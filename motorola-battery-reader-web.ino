@@ -26,10 +26,12 @@ void setup() {
     Serial.println("\n\nMotorola Battery Reader Web Server (AP Mode)");
     Serial.println("==============================================");
 
-    // Инициализация дисплея и кнопки меню
+    // Инициализация дисплея и кнопок меню + стартовая заставка
     displayInit();
     displayButtonSetup();
-    displayShow("BOOT...");
+    displaySplash();
+    delay(2500);
+    displaySetStatus("BOOT...");
 
     // Настройка светодиодов
     pinMode(LED_GREEN_PIN, OUTPUT);

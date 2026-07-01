@@ -3,557 +3,327 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Motorola IMPRES Battery Reader</title>
+    <title>NGU · Motorola IMPRES Battery Tool</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Segoe UI', Arial, sans-serif;
-            background: #1a1a2e;
-            color: #eee;
-            padding: 20px;
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
+        :root{
+            --ua-blue:#0057b7; --ua-yellow:#ffd700;
+            --bg:#12172b; --card:#1b2140; --card2:#141a33;
+            --line:#2a335c; --accent:#e94560; --ok:#2ecc71; --warn:#f39c12; --info:#3498db;
+            --text:#e8ecff; --muted:#8b93b8;
         }
-        .container {
-            max-width: 850px;
-            width: 100%;
-            background: #16213e;
-            border-radius: 20px;
-            padding: 30px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
-        }
-        .header {
-            text-align: center;
-            margin-bottom: 30px;
-            padding-bottom: 20px;
-            border-bottom: 2px solid #0f3460;
-        }
-        h1 {
-            font-weight: 300;
-            color: #0f3460;
-            font-size: 2em;
-        }
-        h1 span { color: #e94560; }
-        .subtitle {
-            color: #888;
-            font-size: 0.8em;
-            margin-top: 5px;
-        }
-        .badge-ap {
-            display: inline-block;
-            background: #0f3460;
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-size: 0.7em;
-            color: #2ecc71;
-            margin-top: 10px;
-        }
-        .card {
-            background: #1a1a3e;
-            border-radius: 15px;
-            padding: 20px;
-            margin-bottom: 20px;
-            border-left: 4px solid #e94560;
-            transition: 0.3s;
-        }
-        .card:hover { border-left-color: #2ecc71; }
-        .card h2 {
-            font-size: 1.1em;
-            margin-bottom: 15px;
-            color: #e94560;
-        }
-        .btn-group {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        .btn {
-            padding: 12px 24px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 1em;
-            font-weight: 600;
-            transition: all 0.3s;
-            text-decoration: none;
-            display: inline-block;
-        }
-        .btn:active { transform: scale(0.95); }
-        .btn-primary { background: #0f3460; color: white; }
-        .btn-primary:hover { background: #1a4f8e; transform: translateY(-2px); }
-        .btn-success { background: #2ecc71; color: #1a1a2e; }
-        .btn-success:hover { background: #27ae60; transform: translateY(-2px); }
-        .btn-danger { background: #e74c3c; color: white; }
-        .btn-danger:hover { background: #c0392b; transform: translateY(-2px); }
-        .btn-info { background: #3498db; color: white; }
-        .btn-info:hover { background: #2980b9; transform: translateY(-2px); }
-        .btn-warning { background: #f39c12; color: #1a1a2e; }
-        .btn-warning:hover { background: #e67e22; transform: translateY(-2px); }
-        .status {
-            background: #0f0f2a;
-            border-radius: 10px;
-            padding: 15px;
-            margin-top: 15px;
-            font-family: 'Courier New', monospace;
-            font-size: 0.85em;
-            white-space: pre-wrap;
-            word-break: break-all;
-            border: 1px solid #0f3460;
-            min-height: 80px;
-        }
-        .file-input {
-            display: block;
-            margin: 15px 0;
-            padding: 15px;
-            background: #0f0f2a;
-            border: 2px dashed #0f3460;
-            border-radius: 10px;
-            color: #eee;
-            width: 100%;
-            text-align: center;
-        }
-        .file-input input { display: none; }
-        .file-label {
-            display: inline-block;
-            padding: 10px 25px;
-            background: #0f3460;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: 0.3s;
-        }
-        .file-label:hover { background: #1a4f8e; }
-        .file-name {
-            margin-left: 15px;
-            color: #888;
-            font-size: 0.9em;
-        }
-        .password-input {
-            background: #0f0f2a;
-            border: 1px solid #0f3460;
-            color: #eee;
-            padding: 12px;
-            border-radius: 8px;
-            width: 100%;
-            margin: 10px 0;
-            font-size: 1em;
-            transition: 0.3s;
-        }
-        .password-input:focus {
-            outline: none;
-            border-color: #e94560;
-        }
-        .flex-row {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-        .toast {
-            padding: 15px 20px;
-            border-radius: 10px;
-            margin: 10px 0;
-            display: none;
-            animation: slideDown 0.3s ease;
-        }
-        @keyframes slideDown {
-            from { opacity: 0; transform: translateY(-10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        .toast-success { background: #1a4f2e; border-left: 4px solid #2ecc71; }
-        .toast-error { background: #4f1a1a; border-left: 4px solid #e74c3c; }
-        .toast-info { background: #1a2a4f; border-left: 4px solid #3498db; }
-        #progress {
-            display: none;
-            text-align: center;
-            padding: 20px;
-        }
-        .spinner {
-            border: 4px solid #0f3460;
-            border-top: 4px solid #e94560;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 10px;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        .warning-text {
-            color: #f39c12;
-            font-size: 0.8em;
-            margin-top: 10px;
-            padding: 10px;
-            background: #1a1a2e;
-            border-radius: 8px;
-            border-left: 3px solid #f39c12;
-        }
-        @media (max-width: 600px) {
-            .container { padding: 15px; }
-            .btn { width: 100%; justify-content: center; }
-            .btn-group { flex-direction: column; }
-        }
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:'Segoe UI',Arial,sans-serif;background:var(--bg);color:var(--text);
+             min-height:100vh;padding:16px;display:flex;justify-content:center}
+        .wrap{width:100%;max-width:900px}
+        /* --- header / logo --- */
+        .brand{display:flex;align-items:center;gap:16px;background:var(--card);
+               border-radius:16px;padding:16px 20px;border:1px solid var(--line);
+               box-shadow:0 8px 30px rgba(0,0,0,.4)}
+        .badge{width:64px;height:72px;flex:0 0 auto;border-radius:10px;
+               background:linear-gradient(180deg,var(--ua-blue) 0 50%,var(--ua-yellow) 50% 100%);
+               display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,.4)}
+        .brand h1{font-size:1.15em;font-weight:700;line-height:1.25}
+        .brand h1 .ua{color:var(--ua-yellow)}
+        .brand .sub{color:var(--muted);font-size:.8em;margin-top:4px}
+        /* --- tabs --- */
+        .tabs{display:flex;gap:8px;margin:16px 0;flex-wrap:wrap}
+        .tab{flex:1;min-width:90px;padding:12px;border:1px solid var(--line);background:var(--card2);
+             color:var(--muted);border-radius:12px;cursor:pointer;font-size:.95em;font-weight:600;
+             text-align:center;transition:.2s}
+        .tab.active{background:var(--ua-blue);color:#fff;border-color:var(--ua-blue)}
+        .page{display:none}
+        .page.active{display:block;animation:fade .25s ease}
+        @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+        /* --- cards --- */
+        .card{background:var(--card);border-radius:14px;padding:18px;margin-bottom:14px;
+              border:1px solid var(--line)}
+        .card h2{font-size:1em;color:var(--ua-yellow);margin-bottom:12px;display:flex;
+                 align-items:center;gap:8px}
+        .row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line);
+             font-size:.95em}
+        .row:last-child{border-bottom:none}
+        .row .k{color:var(--muted)} .row .v{font-weight:600;font-family:'Courier New',monospace}
+        /* charge bar */
+        .charge{display:flex;align-items:center;gap:14px}
+        .batt{position:relative;width:120px;height:46px;border:3px solid var(--text);border-radius:7px}
+        .batt::after{content:'';position:absolute;right:-9px;top:13px;width:6px;height:16px;
+                     background:var(--text);border-radius:0 3px 3px 0}
+        .batt .fill{position:absolute;left:3px;top:3px;bottom:3px;background:var(--ok);border-radius:3px;
+                    width:0;transition:width .5s}
+        .charge .pct{font-size:2em;font-weight:700} .charge .src{color:var(--muted);font-size:.8em}
+        .badge-pill{display:inline-block;padding:4px 12px;border-radius:20px;font-size:.8em;font-weight:700}
+        .pill-ok{background:#123a24;color:var(--ok);border:1px solid var(--ok)}
+        .pill-bad{background:#3a1414;color:var(--accent);border:1px solid var(--accent)}
+        /* buttons */
+        .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+        .btn{padding:12px 20px;border:none;border-radius:10px;cursor:pointer;font-size:.95em;
+             font-weight:600;transition:.2s;color:#fff}
+        .btn:active{transform:scale(.96)}
+        .btn-primary{background:var(--ua-blue)} .btn-primary:hover{background:#0a67d0}
+        .btn-ok{background:var(--ok);color:#0b1a10} .btn-info{background:var(--info)}
+        .btn-warn{background:var(--warn);color:#1a1400} .btn-danger{background:var(--accent)}
+        .file{display:block;margin:12px 0;padding:14px;background:var(--card2);
+              border:2px dashed var(--line);border-radius:10px;text-align:center}
+        .file input{display:none}
+        .file label{display:inline-block;padding:9px 20px;background:var(--ua-blue);border-radius:8px;cursor:pointer}
+        .fname{margin-left:12px;color:var(--muted);font-size:.9em}
+        .pw{width:100%;padding:12px;margin:10px 0;background:var(--card2);border:1px solid var(--line);
+            border-radius:8px;color:var(--text);font-size:1em}
+        .note{font-size:.82em;padding:10px;border-radius:8px;margin-top:10px;border-left:3px solid}
+        .note.i{background:#12233a;color:#9cc4ee;border-color:var(--info)}
+        .note.w{background:#3a2a10;color:#f0c274;border-color:var(--warn)}
+        .hex{font-family:'Courier New',monospace;font-size:.82em;color:#9fe3c0;word-break:break-all;
+             background:var(--card2);padding:10px;border-radius:8px;border:1px solid var(--line)}
+        #toast{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:9;padding:12px 20px;
+               border-radius:10px;display:none;font-weight:600;box-shadow:0 6px 20px rgba(0,0,0,.5)}
+        .t-ok{background:#123a24;color:var(--ok);border:1px solid var(--ok)}
+        .t-err{background:#3a1414;color:var(--accent);border:1px solid var(--accent)}
+        .t-info{background:#12233a;color:#9cc4ee;border:1px solid var(--info)}
+        #progress{display:none;text-align:center;padding:16px}
+        .spin{width:38px;height:38px;border:4px solid var(--line);border-top:4px solid var(--ua-yellow);
+              border-radius:50%;margin:0 auto 8px;animation:spin 1s linear infinite}
+        @keyframes spin{to{transform:rotate(360deg)}}
+        @media(max-width:600px){.btn{width:100%}.btns{flex-direction:column}}
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>🔋 Motorola <span>IMPRES</span></h1>
-            <div class="subtitle">Battery Reader & Programmer</div>
-            <div class="badge-ap">📡 AP Mode: BatteryReader</div>
+<div id="toast"></div>
+<div class="wrap">
+    <div class="brand">
+        <div class="badge">
+            <svg viewBox="0 0 64 76" width="46" height="55" aria-label="Тризуб">
+                <g fill="#ffd700">
+                    <polygon points="32,0 27,10 37,10"/>
+                    <rect x="28" y="8" width="8" height="60"/>
+                    <polygon points="13,10 8,20 18,20"/>
+                    <rect x="9" y="18" width="8" height="26"/>
+                    <polygon points="51,10 46,20 56,20"/>
+                    <rect x="47" y="18" width="8" height="26"/>
+                    <rect x="9" y="37" width="46" height="8"/>
+                    <rect x="16" y="58" width="32" height="6"/>
+                    <rect x="23" y="64" width="18" height="6"/>
+                </g>
+            </svg>
         </div>
-        
-        <div id="toast" class="toast"></div>
-        
-        <div class="card">
-            <h2>📊 Статус батареи</h2>
-            <div id="statusInfo" class="status">⏳ Дамп не считан</div>
-            <div class="btn-group" style="margin-top: 15px;">
-                <button class="btn btn-primary" onclick="readDump()">🔍 Считать дамп</button>
-                <button class="btn btn-info" onclick="refreshInfo()">🔄 Обновить</button>
-            </div>
-        </div>
-        
-        <div class="card">
-            <h2>💾 Управление дампом</h2>
-            <div class="btn-group">
-                <button class="btn btn-success" onclick="downloadDump()">⬇ Скачать дамп (.bin)</button>
-            </div>
-        </div>
-        
-        <div class="card">
-            <h2>📤 Запись / восстановление прошивки</h2>
-            <div class="warning-text" style="border-left-color:#3498db;color:#3498db;">
-                ℹ️ Восстановление прошивки: залейте <strong>заведомо исправный</strong> дамп
-                той же модели (512 байт) и запишите его. Это надёжный способ восстановить
-                повреждённую/залоченную АКБ. Автоподбор подписи невозможен — нужен эталон.
-            </div>
-            <form id="uploadForm" enctype="multipart/form-data">
-                <div class="file-input">
-                    <label class="file-label" for="fileUpload">📁 Выберите файл .bin</label>
-                    <input type="file" id="fileUpload" name="file" accept=".bin" required>
-                    <span class="file-name" id="fileName">Файл не выбран</span>
-                </div>
-            </form>
-            
-            <input type="password" class="password-input" id="password" placeholder="🔑 Введите пароль администратора">
-            <button class="btn btn-danger" onclick="writeDump()" style="width:100%;">⚡ ЗАПИСАТЬ В БАТАРЕЮ</button>
-            
-            <div class="warning-text">
-                ⚠️ <strong>ВНИМАНИЕ!</strong> Запись необратима.
-                Убедитесь, что файл корректен (ровно 512 байт).
-                Неправильная прошивка может вывести батарею из строя!
-            </div>
-        </div>
-
-        <div class="card">
-            <h2>🔬 Монитор DS2438</h2>
-            <div id="statusInfo2438" class="status">⏳ Данные не считаны</div>
-            <div class="btn-group" style="margin-top: 15px;">
-                <button class="btn btn-success" onclick="downloadDump2438()">⬇ Скачать DS2438 (.bin)</button>
-            </div>
-
-            <form id="uploadForm2438" enctype="multipart/form-data" style="margin-top:15px;">
-                <div class="file-input">
-                    <label class="file-label" for="fileUpload2438">📁 Выберите файл .bin (64 байта)</label>
-                    <input type="file" id="fileUpload2438" name="file" accept=".bin" required>
-                    <span class="file-name" id="fileName2438">Файл не выбран</span>
-                </div>
-            </form>
-
-            <input type="password" class="password-input" id="password2438" placeholder="🔑 Пароль администратора">
-            <button class="btn btn-danger" onclick="writeDump2438()" style="width:100%;">⚡ ЗАПИСАТЬ В DS2438</button>
-
-            <div class="warning-text">
-                ⚠️ Запись всей памяти DS2438 (64 байта) необратима и может нарушить
-                калибровку топливного датчика батареи. Файл должен быть ровно 64 байта.
-            </div>
-        </div>
-
-        <div id="progress">
-            <div class="spinner"></div>
-            <div id="progressText">Выполняется...</div>
+        <div>
+            <h1><span class="ua">Національна Гвардія</span> України</h1>
+            <div class="sub">🔋 Motorola IMPRES · Battery Reader / Programmer</div>
         </div>
     </div>
 
-    <script>
-        let currentFile = null;
-        let currentFile2438 = null;
+    <div class="tabs">
+        <div class="tab active" data-p="overview" onclick="showTab(this)">📊 Обзор</div>
+        <div class="tab" data-p="data" onclick="showTab(this)">🔬 Данные</div>
+        <div class="tab" data-p="fw" onclick="showTab(this)">📤 Прошивка</div>
+    </div>
 
-        document.getElementById('fileUpload').addEventListener('change', function(e) {
-            currentFile = this.files[0];
-            document.getElementById('fileName').textContent = currentFile ? currentFile.name + ' (' + currentFile.size + ' bytes)' : 'Файл не выбран';
-            console.log('File selected:', currentFile);
-        });
+    <div id="progress"><div class="spin"></div><div id="progressText">Выполняется...</div></div>
 
-        document.getElementById('fileUpload2438').addEventListener('change', function(e) {
-            currentFile2438 = this.files[0];
-            document.getElementById('fileName2438').textContent = currentFile2438 ? currentFile2438.name + ' (' + currentFile2438.size + ' bytes)' : 'Файл не выбран';
-        });
-        
-        function showToast(message, type = 'success') {
-            const toast = document.getElementById('toast');
-            toast.className = `toast toast-${type}`;
-            toast.textContent = message;
-            toast.style.display = 'block';
-            setTimeout(() => { toast.style.display = 'none'; }, 5000);
-        }
-        
-        function showProgress(show, text = 'Выполняется...') {
-            document.getElementById('progress').style.display = show ? 'block' : 'none';
-            document.getElementById('progressText').textContent = text;
-        }
-        
-        async function readDump() {
-            showProgress(true, 'Чтение микросхем...');
-            try {
-                const response = await fetch('/api/read');
-                const data = await response.json();
-                if (data.status === 'success') {
-                    const parts = [
-                        data.ds2433 ? 'DS2433 ✅' : 'DS2433 ❌',
-                        data.ds2438 ? 'DS2438 ✅' : 'DS2438 ❌'
-                    ];
-                    showToast('Считано: ' + parts.join(', '), (data.ds2433 && data.ds2438) ? 'success' : 'info');
-                    await refreshInfo();
-                    await refreshInfo2438();
-                } else {
-                    showToast('❌ Ошибка: ' + data.message, 'error');
-                }
-            } catch (error) {
-                showToast('❌ Ошибка соединения: ' + error.message, 'error');
-            }
-            showProgress(false);
-        }
+    <!-- ========== OVERVIEW ========== -->
+    <div class="page active" id="overview">
+        <div class="card">
+            <h2>🔋 Заряд</h2>
+            <div class="charge">
+                <div class="batt"><div class="fill" id="battFill"></div></div>
+                <div><div class="pct" id="chargePct">--%</div><div class="src" id="chargeSrc"></div></div>
+            </div>
+            <div class="row" style="margin-top:12px"><span class="k">Напряжение</span><span class="v" id="ovVolt">—</span></div>
+            <div class="row"><span class="k">Температура</span><span class="v" id="ovTemp">—</span></div>
+            <div class="btns">
+                <button class="btn btn-primary" onclick="readDump()">🔍 Считать АКБ</button>
+                <button class="btn btn-info" onclick="refreshAll()">🔄 Обновить</button>
+            </div>
+        </div>
+        <div class="card">
+            <h2>🪪 Батарея</h2>
+            <div class="row"><span class="k">Модель</span><span class="v" id="ovModel">—</span></div>
+            <div class="row"><span class="k">Ёмкость</span><span class="v" id="ovCap">—</span></div>
+            <div class="row"><span class="k">Износ</span><span class="v" id="ovWear">—</span></div>
+            <div class="row"><span class="k">Подлинность</span><span class="v" id="ovAuth">—</span></div>
+        </div>
+    </div>
 
-        async function refreshInfo2438() {
-            try {
-                const response = await fetch('/api/info2438');
-                if (response.status === 404) {
-                    document.getElementById('statusInfo2438').textContent = '❌ Данные не считаны';
-                    return;
-                }
-                const data = await response.json();
-                let info = `📦 Размер: ${data.size} байт\n`;
-                info += `⚡ Напряжение: ${data.voltage} В\n`;
-                info += `🌡 Температура: ${data.temperature} °C\n`;
-                info += `🔌 Ток (сырое): ${data.currentRaw}\n`;
-                info += `📋 HEX превью (16 байт):\n   ${data.preview || 'Нет данных'}`;
-                document.getElementById('statusInfo2438').textContent = info;
-            } catch (error) {
-                document.getElementById('statusInfo2438').textContent = '❌ Ошибка получения информации';
-            }
-        }
+    <!-- ========== DATA ========== -->
+    <div class="page" id="data">
+        <div class="card">
+            <h2>🔬 Монитор DS2438</h2>
+            <div class="row"><span class="k">Напряжение</span><span class="v" id="dV">—</span></div>
+            <div class="row"><span class="k">Температура</span><span class="v" id="dT">—</span></div>
+            <div class="row"><span class="k">Ток (raw)</span><span class="v" id="dI">—</span></div>
+            <div class="row"><span class="k">HEX (16 байт)</span><span class="v" style="font-size:.85em" id="dPrev">—</span></div>
+        </div>
+        <div class="card">
+            <h2>📋 Дамп DS2433</h2>
+            <div class="row"><span class="k">Модель</span><span class="v" id="d33Model">—</span></div>
+            <div class="hex" id="d33Prev" style="margin-top:8px">—</div>
+        </div>
+    </div>
 
-        async function downloadDump2438() {
-            try {
-                const response = await fetch('/api/download2438');
-                if (response.status === 404) {
-                    showToast('❌ Дамп DS2438 не найден. Сначала считайте батарею.', 'error');
-                    return;
-                }
-                const blob = await response.blob();
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'ds2438_dump_' + new Date().toISOString().slice(0,10) + '.bin';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-                showToast('✅ Дамп DS2438 скачан!', 'success');
-            } catch (error) {
-                showToast('❌ Ошибка: ' + error.message, 'error');
-            }
-        }
+    <!-- ========== FIRMWARE ========== -->
+    <div class="page" id="fw">
+        <div class="card">
+            <h2>💾 Чтение и резервная копия</h2>
+            <div class="btns">
+                <button class="btn btn-primary" onclick="readDump()">🔍 Считать АКБ</button>
+                <button class="btn btn-ok" onclick="downloadDump()">⬇ Дамп DS2433 (.bin)</button>
+                <button class="btn btn-ok" onclick="downloadDump2438()">⬇ Дамп DS2438 (.bin)</button>
+            </div>
+            <div class="note i">ℹ️ Перед любой записью сделайте резервную копию — скачайте дампы.</div>
+        </div>
 
-        async function writeDump2438() {
-            if (!currentFile2438) {
-                showToast('❌ Выберите файл DS2438!', 'error');
-                return;
-            }
-            if (currentFile2438.size !== 64) {
-                showToast('❌ Файл должен быть ровно 64 байта! Сейчас: ' + currentFile2438.size + ' байт', 'error');
-                return;
-            }
-            const password = document.getElementById('password2438').value;
-            if (!password) {
-                showToast('❌ Введите пароль администратора!', 'error');
-                return;
-            }
-            if (!confirm('⚠️ Запись всей памяти DS2438 НЕОБРАТИМА и может нарушить\n' +
-                         'калибровку топливного датчика батареи.\n\n' +
-                         'Файл: ' + currentFile2438.name + '\n' +
-                         'Размер: ' + currentFile2438.size + ' байт\n\nПродолжить?')) {
-                return;
-            }
+        <div class="card">
+            <h2>📤 Запись / восстановление прошивки</h2>
+            <div class="note i">ℹ️ Восстановление залоченной/повреждённой АКБ = запись <b>заведомо исправного</b>
+                дампа той же модели (512 байт). Автоподбор подписи невозможен — нужен эталон.</div>
+            <form enctype="multipart/form-data">
+                <div class="file">
+                    <label for="fu33">📁 Файл .bin (512 байт)</label>
+                    <input type="file" id="fu33" accept=".bin">
+                    <span class="fname" id="fn33">не выбран</span>
+                </div>
+            </form>
+            <input type="password" class="pw" id="pw33" placeholder="🔑 Пароль администратора">
+            <button class="btn btn-danger" style="width:100%" onclick="writeDump()">⚡ ЗАПИСАТЬ DS2433</button>
+            <div class="note w">⚠️ Запись необратима. Неверный файл может вывести АКБ из строя.</div>
+        </div>
 
-            showProgress(true, 'Загрузка файла DS2438...');
-            try {
-                const formData = new FormData();
-                formData.append('file', currentFile2438);
+        <div class="card">
+            <h2>🔬 Запись DS2438 (монитор)</h2>
+            <form enctype="multipart/form-data">
+                <div class="file">
+                    <label for="fu38">📁 Файл .bin (64 байта)</label>
+                    <input type="file" id="fu38" accept=".bin">
+                    <span class="fname" id="fn38">не выбран</span>
+                </div>
+            </form>
+            <input type="password" class="pw" id="pw38" placeholder="🔑 Пароль администратора">
+            <button class="btn btn-danger" style="width:100%" onclick="writeDump2438()">⚡ ЗАПИСАТЬ DS2438</button>
+        </div>
 
-                const uploadResponse = await fetch('/upload2438', { method: 'POST', body: formData });
-                const uploadData = await uploadResponse.json();
-                if (uploadData.status !== 'success') {
-                    showToast('❌ Ошибка загрузки: ' + uploadData.message, 'error');
-                    showProgress(false);
-                    return;
-                }
+        <div class="card">
+            <h2>♻️ Сброс для рекалибровки</h2>
+            <div class="note w">⚠️ Обнуляет счётчики заряда/разряда (CCA/DCA/таймер) и износ (ёмкость→100%),
+                пересчитывает контрольные суммы и пишет в чип. Калибровка (offset) сохраняется.
+                Затем откалибруйте АКБ на <b>оригинальном</b> зарядном устройстве IMPRES.
+                Точное поведение ЗУ проверьте на «жертвенной» батарее. Запись необратима.</div>
+            <input type="password" class="pw" id="pwRst" placeholder="🔑 Пароль администратора">
+            <button class="btn btn-warn" style="width:100%" onclick="resetBattery()">♻️ СБРОСИТЬ СЧЁТЧИКИ</button>
+        </div>
+    </div>
+</div>
 
-                showToast('✅ Файл загружен! Записываем в DS2438...', 'success');
-                showProgress(true, '⏳ Запись в DS2438... (не отключайте питание!)');
-                await new Promise(resolve => setTimeout(resolve, 300));
+<script>
+let f33=null, f38=null;
+function $(id){return document.getElementById(id)}
+function showTab(el){
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+    el.classList.add('active'); $(el.dataset.p).classList.add('active');
+}
+function toast(m,t='ok'){const e=$('toast');e.className='t-'+t;e.textContent=m;e.style.display='block';
+    setTimeout(()=>e.style.display='none',4500)}
+function prog(s,t='Выполняется...'){$('progress').style.display=s?'block':'none';$('progressText').textContent=t}
 
-                const writeResponse = await fetch('/api/write2438?password=' + encodeURIComponent(password), { method: 'POST' });
-                const writeData = await writeResponse.json();
-                if (writeData.status === 'success') {
-                    showToast('✅ DS2438 успешно записан!', 'success');
-                    await refreshInfo2438();
-                } else {
-                    showToast('❌ Ошибка записи: ' + writeData.message, 'error');
-                }
-            } catch (error) {
-                showToast('❌ Ошибка: ' + error.message, 'error');
+$('fu33').addEventListener('change',function(){f33=this.files[0];$('fn33').textContent=f33?f33.name+' ('+f33.size+' б)':'не выбран'});
+$('fu38').addEventListener('change',function(){f38=this.files[0];$('fn38').textContent=f38?f38.name+' ('+f38.size+' б)':'не выбран'});
+
+async function readDump(){
+    prog(true,'Чтение микросхем...');
+    try{
+        const r=await fetch('/api/read'); const d=await r.json();
+        if(d.status==='success'){
+            toast('Считано: DS2433 '+(d.ds2433?'✅':'❌')+', DS2438 '+(d.ds2438?'✅':'❌'),
+                  (d.ds2433&&d.ds2438)?'ok':'info');
+            await refreshAll();
+        } else toast('Ошибка: '+d.message,'err');
+    }catch(e){toast('Соединение: '+e.message,'err')}
+    prog(false);
+}
+
+async function refreshAll(){
+    // DS2433 info
+    try{
+        const r=await fetch('/api/info');
+        if(r.status!==404){
+            const d=await r.json();
+            $('ovModel').textContent=d.model||'—'; $('d33Model').textContent=d.model||'—';
+            if(typeof d.capacity==='number'&&d.capacity>=0){
+                $('ovCap').textContent=d.capacity+' %'; $('ovWear').textContent=d.wear+' %';
             }
-            showProgress(false);
+            if(typeof d.genuine==='boolean'){
+                $('ovAuth').innerHTML=d.genuine
+                    ?'<span class="badge-pill pill-ok">OK</span>'
+                    :'<span class="badge-pill pill-bad">РИСК ('+d.authReason+')</span>';
+            }
+            $('d33Prev').textContent=d.preview||'—';
         }
-        
-        async function refreshInfo() {
-            try {
-                const response = await fetch('/api/info');
-                if (response.status === 404) {
-                    document.getElementById('statusInfo').textContent = '❌ Дамп не считан';
-                    return;
-                }
-                const data = await response.json();
-                let info = `📦 Размер: ${data.size} байт\n`;
-                info += `🔖 Модель: ${data.model || '—'}\n`;
-                if (typeof data.capacity === 'number' && data.capacity >= 0) {
-                    info += `🔋 Ёмкость: ${data.capacity}%   Износ: ${data.wear}%\n`;
-                }
-                if (typeof data.genuine === 'boolean') {
-                    info += data.genuine
-                        ? `🛡 Подлинность: ✅ OK\n`
-                        : `🛡 Подлинность: ⛔ РИСК БЛОКИРОВКИ (${data.authReason})\n`;
-                }
-                info += `📋 HEX превью (первые 16 байт):\n   ${data.preview || 'Нет данных'}\n`;
-                info += `🟢 Статус: ${data.hasData ? '✅ Дамп загружен' : '❌ Нет данных'}`;
-                document.getElementById('statusInfo').textContent = info;
-            } catch (error) {
-                document.getElementById('statusInfo').textContent = '❌ Ошибка получения информации';
-            }
+    }catch(e){}
+    // DS2438 info
+    try{
+        const r=await fetch('/api/info2438');
+        if(r.status!==404){
+            const d=await r.json();
+            const pct=(typeof d.charge==='number'&&d.charge>=0)?d.charge:null;
+            $('chargePct').textContent=pct!==null?pct+'%':'--%';
+            $('chargeSrc').textContent=pct!==null?'источник: '+(d.chargeSrc==='ICA'?'ICA (DS2438)':'напряжение'):'';
+            const fill=$('battFill');
+            fill.style.width=(pct!==null?pct:0)+'%';
+            fill.style.background=pct===null?'#555':(pct<20?'#e74c3c':pct<50?'#f39c12':'#2ecc71');
+            $('ovVolt').textContent=d.voltage.toFixed(2)+' В'; $('ovTemp').textContent=d.temperature.toFixed(1)+' °C';
+            $('dV').textContent=d.voltage.toFixed(2)+' В'; $('dT').textContent=d.temperature.toFixed(1)+' °C';
+            $('dI').textContent=d.currentRaw; $('dPrev').textContent=d.preview||'—';
         }
-        
-        async function downloadDump() {
-            try {
-                const response = await fetch('/api/download');
-                if (response.status === 404) {
-                    showToast('❌ Дамп не найден. Сначала считайте батарею.', 'error');
-                    return;
-                }
-                const blob = await response.blob();
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'battery_dump_' + new Date().toISOString().slice(0,10) + '.bin';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-                showToast('✅ Дамп скачан!', 'success');
-            } catch (error) {
-                showToast('❌ Ошибка: ' + error.message, 'error');
-            }
-        }
-        
-        async function writeDump() {
-            if (!currentFile) {
-                showToast('❌ Выберите файл прошивки!', 'error');
-                return;
-            }
-            
-            if (currentFile.size !== 512) {
-                showToast('❌ Файл должен быть ровно 512 байт! Сейчас: ' + currentFile.size + ' байт', 'error');
-                return;
-            }
-            
-            const password = document.getElementById('password').value;
-            if (!password) {
-                showToast('❌ Введите пароль администратора!', 'error');
-                return;
-            }
-            
-            if (!confirm('⚠️ ВНИМАНИЕ! Запись в батарею НЕОБРАТИМА.\n\n' +
-                         'Файл: ' + currentFile.name + '\n' +
-                         'Размер: ' + currentFile.size + ' байт\n\n' +
-                         'Продолжить?')) {
-                return;
-            }
-            
-            showProgress(true, 'Загрузка файла на ESP32...');
-            
-            try {
-                // Создаем FormData и добавляем файл
-                const formData = new FormData();
-                formData.append('file', currentFile);
-                
-                console.log('Uploading file:', currentFile.name, currentFile.size, 'bytes');
-                
-                // Загружаем файл
-                const uploadResponse = await fetch('/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                console.log('Upload response status:', uploadResponse.status);
-                const uploadData = await uploadResponse.json();
-                console.log('Upload response:', uploadData);
-                
-                if (uploadData.status !== 'success') {
-                    showToast('❌ Ошибка загрузки: ' + uploadData.message, 'error');
-                    showProgress(false);
-                    return;
-                }
-                
-                showToast('✅ Файл загружен! Записываем в батарею...', 'success');
-                showProgress(true, '⏳ Запись в батарею... (не отключайте питание!)');
-                
-                // Даем время на обработку
-                await new Promise(resolve => setTimeout(resolve, 500));
-                
-                // Пишем в батарею
-                const writeResponse = await fetch('/api/write?password=' + encodeURIComponent(password), {
-                    method: 'POST'
-                });
-                
-                console.log('Write response status:', writeResponse.status);
-                const writeData = await writeResponse.json();
-                console.log('Write response:', writeData);
-                
-                if (writeData.status === 'success') {
-                    showToast('✅ Прошивка успешно записана!', 'success');
-                    await refreshInfo();
-                } else {
-                    showToast('❌ Ошибка записи: ' + writeData.message, 'error');
-                }
-            } catch (error) {
-                console.error('Error:', error);
-                showToast('❌ Ошибка: ' + error.message, 'error');
-            }
-            
-            showProgress(false);
-        }
-        
-        // Автообновление при загрузке
-        window.onload = function() {
-            refreshInfo();
-            refreshInfo2438();
-            setInterval(function() { refreshInfo(); refreshInfo2438(); }, 10000);
-        };
-    </script>
+    }catch(e){}
+}
+
+async function downloadBin(url,name){
+    try{
+        const r=await fetch(url);
+        if(r.status===404){toast('Дамп не найден — сначала считайте АКБ','err');return}
+        const b=await r.blob(); const u=URL.createObjectURL(b); const a=document.createElement('a');
+        a.href=u; a.download=name+'_'+new Date().toISOString().slice(0,10)+'.bin';
+        document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u);
+        toast('Скачано: '+name,'ok');
+    }catch(e){toast('Ошибка: '+e.message,'err')}
+}
+const downloadDump=()=>downloadBin('/api/download','ds2433');
+const downloadDump2438=()=>downloadBin('/api/download2438','ds2438');
+
+async function writeGeneric(file,size,pwId,upUrl,wrUrl,name){
+    if(!file){toast('Выберите файл '+name,'err');return}
+    if(file.size!==size){toast('Файл должен быть '+size+' байт (сейчас '+file.size+')','err');return}
+    const pw=$(pwId).value; if(!pw){toast('Введите пароль','err');return}
+    if(!confirm('⚠️ Запись '+name+' НЕОБРАТИМА.\nФайл: '+file.name+'\nПродолжить?'))return;
+    prog(true,'Загрузка файла...');
+    try{
+        const fd=new FormData(); fd.append('file',file);
+        const u=await(await fetch(upUrl,{method:'POST',body:fd})).json();
+        if(u.status!=='success'){toast('Загрузка: '+u.message,'err');prog(false);return}
+        prog(true,'⏳ Запись в чип...');
+        await new Promise(r=>setTimeout(r,350));
+        const w=await(await fetch(wrUrl+'?password='+encodeURIComponent(pw),{method:'POST'})).json();
+        toast(w.status==='success'?('✅ '+name+' записан'):('Ошибка: '+w.message),w.status==='success'?'ok':'err');
+        if(w.status==='success')await refreshAll();
+    }catch(e){toast('Ошибка: '+e.message,'err')}
+    prog(false);
+}
+const writeDump=()=>writeGeneric(f33,512,'pw33','/upload','/api/write','DS2433');
+const writeDump2438=()=>writeGeneric(f38,64,'pw38','/upload2438','/api/write2438','DS2438');
+
+async function resetBattery(){
+    const pw=$('pwRst').value; if(!pw){toast('Введите пароль','err');return}
+    if(!confirm('♻️ Сброс счётчиков/износа и запись в чип НЕОБРАТИМЫ.\n'+
+                'После — калибровка на оригинальном IMPRES-ЗУ.\nПродолжить?'))return;
+    prog(true,'Сброс и запись...');
+    try{
+        const r=await(await fetch('/api/reset?password='+encodeURIComponent(pw),{method:'POST'})).json();
+        toast(r.status==='success'?'✅ Счётчики сброшены':('Ошибка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Ошибка: '+e.message,'err')}
+    prog(false);
+}
+
+window.onload=function(){refreshAll();setInterval(refreshAll,10000)};
+</script>
 </body>
 </html>

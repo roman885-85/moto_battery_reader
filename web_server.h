@@ -285,10 +285,15 @@ void handleDumpInfo2438() {
 
     int16_t current = (int16_t)((batteryDump2438[6] << 8) | batteryDump2438[5]); // сырое значение
 
-    char json[220];
+    const char *csrc;
+    int charge = batteryPercent(&csrc);
+
+    char json[280];
     snprintf(json, sizeof(json),
-        "{\"size\":%d,\"hasData\":true,\"voltage\":%.2f,\"temperature\":%.2f,\"currentRaw\":%d,\"preview\":\"%s\"}",
-        DS2438_MEM_SIZE, voltage, temperature, current, hexPreview(batteryDump2438, 16).c_str());
+        "{\"size\":%d,\"hasData\":true,\"voltage\":%.2f,\"temperature\":%.2f,\"currentRaw\":%d,"
+        "\"charge\":%d,\"chargeSrc\":\"%s\",\"preview\":\"%s\"}",
+        DS2438_MEM_SIZE, voltage, temperature, current, charge, csrc,
+        hexPreview(batteryDump2438, 16).c_str());
 
     server.send(200, "application/json", json);
 }
@@ -545,6 +550,74 @@ void handleDumpInfo() {
     server.send(200, "application/json", json);
 }
 
+// Сброс счётчиков использования / износа для рекалибровки на оригинальной ЗУ.
+// Обнуляет CCA/DCA/ETM в DS2438 и их зеркало в DS2433 (запись 0x0D), сбрасывает
+// отображаемую ёмкость на 100% (износ 0). Контрольные суммы затронутых записей
+// пересчитываются (Σ==0x5A). Калибровка (offset-регистр DS2438) сохраняется.
+void resetBatteryData() {
+    if (hasDump2438) {
+        for (int i = 8; i <= 11; i++) batteryDump2438[i] = 0; // ETM (таймер)
+        batteryDump2438[60] = batteryDump2438[61] = 0;         // CCA
+        batteryDump2438[62] = batteryDump2438[63] = 0;         // DCA
+    }
+    if (hasDump) {
+        // Зеркало CCA/DCA в записи 0x0D сразу после модели ("0B 'PMNN' ... 0D ...")
+        for (int i = 0x100; i < 0x1F0 - 13; i++) {
+            if (batteryDump[i] == 0x0B && batteryDump[i + 1] == 'P' &&
+                batteryDump[i + 2] == 'M' && batteryDump[i + 3] == 'N') {
+                for (int j = i + 10; j < i + 30 && j < 0x1F0 - 13; j++) {
+                    if (batteryDump[j] == 0x0D) {
+                        batteryDump[j + 3] = batteryDump[j + 4] = 0; // CCA
+                        batteryDump[j + 5] = batteryDump[j + 6] = 0; // DCA
+                        fixRecordChecksum(batteryDump, j, 0x0D);
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+        // Ёмкость -> 100% (износ 0) в записи истории 0x17
+        for (int i = 0x100; i < 0x1F0 - 23; i++) {
+            if (batteryDump[i] == 0x17 && batteryDump[i + 1] == 0x00) {
+                batteryDump[i + 21] = 0x64;
+                fixRecordChecksum(batteryDump, i, 0x17);
+                break;
+            }
+        }
+    }
+}
+
+// Обработчик сброса: правит дампы в ОЗУ, пишет в обе микросхемы, сохраняет.
+void handleResetBattery() {
+    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
+        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}");
+        return;
+    }
+    if (!hasDump && !hasDump2438) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}");
+        return;
+    }
+
+    Serial.println("\n=== Battery reset (recalibration) ===");
+    displayShow("RESET...");
+    resetBatteryData();
+
+    bool ok = true;
+    if (hasDump)     ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (hasDump2438) ok &= battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+
+    if (ok) {
+        if (hasDump)     saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+        if (hasDump2438) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+        displayShow("RESET OK");
+        server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Battery counters reset\"}");
+    } else {
+        displayShow("RESET FAIL");
+        server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to write reset\"}");
+    }
+    Serial.println("=== Reset completed ===\n");
+}
+
 // Настройка веб-сервера
 void setupWebServer() {
     if (!SPIFFS.begin(true)) {
@@ -573,6 +646,7 @@ void setupWebServer() {
     server.on("/api/info2438", HTTP_GET, handleDumpInfo2438);
     server.on("/api/write2438", HTTP_POST, handleWriteDump2438);
     server.on("/upload2438", HTTP_POST, handleUploadDone2438, handleUploadDump2438);
+    server.on("/api/reset", HTTP_POST, handleResetBattery);
     
     server.begin();
     Serial.println("Web server started");

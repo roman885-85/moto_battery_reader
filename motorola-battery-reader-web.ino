@@ -80,7 +80,12 @@ void setup() {
 }
 
 void loop() {
+    // Обработка клиентских запросов (включая GET и POST)
     server.handleClient();
+    
+    // КРИТИЧЕСКИ ВАЖНО: Обработка загрузки файлов
+    // Это необходимо для работы multipart/form-data запросов
+    server.handleFileUpload();
     
     // Индикация работы: быстрый зеленый миг каждые 3 секунды
     static unsigned long lastBlink = 0;

@@ -60,7 +60,7 @@ void handleRoot() {
 // Чтение обеих микросхем (DS2433 + DS2438) с сохранением в SPIFFS и на дисплей.
 // Возвращает true, если считана хотя бы одна микросхема.
 bool readAllChips(bool &ok2433, bool &ok2438) {
-    displayShow("READING...");
+    displayShow("ЗЧИТУВАННЯ...");
 
     memset(batteryDump, 0, DUMP_SIZE);
     memset(batteryDump2438, 0, DS2438_MEM_SIZE);
@@ -85,9 +85,9 @@ bool readAllChips(bool &ok2433, bool &ok2438) {
         hasSN2438 = true;
     }
 
-    char st[22];
-    if (ok2433 || ok2438) snprintf(st, sizeof(st), "READ 2433:%s 2438:%s", ok2433 ? "OK" : "-", ok2438 ? "OK" : "-");
-    else                  snprintf(st, sizeof(st), "READ FAIL: no chip");
+    char st[40];
+    if (ok2433 || ok2438) snprintf(st, sizeof(st), "ЧИТ 2433:%s 2438:%s", ok2433 ? "OK" : "-", ok2438 ? "OK" : "-");
+    else                  snprintf(st, sizeof(st), "ПОМИЛКА: нема чіпа");
     displayShow(st);
 
     return ok2433 || ok2438;
@@ -241,14 +241,14 @@ void handleWriteDump2438() {
     }
 
     Serial.println("Writing to DS2438 chip...");
-    displayShow("WRITE 2438...");
+    displayShow("ЗАПИС 2438...");
     if (battery.writeDS2438(buffer, DS2438_MEM_SIZE)) {
         memcpy(batteryDump2438, buffer, DS2438_MEM_SIZE);
         hasDump2438 = true;
         saveDump("/dump2438.bin", buffer, DS2438_MEM_SIZE);
 
         Serial.println("✓✓✓ DS2438 WRITE SUCCESSFUL ✓✓✓");
-        displayShow("2438 WRITE OK");
+        displayShow("2438 ЗАПИС OK");
         server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"DS2438 written successfully\"}");
 
         for (int i = 0; i < 3; i++) {
@@ -259,7 +259,7 @@ void handleWriteDump2438() {
         }
     } else {
         Serial.println("✗✗✗ DS2438 WRITE FAILED ✗✗✗");
-        displayShow("2438 WRITE FAIL");
+        displayShow("2438 ЗАПИС ЗБІЙ");
         server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to write DS2438\"}");
 
         digitalWrite(LED_RED_PIN, HIGH);
@@ -481,7 +481,7 @@ void handleWriteDump() {
     
     // Пишем в батарею
     Serial.println("Writing to battery chip...");
-    displayShow("WRITE 2433...");
+    displayShow("ЗАПИС 2433...");
     if (battery.writeBattery(buffer, DUMP_SIZE)) {
         memcpy(batteryDump, buffer, DUMP_SIZE);
         hasDump = true;
@@ -499,7 +499,7 @@ void handleWriteDump() {
         }
         
         Serial.println("✓✓✓ WRITE SUCCESSFUL ✓✓✓");
-        displayShow("2433 WRITE OK");
+        displayShow("2433 ЗАПИС OK");
         server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Firmware written successfully\"}");
         
         // Индикация успеха
@@ -511,7 +511,7 @@ void handleWriteDump() {
         }
     } else {
         Serial.println("✗✗✗ WRITE FAILED ✗✗✗");
-        displayShow("2433 WRITE FAIL");
+        displayShow("2433 ЗАПИС ЗБІЙ");
         server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to write battery\"}");
         
         digitalWrite(LED_RED_PIN, HIGH);
@@ -599,7 +599,7 @@ void handleResetBattery() {
     }
 
     Serial.println("\n=== Battery reset (recalibration) ===");
-    displayShow("RESET...");
+    displayShow("СКИДАННЯ...");
     resetBatteryData();
 
     bool ok = true;
@@ -609,10 +609,10 @@ void handleResetBattery() {
     if (ok) {
         if (hasDump)     saveDump("/dump.bin", batteryDump, DUMP_SIZE);
         if (hasDump2438) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
-        displayShow("RESET OK");
+        displayShow("СКИД. OK");
         server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Battery counters reset\"}");
     } else {
-        displayShow("RESET FAIL");
+        displayShow("СКИД. ЗБІЙ");
         server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to write reset\"}");
     }
     Serial.println("=== Reset completed ===\n");

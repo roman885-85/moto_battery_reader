@@ -31,7 +31,7 @@ void setup() {
     displayButtonSetup();
     displaySplash();
     delay(2500);
-    displaySetStatus("BOOT...");
+    displaySetStatus("ЗАПУСК...");
 
     // Настройка светодиодов
     pinMode(LED_GREEN_PIN, OUTPUT);
@@ -103,8 +103,8 @@ void setup() {
     delay(1000);
     digitalWrite(LED_GREEN_PIN, LOW);
 
-    // Готовность на дисплее
-    displayShow("READY");
+    // Готовність на дисплеї
+    displayShow("ГОТОВО");
 }
 
 void loop() {

@@ -30,7 +30,7 @@ extern bool hasSN2438;
   U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
 #endif
 
-static char g_displayStatus[22] = "BOOT";  // нижняя строка статуса
+static char g_displayStatus[36] = "ЗАПУСК";  // нижняя строка статуса (UTF-8)
 static int  g_displayPage = 0;             // текущая страница меню
 static bool g_readRequested = false;       // запрос повторного чтения после цикла
 
@@ -73,7 +73,7 @@ inline void fixRecordChecksum(uint8_t *buf, int start, int len) {
 inline void displayInit() {
     u8g2.setI2CAddress(DISPLAY_I2C_ADDR << 1);
     u8g2.begin();
-    u8g2.setFont(u8g2_font_5x8_tr);
+    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
 }
 
 // Стартовая заставка: тризуб + "Національна Гвардія України".
@@ -101,19 +101,19 @@ inline void displayShow(const char *s) {
 
 inline void drawHeader(const char *title) {
     char h[16];
-    u8g2.setFont(u8g2_font_5x8_tr);
-    u8g2.drawStr(0, 7, title);
+    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+    u8g2.drawUTF8(0, 7, title);
     snprintf(h, sizeof(h), "%d/%d", g_displayPage + 1, NUM_DISPLAY_PAGES);
-    u8g2.drawStr(108, 7, h);
+    u8g2.drawUTF8(108, 7, h);
     u8g2.drawHLine(0, 9, 128);
 }
 
 inline void drawFooter() {
-    char f[26];
-    u8g2.setFont(u8g2_font_5x8_tr);
+    char f[42];
+    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
     u8g2.drawHLine(0, 53, 128);
     snprintf(f, sizeof(f), ">%s", g_displayStatus);
-    u8g2.drawStr(0, 62, f);
+    u8g2.drawUTF8(0, 62, f);
 }
 
 // Иконка батареи со шкалой заполнения; pct<0 — данных нет.
@@ -207,7 +207,7 @@ inline bool decodeCapacity(int *capPct, int *wearPct) {
 //   - переполнен счётчик заряда CCA (0xFFFF) в DS2438.
 // Возвращает true, если признаков блокировки нет; в reason — краткая причина.
 inline bool batteryGenuine(const char **reason) {
-    if (!hasDump) { *reason = "no dump"; return false; }
+    if (!hasDump) { *reason = "нема дампу"; return false; }
 
     bool auth = false;
     static const char pat[] = "MOTOROLA";
@@ -217,17 +217,17 @@ inline bool batteryGenuine(const char **reason) {
         while (k < plen && batteryDump[i + k] == (uint8_t)pat[k]) k++;
         if (k == plen) auth = true;
     }
-    if (!auth) { *reason = "no auth block"; return false; }
+    if (!auth) { *reason = "нема автент."; return false; }
 
     if (batteryDump[0x1B] == 0xFF && batteryDump[0x1C] == 0xFF &&
         batteryDump[0x1D] == 0xFF && batteryDump[0x1E] == 0xFF) {
-        *reason = "calib erased";
+        *reason = "нема калібр.";
         return false;
     }
 
     if (hasDump2438) {
         uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
-        if (cca == 0xFFFF) { *reason = "CCA overflow"; return false; }
+        if (cca == 0xFFFF) { *reason = "CCA перепов."; return false; }
     }
 
     *reason = "OK";
@@ -237,7 +237,7 @@ inline bool batteryGenuine(const char **reason) {
 // ---------- страницы меню ----------
 
 inline void drawPageMain() {
-    char buf[26];
+    char buf[40];
     const char *src;
     int pct = batteryPercent(&src);
 
@@ -247,59 +247,59 @@ inline void drawPageMain() {
     u8g2.setFont(u8g2_font_6x12_tr);
     if (pct >= 0) snprintf(buf, sizeof(buf), "%d%%", pct);
     else          snprintf(buf, sizeof(buf), "--%%");
-    u8g2.drawStr(58, 24, buf);
-    u8g2.setFont(u8g2_font_5x8_tr);
-    u8g2.drawStr(90, 23, src);                  // источник данных заряда
+    u8g2.drawUTF8(58, 24, buf);
+    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+    u8g2.drawUTF8(90, 23, src);                  // источник данных заряда
 
     if (hasDump2438) {
         uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
         int16_t traw = ((int16_t)((batteryDump2438[2] << 8) | batteryDump2438[1])) >> 3;
         snprintf(buf, sizeof(buf), "%.2f V   %.1f C", vraw * 0.01f, traw * 0.03125f);
     } else {
-        snprintf(buf, sizeof(buf), "DS2438: no data");
+        snprintf(buf, sizeof(buf), "DS2438: немає даних");
     }
-    u8g2.drawStr(0, 40, buf);
+    u8g2.drawUTF8(0, 40, buf);
 
     snprintf(buf, sizeof(buf), "IP: %s", ESP_IP);
-    u8g2.drawStr(0, 49, buf);
+    u8g2.drawUTF8(0, 49, buf);
 
     drawFooter();
 }
 
 inline void drawPageModel() {
-    drawHeader("Model / Serial");
+    drawHeader("Модель / Серійний");
 
     char model[24];
-    u8g2.setFont(u8g2_font_5x8_tr);
-    u8g2.drawStr(0, 20, "Model:");
+    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+    u8g2.drawUTF8(0, 20, "Модель:");
     if (decodeModel(model, sizeof(model))) {
         u8g2.setFont(u8g2_font_7x13B_tr);
-        u8g2.drawStr(6, 33, model);
+        u8g2.drawUTF8(6, 33, model);
     } else {
-        u8g2.setFont(u8g2_font_5x8_tr);
-        u8g2.drawStr(40, 20, hasDump ? "(unknown)" : "(read first)");
+        u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+        u8g2.drawUTF8(48, 20, hasDump ? "(невідомо)" : "(зчитайте)");
     }
 
-    u8g2.setFont(u8g2_font_5x8_tr);
-    u8g2.drawStr(0, 46, "Serial (DS2438 chip):");
+    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+    u8g2.drawUTF8(0, 46, "Серійний (DS2438):");
     if (hasSN2438) {
         char sn[20];
         int p = 0;
         for (int i = 0; i < 8; i++) p += snprintf(sn + p, sizeof(sn) - p, "%02X", chipSN2438[i]);
-        u8g2.drawStr(6, 56, sn);
+        u8g2.drawUTF8(6, 56, sn);
     } else {
-        u8g2.drawStr(6, 56, "(read battery)");
+        u8g2.drawUTF8(6, 56, "(зчитайте АКБ)");
     }
 }
 
 inline void drawPageTech() {
     char buf[40];
-    drawHeader("Battery data");
+    drawHeader("Дані батареї");
 
     if (!hasDump2438) {
-        u8g2.setFont(u8g2_font_5x8_tr);
-        u8g2.drawStr(0, 24, "No DS2438 data.");
-        u8g2.drawStr(0, 34, "Read battery first.");
+        u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+        u8g2.drawUTF8(0, 24, "Немає даних DS2438.");
+        u8g2.drawUTF8(0, 34, "Спочатку зчитайте АКБ.");
         drawFooter();
         return;
     }
@@ -312,40 +312,40 @@ inline void drawPageTech() {
     uint16_t chg  = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];      // CCA
     uint16_t dis  = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];      // DCA
 
-    u8g2.setFont(u8g2_font_5x8_tr);
-    snprintf(buf, sizeof(buf), "Voltage:  %.2f V", vraw * 0.01f);      u8g2.drawStr(0, 18, buf);
-    snprintf(buf, sizeof(buf), "Current:  %.0f mA", i_mA);             u8g2.drawStr(0, 27, buf);
-    snprintf(buf, sizeof(buf), "Temp:     %.1f C", traw * 0.03125f);   u8g2.drawStr(0, 36, buf);
-    snprintf(buf, sizeof(buf), "Rem:%u Chg:%u Dis:%u", rem, chg, dis); u8g2.drawStr(0, 45, buf);
+    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+    snprintf(buf, sizeof(buf), "Напруга:  %.2f V", vraw * 0.01f);      u8g2.drawUTF8(0, 18, buf);
+    snprintf(buf, sizeof(buf), "Струм:    %.0f mA", i_mA);             u8g2.drawUTF8(0, 27, buf);
+    snprintf(buf, sizeof(buf), "Темп:     %.1f C", traw * 0.03125f);   u8g2.drawUTF8(0, 36, buf);
+    snprintf(buf, sizeof(buf), "Зал:%u Зар:%u Роз:%u", rem, chg, dis); u8g2.drawUTF8(0, 45, buf);
 
     drawFooter();
 }
 
 inline void drawPageHealth() {
-    char buf[26];
-    drawHeader("Health");
-    u8g2.setFont(u8g2_font_5x8_tr);
+    char buf[48];
+    drawHeader("Стан АКБ");
+    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
 
     int cap, wear;
     if (decodeCapacity(&cap, &wear)) {
-        snprintf(buf, sizeof(buf), "Capacity: %d %%", cap);  u8g2.drawStr(0, 17, buf);
-        snprintf(buf, sizeof(buf), "Wear:     %d %%", wear); u8g2.drawStr(0, 26, buf);
+        snprintf(buf, sizeof(buf), "Ємність: %d %%", cap);  u8g2.drawUTF8(0, 17, buf);
+        snprintf(buf, sizeof(buf), "Знос:    %d %%", wear); u8g2.drawUTF8(0, 26, buf);
     } else {
-        u8g2.drawStr(0, 17, "Capacity: (read DS2433)");
+        u8g2.drawUTF8(0, 17, "Ємність: (зчитайте)");
     }
 
     if (hasDump2438) {
         uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
         uint16_t dca = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
-        snprintf(buf, sizeof(buf), "Charge:%u Dis:%u", cca, dca);  u8g2.drawStr(0, 35, buf);
+        snprintf(buf, sizeof(buf), "Заряд:%u Розр:%u", cca, dca);  u8g2.drawUTF8(0, 35, buf);
     }
 
     const char *reason;
     if (batteryGenuine(&reason)) {
-        u8g2.drawStr(0, 44, "Auth: GENUINE");
+        u8g2.drawUTF8(0, 44, "Справжня: ТАК");
     } else {
-        snprintf(buf, sizeof(buf), "Auth: LOCK-RISK/%s", reason);
-        u8g2.drawStr(0, 44, buf);
+        snprintf(buf, sizeof(buf), "РИЗИК: %s", reason);
+        u8g2.drawUTF8(0, 44, buf);
     }
 
     drawFooter();
@@ -355,8 +355,8 @@ inline void drawPageHealth() {
 inline void drawRawPage(const char *title, const uint8_t *data, bool has, int count) {
     drawHeader(title);
     if (!has) {
-        u8g2.setFont(u8g2_font_5x8_tr);
-        u8g2.drawStr(0, 26, "no data (read first)");
+        u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+        u8g2.drawUTF8(0, 26, "немає даних (зчитайте)");
         return;
     }
     u8g2.setFont(u8g2_font_4x6_tr);
@@ -367,14 +367,14 @@ inline void drawRawPage(const char *title, const uint8_t *data, bool has, int co
         int n = snprintf(buf, sizeof(buf), "%02X:", off);
         for (int c = 0; c < perRow && off + c < count; c++)
             n += snprintf(buf + n, sizeof(buf) - n, "%02X ", data[off + c]);
-        u8g2.drawStr(0, y, buf);
+        u8g2.drawUTF8(0, y, buf);
         y += 7;
         if (y > 64) break;
     }
 }
 
-inline void drawPageRaw2438() { drawRawPage("DS2438 raw 0-63", batteryDump2438, hasDump2438, DS2438_MEM_SIZE); }
-inline void drawPageRaw2433() { drawRawPage("DS2433 raw 0-63", batteryDump,     hasDump,     64); }
+inline void drawPageRaw2438() { drawRawPage("DS2438 дамп 0-63", batteryDump2438, hasDump2438, DS2438_MEM_SIZE); }
+inline void drawPageRaw2433() { drawRawPage("DS2433 дамп 0-63", batteryDump,     hasDump,     64); }
 
 // ---------- рендер и кнопка ----------
 

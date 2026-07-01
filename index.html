@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="uk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -112,12 +112,12 @@
     </div>
 
     <div class="tabs">
-        <div class="tab active" data-p="overview" onclick="showTab(this)">📊 Обзор</div>
-        <div class="tab" data-p="data" onclick="showTab(this)">🔬 Данные</div>
+        <div class="tab active" data-p="overview" onclick="showTab(this)">📊 Огляд</div>
+        <div class="tab" data-p="data" onclick="showTab(this)">🔬 Дані</div>
         <div class="tab" data-p="fw" onclick="showTab(this)">📤 Прошивка</div>
     </div>
 
-    <div id="progress"><div class="spin"></div><div id="progressText">Выполняется...</div></div>
+    <div id="progress"><div class="spin"></div><div id="progressText">Виконується...</div></div>
 
     <!-- ========== OVERVIEW ========== -->
     <div class="page active" id="overview">
@@ -127,29 +127,29 @@
                 <div class="batt"><div class="fill" id="battFill"></div></div>
                 <div><div class="pct" id="chargePct">--%</div><div class="src" id="chargeSrc"></div></div>
             </div>
-            <div class="row" style="margin-top:12px"><span class="k">Напряжение</span><span class="v" id="ovVolt">—</span></div>
+            <div class="row" style="margin-top:12px"><span class="k">Напруга</span><span class="v" id="ovVolt">—</span></div>
             <div class="row"><span class="k">Температура</span><span class="v" id="ovTemp">—</span></div>
             <div class="btns">
-                <button class="btn btn-primary" onclick="readDump()">🔍 Считать АКБ</button>
-                <button class="btn btn-info" onclick="refreshAll()">🔄 Обновить</button>
+                <button class="btn btn-primary" onclick="readDump()">🔍 Зчитати АКБ</button>
+                <button class="btn btn-info" onclick="refreshAll()">🔄 Оновити</button>
             </div>
         </div>
         <div class="card">
             <h2>🪪 Батарея</h2>
             <div class="row"><span class="k">Модель</span><span class="v" id="ovModel">—</span></div>
-            <div class="row"><span class="k">Ёмкость</span><span class="v" id="ovCap">—</span></div>
-            <div class="row"><span class="k">Износ</span><span class="v" id="ovWear">—</span></div>
-            <div class="row"><span class="k">Подлинность</span><span class="v" id="ovAuth">—</span></div>
+            <div class="row"><span class="k">Ємність</span><span class="v" id="ovCap">—</span></div>
+            <div class="row"><span class="k">Знос</span><span class="v" id="ovWear">—</span></div>
+            <div class="row"><span class="k">Справжність</span><span class="v" id="ovAuth">—</span></div>
         </div>
     </div>
 
     <!-- ========== DATA ========== -->
     <div class="page" id="data">
         <div class="card">
-            <h2>🔬 Монитор DS2438</h2>
-            <div class="row"><span class="k">Напряжение</span><span class="v" id="dV">—</span></div>
+            <h2>🔬 Монітор DS2438</h2>
+            <div class="row"><span class="k">Напруга</span><span class="v" id="dV">—</span></div>
             <div class="row"><span class="k">Температура</span><span class="v" id="dT">—</span></div>
-            <div class="row"><span class="k">Ток (raw)</span><span class="v" id="dI">—</span></div>
+            <div class="row"><span class="k">Струм (raw)</span><span class="v" id="dI">—</span></div>
             <div class="row"><span class="k">HEX (16 байт)</span><span class="v" style="font-size:.85em" id="dPrev">—</span></div>
         </div>
         <div class="card">
@@ -162,52 +162,52 @@
     <!-- ========== FIRMWARE ========== -->
     <div class="page" id="fw">
         <div class="card">
-            <h2>💾 Чтение и резервная копия</h2>
+            <h2>💾 Зчитування та резервна копія</h2>
             <div class="btns">
-                <button class="btn btn-primary" onclick="readDump()">🔍 Считать АКБ</button>
+                <button class="btn btn-primary" onclick="readDump()">🔍 Зчитати АКБ</button>
                 <button class="btn btn-ok" onclick="downloadDump()">⬇ Дамп DS2433 (.bin)</button>
                 <button class="btn btn-ok" onclick="downloadDump2438()">⬇ Дамп DS2438 (.bin)</button>
             </div>
-            <div class="note i">ℹ️ Перед любой записью сделайте резервную копию — скачайте дампы.</div>
+            <div class="note i">ℹ️ Перед будь-яким записом зробіть резервну копію — завантажте дампи.</div>
         </div>
 
         <div class="card">
-            <h2>📤 Запись / восстановление прошивки</h2>
-            <div class="note i">ℹ️ Восстановление залоченной/повреждённой АКБ = запись <b>заведомо исправного</b>
-                дампа той же модели (512 байт). Автоподбор подписи невозможен — нужен эталон.</div>
+            <h2>📤 Запис / відновлення прошивки</h2>
+            <div class="note i">ℹ️ Відновлення заблокованої/пошкодженої АКБ = запис <b>завідомо справного</b>
+                дампа тієї ж моделі (512 байт). Автопідбір підпису неможливий — потрібен еталон.</div>
             <form enctype="multipart/form-data">
                 <div class="file">
                     <label for="fu33">📁 Файл .bin (512 байт)</label>
                     <input type="file" id="fu33" accept=".bin">
-                    <span class="fname" id="fn33">не выбран</span>
+                    <span class="fname" id="fn33">не обрано</span>
                 </div>
             </form>
-            <input type="password" class="pw" id="pw33" placeholder="🔑 Пароль администратора">
-            <button class="btn btn-danger" style="width:100%" onclick="writeDump()">⚡ ЗАПИСАТЬ DS2433</button>
-            <div class="note w">⚠️ Запись необратима. Неверный файл может вывести АКБ из строя.</div>
+            <input type="password" class="pw" id="pw33" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-danger" style="width:100%" onclick="writeDump()">⚡ ЗАПИСАТИ DS2433</button>
+            <div class="note w">⚠️ Запис незворотний. Невірний файл може вивести АКБ з ладу.</div>
         </div>
 
         <div class="card">
-            <h2>🔬 Запись DS2438 (монитор)</h2>
+            <h2>🔬 Запис DS2438 (монітор)</h2>
             <form enctype="multipart/form-data">
                 <div class="file">
-                    <label for="fu38">📁 Файл .bin (64 байта)</label>
+                    <label for="fu38">📁 Файл .bin (64 байти)</label>
                     <input type="file" id="fu38" accept=".bin">
-                    <span class="fname" id="fn38">не выбран</span>
+                    <span class="fname" id="fn38">не обрано</span>
                 </div>
             </form>
-            <input type="password" class="pw" id="pw38" placeholder="🔑 Пароль администратора">
-            <button class="btn btn-danger" style="width:100%" onclick="writeDump2438()">⚡ ЗАПИСАТЬ DS2438</button>
+            <input type="password" class="pw" id="pw38" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-danger" style="width:100%" onclick="writeDump2438()">⚡ ЗАПИСАТИ DS2438</button>
         </div>
 
         <div class="card">
-            <h2>♻️ Сброс для рекалибровки</h2>
-            <div class="note w">⚠️ Обнуляет счётчики заряда/разряда (CCA/DCA/таймер) и износ (ёмкость→100%),
-                пересчитывает контрольные суммы и пишет в чип. Калибровка (offset) сохраняется.
-                Затем откалибруйте АКБ на <b>оригинальном</b> зарядном устройстве IMPRES.
-                Точное поведение ЗУ проверьте на «жертвенной» батарее. Запись необратима.</div>
-            <input type="password" class="pw" id="pwRst" placeholder="🔑 Пароль администратора">
-            <button class="btn btn-warn" style="width:100%" onclick="resetBattery()">♻️ СБРОСИТЬ СЧЁТЧИКИ</button>
+            <h2>♻️ Скидання для рекалібрування</h2>
+            <div class="note w">⚠️ Обнуляє лічильники заряду/розряду (CCA/DCA/таймер) та знос (ємність→100%),
+                перераховує контрольні суми та пише у чіп. Калібрування (offset) зберігається.
+                Потім відкалібруйте АКБ на <b>оригінальному</b> зарядному пристрої IMPRES.
+                Точну поведінку ЗП перевірте на «жертовній» батареї. Запис незворотний.</div>
+            <input type="password" class="pw" id="pwRst" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="resetBattery()">♻️ СКИНУТИ ЛІЧИЛЬНИКИ</button>
         </div>
     </div>
 </div>
@@ -222,21 +222,21 @@ function showTab(el){
 }
 function toast(m,t='ok'){const e=$('toast');e.className='t-'+t;e.textContent=m;e.style.display='block';
     setTimeout(()=>e.style.display='none',4500)}
-function prog(s,t='Выполняется...'){$('progress').style.display=s?'block':'none';$('progressText').textContent=t}
+function prog(s,t='Виконується...'){$('progress').style.display=s?'block':'none';$('progressText').textContent=t}
 
-$('fu33').addEventListener('change',function(){f33=this.files[0];$('fn33').textContent=f33?f33.name+' ('+f33.size+' б)':'не выбран'});
-$('fu38').addEventListener('change',function(){f38=this.files[0];$('fn38').textContent=f38?f38.name+' ('+f38.size+' б)':'не выбран'});
+$('fu33').addEventListener('change',function(){f33=this.files[0];$('fn33').textContent=f33?f33.name+' ('+f33.size+' б)':'не обрано'});
+$('fu38').addEventListener('change',function(){f38=this.files[0];$('fn38').textContent=f38?f38.name+' ('+f38.size+' б)':'не обрано'});
 
 async function readDump(){
-    prog(true,'Чтение микросхем...');
+    prog(true,'Зчитування мікросхем...');
     try{
         const r=await fetch('/api/read'); const d=await r.json();
         if(d.status==='success'){
-            toast('Считано: DS2433 '+(d.ds2433?'✅':'❌')+', DS2438 '+(d.ds2438?'✅':'❌'),
+            toast('Зчитано: DS2433 '+(d.ds2433?'✅':'❌')+', DS2438 '+(d.ds2438?'✅':'❌'),
                   (d.ds2433&&d.ds2438)?'ok':'info');
             await refreshAll();
-        } else toast('Ошибка: '+d.message,'err');
-    }catch(e){toast('Соединение: '+e.message,'err')}
+        } else toast('Помилка: '+d.message,'err');
+    }catch(e){toast("З'єднання: "+e.message,'err')}
     prog(false);
 }
 
@@ -265,7 +265,7 @@ async function refreshAll(){
             const d=await r.json();
             const pct=(typeof d.charge==='number'&&d.charge>=0)?d.charge:null;
             $('chargePct').textContent=pct!==null?pct+'%':'--%';
-            $('chargeSrc').textContent=pct!==null?'источник: '+(d.chargeSrc==='ICA'?'ICA (DS2438)':'напряжение'):'';
+            $('chargeSrc').textContent=pct!==null?'джерело: '+(d.chargeSrc==='ICA'?'ICA (DS2438)':'напруга'):'';
             const fill=$('battFill');
             fill.style.width=(pct!==null?pct:0)+'%';
             fill.style.background=pct===null?'#555':(pct<20?'#e74c3c':pct<50?'#f39c12':'#2ecc71');
@@ -279,47 +279,47 @@ async function refreshAll(){
 async function downloadBin(url,name){
     try{
         const r=await fetch(url);
-        if(r.status===404){toast('Дамп не найден — сначала считайте АКБ','err');return}
+        if(r.status===404){toast('Дамп не знайдено — спочатку зчитайте АКБ','err');return}
         const b=await r.blob(); const u=URL.createObjectURL(b); const a=document.createElement('a');
         a.href=u; a.download=name+'_'+new Date().toISOString().slice(0,10)+'.bin';
         document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u);
-        toast('Скачано: '+name,'ok');
-    }catch(e){toast('Ошибка: '+e.message,'err')}
+        toast('Завантажено: '+name,'ok');
+    }catch(e){toast('Помилка: '+e.message,'err')}
 }
 const downloadDump=()=>downloadBin('/api/download','ds2433');
 const downloadDump2438=()=>downloadBin('/api/download2438','ds2438');
 
 async function writeGeneric(file,size,pwId,upUrl,wrUrl,name){
-    if(!file){toast('Выберите файл '+name,'err');return}
-    if(file.size!==size){toast('Файл должен быть '+size+' байт (сейчас '+file.size+')','err');return}
-    const pw=$(pwId).value; if(!pw){toast('Введите пароль','err');return}
-    if(!confirm('⚠️ Запись '+name+' НЕОБРАТИМА.\nФайл: '+file.name+'\nПродолжить?'))return;
-    prog(true,'Загрузка файла...');
+    if(!file){toast('Оберіть файл '+name,'err');return}
+    if(file.size!==size){toast('Файл має бути '+size+' байт (зараз '+file.size+')','err');return}
+    const pw=$(pwId).value; if(!pw){toast('Введіть пароль','err');return}
+    if(!confirm('⚠️ Запис '+name+' НЕЗВОРОТНІЙ.\nФайл: '+file.name+'\nПродовжити?'))return;
+    prog(true,'Завантаження файлу...');
     try{
         const fd=new FormData(); fd.append('file',file);
         const u=await(await fetch(upUrl,{method:'POST',body:fd})).json();
-        if(u.status!=='success'){toast('Загрузка: '+u.message,'err');prog(false);return}
-        prog(true,'⏳ Запись в чип...');
+        if(u.status!=='success'){toast('Завантаження: '+u.message,'err');prog(false);return}
+        prog(true,'⏳ Запис у чіп...');
         await new Promise(r=>setTimeout(r,350));
         const w=await(await fetch(wrUrl+'?password='+encodeURIComponent(pw),{method:'POST'})).json();
-        toast(w.status==='success'?('✅ '+name+' записан'):('Ошибка: '+w.message),w.status==='success'?'ok':'err');
+        toast(w.status==='success'?('✅ '+name+' записано'):('Помилка: '+w.message),w.status==='success'?'ok':'err');
         if(w.status==='success')await refreshAll();
-    }catch(e){toast('Ошибка: '+e.message,'err')}
+    }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);
 }
 const writeDump=()=>writeGeneric(f33,512,'pw33','/upload','/api/write','DS2433');
 const writeDump2438=()=>writeGeneric(f38,64,'pw38','/upload2438','/api/write2438','DS2438');
 
 async function resetBattery(){
-    const pw=$('pwRst').value; if(!pw){toast('Введите пароль','err');return}
-    if(!confirm('♻️ Сброс счётчиков/износа и запись в чип НЕОБРАТИМЫ.\n'+
-                'После — калибровка на оригинальном IMPRES-ЗУ.\nПродолжить?'))return;
-    prog(true,'Сброс и запись...');
+    const pw=$('pwRst').value; if(!pw){toast('Введіть пароль','err');return}
+    if(!confirm('♻️ Скидання лічильників/зносу та запис у чіп НЕЗВОРОТНІ.\n'+
+                'Потім — калібрування на оригінальному IMPRES-ЗП.\nПродовжити?'))return;
+    prog(true,'Скидання та запис...');
     try{
         const r=await(await fetch('/api/reset?password='+encodeURIComponent(pw),{method:'POST'})).json();
-        toast(r.status==='success'?'✅ Счётчики сброшены':('Ошибка: '+r.message),r.status==='success'?'ok':'err');
+        toast(r.status==='success'?'✅ Лічильники скинуто':('Помилка: '+r.message),r.status==='success'?'ok':'err');
         if(r.status==='success')await refreshAll();
-    }catch(e){toast('Ошибка: '+e.message,'err')}
+    }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);
 }
 

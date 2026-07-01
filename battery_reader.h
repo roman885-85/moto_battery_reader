@@ -4,9 +4,13 @@
 #include <OneWire.h>
 #include <Arduino.h>
 
-// Family-коды 1-Wire (первый байт ROM)
-#define DS2433_ID 0x23
-#define DS2438_ID 0x26
+// Family-коды (первый байт ROM), которые РЕАЛЬНО возвращают микросхемы этой
+// батареи Motorola — проверено на живом устройстве (осциллограф + логи).
+// Отличаются от номинальных DS2433=0x23 / DS2438=0x26 из даташита.
+// НЕ менять на "стандартные" 0x23/0x26 — иначе поиск (search) перестаёт
+// находить чипы и readBattery/writeBattery падают с "No devices found".
+#define DS2433_ID 0xA3
+#define DS2438_ID 0xA6
 
 // Команды для DS2433
 #define DS2433_READ_MEMORY    0xF0

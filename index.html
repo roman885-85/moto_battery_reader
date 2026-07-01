@@ -226,11 +226,13 @@
         
         <div class="card">
             <h2>📤 Запись прошивки</h2>
-            <div class="file-input">
-                <label class="file-label" for="fileUpload">📁 Выберите файл .bin</label>
-                <input type="file" id="fileUpload" accept=".bin">
-                <span class="file-name" id="fileName">Файл не выбран</span>
-            </div>
+            <form id="uploadForm" enctype="multipart/form-data">
+                <div class="file-input">
+                    <label class="file-label" for="fileUpload">📁 Выберите файл .bin</label>
+                    <input type="file" id="fileUpload" name="file" accept=".bin" required>
+                    <span class="file-name" id="fileName">Файл не выбран</span>
+                </div>
+            </form>
             
             <input type="password" class="password-input" id="password" placeholder="🔑 Введите пароль администратора">
             <button class="btn btn-danger" onclick="writeDump()" style="width:100%;">⚡ ЗАПИСАТЬ В БАТАРЕЮ</button>
@@ -254,6 +256,7 @@
         document.getElementById('fileUpload').addEventListener('change', function(e) {
             currentFile = this.files[0];
             document.getElementById('fileName').textContent = currentFile ? currentFile.name + ' (' + currentFile.size + ' bytes)' : 'Файл не выбран';
+            console.log('File selected:', currentFile);
         });
         
         function showToast(message, type = 'success') {
@@ -352,28 +355,43 @@
             showProgress(true, 'Загрузка файла на ESP32...');
             
             try {
+                // Создаем FormData и добавляем файл
                 const formData = new FormData();
                 formData.append('file', currentFile);
                 
+                console.log('Uploading file:', currentFile.name, currentFile.size, 'bytes');
+                
+                // Загружаем файл
                 const uploadResponse = await fetch('/upload', {
                     method: 'POST',
                     body: formData
                 });
                 
+                console.log('Upload response status:', uploadResponse.status);
                 const uploadData = await uploadResponse.json();
+                console.log('Upload response:', uploadData);
+                
                 if (uploadData.status !== 'success') {
                     showToast('❌ Ошибка загрузки: ' + uploadData.message, 'error');
                     showProgress(false);
                     return;
                 }
                 
+                showToast('✅ Файл загружен! Записываем в батарею...', 'success');
                 showProgress(true, '⏳ Запись в батарею... (не отключайте питание!)');
                 
+                // Даем время на обработку
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+                // Пишем в батарею
                 const writeResponse = await fetch('/api/write?password=' + encodeURIComponent(password), {
                     method: 'POST'
                 });
                 
+                console.log('Write response status:', writeResponse.status);
                 const writeData = await writeResponse.json();
+                console.log('Write response:', writeData);
+                
                 if (writeData.status === 'success') {
                     showToast('✅ Прошивка успешно записана!', 'success');
                     await refreshInfo();
@@ -381,6 +399,7 @@
                     showToast('❌ Ошибка записи: ' + writeData.message, 'error');
                 }
             } catch (error) {
+                console.error('Error:', error);
                 showToast('❌ Ошибка: ' + error.message, 'error');
             }
             

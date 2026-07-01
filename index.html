@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Motorola IMPRES Battery Reader</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .container {
+            max-width: 850px;
+            width: 100%;
+            background: #16213e;
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #0f3460;
+        }
+        h1 {
+            font-weight: 300;
+            color: #0f3460;
+            font-size: 2em;
+        }
+        h1 span { color: #e94560; }
+        .subtitle {
+            color: #888;
+            font-size: 0.8em;
+            margin-top: 5px;
+        }
+        .badge-ap {
+            display: inline-block;
+            background: #0f3460;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.7em;
+            color: #2ecc71;
+            margin-top: 10px;
+        }
+        .card {
+            background: #1a1a3e;
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-left: 4px solid #e94560;
+            transition: 0.3s;
+        }
+        .card:hover { border-left-color: #2ecc71; }
+        .card h2 {
+            font-size: 1.1em;
+            margin-bottom: 15px;
+            color: #e94560;
+        }
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: 600;
+            transition: all 0.3s;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .btn:active { transform: scale(0.95); }
+        .btn-primary { background: #0f3460; color: white; }
+        .btn-primary:hover { background: #1a4f8e; transform: translateY(-2px); }
+        .btn-success { background: #2ecc71; color: #1a1a2e; }
+        .btn-success:hover { background: #27ae60; transform: translateY(-2px); }
+        .btn-danger { background: #e74c3c; color: white; }
+        .btn-danger:hover { background: #c0392b; transform: translateY(-2px); }
+        .btn-info { background: #3498db; color: white; }
+        .btn-info:hover { background: #2980b9; transform: translateY(-2px); }
+        .btn-warning { background: #f39c12; color: #1a1a2e; }
+        .btn-warning:hover { background: #e67e22; transform: translateY(-2px); }
+        .status {
+            background: #0f0f2a;
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            white-space: pre-wrap;
+            word-break: break-all;
+            border: 1px solid #0f3460;
+            min-height: 80px;
+        }
+        .file-input {
+            display: block;
+            margin: 15px 0;
+            padding: 15px;
+            background: #0f0f2a;
+            border: 2px dashed #0f3460;
+            border-radius: 10px;
+            color: #eee;
+            width: 100%;
+            text-align: center;
+        }
+        .file-input input { display: none; }
+        .file-label {
+            display: inline-block;
+            padding: 10px 25px;
+            background: #0f3460;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+        .file-label:hover { background: #1a4f8e; }
+        .file-name {
+            margin-left: 15px;
+            color: #888;
+            font-size: 0.9em;
+        }
+        .password-input {
+            background: #0f0f2a;
+            border: 1px solid #0f3460;
+            color: #eee;
+            padding: 12px;
+            border-radius: 8px;
+            width: 100%;
+            margin: 10px 0;
+            font-size: 1em;
+            transition: 0.3s;
+        }
+        .password-input:focus {
+            outline: none;
+            border-color: #e94560;
+        }
+        .flex-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .toast {
+            padding: 15px 20px;
+            border-radius: 10px;
+            margin: 10px 0;
+            display: none;
+            animation: slideDown 0.3s ease;
+        }
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .toast-success { background: #1a4f2e; border-left: 4px solid #2ecc71; }
+        .toast-error { background: #4f1a1a; border-left: 4px solid #e74c3c; }
+        .toast-info { background: #1a2a4f; border-left: 4px solid #3498db; }
+        #progress {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        .spinner {
+            border: 4px solid #0f3460;
+            border-top: 4px solid #e94560;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .warning-text {
+            color: #f39c12;
+            font-size: 0.8em;
+            margin-top: 10px;
+            padding: 10px;
+            background: #1a1a2e;
+            border-radius: 8px;
+            border-left: 3px solid #f39c12;
+        }
+        @media (max-width: 600px) {
+            .container { padding: 15px; }
+            .btn { width: 100%; justify-content: center; }
+            .btn-group { flex-direction: column; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔋 Motorola <span>IMPRES</span></h1>
+            <div class="subtitle">Battery Reader & Programmer</div>
+            <div class="badge-ap">📡 AP Mode: BatteryReader</div>
+        </div>
+        
+        <div id="toast" class="toast"></div>
+        
+        <div class="card">
+            <h2>📊 Статус батареи</h2>
+            <div id="statusInfo" class="status">⏳ Дамп не считан</div>
+            <div class="btn-group" style="margin-top: 15px;">
+                <button class="btn btn-primary" onclick="readDump()">🔍 Считать дамп</button>
+                <button class="btn btn-info" onclick="refreshInfo()">🔄 Обновить</button>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>💾 Управление дампом</h2>
+            <div class="btn-group">
+                <button class="btn btn-success" onclick="downloadDump()">⬇ Скачать дамп (.bin)</button>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>📤 Запись прошивки</h2>
+            <div class="file-input">
+                <label class="file-label" for="fileUpload">📁 Выберите файл .bin</label>
+                <input type="file" id="fileUpload" accept=".bin">
+                <span class="file-name" id="fileName">Файл не выбран</span>
+            </div>
+            
+            <input type="password" class="password-input" id="password" placeholder="🔑 Введите пароль администратора">
+            <button class="btn btn-danger" onclick="writeDump()" style="width:100%;">⚡ ЗАПИСАТЬ В БАТАРЕЮ</button>
+            
+            <div class="warning-text">
+                ⚠️ <strong>ВНИМАНИЕ!</strong> Запись необратима. 
+                Убедитесь, что файл корректен (ровно 512 байт).
+                Неправильная прошивка может вывести батарею из строя!
+            </div>
+        </div>
+        
+        <div id="progress">
+            <div class="spinner"></div>
+            <div id="progressText">Выполняется...</div>
+        </div>
+    </div>
+
+    <script>
+        let currentFile = null;
+        
+        document.getElementById('fileUpload').addEventListener('change', function(e) {
+            currentFile = this.files[0];
+            document.getElementById('fileName').textContent = currentFile ? currentFile.name + ' (' + currentFile.size + ' bytes)' : 'Файл не выбран';
+        });
+        
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            toast.className = `toast toast-${type}`;
+            toast.textContent = message;
+            toast.style.display = 'block';
+            setTimeout(() => { toast.style.display = 'none'; }, 5000);
+        }
+        
+        function showProgress(show, text = 'Выполняется...') {
+            document.getElementById('progress').style.display = show ? 'block' : 'none';
+            document.getElementById('progressText').textContent = text;
+        }
+        
+        async function readDump() {
+            showProgress(true, 'Чтение дампа...');
+            try {
+                const response = await fetch('/api/read');
+                const data = await response.json();
+                if (data.status === 'success') {
+                    showToast('✅ Дамп успешно считан!', 'success');
+                    await refreshInfo();
+                } else {
+                    showToast('❌ Ошибка: ' + data.message, 'error');
+                }
+            } catch (error) {
+                showToast('❌ Ошибка соединения: ' + error.message, 'error');
+            }
+            showProgress(false);
+        }
+        
+        async function refreshInfo() {
+            try {
+                const response = await fetch('/api/info');
+                if (response.status === 404) {
+                    document.getElementById('statusInfo').textContent = '❌ Дамп не считан';
+                    return;
+                }
+                const data = await response.json();
+                let info = `📦 Размер: ${data.size} байт\n`;
+                info += `📋 HEX превью (первые 16 байт):\n   ${data.preview || 'Нет данных'}\n`;
+                info += `🟢 Статус: ${data.hasData ? '✅ Дамп загружен' : '❌ Нет данных'}`;
+                document.getElementById('statusInfo').textContent = info;
+            } catch (error) {
+                document.getElementById('statusInfo').textContent = '❌ Ошибка получения информации';
+            }
+        }
+        
+        async function downloadDump() {
+            try {
+                const response = await fetch('/api/download');
+                if (response.status === 404) {
+                    showToast('❌ Дамп не найден. Сначала считайте батарею.', 'error');
+                    return;
+                }
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'battery_dump_' + new Date().toISOString().slice(0,10) + '.bin';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                showToast('✅ Дамп скачан!', 'success');
+            } catch (error) {
+                showToast('❌ Ошибка: ' + error.message, 'error');
+            }
+        }
+        
+        async function writeDump() {
+            if (!currentFile) {
+                showToast('❌ Выберите файл прошивки!', 'error');
+                return;
+            }
+            
+            if (currentFile.size !== 512) {
+                showToast('❌ Файл должен быть ровно 512 байт! Сейчас: ' + currentFile.size + ' байт', 'error');
+                return;
+            }
+            
+            const password = document.getElementById('password').value;
+            if (!password) {
+                showToast('❌ Введите пароль администратора!', 'error');
+                return;
+            }
+            
+            if (!confirm('⚠️ ВНИМАНИЕ! Запись в батарею НЕОБРАТИМА.\n\n' +
+                         'Файл: ' + currentFile.name + '\n' +
+                         'Размер: ' + currentFile.size + ' байт\n\n' +
+                         'Продолжить?')) {
+                return;
+            }
+            
+            showProgress(true, 'Загрузка файла на ESP32...');
+            
+            try {
+                const formData = new FormData();
+                formData.append('file', currentFile);
+                
+                const uploadResponse = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const uploadData = await uploadResponse.json();
+                if (uploadData.status !== 'success') {
+                    showToast('❌ Ошибка загрузки: ' + uploadData.message, 'error');
+                    showProgress(false);
+                    return;
+                }
+                
+                showProgress(true, '⏳ Запись в батарею... (не отключайте питание!)');
+                
+                const writeResponse = await fetch('/api/write?password=' + encodeURIComponent(password), {
+                    method: 'POST'
+                });
+                
+                const writeData = await writeResponse.json();
+                if (writeData.status === 'success') {
+                    showToast('✅ Прошивка успешно записана!', 'success');
+                    await refreshInfo();
+                } else {
+                    showToast('❌ Ошибка записи: ' + writeData.message, 'error');
+                }
+            } catch (error) {
+                showToast('❌ Ошибка: ' + error.message, 'error');
+            }
+            
+            showProgress(false);
+        }
+        
+        // Автообновление при загрузке
+        window.onload = function() {
+            refreshInfo();
+            setInterval(refreshInfo, 10000);
+        };
+    </script>
+</body>
+</html>

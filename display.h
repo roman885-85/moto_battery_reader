@@ -156,6 +156,41 @@ inline bool decodeCapacity(int *capPct, int *wearPct) {
     return false;
 }
 
+// Эвристика подлинности / риска блокировки. Проверено на дампах рабочих
+// (6 шт.) и залоченных (2 шт.) PMNN4409/4493 — чётко разделяет их. Признаки
+// залоченной/подделанной после замены элементов АКБ:
+//   - отсутствует блок аутентификации "MOTOROLA..." (0xDF+ стёрт);
+//   - стёрта калибровочная подпись 0x1B-0x1E (все FF);
+//   - переполнен счётчик заряда CCA (0xFFFF) в DS2438.
+// Возвращает true, если признаков блокировки нет; в reason — краткая причина.
+inline bool batteryGenuine(const char **reason) {
+    if (!hasDump) { *reason = "no dump"; return false; }
+
+    bool auth = false;
+    static const char pat[] = "MOTOROLA";
+    const int plen = 8;
+    for (int i = 0; i + plen <= (int)DUMP_SIZE && !auth; i++) {
+        int k = 0;
+        while (k < plen && batteryDump[i + k] == (uint8_t)pat[k]) k++;
+        if (k == plen) auth = true;
+    }
+    if (!auth) { *reason = "no auth block"; return false; }
+
+    if (batteryDump[0x1B] == 0xFF && batteryDump[0x1C] == 0xFF &&
+        batteryDump[0x1D] == 0xFF && batteryDump[0x1E] == 0xFF) {
+        *reason = "calib erased";
+        return false;
+    }
+
+    if (hasDump2438) {
+        uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
+        if (cca == 0xFFFF) { *reason = "CCA overflow"; return false; }
+    }
+
+    *reason = "OK";
+    return true;
+}
+
 // ---------- страницы меню ----------
 
 inline void drawPageMain() {
@@ -250,19 +285,24 @@ inline void drawPageHealth() {
 
     int cap, wear;
     if (decodeCapacity(&cap, &wear)) {
-        snprintf(buf, sizeof(buf), "Capacity: %d %%", cap);  u8g2.drawStr(0, 18, buf);
-        snprintf(buf, sizeof(buf), "Wear:     %d %%", wear); u8g2.drawStr(0, 27, buf);
+        snprintf(buf, sizeof(buf), "Capacity: %d %%", cap);  u8g2.drawStr(0, 17, buf);
+        snprintf(buf, sizeof(buf), "Wear:     %d %%", wear); u8g2.drawStr(0, 26, buf);
     } else {
-        u8g2.drawStr(0, 18, "Capacity: (read DS2433)");
+        u8g2.drawStr(0, 17, "Capacity: (read DS2433)");
     }
 
     if (hasDump2438) {
         uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
         uint16_t dca = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
-        snprintf(buf, sizeof(buf), "Charge acc: %u", cca);  u8g2.drawStr(0, 38, buf);
-        snprintf(buf, sizeof(buf), "Dischg acc: %u", dca);  u8g2.drawStr(0, 47, buf);
+        snprintf(buf, sizeof(buf), "Charge:%u Dis:%u", cca, dca);  u8g2.drawStr(0, 35, buf);
+    }
+
+    const char *reason;
+    if (batteryGenuine(&reason)) {
+        u8g2.drawStr(0, 44, "Auth: GENUINE");
     } else {
-        u8g2.drawStr(0, 40, "DS2438: no data");
+        snprintf(buf, sizeof(buf), "Auth: LOCK-RISK/%s", reason);
+        u8g2.drawStr(0, 44, buf);
     }
 
     drawFooter();

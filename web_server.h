@@ -528,10 +528,15 @@ void handleDumpInfo() {
     int cap = -1, wear = -1;
     decodeCapacity(&cap, &wear);
 
+    const char *reason;
+    bool genuine = batteryGenuine(&reason);
+
     String json = "{\"size\":512,\"hasData\":true";
     json += ",\"model\":\"" + modelStr + "\"";
     json += ",\"capacity\":" + String(cap);
     json += ",\"wear\":" + String(wear);
+    json += ",\"genuine\":" + String(genuine ? "true" : "false");
+    json += ",\"authReason\":\"" + String(reason) + "\"";
     json += ",\"preview\":\"";
     
     json += hexPreview(batteryDump, 16);

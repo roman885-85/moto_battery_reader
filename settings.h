@@ -23,19 +23,29 @@
 // IP адрес ESP32 в режиме AP
 #define ESP_IP "192.168.4.1"
 
-// --- Дисплей GME12864 (OLED 128x64, I2C) ---
-// Пины I2C (любые свободные GPIO — используется программный I2C).
+// ======================= ДИСПЛЕЙ =======================
+// ШАГ 1. Выберите модель дисплея — раскомментируйте РОВНО ОДНУ строку.
+// (интерфейс/разрешение подставятся автоматически)
+#define DISPLAY_SSD1306_I2C        // 0.96" OLED 128x64 I2C (GME12864) — по умолчанию
+// #define DISPLAY_SH1106_I2C      // 1.3"  OLED 128x64 I2C (SH1106)
+// #define DISPLAY_SH1107_128_I2C  // 1.5"  OLED 128x128 I2C (GME128128-02, вариант SH1107)
+// #define DISPLAY_SSD1327_128_I2C // 1.5"  OLED 128x128 I2C (GME128128-02, вариант SSD1327)
+// #define DISPLAY_ST7567_SPI      // Open-Smart 1.8" ST7567, 128x64, SPI
+// #define DISPLAY_PCD8544_SPI     // Nokia 5110 (PCD8544), 84x48, SPI
+
+// ШАГ 2a. Пины I2C (для I2C-дисплеев). SW I2C работает на любых GPIO.
 #define DISPLAY_SDA_PIN   21     // I2C SDA
 #define DISPLAY_SCL_PIN   22     // I2C SCL
-#define DISPLAY_I2C_ADDR  0x3C   // адрес дисплея (обычно 0x3C, реже 0x3D)
-// Контроллер по умолчанию SSD1306. Если экран остаётся пустым — вероятно,
-// у вас SH1106: раскомментируйте строку ниже.
-// #define DISPLAY_SH1106
-
-// Аппаратный I2C дисплея — рендер в ~10 раз быстрее (кнопки отзывчивее),
-// но работает ТОЛЬКО на GPIO21(SDA)/22(SCL). Если экран на этих пинах —
-// раскомментируйте. Для других пинов оставьте закомментированным (SW I2C).
+#define DISPLAY_I2C_ADDR  0x3C   // адрес (обычно 0x3C, реже 0x3D)
+// Аппаратный I2C — рендер в ~10x быстрее, но ТОЛЬКО на GPIO21/22.
+// Если I2C-дисплей на 21/22 — раскомментируйте:
 // #define DISPLAY_HW_I2C
+
+// ШАГ 2b. Пины SPI (для ST7567 / Nokia 5110). Аппаратный SPI ESP32:
+// SCK=GPIO18, MOSI=GPIO23 (подключаются к CLK/DIN дисплея). Управляющие:
+#define DISPLAY_CS_PIN    5      // CS  (Chip Select)
+#define DISPLAY_DC_PIN    17     // DC  (Data/Command; у Nokia — «D/C»)
+#define DISPLAY_RST_PIN   16     // RST (Reset)
 
 // --- Кнопки меню (между GPIO и GND, активный уровень LOW, внутр. подтяжка) ---
 #define MENU_BTN_PIN  25   // "Вперёд": следующая страница

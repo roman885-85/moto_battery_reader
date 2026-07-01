@@ -661,6 +661,18 @@ void handleResetBattery() {
            : "{\"status\":\"error\",\"message\":\"Failed to write reset\"}");
 }
 
+// Captive-portal: любой неизвестный URL (или запрос по чужому домену) перенаправляем
+// на главную страницу. В связке с DNS-сервером (все домены -> 192.168.4.1) телефон/ПК
+// определяет "экран входа в сеть" и сам предлагает открыть страницу при подключении.
+//
+// ОС-детекторы captive-portal (Android /generate_204, Apple /hotspot-detect.html,
+// Windows /connecttest.txt|/ncsi.txt) ждут "успех"; получив 302-редирект вместо него,
+// система показывает уведомление и открывает нашу страницу автоматически.
+void handleCaptive() {
+    server.sendHeader("Location", String("http://") + ESP_IP + "/", true);
+    server.send(302, "text/plain", "");
+}
+
 // Настройка веб-сервера
 void setupWebServer() {
     if (!SPIFFS.begin(true)) {
@@ -691,7 +703,10 @@ void setupWebServer() {
     server.on("/api/write2438", HTTP_POST, handleWriteDump2438);
     server.on("/upload2438", HTTP_POST, handleUploadDone2438, handleUploadDump2438);
     server.on("/api/reset", HTTP_POST, handleResetBattery);
-    
+
+    // Captive-portal: все прочие URL -> редирект на главную (авто-открытие страницы).
+    server.onNotFound(handleCaptive);
+
     server.begin();
     Serial.println("Web server started");
 }

@@ -25,20 +25,65 @@ extern bool hasSN2438;
 #define NUM_DISPLAY_PAGES 7
 #define RESET_PAGE        6
 
-// Объект дисплея. Программный (bit-bang) I2C — работает на любых GPIO,
-// пины берутся из settings.h. Полный буфер кадра (_F_) = 1 КБ ОЗУ.
-#if defined(DISPLAY_HW_I2C)
-  #if defined(DISPLAY_SH1106)
-    U8G2_SH1106_128X64_NONAME_F_HW_I2C  u8g2(U8G2_R0, U8X8_PIN_NONE);
+// Объект дисплея выбирается по модели из settings.h (полный буфер _F_).
+// DISP_W/DISP_H — разрешение; DISPLAY_USES_I2C — признак шины I2C.
+#if defined(DISPLAY_ST7567_SPI)
+  #define DISP_W 128
+  #define DISP_H 64
+  // ST7567, 128x64, аппаратный SPI (SCK=18, MOSI=23). Если экран не тот —
+  // замените ENH_DG128064 на ваш вариант ST7567 (напр. ERC12864, JLX12864).
+  U8G2_ST7567_ENH_DG128064_F_4W_HW_SPI u8g2(U8G2_R0, DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+#elif defined(DISPLAY_PCD8544_SPI)
+  #define DISP_W 84
+  #define DISP_H 48
+  // Nokia 5110 (PCD8544), 84x48, аппаратный SPI.
+  U8G2_PCD8544_84X48_F_4W_HW_SPI u8g2(U8G2_R0, DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+#elif defined(DISPLAY_SH1107_128_I2C)
+  #define DISPLAY_USES_I2C 1
+  #define DISP_W 128
+  #define DISP_H 128
+  #if defined(DISPLAY_HW_I2C)
+    U8G2_SH1107_128X128_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
   #else
-    U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
+    U8G2_SH1107_128X128_F_SW_I2C u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
   #endif
-#else
-  #if defined(DISPLAY_SH1106)
-    U8G2_SH1106_128X64_NONAME_F_SW_I2C  u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+#elif defined(DISPLAY_SSD1327_128_I2C)
+  #define DISPLAY_USES_I2C 1
+  #define DISP_W 128
+  #define DISP_H 128
+  #if defined(DISPLAY_HW_I2C)
+    U8G2_SSD1327_MIDAS_128X128_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
+  #else
+    U8G2_SSD1327_MIDAS_128X128_F_SW_I2C u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+  #endif
+#elif defined(DISPLAY_SH1106_I2C)
+  #define DISPLAY_USES_I2C 1
+  #define DISP_W 128
+  #define DISP_H 64
+  #if defined(DISPLAY_HW_I2C)
+    U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
+  #else
+    U8G2_SH1106_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+  #endif
+#else   // DISPLAY_SSD1306_I2C — по умолчанию
+  #define DISPLAY_USES_I2C 1
+  #define DISP_W 128
+  #define DISP_H 64
+  #if defined(DISPLAY_HW_I2C)
+    U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
   #else
     U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
   #endif
+#endif
+
+// Позиция нижней строки статуса: у экранов >=64px — в области 64px (верх),
+// у Nokia 84x48 — у нижней кромки.
+#if DISP_H >= 64
+  #define FOOT_HL 53
+  #define FOOT_Y  62
+#else
+  #define FOOT_HL (DISP_H - 9)
+  #define FOOT_Y  (DISP_H - 2)
 #endif
 
 static char g_displayStatus[36] = "ЗАПУСК";  // нижняя строка статуса (UTF-8)
@@ -109,11 +154,13 @@ inline void fixRecordChecksum(uint8_t *buf, int start, int len) {
 // ---------- базовая настройка ----------
 
 inline void displayInit() {
-#if defined(DISPLAY_HW_I2C)
+#if defined(DISPLAY_USES_I2C)
+  #if defined(DISPLAY_HW_I2C)
     Wire.begin(DISPLAY_SDA_PIN, DISPLAY_SCL_PIN);
-#endif
+  #endif
     u8g2.setI2CAddress(DISPLAY_I2C_ADDR << 1);
-    u8g2.setBusClock(400000);   // ускоряем I2C -> быстрый рендер, отзывчивые кнопки
+#endif
+    u8g2.setBusClock(400000);   // быстрый рендер -> отзывчивые кнопки
     u8g2.begin();
     u8g2.setFont(u8g2_font_5x8_t_cyrillic);
 }
@@ -121,11 +168,20 @@ inline void displayInit() {
 // Стартовая заставка: тризуб + "Національна Гвардія України".
 inline void displaySplash() {
     u8g2.clearBuffer();
+#if (DISP_H >= 64) && (DISP_W >= 110)
+    // Полноразмерная эмблема + текст (128x64 / 128x128).
     u8g2.drawXBM(0, 0, NGU_W, NGU_H, ngu_xbm);
     u8g2.setFont(u8g2_font_5x8_t_cyrillic);
     u8g2.drawUTF8(66, 18, "Національна");
     u8g2.drawUTF8(66, 34, "Гвардія");
     u8g2.drawUTF8(66, 50, "України");
+#else
+    // Мелкие экраны (Nokia 5110): только текст.
+    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+    u8g2.drawUTF8(0, 12, "Нац. Гвардія");
+    u8g2.drawUTF8(0, 24, "України");
+    u8g2.drawUTF8(0, 40, "IMPRES tool");
+#endif
     u8g2.sendBuffer();
 }
 
@@ -146,16 +202,16 @@ inline void drawHeader(const char *title) {
     u8g2.setFont(u8g2_font_5x8_t_cyrillic);
     u8g2.drawUTF8(0, 7, title);
     snprintf(h, sizeof(h), "%d/%d", g_displayPage + 1, NUM_DISPLAY_PAGES);
-    u8g2.drawUTF8(108, 7, h);
-    u8g2.drawHLine(0, 9, 128);
+    u8g2.drawUTF8(DISP_W - 18, 7, h);
+    u8g2.drawHLine(0, 9, DISP_W);
 }
 
 inline void drawFooter() {
     char f[42];
     u8g2.setFont(u8g2_font_5x8_t_cyrillic);
-    u8g2.drawHLine(0, 53, 128);
+    u8g2.drawHLine(0, FOOT_HL, DISP_W);
     snprintf(f, sizeof(f), ">%s", g_displayStatus);
-    u8g2.drawUTF8(0, 62, f);
+    u8g2.drawUTF8(0, FOOT_Y, f);
 }
 
 // Иконка батареи со шкалой заполнения; pct<0 — данных нет.
@@ -416,7 +472,7 @@ inline void drawRawPage(const char *title, const uint8_t *data, bool has, int co
             n += snprintf(buf + n, sizeof(buf) - n, "%02X ", data[off + c]);
         u8g2.drawUTF8(0, y, buf);
         y += 7;
-        if (y > 64) break;
+        if (y > DISP_H) break;
     }
 }
 

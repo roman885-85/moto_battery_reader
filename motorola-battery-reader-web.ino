@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <DNSServer.h>
 #include <SPIFFS.h>
 #include "settings.h"
 #include "battery_reader.h"
@@ -9,6 +10,7 @@
 
 // Глобальные объекты
 WebServer server(HTTP_PORT);
+DNSServer dnsServer;                 // captive-portal: авто-открытие страницы
 BatteryReader battery(DS_PIN, PULLUP_PIN);
 
 uint8_t batteryDump[DUMP_SIZE];
@@ -54,6 +56,11 @@ void setup() {
     IPAddress IP = WiFi.softAPIP();
     Serial.print("AP IP Address: ");
     Serial.println(IP);
+
+    // Captive-portal DNS: отвечаем адресом ESP на ЛЮБОЙ домен, чтобы телефон/ПК
+    // при подключении к Wi-Fi сразу предложил открыть нашу страницу.
+    dnsServer.start(53, "*", IP);
+    Serial.println("Captive-portal DNS started");
     
     // Мигаем зеленым при успешном создании AP
     for (int i = 0; i < 5; i++) {
@@ -108,6 +115,9 @@ void setup() {
 }
 
 void loop() {
+    // Captive-portal: обрабатываем DNS-запросы (все домены -> 192.168.4.1).
+    dnsServer.processNextRequest();
+
     // Обработка всех клиентских запросов
     // WebServer автоматически обрабатывает multipart upload в handleClient()
     server.handleClient();

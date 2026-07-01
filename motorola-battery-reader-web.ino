@@ -22,8 +22,9 @@ void setup() {
     Serial.println("\n\nMotorola Battery Reader Web Server (AP Mode)");
     Serial.println("==============================================");
 
-    // Инициализация дисплея
+    // Инициализация дисплея и кнопки меню
     displayInit();
+    displayButtonSetup();
     displayShow("BOOT...");
 
     // Настройка светодиодов
@@ -104,6 +105,9 @@ void loop() {
     // Обработка всех клиентских запросов
     // WebServer автоматически обрабатывает multipart upload в handleClient()
     server.handleClient();
+
+    // Опрос кнопки перелистывания меню
+    displayHandleButton();
 
     // Периодическое обновление дисплея (свежие статус/дампы) раз в секунду
     static unsigned long lastDisplay = 0;

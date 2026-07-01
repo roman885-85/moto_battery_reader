@@ -17,9 +17,10 @@ extern bool hasSN2438;
 //   0 - главная (заряд + статус)
 //   1 - модель и серийный номер
 //   2 - технические данные DS2438
-//   3 - сырой дамп DS2438 (hex)
-//   4 - сырой дамп DS2433 (первые 64 байта, hex)
-#define NUM_DISPLAY_PAGES 5
+//   3 - здоровье: ёмкость / износ / циклы
+//   4 - сырой дамп DS2438 (hex)
+//   5 - сырой дамп DS2433 (первые 64 байта, hex)
+#define NUM_DISPLAY_PAGES 6
 
 // Объект дисплея. Программный (bit-bang) I2C — работает на любых GPIO,
 // пины берутся из settings.h. Полный буфер кадра (_F_) = 1 КБ ОЗУ.
@@ -103,8 +104,9 @@ inline int batteryPercent(const char **src) {
     return (int)pct;
 }
 
-// Найти модель (Motorola part number) в дампе DS2433: самая длинная строка
-// из заглавных букв/цифр длиной >=6 (например, "PMNN4409A").
+// Найти модель (Motorola part number, напр. "PMNN4409A") в дампе DS2433.
+// Ищем компактную строку из заглавных букв и цифр длиной 7..11, содержащую
+// цифру, — так отсекаем длинный блок "COPYRIGHT...MOTOROLASOLUTIONS".
 inline bool decodeModel(char *out, size_t n) {
     if (!hasDump) return false;
     int best = -1, bestLen = 0;
@@ -113,23 +115,45 @@ inline bool decodeModel(char *out, size_t n) {
         uint8_t c = batteryDump[i];
         if (c >= 'A' && c <= 'Z') {
             int j = i + 1;
+            bool hasDigit = false;
             while (j < (int)DUMP_SIZE) {
                 uint8_t d = batteryDump[j];
-                if ((d >= 'A' && d <= 'Z') || (d >= '0' && d <= '9')) j++;
+                if (d >= '0' && d <= '9') { hasDigit = true; j++; }
+                else if (d >= 'A' && d <= 'Z') j++;
                 else break;
             }
-            if (j - i > bestLen) { bestLen = j - i; best = i; }
+            int len = j - i;
+            if (hasDigit && len >= 7 && len <= 11 && len > bestLen) { bestLen = len; best = i; }
             i = j;
         } else {
             i++;
         }
     }
-    if (best < 0 || bestLen < 6) return false;
+    if (best < 0) return false;
     int len = bestLen;
     if ((size_t)len >= n) len = n - 1;
     memcpy(out, batteryDump + best, len);
     out[len] = '\0';
     return true;
+}
+
+// Ёмкость/износ из записи истории ёмкости DS2433 (тег/длина 0x17, "17 00 ...").
+// Формат записи: [0x17][22 байта данных][контрольная сумма]; последний байт
+// данных (перед CRC) — самое свежее значение ёмкости в % (проверено на дампах
+// рабочих и залоченных PMNN4409/4493). Износ = 100 - ёмкость.
+inline bool decodeCapacity(int *capPct, int *wearPct) {
+    if (!hasDump) return false;
+    for (int i = 0x100; i < (int)DUMP_SIZE - 23; i++) {
+        if (batteryDump[i] == 0x17 && batteryDump[i + 1] == 0x00) {
+            int cap = batteryDump[i + 21];   // последнее значение ёмкости, %
+            if (cap <= 100) {
+                *capPct = cap;
+                *wearPct = 100 - cap;
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 // ---------- страницы меню ----------
@@ -219,6 +243,31 @@ inline void drawPageTech() {
     drawFooter();
 }
 
+inline void drawPageHealth() {
+    char buf[26];
+    drawHeader("Health");
+    u8g2.setFont(u8g2_font_5x8_tr);
+
+    int cap, wear;
+    if (decodeCapacity(&cap, &wear)) {
+        snprintf(buf, sizeof(buf), "Capacity: %d %%", cap);  u8g2.drawStr(0, 18, buf);
+        snprintf(buf, sizeof(buf), "Wear:     %d %%", wear); u8g2.drawStr(0, 27, buf);
+    } else {
+        u8g2.drawStr(0, 18, "Capacity: (read DS2433)");
+    }
+
+    if (hasDump2438) {
+        uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
+        uint16_t dca = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
+        snprintf(buf, sizeof(buf), "Charge acc: %u", cca);  u8g2.drawStr(0, 38, buf);
+        snprintf(buf, sizeof(buf), "Dischg acc: %u", dca);  u8g2.drawStr(0, 47, buf);
+    } else {
+        u8g2.drawStr(0, 40, "DS2438: no data");
+    }
+
+    drawFooter();
+}
+
 // Общая отрисовка сырого дампа (hex), шрифт 4x6, по 8 байт в строке.
 inline void drawRawPage(const char *title, const uint8_t *data, bool has, int count) {
     drawHeader(title);
@@ -252,8 +301,9 @@ inline void displayRender() {
         case 0:  drawPageMain();     break;
         case 1:  drawPageModel();    break;
         case 2:  drawPageTech();     break;
-        case 3:  drawPageRaw2438();  break;
-        case 4:  drawPageRaw2433();  break;
+        case 3:  drawPageHealth();   break;
+        case 4:  drawPageRaw2438();  break;
+        case 5:  drawPageRaw2433();  break;
         default: drawPageMain();     break;
     }
     u8g2.sendBuffer();

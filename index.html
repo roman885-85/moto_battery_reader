@@ -426,6 +426,10 @@
                 }
                 const data = await response.json();
                 let info = `📦 Размер: ${data.size} байт\n`;
+                info += `🔖 Модель: ${data.model || '—'}\n`;
+                if (typeof data.capacity === 'number' && data.capacity >= 0) {
+                    info += `🔋 Ёмкость: ${data.capacity}%   Износ: ${data.wear}%\n`;
+                }
                 info += `📋 HEX превью (первые 16 байт):\n   ${data.preview || 'Нет данных'}\n`;
                 info += `🟢 Статус: ${data.hasData ? '✅ Дамп загружен' : '❌ Нет данных'}`;
                 document.getElementById('statusInfo').textContent = info;

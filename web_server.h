@@ -523,16 +523,20 @@ void handleDumpInfo() {
         return;
     }
     
-    String json = "{\"size\":512,\"hasData\":true,\"preview\":\"";
+    char model[24];
+    String modelStr = decodeModel(model, sizeof(model)) ? String(model) : String("");
+    int cap = -1, wear = -1;
+    decodeCapacity(&cap, &wear);
+
+    String json = "{\"size\":512,\"hasData\":true";
+    json += ",\"model\":\"" + modelStr + "\"";
+    json += ",\"capacity\":" + String(cap);
+    json += ",\"wear\":" + String(wear);
+    json += ",\"preview\":\"";
     
-    for (int i = 0; i < 16; i++) {
-        char hex[3];
-        sprintf(hex, "%02X", batteryDump[i]);
-        json += hex;
-        if (i < 15) json += " ";
-    }
+    json += hexPreview(batteryDump, 16);
     json += "\"}";
-    
+
     server.send(200, "application/json", json);
 }
 

@@ -13,6 +13,9 @@ extern BatteryReader battery;
 extern uint8_t batteryDump[DUMP_SIZE];
 extern bool hasDump;
 
+// Переменная для отслеживания начала загрузки
+bool firstChunk = true;
+
 // Обработчик главной страницы
 void handleRoot() {
     File file = SPIFFS.open("/index.html", "r");
@@ -77,14 +80,15 @@ void handleDownloadDump() {
     file.close();
 }
 
-// Обработчик загрузки файла - использует встроенную поддержку WebServer
+// Обработчик загрузки файла
 void handleUploadDump() {
     HTTPUpload &upload = server.upload();
+    static File uploadFile;
     
     if (upload.status == UPLOAD_FILE_START) {
         Serial.printf("\n=== Upload started: %s ===\n", upload.filename.c_str());
         
-        // Проверяем свободное место в SPIFFS
+        // Проверяем свободное место
         size_t totalBytes = SPIFFS.totalBytes();
         size_t usedBytes = SPIFFS.usedBytes();
         size_t freeBytes = totalBytes - usedBytes;
@@ -94,69 +98,77 @@ void handleUploadDump() {
         // Удаляем старый файл
         if (SPIFFS.exists("/upload.bin")) {
             SPIFFS.remove("/upload.bin");
-            delay(50);
+            delay(100);
         }
         
-    } else if (upload.status == UPLOAD_FILE_WRITE) {
-        Serial.printf("Receiving chunk: %d bytes\n", upload.currentSize);
-        
-        // Пишем напрямую в SPIFFS используя встроенный буфер WebServer
-        // Используем streamFile из WebServer напрямую
-        size_t len = upload.currentSize;
-        uint8_t *buf = upload.buf;
-        
-        // Открываем файл в режиме добавления
-        File file = SPIFFS.open("/upload.bin", upload.totalSize == upload.currentSize ? "w" : "a");
-        if (!file) {
-            Serial.println("ERROR: Cannot open /upload.bin!");
+        // Открываем новый файл для записи
+        uploadFile = SPIFFS.open("/upload.bin", "w");
+        if (!uploadFile) {
+            Serial.println("CRITICAL ERROR: Cannot create /upload.bin!");
             return;
         }
         
-        // Пишем данные
-        size_t written = 0;
-        while (written < len) {
-            size_t chunk = (len - written > 512) ? 512 : (len - written);
-            size_t w = file.write(buf + written, chunk);
-            if (w == 0) {
-                Serial.println("ERROR: Write failed!");
-                break;
-            }
-            written += w;
+        firstChunk = true;
+        Serial.println("Upload file created successfully");
+        
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+        if (!uploadFile) {
+            Serial.println("ERROR: Upload file not open!");
+            return;
         }
         
-        file.close();
-        Serial.printf("Written %d bytes\n", written);
+        Serial.printf("Chunk: %d bytes\n", upload.currentSize);
+        
+        // Пишем данные напрямую в файл
+        size_t written = uploadFile.write(upload.buf, upload.currentSize);
+        
+        if (written != upload.currentSize) {
+            Serial.printf("ERROR: Write mismatch! Expected %d, wrote %d\n", upload.currentSize, written);
+        } else {
+            Serial.printf("✓ Written %d bytes\n", written);
+        }
         
     } else if (upload.status == UPLOAD_FILE_END) {
-        Serial.printf("Upload finished: %s (%d bytes total)\n", upload.filename.c_str(), upload.totalSize);
-        
-        // Даем время на синхронизацию
-        delay(100);
-        
-        // Проверяем размер файла
-        if (SPIFFS.exists("/upload.bin")) {
-            File file = SPIFFS.open("/upload.bin", "r");
-            if (file) {
-                size_t fileSize = file.size();
-                Serial.printf("File size in SPIFFS: %d bytes\n", fileSize);
-                
-                // Проверяем первые байты
-                uint8_t header[16];
-                size_t headerRead = file.read(header, 16);
-                Serial.printf("Header: ");
-                for (int i = 0; i < headerRead; i++) {
-                    Serial.printf("%02X ", header[i]);
+        if (uploadFile) {
+            uploadFile.flush();
+            uploadFile.close();
+            delay(200);  // Критическая задержка для синхронизации
+            
+            Serial.printf("Upload finished: %s (%d bytes)\n", upload.filename.c_str(), upload.totalSize);
+            
+            // Проверяем результат
+            delay(100);
+            if (SPIFFS.exists("/upload.bin")) {
+                File file = SPIFFS.open("/upload.bin", "r");
+                if (file) {
+                    size_t size = file.size();
+                    Serial.printf("✓ File created: %d bytes\n", size);
+                    
+                    uint8_t header[16];
+                    file.seek(0);
+                    size_t read = file.read(header, 16);
+                    Serial.printf("Header (%d bytes): ", read);
+                    for (int i = 0; i < read; i++) {
+                        Serial.printf("%02X ", header[i]);
+                    }
+                    Serial.println();
+                    
+                    file.close();
                 }
-                Serial.println();
-                
-                file.close();
+            } else {
+                Serial.println("✗ CRITICAL: File not found in SPIFFS!");
             }
-        } else {
-            Serial.println("ERROR: /upload.bin not found after upload!");
+            
+            Serial.println("=== Upload completed ===\n");
         }
         
         server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"File uploaded\"}");
-        Serial.println("=== Upload completed ===\n");
+        
+    } else if (upload.status == UPLOAD_FILE_ABORTED) {
+        if (uploadFile) {
+            uploadFile.close();
+        }
+        Serial.println("Upload aborted!");
     }
 }
 
@@ -172,7 +184,7 @@ void handleWriteDump() {
     
     // Проверяем наличие файла
     if (!SPIFFS.exists("/upload.bin")) {
-        Serial.println("ERROR: /upload.bin does not exist");
+        Serial.println("✗ /upload.bin does not exist - upload a file first");
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No file uploaded\"}");
         return;
     }
@@ -180,7 +192,7 @@ void handleWriteDump() {
     // Открываем и проверяем размер
     File file = SPIFFS.open("/upload.bin", "r");
     if (!file) {
-        Serial.println("ERROR: Cannot open /upload.bin");
+        Serial.println("✗ Cannot open /upload.bin");
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No file uploaded\"}");
         return;
     }
@@ -190,7 +202,7 @@ void handleWriteDump() {
     
     if (fileSize != DUMP_SIZE) {
         file.close();
-        Serial.printf("ERROR: Invalid file size\n");
+        Serial.printf("✗ Invalid file size\n");
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid file size\"}");
         return;
     }
@@ -199,23 +211,24 @@ void handleWriteDump() {
     uint8_t buffer[DUMP_SIZE];
     memset(buffer, 0, DUMP_SIZE);
     
+    file.seek(0);
     size_t bytesRead = file.read(buffer, DUMP_SIZE);
     file.close();
     
     Serial.printf("Bytes read: %d\n", bytesRead);
     
-    // Проверяем данные
-    Serial.printf("Data header: ");
-    for (int i = 0; i < 16 && i < bytesRead; i++) {
-        Serial.printf("%02X ", buffer[i]);
-    }
-    Serial.println();
-    
     if (bytesRead != DUMP_SIZE) {
-        Serial.printf("ERROR: Read mismatch! Expected %d, got %d\n", DUMP_SIZE, bytesRead);
+        Serial.printf("✗ Read mismatch! Expected %d, got %d\n", DUMP_SIZE, bytesRead);
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Failed to read uploaded file\"}");
         return;
     }
+    
+    // Выводим первые байты
+    Serial.printf("Data: ");
+    for (int i = 0; i < 16; i++) {
+        Serial.printf("%02X ", buffer[i]);
+    }
+    Serial.println();
     
     // Пишем в батарею
     Serial.println("Writing to battery chip...");
@@ -232,10 +245,10 @@ void handleWriteDump() {
             dumpFile.flush();
             dumpFile.close();
             delay(50);
-            Serial.printf("Dump saved to SPIFFS: %d bytes\n", written);
+            Serial.printf("Current dump saved: %d bytes\n", written);
         }
         
-        Serial.println("✓ Write to battery SUCCESSFUL!");
+        Serial.println("✓✓✓ WRITE SUCCESSFUL ✓✓✓");
         server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Firmware written successfully\"}");
         
         // Индикация успеха
@@ -246,10 +259,9 @@ void handleWriteDump() {
             delay(200);
         }
     } else {
-        Serial.println("✗ Write to battery FAILED!");
+        Serial.println("✗✗✗ WRITE FAILED ✗✗✗");
         server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to write battery\"}");
         
-        // Индикация ошибки
         digitalWrite(LED_RED_PIN, HIGH);
         delay(500);
         digitalWrite(LED_RED_PIN, LOW);

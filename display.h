@@ -2,6 +2,7 @@
 #define DISPLAY_H
 
 #include <U8g2lib.h>
+#include <Wire.h>
 #include "settings.h"
 #include "battery_reader.h"
 
@@ -26,10 +27,18 @@ extern bool hasSN2438;
 
 // Объект дисплея. Программный (bit-bang) I2C — работает на любых GPIO,
 // пины берутся из settings.h. Полный буфер кадра (_F_) = 1 КБ ОЗУ.
-#if defined(DISPLAY_SH1106)
-  U8G2_SH1106_128X64_NONAME_F_SW_I2C  u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+#if defined(DISPLAY_HW_I2C)
+  #if defined(DISPLAY_SH1106)
+    U8G2_SH1106_128X64_NONAME_F_HW_I2C  u8g2(U8G2_R0, U8X8_PIN_NONE);
+  #else
+    U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
+  #endif
 #else
-  U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+  #if defined(DISPLAY_SH1106)
+    U8G2_SH1106_128X64_NONAME_F_SW_I2C  u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+  #else
+    U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+  #endif
 #endif
 
 static char g_displayStatus[36] = "ЗАПУСК";  // нижняя строка статуса (UTF-8)
@@ -100,7 +109,11 @@ inline void fixRecordChecksum(uint8_t *buf, int start, int len) {
 // ---------- базовая настройка ----------
 
 inline void displayInit() {
+#if defined(DISPLAY_HW_I2C)
+    Wire.begin(DISPLAY_SDA_PIN, DISPLAY_SCL_PIN);
+#endif
     u8g2.setI2CAddress(DISPLAY_I2C_ADDR << 1);
+    u8g2.setBusClock(400000);   // ускоряем I2C -> быстрый рендер, отзывчивые кнопки
     u8g2.begin();
     u8g2.setFont(u8g2_font_5x8_t_cyrillic);
 }
@@ -440,15 +453,37 @@ inline void displayButtonSetup() {
     pinMode(MENU_BTN2_PIN, INPUT_PULLUP);
 }
 
-// Универсальный опрос кнопки с антидребезгом: возвращает true в момент нажатия.
-inline bool buttonPressed(int pin, bool &committed, bool &lastRaw, unsigned long &tChange) {
+// Состояние одной кнопки для антидребезга + распознавания долгого нажатия.
+struct BtnState {
+    bool stable = HIGH;        // устойчивый (антидребезг) уровень
+    bool lastRaw = HIGH;
+    unsigned long tChange = 0; // время последнего изменения сырого уровня
+    unsigned long tPress = 0;  // время нажатия
+    bool longFired = false;
+};
+
+// Опрос кнопки. Возвращает: 0 — ничего, 1 — короткое (по отпусканию),
+// 2 — долгое (при удержании longMs). longMs=0 отключает долгое нажатие.
+inline int pollButton(int pin, BtnState &b, unsigned long longMs) {
     bool raw = digitalRead(pin);
-    if (raw != lastRaw) { lastRaw = raw; tChange = millis(); }
-    if ((millis() - tChange) > 30 && committed != lastRaw) {
-        committed = lastRaw;
-        if (committed == LOW) return true;
+    unsigned long now = millis();
+    if (raw != b.lastRaw) { b.lastRaw = raw; b.tChange = now; }
+
+    int ev = 0;
+    if (now - b.tChange > 25 && raw != b.stable) {   // устойчивое изменение
+        b.stable = raw;
+        if (b.stable == LOW) {                        // нажатие
+            b.tPress = now;
+            b.longFired = false;
+        } else {                                      // отпускание
+            if (!b.longFired) ev = 1;                 // короткое (если не было долгого)
+        }
     }
-    return false;
+    if (b.stable == LOW && longMs && !b.longFired && now - b.tPress >= longMs) {
+        b.longFired = true;
+        ev = 2;                                        // долгое (единожды)
+    }
+    return ev;
 }
 
 // true один раз после того, как кнопка провернула меню на полный круг.
@@ -463,33 +498,36 @@ inline bool displayConsumeResetRequest() {
     return false;
 }
 
-// Опрос кнопок: BTN = следующая страница; BTN2 = назад, а на странице
-// сброса — взвод/подтверждение (двойное нажатие с защитой от случайного).
+// Опрос кнопок. BTN1: короткое — следующая страница, долгое (0.8с) — повторное
+// чтение АКБ. BTN2: короткое — назад, а на странице сброса — взвод/подтверждение.
 inline void displayHandleButton() {
-    static bool c1 = HIGH, r1 = HIGH; static unsigned long t1 = 0;
-    static bool c2 = HIGH, r2 = HIGH; static unsigned long t2 = 0;
+    static BtnState b1, b2;
 
-    if (buttonPressed(MENU_BTN_PIN, c1, r1, t1)) {   // "Вперёд"
-        g_resetArmed = false;                        // уход со страницы снимает взвод
-        int prev = g_displayPage;
+    int e1 = pollButton(MENU_BTN_PIN, b1, 800);
+    if (e1 == 2) {                                   // долгое -> перечитать
+        g_resetArmed = false;
+        g_readRequested = true;
+        displaySetStatus("ЗЧИТУВАННЯ...");
+        displayRender();
+    } else if (e1 == 1) {                            // короткое -> следующая страница
+        g_resetArmed = false;
         g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
-        // Полный круг (с последней страницы на первую) — запросить перечитывание.
-        if (g_displayPage == 0 && prev == NUM_DISPLAY_PAGES - 1) g_readRequested = true;
         displayRender();
     }
 
-    if (buttonPressed(MENU_BTN2_PIN, c2, r2, t2)) {
+    int e2 = pollButton(MENU_BTN2_PIN, b2, 0);
+    if (e2 == 1) {
         if (g_displayPage == RESET_PAGE) {           // взвод -> подтверждение сброса
             if (!g_resetArmed) { g_resetArmed = true; g_resetArmedAt = millis(); }
             else               { g_resetArmed = false; g_resetRequested = true; }
             displayRender();
-        } else {                                     // "Назад"
+        } else {                                     // назад
             g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
             displayRender();
         }
     }
 
-    // Авто-снятие взвода через 5 с без подтверждения.
+    // Авто-снятие взвода сброса через 5 с без подтверждения.
     if (g_resetArmed && millis() - g_resetArmedAt > 5000) {
         g_resetArmed = false;
         if (g_displayPage == RESET_PAGE) displayRender();

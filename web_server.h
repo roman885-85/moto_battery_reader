@@ -576,7 +576,7 @@ void handleDumpInfo() {
     json += ",\"preview\":\"";
     
     json += hexPreview(batteryDump, 16);
-    json += "\",\"hex\":\"" + hexPreview(batteryDump, 64) + "\"}";
+    json += "\",\"hex\":\"" + hexPreview(batteryDump, DUMP_SIZE) + "\"}";
 
     server.send(200, "application/json", json);
 }

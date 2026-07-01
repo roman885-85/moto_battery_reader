@@ -127,19 +127,15 @@ void loop() {
         performReset();
     }
 
-    // Периодическое обновление дисплея (свежие статус/дампы) раз в секунду
-    static unsigned long lastDisplay = 0;
-    if (millis() - lastDisplay > 1000) {
-        lastDisplay = millis();
-        displayRender();
-    }
+    // Дисплей перерисовывается по событиям (нажатие кнопки, чтение/запись),
+    // поэтому цикл не блокируется медленным рендером и кнопки отзывчивы.
 
-    // Индикация работы: быстрый зеленый миг каждые 3 секунды
+    // Индикация работы: неблокирующий зелёный миг ~раз в 3 секунды.
     static unsigned long lastBlink = 0;
-    if (millis() - lastBlink > 3000) {
-        lastBlink = millis();
-        digitalWrite(LED_GREEN_PIN, HIGH);
-        delay(30);
-        digitalWrite(LED_GREEN_PIN, LOW);
+    static bool blinkOn = false;
+    if (!blinkOn && millis() - lastBlink > 3000) {
+        digitalWrite(LED_GREEN_PIN, HIGH); blinkOn = true; lastBlink = millis();
+    } else if (blinkOn && millis() - lastBlink > 30) {
+        digitalWrite(LED_GREEN_PIN, LOW); blinkOn = false;
     }
 }

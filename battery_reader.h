@@ -4,14 +4,18 @@
 #include <OneWire.h>
 #include <Arduino.h>
 
-// Правильные идентификаторы из оригинального проекта
-#define DS2433_ID 0xA3
-#define DS2438_ID 0xA6
+// Family-коды 1-Wire (первый байт ROM)
+#define DS2433_ID 0x23
+#define DS2438_ID 0x26
 
 // Команды для DS2433
 #define DS2433_READ_MEMORY    0xF0
 #define DS2433_WRITE_SCRATCH  0x0F
+#define DS2433_READ_SCRATCH   0xAA
 #define DS2433_COPY_SCRATCH   0x55
+
+// Организация памяти DS2433: 16 страниц по 32 байта (scratchpad = 32 байта)
+#define DS2433_PAGE_SIZE      32
 
 class BatteryReader {
 public:

@@ -171,16 +171,33 @@ void handleUploadDump() {
             
             Serial.println("=== Upload completed ===\n");
         }
-        
-        server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"File uploaded\"}");
-        
+        // Ответ отправляет handleUploadDone() (обработчик запроса), а не upload-колбэк.
+
     } else if (upload.status == UPLOAD_FILE_ABORTED) {
         if (uploadFile) {
             uploadFile.close();
         }
         Serial.println("Upload aborted!");
-        server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Upload aborted\"}");
     }
+}
+
+// Обработчик запроса /upload (fn): вызывается после того, как upload-колбэк
+// (ufn) полностью принял тело multipart-формы. Отправляет HTTP-ответ.
+void handleUploadDone() {
+    if (SPIFFS.exists("/upload.bin")) {
+        File file = SPIFFS.open("/upload.bin", "r");
+        size_t size = file ? file.size() : 0;
+        if (file) file.close();
+
+        if (size == DUMP_SIZE) {
+            server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"File uploaded\"}");
+            return;
+        }
+        Serial.printf("Upload size mismatch: %d bytes (expected %d)\n", size, DUMP_SIZE);
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid file size\"}");
+        return;
+    }
+    server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Upload failed\"}");
 }
 
 // Обработчик записи дампа
@@ -318,7 +335,10 @@ void setupWebServer() {
     server.on("/api/download", HTTP_GET, handleDownloadDump);
     server.on("/api/info", HTTP_GET, handleDumpInfo);
     server.on("/api/write", HTTP_POST, handleWriteDump);
-    server.on("/upload", HTTP_POST, handleUploadDump);
+    // Загрузка файла: 4-аргументная форма — handleUploadDone это обработчик
+    // запроса (fn, отправляет ответ), handleUploadDump — upload-колбэк (ufn,
+    // принимает тело multipart и пишет его в SPIFFS).
+    server.on("/upload", HTTP_POST, handleUploadDone, handleUploadDump);
     
     server.begin();
     Serial.println("Web server started");

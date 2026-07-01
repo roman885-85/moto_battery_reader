@@ -13,6 +13,9 @@ extern BatteryReader battery;
 extern uint8_t batteryDump[DUMP_SIZE];
 extern bool hasDump;
 
+// Глобальная переменная для отслеживания загруженного размера
+size_t uploadedSize = 0;
+
 // Обработчик главной страницы
 void handleRoot() {
     File file = SPIFFS.open("/index.html", "r");
@@ -83,19 +86,33 @@ void handleUploadDump() {
     if (upload.status == UPLOAD_FILE_START) {
         Serial.printf("Upload started: %s\n", upload.filename.c_str());
         SPIFFS.remove("/upload.bin");
+        uploadedSize = 0;
     } else if (upload.status == UPLOAD_FILE_WRITE) {
         File file = SPIFFS.open("/upload.bin", "a");
         if (file) {
             size_t written = file.write(upload.buf, upload.currentSize);
+            uploadedSize += written;
             file.close();
+            
             if (written != upload.currentSize) {
                 Serial.printf("WARNING: Failed to write all upload data (wrote %d of %d bytes)\n", written, upload.currentSize);
+                Serial.printf("Total uploaded so far: %d bytes\n", uploadedSize);
             }
         } else {
             Serial.println("ERROR: Failed to open /upload.bin for writing");
         }
     } else if (upload.status == UPLOAD_FILE_END) {
         Serial.printf("Upload finished: %s (%d bytes)\n", upload.filename.c_str(), upload.totalSize);
+        Serial.printf("Actual size in SPIFFS: %d bytes\n", uploadedSize);
+        
+        // Проверяем размер файла в SPIFFS
+        File file = SPIFFS.open("/upload.bin", "r");
+        if (file) {
+            size_t fileSize = file.size();
+            file.close();
+            Serial.printf("File size verification: %d bytes\n", fileSize);
+        }
+        
         server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"File uploaded\"}");
     }
 }
@@ -108,27 +125,46 @@ void handleWriteDump() {
         return;
     }
     
+    Serial.println("Write request received, checking uploaded file...");
+    
+    // Проверяем размер файла перед открытием
     File file = SPIFFS.open("/upload.bin", "r");
     if (!file) {
+        Serial.println("ERROR: /upload.bin not found");
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No file uploaded\"}");
         return;
     }
     
-    uint8_t buffer[DUMP_SIZE];
-    size_t size = file.read(buffer, DUMP_SIZE);
-    file.close();
+    size_t fileSize = file.size();
+    Serial.printf("File size: %d bytes (expected: %d bytes)\n", fileSize, DUMP_SIZE);
     
-    if (size != DUMP_SIZE) {
+    if (fileSize != DUMP_SIZE) {
+        file.close();
+        Serial.printf("ERROR: Invalid file size: %d (expected %d)\n", fileSize, DUMP_SIZE);
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid file size\"}");
         return;
     }
     
+    // Читаем файл
+    uint8_t buffer[DUMP_SIZE];
+    size_t bytesRead = file.read(buffer, DUMP_SIZE);
+    file.close();
+    
+    Serial.printf("Bytes read: %d\n", bytesRead);
+    
+    if (bytesRead != DUMP_SIZE) {
+        Serial.printf("ERROR: Failed to read complete file (read %d of %d bytes)\n", bytesRead, DUMP_SIZE);
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Failed to read uploaded file\"}");
+        return;
+    }
+    
+    Serial.println("Writing to battery...");
     if (battery.writeBattery(buffer, DUMP_SIZE)) {
         memcpy(batteryDump, buffer, DUMP_SIZE);
         hasDump = true;
         
         // Сохраняем в SPIFFS
-        SPIFFS.remove("/dump.bin");  // Удаляем старый файл
+        SPIFFS.remove("/dump.bin");
         File dumpFile = SPIFFS.open("/dump.bin", "w");
         if (dumpFile) {
             size_t written = dumpFile.write(buffer, DUMP_SIZE);
@@ -138,6 +174,7 @@ void handleWriteDump() {
             }
         }
         
+        Serial.println("Write successful!");
         server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Firmware written successfully\"}");
         
         for (int i = 0; i < 3; i++) {
@@ -147,6 +184,7 @@ void handleWriteDump() {
             delay(200);
         }
     } else {
+        Serial.println("ERROR: Battery write failed!");
         server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to write battery\"}");
         
         digitalWrite(LED_RED_PIN, HIGH);

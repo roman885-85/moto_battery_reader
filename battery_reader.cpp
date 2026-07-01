@@ -133,9 +133,23 @@ bool BatteryReader::writeBattery(const uint8_t *buffer, size_t size) {
     _ow->write(0x00); // Адрес (младший байт)
     _ow->write(0x00); // Адрес (старший байт)
 
-    delay(15); // Ждем завершения записи (даташит: макс 10 мс)
+    // Ждем завершения записи (даташит: макс 10 мс, но даем запас)
+    delay(25);
+    
+    // Проверяем статус записи
     _ow->reset();
+    _ow->select(ds2433_addr);
+    _ow->write(0xAA); // Команда чтения статуса
+    
+    uint8_t status = _ow->read();
+    _ow->reset();
+    
     digitalWrite(_pullupPin, LOW);
+    
+    if (status == 0xFF) {
+        Serial.println("ERROR: Write operation not confirmed!");
+        return false;
+    }
     
     return true;
 }

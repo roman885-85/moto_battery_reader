@@ -34,10 +34,14 @@ void handleReadDump() {
         hasDump = true;
         
         // Сохраняем в SPIFFS
+        SPIFFS.remove("/dump.bin");  // Удаляем старый файл
         File file = SPIFFS.open("/dump.bin", "w");
         if (file) {
-            file.write(batteryDump, DUMP_SIZE);
+            size_t written = file.write(batteryDump, DUMP_SIZE);
             file.close();
+            if (written != DUMP_SIZE) {
+                Serial.printf("ERROR: Failed to write dump to SPIFFS (wrote %d of %d bytes)\n", written, DUMP_SIZE);
+            }
         }
         
         server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Dump read successfully\"}");
@@ -82,8 +86,13 @@ void handleUploadDump() {
     } else if (upload.status == UPLOAD_FILE_WRITE) {
         File file = SPIFFS.open("/upload.bin", "a");
         if (file) {
-            file.write(upload.buf, upload.currentSize);
+            size_t written = file.write(upload.buf, upload.currentSize);
             file.close();
+            if (written != upload.currentSize) {
+                Serial.printf("WARNING: Failed to write all upload data (wrote %d of %d bytes)\n", written, upload.currentSize);
+            }
+        } else {
+            Serial.println("ERROR: Failed to open /upload.bin for writing");
         }
     } else if (upload.status == UPLOAD_FILE_END) {
         Serial.printf("Upload finished: %s (%d bytes)\n", upload.filename.c_str(), upload.totalSize);
@@ -118,10 +127,15 @@ void handleWriteDump() {
         memcpy(batteryDump, buffer, DUMP_SIZE);
         hasDump = true;
         
+        // Сохраняем в SPIFFS
+        SPIFFS.remove("/dump.bin");  // Удаляем старый файл
         File dumpFile = SPIFFS.open("/dump.bin", "w");
         if (dumpFile) {
-            dumpFile.write(buffer, DUMP_SIZE);
+            size_t written = dumpFile.write(buffer, DUMP_SIZE);
             dumpFile.close();
+            if (written != DUMP_SIZE) {
+                Serial.printf("ERROR: Failed to write dump to SPIFFS (wrote %d of %d bytes)\n", written, DUMP_SIZE);
+            }
         }
         
         server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Firmware written successfully\"}");
@@ -134,6 +148,10 @@ void handleWriteDump() {
         }
     } else {
         server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to write battery\"}");
+        
+        digitalWrite(LED_RED_PIN, HIGH);
+        delay(500);
+        digitalWrite(LED_RED_PIN, LOW);
     }
 }
 

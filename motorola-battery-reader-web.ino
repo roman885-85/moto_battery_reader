@@ -17,6 +17,10 @@ bool hasDump = false;
 uint8_t batteryDump2438[DS2438_MEM_SIZE];
 bool hasDump2438 = false;
 
+// Серийный номер (лазерный 1-Wire ROM-ID) чипа DS2438 из последнего чтения
+uint8_t chipSN2438[8] = {0};
+bool hasSN2438 = false;
+
 void setup() {
     Serial.begin(115200);
     Serial.println("\n\nMotorola Battery Reader Web Server (AP Mode)");
@@ -108,6 +112,13 @@ void loop() {
 
     // Опрос кнопки перелистывания меню
     displayHandleButton();
+
+    // После полного цикла перелистывания (возврат на 1-ю страницу) —
+    // перечитываем аккумулятор, чтобы обновить данные.
+    if (displayConsumeReadRequest()) {
+        bool ok2433, ok2438;
+        readAllChips(ok2433, ok2438);
+    }
 
     // Периодическое обновление дисплея (свежие статус/дампы) раз в секунду
     static unsigned long lastDisplay = 0;

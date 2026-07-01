@@ -41,13 +41,17 @@ bool BatteryReader::findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr) {
 
     // Сбрасываем поиск для следующего раза
     _ow->reset_search();
-    
+
+    // Запоминаем ROM-ID (серийники) найденных чипов
+    if (found2433) { memcpy(_rom2433, ds2433_addr, 8); _haveRom2433 = true; }
+    if (found2438) { memcpy(_rom2438, ds2438_addr, 8); _haveRom2438 = true; }
+
     // Выключаем подтяжку, если не нашли ни одного устройства
     if (!found2433 && !found2438) {
         digitalWrite(_pullupPin, LOW);
         return false;
     }
-    
+
     return true;
 }
 

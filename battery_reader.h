@@ -44,10 +44,21 @@ public:
     bool writeDS2438(const uint8_t *buffer, size_t size);
     void printDump(const uint8_t *buffer, size_t size);
 
+    // Лазерный 1-Wire ROM-ID (серийный номер) последних найденных чипов.
+    bool hasRom2433() const { return _haveRom2433; }
+    bool hasRom2438() const { return _haveRom2438; }
+    const uint8_t *rom2433() const { return _rom2433; }
+    const uint8_t *rom2438() const { return _rom2438; }
+
 private:
     int _pin;
     int _pullupPin;
     OneWire* _ow;
+
+    uint8_t _rom2433[8];
+    uint8_t _rom2438[8];
+    bool _haveRom2433 = false;
+    bool _haveRom2438 = false;
 
     // Новый метод для поиска устройств
     bool findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr);

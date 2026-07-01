@@ -10,11 +10,16 @@ extern bool hasDump;
 extern bool hasDump2438;
 extern uint8_t batteryDump[DUMP_SIZE];
 extern uint8_t batteryDump2438[DS2438_MEM_SIZE];
+extern uint8_t chipSN2438[8];
+extern bool hasSN2438;
 
-// Количество страниц меню (перелистываются кнопкой):
-//   0 - главная (заряд + статус), 1 - техданные DS2438,
-//   2 - сырой дамп DS2438, 3 - сырой дамп DS2433 (первые 64 байта).
-#define NUM_DISPLAY_PAGES 4
+// Страницы меню (перелистываются кнопкой):
+//   0 - главная (заряд + статус)
+//   1 - модель и серийный номер
+//   2 - технические данные DS2438
+//   3 - сырой дамп DS2438 (hex)
+//   4 - сырой дамп DS2433 (первые 64 байта, hex)
+#define NUM_DISPLAY_PAGES 5
 
 // Объект дисплея. Программный (bit-bang) I2C — работает на любых GPIO,
 // пины берутся из settings.h. Полный буфер кадра (_F_) = 1 КБ ОЗУ.
@@ -26,6 +31,7 @@ extern uint8_t batteryDump2438[DS2438_MEM_SIZE];
 
 static char g_displayStatus[22] = "BOOT";  // нижняя строка статуса
 static int  g_displayPage = 0;             // текущая страница меню
+static bool g_readRequested = false;       // запрос повторного чтения после цикла
 
 inline void displayRender(); // определение ниже
 
@@ -78,7 +84,7 @@ inline void drawBatteryIcon(int x, int y, int w, int h, int pct) {
 }
 
 // Процент заряда. Приоритет — ICA (если включён учёт тока IAD=1),
-// иначе оценка по напряжению. src получает метку источника ("ICA"/"U"/"--").
+// иначе оценка по напряжению. src получает метку источника ("ICA"/"volt"/"--").
 inline int batteryPercent(const char **src) {
     if (!hasDump2438) { *src = "--"; return -1; }
 
@@ -89,12 +95,41 @@ inline int batteryPercent(const char **src) {
         return pct > 100 ? 100 : pct;
     }
 
-    *src = "U";                                 // запасной вариант — по напряжению
+    *src = "volt";                              // запасной вариант — по напряжению
     long vmv = (long)(((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3]) * 10;
     long pct = (vmv - BATTERY_EMPTY_MV) * 100 / (BATTERY_FULL_MV - BATTERY_EMPTY_MV);
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
     return (int)pct;
+}
+
+// Найти модель (Motorola part number) в дампе DS2433: самая длинная строка
+// из заглавных букв/цифр длиной >=6 (например, "PMNN4409A").
+inline bool decodeModel(char *out, size_t n) {
+    if (!hasDump) return false;
+    int best = -1, bestLen = 0;
+    int i = 0;
+    while (i < (int)DUMP_SIZE) {
+        uint8_t c = batteryDump[i];
+        if (c >= 'A' && c <= 'Z') {
+            int j = i + 1;
+            while (j < (int)DUMP_SIZE) {
+                uint8_t d = batteryDump[j];
+                if ((d >= 'A' && d <= 'Z') || (d >= '0' && d <= '9')) j++;
+                else break;
+            }
+            if (j - i > bestLen) { bestLen = j - i; best = i; }
+            i = j;
+        } else {
+            i++;
+        }
+    }
+    if (best < 0 || bestLen < 6) return false;
+    int len = bestLen;
+    if ((size_t)len >= n) len = n - 1;
+    memcpy(out, batteryDump + best, len);
+    out[len] = '\0';
+    return true;
 }
 
 // ---------- страницы меню ----------
@@ -112,26 +147,52 @@ inline void drawPageMain() {
     else          snprintf(buf, sizeof(buf), "--%%");
     u8g2.drawStr(58, 24, buf);
     u8g2.setFont(u8g2_font_5x8_tr);
-    u8g2.drawStr(98, 23, src);                  // источник данных заряда
+    u8g2.drawStr(90, 23, src);                  // источник данных заряда
 
     if (hasDump2438) {
         uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
         int16_t traw = ((int16_t)((batteryDump2438[2] << 8) | batteryDump2438[1])) >> 3;
-        snprintf(buf, sizeof(buf), "V:%.2fV T:%.1fC", vraw * 0.01f, traw * 0.03125f);
+        snprintf(buf, sizeof(buf), "%.2f V   %.1f C", vraw * 0.01f, traw * 0.03125f);
     } else {
         snprintf(buf, sizeof(buf), "DS2438: no data");
     }
     u8g2.drawStr(0, 40, buf);
 
-    snprintf(buf, sizeof(buf), "IP:%s", ESP_IP);
+    snprintf(buf, sizeof(buf), "IP: %s", ESP_IP);
     u8g2.drawStr(0, 49, buf);
 
     drawFooter();
 }
 
+inline void drawPageModel() {
+    drawHeader("Model / Serial");
+
+    char model[24];
+    u8g2.setFont(u8g2_font_5x8_tr);
+    u8g2.drawStr(0, 20, "Model:");
+    if (decodeModel(model, sizeof(model))) {
+        u8g2.setFont(u8g2_font_7x13B_tr);
+        u8g2.drawStr(6, 33, model);
+    } else {
+        u8g2.setFont(u8g2_font_5x8_tr);
+        u8g2.drawStr(40, 20, hasDump ? "(unknown)" : "(read first)");
+    }
+
+    u8g2.setFont(u8g2_font_5x8_tr);
+    u8g2.drawStr(0, 46, "Serial (DS2438 chip):");
+    if (hasSN2438) {
+        char sn[20];
+        int p = 0;
+        for (int i = 0; i < 8; i++) p += snprintf(sn + p, sizeof(sn) - p, "%02X", chipSN2438[i]);
+        u8g2.drawStr(6, 56, sn);
+    } else {
+        u8g2.drawStr(6, 56, "(read battery)");
+    }
+}
+
 inline void drawPageTech() {
-    char buf[26];
-    drawHeader("Battery tech");
+    char buf[40];
+    drawHeader("Battery data");
 
     if (!hasDump2438) {
         u8g2.setFont(u8g2_font_5x8_tr);
@@ -145,18 +206,15 @@ inline void drawPageTech() {
     int16_t  traw = ((int16_t)((batteryDump2438[2] << 8) | batteryDump2438[1])) >> 3;
     int16_t  iraw = (int16_t)(((uint16_t)batteryDump2438[6] << 8) | batteryDump2438[5]);
     float    i_mA = (float)iraw / (4096.0f * DS2438_RSENSE_OHM) * 1000.0f;
-    uint8_t  ica  = batteryDump2438[12];
-    uint16_t cca  = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
-    uint16_t dca  = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
-    uint8_t  cfg  = batteryDump2438[0];
-    uint8_t  thr  = batteryDump2438[7];
-    uint16_t off  = ((uint16_t)batteryDump2438[14] << 8) | batteryDump2438[13];
+    uint8_t  rem  = batteryDump2438[12];                                             // ICA
+    uint16_t chg  = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];      // CCA
+    uint16_t dis  = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];      // DCA
 
     u8g2.setFont(u8g2_font_5x8_tr);
-    snprintf(buf, sizeof(buf), "V:%.2fV  I:%.0fmA", vraw * 0.01f, i_mA);   u8g2.drawStr(0, 18, buf);
-    snprintf(buf, sizeof(buf), "T:%.1fC  ICA:%u", traw * 0.03125f, ica);    u8g2.drawStr(0, 27, buf);
-    snprintf(buf, sizeof(buf), "CCA:%u  DCA:%u", cca, dca);                  u8g2.drawStr(0, 36, buf);
-    snprintf(buf, sizeof(buf), "Cfg:%02X Thr:%02X Off:%04X", cfg, thr, off); u8g2.drawStr(0, 45, buf);
+    snprintf(buf, sizeof(buf), "Voltage:  %.2f V", vraw * 0.01f);      u8g2.drawStr(0, 18, buf);
+    snprintf(buf, sizeof(buf), "Current:  %.0f mA", i_mA);             u8g2.drawStr(0, 27, buf);
+    snprintf(buf, sizeof(buf), "Temp:     %.1f C", traw * 0.03125f);   u8g2.drawStr(0, 36, buf);
+    snprintf(buf, sizeof(buf), "Rem:%u Chg:%u Dis:%u", rem, chg, dis); u8g2.drawStr(0, 45, buf);
 
     drawFooter();
 }
@@ -166,7 +224,7 @@ inline void drawRawPage(const char *title, const uint8_t *data, bool has, int co
     drawHeader(title);
     if (!has) {
         u8g2.setFont(u8g2_font_5x8_tr);
-        u8g2.drawStr(0, 26, "no data");
+        u8g2.drawStr(0, 26, "no data (read first)");
         return;
     }
     u8g2.setFont(u8g2_font_4x6_tr);
@@ -192,9 +250,10 @@ inline void displayRender() {
     u8g2.clearBuffer();
     switch (g_displayPage) {
         case 0:  drawPageMain();     break;
-        case 1:  drawPageTech();     break;
-        case 2:  drawPageRaw2438();  break;
-        case 3:  drawPageRaw2433();  break;
+        case 1:  drawPageModel();    break;
+        case 2:  drawPageTech();     break;
+        case 3:  drawPageRaw2438();  break;
+        case 4:  drawPageRaw2433();  break;
         default: drawPageMain();     break;
     }
     u8g2.sendBuffer();
@@ -202,6 +261,12 @@ inline void displayRender() {
 
 inline void displayButtonSetup() {
     pinMode(MENU_BTN_PIN, INPUT_PULLUP);
+}
+
+// true один раз после того, как кнопка провернула меню на полный круг.
+inline bool displayConsumeReadRequest() {
+    if (g_readRequested) { g_readRequested = false; return true; }
+    return false;
 }
 
 // Опрос кнопки с антидребезгом; по нажатию — следующая страница.
@@ -216,7 +281,10 @@ inline void displayHandleButton() {
     if ((millis() - tChange) > 30 && committed != lastRaw) {
         committed = lastRaw;
         if (committed == LOW) {       // нажатие (активный уровень LOW)
+            int prev = g_displayPage;
             g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
+            // Полный круг (с последней страницы на первую) — запросить перечитывание.
+            if (g_displayPage == 0 && prev == NUM_DISPLAY_PAGES - 1) g_readRequested = true;
             displayRender();
         }
     }

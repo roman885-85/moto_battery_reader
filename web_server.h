@@ -15,6 +15,8 @@ extern uint8_t batteryDump[DUMP_SIZE];
 extern bool hasDump;
 extern uint8_t batteryDump2438[DS2438_MEM_SIZE];
 extern bool hasDump2438;
+extern uint8_t chipSN2438[8];
+extern bool hasSN2438;
 
 // Сохранение дампа в SPIFFS (перезапись файла).
 static void saveDump(const char *path, const uint8_t *data, size_t size) {
@@ -55,43 +57,59 @@ void handleRoot() {
     file.close();
 }
 
-// Обработчик чтения дампа: считываем обе микросхемы (DS2433 + DS2438).
-void handleReadDump() {
-    Serial.println("Starting battery read...");
+// Чтение обеих микросхем (DS2433 + DS2438) с сохранением в SPIFFS и на дисплей.
+// Возвращает true, если считана хотя бы одна микросхема.
+bool readAllChips(bool &ok2433, bool &ok2438) {
     displayShow("READING...");
 
     memset(batteryDump, 0, DUMP_SIZE);
     memset(batteryDump2438, 0, DS2438_MEM_SIZE);
 
     // DS2433 — основной дамп (512 байт).
-    bool ok2433 = battery.readBattery(batteryDump, DUMP_SIZE);
+    ok2433 = battery.readBattery(batteryDump, DUMP_SIZE);
     if (ok2433) {
         hasDump = true;
         saveDump("/dump.bin", batteryDump, DUMP_SIZE);
     }
 
     // DS2438 — монитор батареи (64 байта).
-    bool ok2438 = battery.readDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    ok2438 = battery.readDS2438(batteryDump2438, DS2438_MEM_SIZE);
     if (ok2438) {
         hasDump2438 = true;
         saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
     }
+
+    // Серийный номер чипа (лазерный ROM-ID DS2438)
+    if (battery.hasRom2438()) {
+        memcpy(chipSN2438, battery.rom2438(), 8);
+        hasSN2438 = true;
+    }
+
+    char st[22];
+    if (ok2433 || ok2438) snprintf(st, sizeof(st), "READ 2433:%s 2438:%s", ok2433 ? "OK" : "-", ok2438 ? "OK" : "-");
+    else                  snprintf(st, sizeof(st), "READ FAIL: no chip");
+    displayShow(st);
+
+    return ok2433 || ok2438;
+}
+
+// Обработчик чтения дампа: считываем обе микросхемы (DS2433 + DS2438).
+void handleReadDump() {
+    Serial.println("Starting battery read...");
+
+    bool ok2433, ok2438;
+    readAllChips(ok2433, ok2438);
 
     if (ok2433 || ok2438) {
         String json = String("{\"status\":\"success\",\"ds2433\":") + (ok2433 ? "true" : "false") +
                       ",\"ds2438\":" + (ok2438 ? "true" : "false") + "}";
         server.send(200, "application/json", json);
 
-        char st[22];
-        snprintf(st, sizeof(st), "READ 2433:%s 2438:%s", ok2433 ? "OK" : "-", ok2438 ? "OK" : "-");
-        displayShow(st);
-
         digitalWrite(LED_GREEN_PIN, HIGH);
         delay(200);
         digitalWrite(LED_GREEN_PIN, LOW);
     } else {
         server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to read battery\"}");
-        displayShow("READ FAIL: no chip");
 
         digitalWrite(LED_RED_PIN, HIGH);
         delay(500);

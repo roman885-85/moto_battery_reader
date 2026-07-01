@@ -17,19 +17,34 @@
 // Организация памяти DS2433: 16 страниц по 32 байта (scratchpad = 32 байта)
 #define DS2433_PAGE_SIZE      32
 
+// Команды для DS2438 (монитор батареи)
+#define DS2438_CONVERT_T      0x44
+#define DS2438_CONVERT_V      0xB4
+#define DS2438_RECALL_MEMORY  0xB8
+#define DS2438_READ_SCRATCH   0xBE
+#define DS2438_WRITE_SCRATCH  0x4E
+#define DS2438_COPY_SCRATCH   0x48
+
+// Организация памяти DS2438: 8 страниц по 8 байт = 64 байта
+#define DS2438_PAGES          8
+#define DS2438_PAGE_SIZE      8
+#define DS2438_MEM_SIZE       64
+
 class BatteryReader {
 public:
     BatteryReader(int pin, int pullupPin);
     bool begin();
     bool readBattery(uint8_t *buffer, size_t size);
     bool writeBattery(const uint8_t *buffer, size_t size);
+    bool readDS2438(uint8_t *buffer, size_t size);
+    bool writeDS2438(const uint8_t *buffer, size_t size);
     void printDump(const uint8_t *buffer, size_t size);
-    
+
 private:
     int _pin;
     int _pullupPin;
     OneWire* _ow;
-    
+
     // Новый метод для поиска устройств
     bool findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr);
 };

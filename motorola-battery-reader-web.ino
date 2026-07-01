@@ -13,6 +13,9 @@ BatteryReader battery(DS_PIN, PULLUP_PIN);
 uint8_t batteryDump[DUMP_SIZE];
 bool hasDump = false;
 
+uint8_t batteryDump2438[DS2438_MEM_SIZE];
+bool hasDump2438 = false;
+
 void setup() {
     Serial.begin(115200);
     Serial.println("\n\nMotorola Battery Reader Web Server (AP Mode)");
@@ -48,16 +51,26 @@ void setup() {
         delay(100);
     }
     
-    // Загружаем сохраненный дамп из SPIFFS
+    // Загружаем сохраненные дампы из SPIFFS
     if (SPIFFS.begin(true)) {
         File file = SPIFFS.open("/dump.bin", "r");
         if (file) {
             size_t size = file.read(batteryDump, DUMP_SIZE);
             if (size == DUMP_SIZE) {
                 hasDump = true;
-                Serial.println("Loaded saved dump from SPIFFS");
+                Serial.println("Loaded saved DS2433 dump from SPIFFS");
             }
             file.close();
+        }
+
+        File file2438 = SPIFFS.open("/dump2438.bin", "r");
+        if (file2438) {
+            size_t size = file2438.read(batteryDump2438, DS2438_MEM_SIZE);
+            if (size == DS2438_MEM_SIZE) {
+                hasDump2438 = true;
+                Serial.println("Loaded saved DS2438 dump from SPIFFS");
+            }
+            file2438.close();
         }
     } else {
         Serial.println("SPIFFS mount failed!");

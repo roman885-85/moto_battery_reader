@@ -238,12 +238,36 @@
             <button class="btn btn-danger" onclick="writeDump()" style="width:100%;">⚡ ЗАПИСАТЬ В БАТАРЕЮ</button>
             
             <div class="warning-text">
-                ⚠️ <strong>ВНИМАНИЕ!</strong> Запись необратима. 
+                ⚠️ <strong>ВНИМАНИЕ!</strong> Запись необратима.
                 Убедитесь, что файл корректен (ровно 512 байт).
                 Неправильная прошивка может вывести батарею из строя!
             </div>
         </div>
-        
+
+        <div class="card">
+            <h2>🔬 Монитор DS2438</h2>
+            <div id="statusInfo2438" class="status">⏳ Данные не считаны</div>
+            <div class="btn-group" style="margin-top: 15px;">
+                <button class="btn btn-success" onclick="downloadDump2438()">⬇ Скачать DS2438 (.bin)</button>
+            </div>
+
+            <form id="uploadForm2438" enctype="multipart/form-data" style="margin-top:15px;">
+                <div class="file-input">
+                    <label class="file-label" for="fileUpload2438">📁 Выберите файл .bin (64 байта)</label>
+                    <input type="file" id="fileUpload2438" name="file" accept=".bin" required>
+                    <span class="file-name" id="fileName2438">Файл не выбран</span>
+                </div>
+            </form>
+
+            <input type="password" class="password-input" id="password2438" placeholder="🔑 Пароль администратора">
+            <button class="btn btn-danger" onclick="writeDump2438()" style="width:100%;">⚡ ЗАПИСАТЬ В DS2438</button>
+
+            <div class="warning-text">
+                ⚠️ Запись всей памяти DS2438 (64 байта) необратима и может нарушить
+                калибровку топливного датчика батареи. Файл должен быть ровно 64 байта.
+            </div>
+        </div>
+
         <div id="progress">
             <div class="spinner"></div>
             <div id="progressText">Выполняется...</div>
@@ -252,11 +276,17 @@
 
     <script>
         let currentFile = null;
-        
+        let currentFile2438 = null;
+
         document.getElementById('fileUpload').addEventListener('change', function(e) {
             currentFile = this.files[0];
             document.getElementById('fileName').textContent = currentFile ? currentFile.name + ' (' + currentFile.size + ' bytes)' : 'Файл не выбран';
             console.log('File selected:', currentFile);
+        });
+
+        document.getElementById('fileUpload2438').addEventListener('change', function(e) {
+            currentFile2438 = this.files[0];
+            document.getElementById('fileName2438').textContent = currentFile2438 ? currentFile2438.name + ' (' + currentFile2438.size + ' bytes)' : 'Файл не выбран';
         });
         
         function showToast(message, type = 'success') {
@@ -273,18 +303,116 @@
         }
         
         async function readDump() {
-            showProgress(true, 'Чтение дампа...');
+            showProgress(true, 'Чтение микросхем...');
             try {
                 const response = await fetch('/api/read');
                 const data = await response.json();
                 if (data.status === 'success') {
-                    showToast('✅ Дамп успешно считан!', 'success');
+                    const parts = [
+                        data.ds2433 ? 'DS2433 ✅' : 'DS2433 ❌',
+                        data.ds2438 ? 'DS2438 ✅' : 'DS2438 ❌'
+                    ];
+                    showToast('Считано: ' + parts.join(', '), (data.ds2433 && data.ds2438) ? 'success' : 'info');
                     await refreshInfo();
+                    await refreshInfo2438();
                 } else {
                     showToast('❌ Ошибка: ' + data.message, 'error');
                 }
             } catch (error) {
                 showToast('❌ Ошибка соединения: ' + error.message, 'error');
+            }
+            showProgress(false);
+        }
+
+        async function refreshInfo2438() {
+            try {
+                const response = await fetch('/api/info2438');
+                if (response.status === 404) {
+                    document.getElementById('statusInfo2438').textContent = '❌ Данные не считаны';
+                    return;
+                }
+                const data = await response.json();
+                let info = `📦 Размер: ${data.size} байт\n`;
+                info += `⚡ Напряжение: ${data.voltage} В\n`;
+                info += `🌡 Температура: ${data.temperature} °C\n`;
+                info += `🔌 Ток (сырое): ${data.currentRaw}\n`;
+                info += `📋 HEX превью (16 байт):\n   ${data.preview || 'Нет данных'}`;
+                document.getElementById('statusInfo2438').textContent = info;
+            } catch (error) {
+                document.getElementById('statusInfo2438').textContent = '❌ Ошибка получения информации';
+            }
+        }
+
+        async function downloadDump2438() {
+            try {
+                const response = await fetch('/api/download2438');
+                if (response.status === 404) {
+                    showToast('❌ Дамп DS2438 не найден. Сначала считайте батарею.', 'error');
+                    return;
+                }
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'ds2438_dump_' + new Date().toISOString().slice(0,10) + '.bin';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                showToast('✅ Дамп DS2438 скачан!', 'success');
+            } catch (error) {
+                showToast('❌ Ошибка: ' + error.message, 'error');
+            }
+        }
+
+        async function writeDump2438() {
+            if (!currentFile2438) {
+                showToast('❌ Выберите файл DS2438!', 'error');
+                return;
+            }
+            if (currentFile2438.size !== 64) {
+                showToast('❌ Файл должен быть ровно 64 байта! Сейчас: ' + currentFile2438.size + ' байт', 'error');
+                return;
+            }
+            const password = document.getElementById('password2438').value;
+            if (!password) {
+                showToast('❌ Введите пароль администратора!', 'error');
+                return;
+            }
+            if (!confirm('⚠️ Запись всей памяти DS2438 НЕОБРАТИМА и может нарушить\n' +
+                         'калибровку топливного датчика батареи.\n\n' +
+                         'Файл: ' + currentFile2438.name + '\n' +
+                         'Размер: ' + currentFile2438.size + ' байт\n\nПродолжить?')) {
+                return;
+            }
+
+            showProgress(true, 'Загрузка файла DS2438...');
+            try {
+                const formData = new FormData();
+                formData.append('file', currentFile2438);
+
+                const uploadResponse = await fetch('/upload2438', { method: 'POST', body: formData });
+                const uploadData = await uploadResponse.json();
+                if (uploadData.status !== 'success') {
+                    showToast('❌ Ошибка загрузки: ' + uploadData.message, 'error');
+                    showProgress(false);
+                    return;
+                }
+
+                showToast('✅ Файл загружен! Записываем в DS2438...', 'success');
+                showProgress(true, '⏳ Запись в DS2438... (не отключайте питание!)');
+                await new Promise(resolve => setTimeout(resolve, 300));
+
+                const writeResponse = await fetch('/api/write2438?password=' + encodeURIComponent(password), { method: 'POST' });
+                const writeData = await writeResponse.json();
+                if (writeData.status === 'success') {
+                    showToast('✅ DS2438 успешно записан!', 'success');
+                    await refreshInfo2438();
+                } else {
+                    showToast('❌ Ошибка записи: ' + writeData.message, 'error');
+                }
+            } catch (error) {
+                showToast('❌ Ошибка: ' + error.message, 'error');
             }
             showProgress(false);
         }
@@ -409,7 +537,8 @@
         // Автообновление при загрузке
         window.onload = function() {
             refreshInfo();
-            setInterval(refreshInfo, 10000);
+            refreshInfo2438();
+            setInterval(function() { refreshInfo(); refreshInfo2438(); }, 10000);
         };
     </script>
 </body>

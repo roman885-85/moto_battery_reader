@@ -216,3 +216,140 @@ bool BatteryReader::writeBattery(const uint8_t *buffer, size_t size) {
     Serial.println("Write verified successfully");
     return true;
 }
+
+// --- Чтение всей памяти DS2438 (8 страниц по 8 байт = 64 байта) ---
+// Порядок на страницу: Recall Memory (0xB8) -> Read Scratchpad (0xBE) ->
+// 9 байт (8 данных + CRC8). Перед чтением запускаем измерения, чтобы
+// страница 0 содержала свежие значения напряжения/температуры.
+bool BatteryReader::readDS2438(uint8_t *buffer, size_t size) {
+    uint8_t ds2433_addr[8];
+    uint8_t ds2438_addr[8];
+
+    if (!findDevices(ds2433_addr, ds2438_addr)) {
+        Serial.println("Error: No devices found on 1-Wire bus!");
+        digitalWrite(_pullupPin, LOW);
+        return false;
+    }
+    if (ds2438_addr[0] != DS2438_ID) {
+        Serial.println("Error: DS2438 not found!");
+        digitalWrite(_pullupPin, LOW);
+        return false;
+    }
+    if (size < DS2438_MEM_SIZE) {
+        Serial.println("Error: DS2438 buffer too small!");
+        digitalWrite(_pullupPin, LOW);
+        return false;
+    }
+
+    // Запускаем измерение напряжения и температуры (tCONV макс 10 мс).
+    _ow->reset();
+    _ow->select(ds2438_addr);
+    _ow->write(DS2438_CONVERT_V);
+    delay(10);
+    _ow->reset();
+    _ow->select(ds2438_addr);
+    _ow->write(DS2438_CONVERT_T);
+    delay(10);
+
+    for (uint8_t page = 0; page < DS2438_PAGES; page++) {
+        // Recall Memory: копируем страницу EEPROM/SRAM в scratchpad.
+        _ow->reset();
+        _ow->select(ds2438_addr);
+        _ow->write(DS2438_RECALL_MEMORY);
+        _ow->write(page);
+
+        // Read Scratchpad: 8 байт данных + CRC8.
+        _ow->reset();
+        _ow->select(ds2438_addr);
+        _ow->write(DS2438_READ_SCRATCH);
+        _ow->write(page);
+
+        uint8_t sp[9];
+        for (int i = 0; i < 9; i++) sp[i] = _ow->read();
+
+        if (OneWire::crc8(sp, 8) != sp[8]) {
+            Serial.printf("ERROR: DS2438 CRC mismatch on page %d\n", (int)page);
+            _ow->reset();
+            digitalWrite(_pullupPin, LOW);
+            return false;
+        }
+        memcpy(buffer + page * DS2438_PAGE_SIZE, sp, DS2438_PAGE_SIZE);
+    }
+
+    _ow->reset();
+    digitalWrite(_pullupPin, LOW);
+    Serial.println("DS2438 read completed");
+    return true;
+}
+
+// --- Запись всей памяти DS2438 (8 страниц по 8 байт) ---
+// Порядок на страницу: Write Scratchpad (0x4E) -> Read Scratchpad (сверка +
+// CRC8) -> Copy Scratchpad (0x48) -> пауза tWR (2..10 мс). Strong pullup не
+// требуется. Внимание: байты измерений в стр. 0 (temp/voltage/current) и
+// прочие волатильные регистры энергонезависимо не сохраняются — устройство
+// перезапишет их при следующем измерении; поэтому финальная сверка чтением
+// памяти по всей странице здесь неприменима, проверяем только scratchpad.
+bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
+    uint8_t ds2433_addr[8];
+    uint8_t ds2438_addr[8];
+
+    if (!findDevices(ds2433_addr, ds2438_addr)) {
+        Serial.println("Error: No devices found on 1-Wire bus!");
+        digitalWrite(_pullupPin, LOW);
+        return false;
+    }
+    if (ds2438_addr[0] != DS2438_ID) {
+        Serial.println("Error: DS2438 not found for writing!");
+        digitalWrite(_pullupPin, LOW);
+        return false;
+    }
+    if (size < DS2438_MEM_SIZE) {
+        Serial.println("Error: DS2438 source too small!");
+        digitalWrite(_pullupPin, LOW);
+        return false;
+    }
+
+    for (uint8_t page = 0; page < DS2438_PAGES; page++) {
+        const uint8_t *pageData = buffer + page * DS2438_PAGE_SIZE;
+
+        // Write Scratchpad (запись всегда начинается с байта 0 scratchpad).
+        _ow->reset();
+        _ow->select(ds2438_addr);
+        _ow->write(DS2438_WRITE_SCRATCH);
+        _ow->write(page);
+        for (int i = 0; i < DS2438_PAGE_SIZE; i++) _ow->write(pageData[i]);
+
+        // Read Scratchpad: убеждаемся, что данные легли верно (данные + CRC8).
+        _ow->reset();
+        _ow->select(ds2438_addr);
+        _ow->write(DS2438_READ_SCRATCH);
+        _ow->write(page);
+        uint8_t sp[9];
+        for (int i = 0; i < 9; i++) sp[i] = _ow->read();
+
+        if (OneWire::crc8(sp, 8) != sp[8]) {
+            Serial.printf("ERROR: DS2438 scratchpad CRC mismatch on page %d\n", (int)page);
+            _ow->reset();
+            digitalWrite(_pullupPin, LOW);
+            return false;
+        }
+        if (memcmp(sp, pageData, DS2438_PAGE_SIZE) != 0) {
+            Serial.printf("ERROR: DS2438 scratchpad data mismatch on page %d\n", (int)page);
+            _ow->reset();
+            digitalWrite(_pullupPin, LOW);
+            return false;
+        }
+
+        // Copy Scratchpad -> страница памяти; ждём завершения (tWR макс 10 мс).
+        _ow->reset();
+        _ow->select(ds2438_addr);
+        _ow->write(DS2438_COPY_SCRATCH);
+        _ow->write(page);
+        delay(11);
+    }
+
+    _ow->reset();
+    digitalWrite(_pullupPin, LOW);
+    Serial.println("DS2438 write completed");
+    return true;
+}

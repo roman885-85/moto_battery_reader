@@ -12,6 +12,36 @@ extern WebServer server;
 extern BatteryReader battery;
 extern uint8_t batteryDump[DUMP_SIZE];
 extern bool hasDump;
+extern uint8_t batteryDump2438[DS2438_MEM_SIZE];
+extern bool hasDump2438;
+
+// Сохранение дампа в SPIFFS (перезапись файла).
+static void saveDump(const char *path, const uint8_t *data, size_t size) {
+    SPIFFS.remove(path);
+    delay(50);
+    File f = SPIFFS.open(path, "w");
+    if (f) {
+        size_t written = f.write(data, size);
+        f.flush();
+        f.close();
+        delay(50);
+        Serial.printf("Saved %s: %d bytes\n", path, written);
+    } else {
+        Serial.printf("ERROR: cannot open %s for writing\n", path);
+    }
+}
+
+// HEX-превью первых n байт в JSON-строку ("AA BB CC ...").
+static String hexPreview(const uint8_t *data, size_t n) {
+    String s;
+    for (size_t i = 0; i < n; i++) {
+        char hex[4];
+        sprintf(hex, "%02X", data[i]);
+        s += hex;
+        if (i + 1 < n) s += " ";
+    }
+    return s;
+}
 
 // Обработчик главной страницы
 void handleRoot() {
@@ -24,35 +54,38 @@ void handleRoot() {
     file.close();
 }
 
-// Обработчик чтения дампа
+// Обработчик чтения дампа: считываем обе микросхемы (DS2433 + DS2438).
 void handleReadDump() {
     Serial.println("Starting battery read...");
-    
+
     memset(batteryDump, 0, DUMP_SIZE);
-    
-    if (battery.readBattery(batteryDump, DUMP_SIZE)) {
+    memset(batteryDump2438, 0, DS2438_MEM_SIZE);
+
+    // DS2433 — основной дамп (512 байт).
+    bool ok2433 = battery.readBattery(batteryDump, DUMP_SIZE);
+    if (ok2433) {
         hasDump = true;
-        
-        // Сохраняем в SPIFFS
-        SPIFFS.remove("/dump.bin");
-        delay(50);
-        File file = SPIFFS.open("/dump.bin", "w");
-        if (file) {
-            size_t written = file.write(batteryDump, DUMP_SIZE);
-            file.flush();
-            file.close();
-            delay(50);
-            Serial.printf("Dump saved to SPIFFS: %d bytes\n", written);
-        }
-        
-        server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Dump read successfully\"}");
-        
+        saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+    }
+
+    // DS2438 — монитор батареи (64 байта).
+    bool ok2438 = battery.readDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (ok2438) {
+        hasDump2438 = true;
+        saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+    }
+
+    if (ok2433 || ok2438) {
+        String json = String("{\"status\":\"success\",\"ds2433\":") + (ok2433 ? "true" : "false") +
+                      ",\"ds2438\":" + (ok2438 ? "true" : "false") + "}";
+        server.send(200, "application/json", json);
+
         digitalWrite(LED_GREEN_PIN, HIGH);
         delay(200);
         digitalWrite(LED_GREEN_PIN, LOW);
     } else {
         server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to read battery\"}");
-        
+
         digitalWrite(LED_RED_PIN, HIGH);
         delay(500);
         digitalWrite(LED_RED_PIN, LOW);
@@ -75,6 +108,161 @@ void handleDownloadDump() {
     server.sendHeader("Content-Disposition", "attachment; filename=battery_dump.bin");
     server.streamFile(file, "application/octet-stream");
     file.close();
+}
+
+// Обработчик скачивания дампа DS2438
+void handleDownloadDump2438() {
+    if (!hasDump2438) {
+        server.send(404, "text/plain", "No DS2438 dump available");
+        return;
+    }
+
+    File file = SPIFFS.open("/dump2438.bin", "r");
+    if (!file) {
+        server.send(500, "text/plain", "Failed to open file");
+        return;
+    }
+
+    server.sendHeader("Content-Disposition", "attachment; filename=ds2438_dump.bin");
+    server.streamFile(file, "application/octet-stream");
+    file.close();
+}
+
+// Upload-колбэк (ufn) для файла DS2438 -> /upload2438.bin
+void handleUploadDump2438() {
+    static File uploadFile;
+
+    HTTPUpload &upload = server.upload();
+
+    if (upload.status == UPLOAD_FILE_START) {
+        Serial.printf("\n=== DS2438 upload started: %s ===\n", upload.filename.c_str());
+        if (uploadFile) { uploadFile.close(); delay(20); }
+        if (SPIFFS.exists("/upload2438.bin")) { SPIFFS.remove("/upload2438.bin"); delay(20); }
+        uploadFile = SPIFFS.open("/upload2438.bin", "w");
+        if (!uploadFile) Serial.println("CRITICAL ERROR: Cannot create /upload2438.bin!");
+
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+        if (uploadFile) uploadFile.write(upload.buf, upload.currentSize);
+
+    } else if (upload.status == UPLOAD_FILE_END) {
+        if (uploadFile) {
+            uploadFile.flush();
+            uploadFile.close();
+            delay(50);
+            Serial.printf("DS2438 upload finished (%d bytes)\n", upload.totalSize);
+        }
+
+    } else if (upload.status == UPLOAD_FILE_ABORTED) {
+        if (uploadFile) uploadFile.close();
+        Serial.println("DS2438 upload aborted!");
+    }
+}
+
+// Обработчик запроса /upload2438 (fn): отправляет ответ после приёма файла.
+void handleUploadDone2438() {
+    if (SPIFFS.exists("/upload2438.bin")) {
+        File file = SPIFFS.open("/upload2438.bin", "r");
+        size_t size = file ? file.size() : 0;
+        if (file) file.close();
+
+        if (size == DS2438_MEM_SIZE) {
+            server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"File uploaded\"}");
+            return;
+        }
+        Serial.printf("DS2438 upload size mismatch: %d bytes (expected %d)\n", size, DS2438_MEM_SIZE);
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid file size\"}");
+        return;
+    }
+    server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Upload failed\"}");
+}
+
+// Обработчик записи дампа в DS2438
+void handleWriteDump2438() {
+    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
+        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}");
+        return;
+    }
+
+    Serial.println("\n=== DS2438 write request received ===");
+
+    if (!SPIFFS.exists("/upload2438.bin")) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No file uploaded\"}");
+        return;
+    }
+
+    File file = SPIFFS.open("/upload2438.bin", "r");
+    if (!file) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No file uploaded\"}");
+        return;
+    }
+
+    size_t fileSize = file.size();
+    if (fileSize != DS2438_MEM_SIZE) {
+        file.close();
+        Serial.printf("DS2438 invalid file size: %d (expected %d)\n", fileSize, DS2438_MEM_SIZE);
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid file size\"}");
+        return;
+    }
+
+    uint8_t buffer[DS2438_MEM_SIZE];
+    memset(buffer, 0, DS2438_MEM_SIZE);
+    file.seek(0);
+    size_t bytesRead = file.read(buffer, DS2438_MEM_SIZE);
+    file.close();
+
+    if (bytesRead != DS2438_MEM_SIZE) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Failed to read uploaded file\"}");
+        return;
+    }
+
+    Serial.println("Writing to DS2438 chip...");
+    if (battery.writeDS2438(buffer, DS2438_MEM_SIZE)) {
+        memcpy(batteryDump2438, buffer, DS2438_MEM_SIZE);
+        hasDump2438 = true;
+        saveDump("/dump2438.bin", buffer, DS2438_MEM_SIZE);
+
+        Serial.println("✓✓✓ DS2438 WRITE SUCCESSFUL ✓✓✓");
+        server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"DS2438 written successfully\"}");
+
+        for (int i = 0; i < 3; i++) {
+            digitalWrite(LED_GREEN_PIN, HIGH);
+            delay(200);
+            digitalWrite(LED_GREEN_PIN, LOW);
+            delay(200);
+        }
+    } else {
+        Serial.println("✗✗✗ DS2438 WRITE FAILED ✗✗✗");
+        server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to write DS2438\"}");
+
+        digitalWrite(LED_RED_PIN, HIGH);
+        delay(500);
+        digitalWrite(LED_RED_PIN, LOW);
+    }
+    Serial.println("=== DS2438 write request completed ===\n");
+}
+
+// Информация о DS2438: превью + расшифрованные напряжение/температура (стр. 0).
+void handleDumpInfo2438() {
+    if (!hasDump2438) {
+        server.send(404, "application/json", "{\"status\":\"error\",\"message\":\"No dump available\"}");
+        return;
+    }
+
+    // Страница 0: [1]=Temp LSB, [2]=Temp MSB, [3]=V LSB, [4]=V MSB, [5]=I LSB, [6]=I MSB
+    uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
+    float voltage = vraw * 0.01f; // 10 мВ/LSb
+
+    int16_t traw = ((int16_t)((batteryDump2438[2] << 8) | batteryDump2438[1])) >> 3; // 13-бит
+    float temperature = traw * 0.03125f; // °C/LSb
+
+    int16_t current = (int16_t)((batteryDump2438[6] << 8) | batteryDump2438[5]); // сырое значение
+
+    char json[220];
+    snprintf(json, sizeof(json),
+        "{\"size\":%d,\"hasData\":true,\"voltage\":%.2f,\"temperature\":%.2f,\"currentRaw\":%d,\"preview\":\"%s\"}",
+        DS2438_MEM_SIZE, voltage, temperature, current, hexPreview(batteryDump2438, 16).c_str());
+
+    server.send(200, "application/json", json);
 }
 
 // Обработчик загрузки файла - переработан для корректной работы с ESP32 WebServer
@@ -339,6 +527,12 @@ void setupWebServer() {
     // запроса (fn, отправляет ответ), handleUploadDump — upload-колбэк (ufn,
     // принимает тело multipart и пишет его в SPIFFS).
     server.on("/upload", HTTP_POST, handleUploadDone, handleUploadDump);
+
+    // Микросхема DS2438 (монитор батареи)
+    server.on("/api/download2438", HTTP_GET, handleDownloadDump2438);
+    server.on("/api/info2438", HTTP_GET, handleDumpInfo2438);
+    server.on("/api/write2438", HTTP_POST, handleWriteDump2438);
+    server.on("/upload2438", HTTP_POST, handleUploadDone2438, handleUploadDump2438);
     
     server.begin();
     Serial.println("Web server started");

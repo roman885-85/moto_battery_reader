@@ -297,15 +297,34 @@ void handleDumpInfo2438() {
 
     int16_t current = (int16_t)((batteryDump2438[6] << 8) | batteryDump2438[5]); // сырое значение
 
+    float    i_mA = (float)current / (4096.0f * DS2438_RSENSE_OHM) * 1000.0f;
+    uint8_t  ica  = batteryDump2438[12];
+    uint16_t cca  = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
+    uint16_t dca  = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
+
     const char *csrc;
     int charge = batteryPercent(&csrc);
 
-    char json[280];
-    snprintf(json, sizeof(json),
-        "{\"size\":%d,\"hasData\":true,\"voltage\":%.2f,\"temperature\":%.2f,\"currentRaw\":%d,"
-        "\"charge\":%d,\"chargeSrc\":\"%s\",\"preview\":\"%s\"}",
-        DS2438_MEM_SIZE, voltage, temperature, current, charge, csrc,
-        hexPreview(batteryDump2438, 16).c_str());
+    String serial = "";
+    if (hasSN2438) {
+        char b[3];
+        for (int i = 0; i < 8; i++) { sprintf(b, "%02X", chipSN2438[i]); serial += b; }
+    }
+
+    String json = "{\"size\":64,\"hasData\":true";
+    json += ",\"voltage\":" + String(voltage, 2);
+    json += ",\"temperature\":" + String(temperature, 1);
+    json += ",\"currentRaw\":" + String(current);
+    json += ",\"currentMa\":" + String(i_mA, 0);
+    json += ",\"ica\":" + String(ica);
+    json += ",\"cca\":" + String(cca);
+    json += ",\"dca\":" + String(dca);
+    json += ",\"charge\":" + String(charge);
+    json += ",\"chargeSrc\":\"" + String(csrc) + "\"";
+    json += ",\"serial\":\"" + serial + "\"";
+    json += ",\"preview\":\"" + hexPreview(batteryDump2438, 16) + "\"";
+    json += ",\"hex\":\"" + hexPreview(batteryDump2438, 64) + "\"";
+    json += "}";
 
     server.send(200, "application/json", json);
 }
@@ -557,7 +576,7 @@ void handleDumpInfo() {
     json += ",\"preview\":\"";
     
     json += hexPreview(batteryDump, 16);
-    json += "\"}";
+    json += "\",\"hex\":\"" + hexPreview(batteryDump, 64) + "\"}";
 
     server.send(200, "application/json", json);
 }

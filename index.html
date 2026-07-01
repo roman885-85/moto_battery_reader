@@ -149,16 +149,26 @@
     <!-- ========== DATA ========== -->
     <div class="page" id="data">
         <div class="card">
-            <h2>🔬 Монітор DS2438</h2>
-            <div class="row"><span class="k">Напруга</span><span class="v" id="dV">—</span></div>
-            <div class="row"><span class="k">Температура</span><span class="v" id="dT">—</span></div>
-            <div class="row"><span class="k">Струм (raw)</span><span class="v" id="dI">—</span></div>
-            <div class="row"><span class="k">HEX (16 байт)</span><span class="v" style="font-size:.85em" id="dPrev">—</span></div>
+            <h2>🪪 Модель / Серійний</h2>
+            <div class="row"><span class="k">Модель</span><span class="v" id="dModel">—</span></div>
+            <div class="row"><span class="k">Серійний (DS2438)</span><span class="v" style="font-size:.85em" id="dSerial">—</span></div>
         </div>
         <div class="card">
-            <h2>📋 Дамп DS2433</h2>
-            <div class="row"><span class="k">Модель</span><span class="v" id="d33Model">—</span></div>
-            <div class="hex" id="d33Prev" style="margin-top:8px">—</div>
+            <h2>🔬 Дані батареї (DS2438)</h2>
+            <div class="row"><span class="k">Напруга</span><span class="v" id="dV">—</span></div>
+            <div class="row"><span class="k">Струм</span><span class="v" id="dI">—</span></div>
+            <div class="row"><span class="k">Температура</span><span class="v" id="dT">—</span></div>
+            <div class="row"><span class="k">Залишок (ICA)</span><span class="v" id="dICA">—</span></div>
+            <div class="row"><span class="k">Заряджено (CCA)</span><span class="v" id="dCCA">—</span></div>
+            <div class="row"><span class="k">Розряджено (DCA)</span><span class="v" id="dDCA">—</span></div>
+        </div>
+        <div class="card">
+            <h2>📋 Дамп DS2438 (0-63)</h2>
+            <div class="hex" id="dHex38">—</div>
+        </div>
+        <div class="card">
+            <h2>📋 Дамп DS2433 (0-63)</h2>
+            <div class="hex" id="dHex33">—</div>
         </div>
     </div>
 
@@ -249,16 +259,16 @@ async function refreshAll(){
         const r=await fetch('/api/info');
         if(r.status!==404){
             const d=await r.json();
-            $('ovModel').textContent=d.model||'—'; $('d33Model').textContent=d.model||'—';
+            $('ovModel').textContent=d.model||'—'; $('dModel').textContent=d.model||'—';
             if(typeof d.capacity==='number'&&d.capacity>=0){
                 $('ovCap').textContent=d.capacity+' %'; $('ovWear').textContent=d.wear+' %';
             }
             if(typeof d.genuine==='boolean'){
                 $('ovAuth').innerHTML=d.genuine
                     ?'<span class="badge-pill pill-ok">OK</span>'
-                    :'<span class="badge-pill pill-bad">РИСК ('+d.authReason+')</span>';
+                    :'<span class="badge-pill pill-bad">РИЗИК ('+d.authReason+')</span>';
             }
-            $('d33Prev').textContent=d.preview||'—';
+            $('dHex33').textContent=d.hex||d.preview||'—';
         }
     }catch(e){}
     // DS2438 info
@@ -274,7 +284,10 @@ async function refreshAll(){
             fill.style.background=pct===null?'#555':(pct<20?'#e74c3c':pct<50?'#f39c12':'#2ecc71');
             $('ovVolt').textContent=d.voltage.toFixed(2)+' В'; $('ovTemp').textContent=d.temperature.toFixed(1)+' °C';
             $('dV').textContent=d.voltage.toFixed(2)+' В'; $('dT').textContent=d.temperature.toFixed(1)+' °C';
-            $('dI').textContent=d.currentRaw; $('dPrev').textContent=d.preview||'—';
+            $('dI').textContent=(d.currentMa!==undefined?d.currentMa:'—')+' мА';
+            $('dICA').textContent=d.ica; $('dCCA').textContent=d.cca; $('dDCA').textContent=d.dca;
+            $('dSerial').textContent=d.serial||'—';
+            $('dHex38').textContent=d.hex||d.preview||'—';
         }
     }catch(e){}
 }

@@ -16,6 +16,7 @@ extern bool hasDump;
 // Глобальные переменные для отслеживания загруженного размера
 size_t uploadedSize = 0;
 File uploadFile;  // Файл остается открытым на время загрузки
+bool uploadInProgress = false;
 
 // Обработчик главной страницы
 void handleRoot() {
@@ -43,8 +44,9 @@ void handleReadDump() {
         File file = SPIFFS.open("/dump.bin", "w");
         if (file) {
             size_t written = file.write(batteryDump, DUMP_SIZE);
-            file.flush();  // Явная синхронизация
+            file.flush();
             file.close();
+            delay(50);  // Даем время на синхронизацию
             Serial.printf("Dump saved to SPIFFS: %d bytes\n", written);
             if (written != DUMP_SIZE) {
                 Serial.printf("ERROR: Failed to write dump to SPIFFS (wrote %d of %d bytes)\n", written, DUMP_SIZE);
@@ -90,7 +92,7 @@ void handleUploadDump() {
     HTTPUpload &upload = server.upload();
     
     if (upload.status == UPLOAD_FILE_START) {
-        Serial.printf("Upload started: %s\n", upload.filename.c_str());
+        Serial.printf("\n=== Upload started: %s ===\n", upload.filename.c_str());
         
         // Проверяем свободное место в SPIFFS
         size_t totalBytes = SPIFFS.totalBytes();
@@ -105,30 +107,37 @@ void handleUploadDump() {
         
         // Закрываем старый файл если он еще открыт
         if (uploadFile) {
+            Serial.println("Closing previous upload file...");
+            uploadFile.flush();
             uploadFile.close();
+            delay(100);
         }
         
         // Удаляем старый файл
-        SPIFFS.remove("/upload.bin");
-        delay(100);
+        if (SPIFFS.exists("/upload.bin")) {
+            SPIFFS.remove("/upload.bin");
+            delay(100);
+        }
         
         // Открываем файл один раз для всей загрузки
         uploadFile = SPIFFS.open("/upload.bin", "w");
         if (!uploadFile) {
             Serial.println("ERROR: Failed to open /upload.bin for writing!");
+            uploadInProgress = false;
             return;
         }
         
         uploadedSize = 0;
+        uploadInProgress = true;
         Serial.println("Upload file opened successfully");
         
     } else if (upload.status == UPLOAD_FILE_WRITE) {
-        if (!uploadFile) {
-            Serial.println("ERROR: Upload file is not open!");
+        if (!uploadFile || !uploadInProgress) {
+            Serial.println("ERROR: Upload file is not open or upload not in progress!");
             return;
         }
         
-        Serial.printf("Writing chunk: %d bytes\n", upload.currentSize);
+        Serial.printf("Writing chunk: %d bytes (chunk number)\n", upload.currentSize);
         
         size_t written = uploadFile.write(upload.buf, upload.currentSize);
         uploadedSize += written;
@@ -140,18 +149,28 @@ void handleUploadDump() {
         }
         
     } else if (upload.status == UPLOAD_FILE_END) {
-        if (uploadFile) {
-            uploadFile.flush();  // Синхронизируем буфер
+        if (uploadFile && uploadInProgress) {
+            Serial.println("Closing upload file...");
+            uploadFile.flush();
             uploadFile.close();
+            delay(100);  // Критическая задержка для синхронизации SPIFFS
+            
+            uploadInProgress = false;
             
             Serial.printf("Upload finished: %s\n", upload.filename.c_str());
             Serial.printf("Total bytes written to file: %d\n", uploadedSize);
             
             // Проверяем размер файла в SPIFFS
+            delay(50);  // Еще одна задержка перед проверкой
+            
             File file = SPIFFS.open("/upload.bin", "r");
             if (file) {
                 size_t fileSize = file.size();
                 Serial.printf("File size verification: %d bytes\n", fileSize);
+                
+                if (fileSize == 0) {
+                    Serial.println("WARNING: File size is 0! SPIFFS sync may have failed.");
+                }
                 
                 // Читаем первые 16 байтов для проверки
                 uint8_t header[16];
@@ -166,6 +185,10 @@ void handleUploadDump() {
             } else {
                 Serial.println("ERROR: Cannot open /upload.bin for verification");
             }
+            
+            Serial.println("=== Upload completed ===\n");
+        } else {
+            Serial.println("ERROR: Upload file not properly opened!");
         }
         
         server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"File uploaded\"}");
@@ -184,10 +207,20 @@ void handleWriteDump() {
     
     // Убеждаемся, что файл загрузки закрыт
     if (uploadFile) {
+        Serial.println("Upload file still open, closing...");
+        uploadFile.flush();
         uploadFile.close();
+        delay(100);
     }
+    uploadInProgress = false;
     
     // Проверяем размер файла перед открытием
+    if (!SPIFFS.exists("/upload.bin")) {
+        Serial.println("ERROR: /upload.bin does not exist");
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No file uploaded\"}");
+        return;
+    }
+    
     File file = SPIFFS.open("/upload.bin", "r");
     if (!file) {
         Serial.println("ERROR: /upload.bin not found");
@@ -200,8 +233,8 @@ void handleWriteDump() {
     
     if (fileSize != DUMP_SIZE) {
         file.close();
-        Serial.printf("ERROR: Invalid file size\n");
-        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid file size\"}");
+        Serial.printf("ERROR: Invalid file size. Need to upload a file first!\n");
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid file size - please upload a file first\"}");
         return;
     }
     
@@ -239,6 +272,7 @@ void handleWriteDump() {
             size_t written = dumpFile.write(buffer, DUMP_SIZE);
             dumpFile.flush();
             dumpFile.close();
+            delay(50);
             Serial.printf("Dump saved to SPIFFS: %d bytes\n", written);
         }
         

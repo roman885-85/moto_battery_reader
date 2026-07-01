@@ -285,7 +285,10 @@ async function refreshAll(){
             $('ovVolt').textContent=d.voltage.toFixed(2)+' В'; $('ovTemp').textContent=d.temperature.toFixed(1)+' °C';
             $('dV').textContent=d.voltage.toFixed(2)+' В'; $('dT').textContent=d.temperature.toFixed(1)+' °C';
             $('dI').textContent=(d.currentMa!==undefined?d.currentMa:'—')+' мА';
-            $('dICA').textContent=d.ica; $('dCCA').textContent=d.cca; $('dDCA').textContent=d.dca;
+            const mah=(v,raw)=>(v!==undefined?('≈'+v+' мА·год (raw '+raw+')'):raw);
+            $('dICA').textContent=mah(d.icaMah,d.ica);
+            $('dCCA').textContent=mah(d.ccaMah,d.cca);
+            $('dDCA').textContent=mah(d.dcaMah,d.dca);
             $('dSerial').textContent=d.serial||'—';
             $('dHex38').textContent=d.hex||d.preview||'—';
         }

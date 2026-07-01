@@ -319,6 +319,9 @@ void handleDumpInfo2438() {
     json += ",\"ica\":" + String(ica);
     json += ",\"cca\":" + String(cca);
     json += ",\"dca\":" + String(dca);
+    json += ",\"icaMah\":" + String((int)(ica * DS2438_MAH_PER_LSB));
+    json += ",\"ccaMah\":" + String((int)(cca * DS2438_MAH_PER_LSB));
+    json += ",\"dcaMah\":" + String((int)(dca * DS2438_MAH_PER_LSB));
     json += ",\"charge\":" + String(charge);
     json += ",\"chargeSrc\":\"" + String(csrc) + "\"";
     json += ",\"serial\":\"" + serial + "\"";

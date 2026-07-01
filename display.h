@@ -354,11 +354,14 @@ inline void drawPageTech() {
     uint16_t chg  = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];      // CCA
     uint16_t dis  = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];      // DCA
 
+    int remMah = (int)(rem * DS2438_MAH_PER_LSB);   // остаток в мА*ч
+    (void)chg; (void)dis;                            // CCA/DCA показаны на стр. "Стан АКБ"
+
     u8g2.setFont(u8g2_font_5x8_t_cyrillic);
     snprintf(buf, sizeof(buf), "Напруга:  %.2f V", vraw * 0.01f);      u8g2.drawUTF8(0, 18, buf);
     snprintf(buf, sizeof(buf), "Струм:    %.0f mA", i_mA);             u8g2.drawUTF8(0, 27, buf);
     snprintf(buf, sizeof(buf), "Темп:     %.1f C", traw * 0.03125f);   u8g2.drawUTF8(0, 36, buf);
-    snprintf(buf, sizeof(buf), "Зал:%u Зар:%u Роз:%u", rem, chg, dis); u8g2.drawUTF8(0, 45, buf);
+    snprintf(buf, sizeof(buf), "Залишок: ~%d mAh", remMah);            u8g2.drawUTF8(0, 45, buf);
 
     drawFooter();
 }
@@ -379,7 +382,9 @@ inline void drawPageHealth() {
     if (hasDump2438) {
         uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
         uint16_t dca = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
-        snprintf(buf, sizeof(buf), "Заряд:%u Розр:%u", cca, dca);  u8g2.drawUTF8(0, 35, buf);
+        int chgK = (int)(cca * DS2438_MAH_PER_LSB / 1000.0f);  // всего заряжено, тыс. мА*ч
+        int disK = (int)(dca * DS2438_MAH_PER_LSB / 1000.0f);  // всего разряжено
+        snprintf(buf, sizeof(buf), "Зар:%dk Розр:%dk mAh", chgK, disK);  u8g2.drawUTF8(0, 35, buf);
     }
 
     const char *reason;

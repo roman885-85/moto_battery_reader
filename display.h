@@ -20,7 +20,9 @@ extern bool hasSN2438;
 //   3 - здоровье: ёмкость / износ / циклы
 //   4 - сырой дамп DS2438 (hex)
 //   5 - сырой дамп DS2433 (первые 64 байта, hex)
-#define NUM_DISPLAY_PAGES 6
+//   6 - сброс счётчиков (рекалибровка)
+#define NUM_DISPLAY_PAGES 7
+#define RESET_PAGE        6
 
 // Объект дисплея. Программный (bit-bang) I2C — работает на любых GPIO,
 // пины берутся из settings.h. Полный буфер кадра (_F_) = 1 КБ ОЗУ.
@@ -33,6 +35,9 @@ extern bool hasSN2438;
 static char g_displayStatus[36] = "ЗАПУСК";  // нижняя строка статуса (UTF-8)
 static int  g_displayPage = 0;             // текущая страница меню
 static bool g_readRequested = false;       // запрос повторного чтения после цикла
+static bool g_resetRequested = false;      // запрос сброса из меню (кнопкой)
+static bool g_resetArmed = false;          // сброс "взведён" (первое нажатие)
+static unsigned long g_resetArmedAt = 0;   // время взведения (авто-сброс через 5с)
 
 inline void displayRender(); // определение ниже
 
@@ -376,6 +381,19 @@ inline void drawRawPage(const char *title, const uint8_t *data, bool has, int co
 inline void drawPageRaw2438() { drawRawPage("DS2438 дамп 0-63", batteryDump2438, hasDump2438, DS2438_MEM_SIZE); }
 inline void drawPageRaw2433() { drawRawPage("DS2433 дамп 0-63", batteryDump,     hasDump,     64); }
 
+inline void drawPageReset() {
+    drawHeader("Скидання");
+    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+    u8g2.drawUTF8(0, 19, "Скинути лічильники");
+    u8g2.drawUTF8(0, 28, "(цикли/знос) для");
+    u8g2.drawUTF8(0, 37, "рекалібрування.");
+    if (g_resetArmed)
+        u8g2.drawUTF8(0, 50, "Ще раз [<] = СКИДАННЯ!");
+    else
+        u8g2.drawUTF8(0, 50, "[<] двічі = скидання");
+    drawFooter();
+}
+
 // ---------- рендер и кнопка ----------
 
 inline void displayRender() {
@@ -387,6 +405,7 @@ inline void displayRender() {
         case 3:  drawPageHealth();   break;
         case 4:  drawPageRaw2438();  break;
         case 5:  drawPageRaw2433();  break;
+        case 6:  drawPageReset();    break;
         default: drawPageMain();     break;
     }
     u8g2.sendBuffer();
@@ -414,12 +433,20 @@ inline bool displayConsumeReadRequest() {
     return false;
 }
 
-// Опрос кнопок: BTN = следующая страница, BTN2 = предыдущая.
+// true один раз, когда пользователь подтвердил сброс из меню (двойное [<]).
+inline bool displayConsumeResetRequest() {
+    if (g_resetRequested) { g_resetRequested = false; return true; }
+    return false;
+}
+
+// Опрос кнопок: BTN = следующая страница; BTN2 = назад, а на странице
+// сброса — взвод/подтверждение (двойное нажатие с защитой от случайного).
 inline void displayHandleButton() {
     static bool c1 = HIGH, r1 = HIGH; static unsigned long t1 = 0;
     static bool c2 = HIGH, r2 = HIGH; static unsigned long t2 = 0;
 
     if (buttonPressed(MENU_BTN_PIN, c1, r1, t1)) {   // "Вперёд"
+        g_resetArmed = false;                        // уход со страницы снимает взвод
         int prev = g_displayPage;
         g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
         // Полный круг (с последней страницы на первую) — запросить перечитывание.
@@ -427,9 +454,21 @@ inline void displayHandleButton() {
         displayRender();
     }
 
-    if (buttonPressed(MENU_BTN2_PIN, c2, r2, t2)) {  // "Назад"
-        g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
-        displayRender();
+    if (buttonPressed(MENU_BTN2_PIN, c2, r2, t2)) {
+        if (g_displayPage == RESET_PAGE) {           // взвод -> подтверждение сброса
+            if (!g_resetArmed) { g_resetArmed = true; g_resetArmedAt = millis(); }
+            else               { g_resetArmed = false; g_resetRequested = true; }
+            displayRender();
+        } else {                                     // "Назад"
+            g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
+            displayRender();
+        }
+    }
+
+    // Авто-снятие взвода через 5 с без подтверждения.
+    if (g_resetArmed && millis() - g_resetArmedAt > 5000) {
+        g_resetArmed = false;
+        if (g_displayPage == RESET_PAGE) displayRender();
     }
 }
 

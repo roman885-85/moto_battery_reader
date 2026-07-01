@@ -90,8 +90,11 @@
 <div id="toast"></div>
 <div class="wrap">
     <div class="brand">
-        <div class="badge">
-            <svg viewBox="0 0 64 76" width="46" height="55" aria-label="Тризуб">
+        <div class="badge" id="logoBadge">
+            <img id="logoImg" src="/logo.png" alt="НГУ" style="max-width:60px;max-height:68px;display:none"
+                 onload="this.style.display='block';document.getElementById('logoSvg').style.display='none';
+                         var b=document.getElementById('logoBadge');b.style.background='transparent';b.style.border='none'">
+            <svg id="logoSvg" viewBox="0 0 64 76" width="46" height="55" aria-label="Тризуб">
                 <g fill="#ffd700">
                     <polygon points="32,0 27,10 37,10"/>
                     <rect x="28" y="8" width="8" height="60"/>

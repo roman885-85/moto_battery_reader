@@ -46,6 +46,18 @@ static String hexPreview(const uint8_t *data, size_t n) {
     return s;
 }
 
+// Логотип: отдаём /logo.png из SPIFFS, если он загружен (иначе 404 -> в вебе
+// показывается встроенный SVG-тризуб). Позволяет использовать точный логотип НГУ.
+void handleLogo() {
+    if (SPIFFS.exists("/logo.png")) {
+        File f = SPIFFS.open("/logo.png", "r");
+        server.streamFile(f, "image/png");
+        f.close();
+    } else {
+        server.send(404, "text/plain", "no logo");
+    }
+}
+
 // Обработчик главной страницы
 void handleRoot() {
     File file = SPIFFS.open("/index.html", "r");
@@ -587,16 +599,10 @@ void resetBatteryData() {
     }
 }
 
-// Обработчик сброса: правит дампы в ОЗУ, пишет в обе микросхемы, сохраняет.
-void handleResetBattery() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}");
-        return;
-    }
-    if (!hasDump && !hasDump2438) {
-        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}");
-        return;
-    }
+// Ядро сброса: правит дампы, пишет в обе микросхемы, сохраняет. Без HTTP —
+// вызывается и из веб-обработчика, и из меню на дисплее (по кнопкам).
+bool performReset() {
+    if (!hasDump && !hasDump2438) { displayShow("СПОЧАТКУ ЧИТАЙ"); return false; }
 
     Serial.println("\n=== Battery reset (recalibration) ===");
     displayShow("СКИДАННЯ...");
@@ -610,12 +616,27 @@ void handleResetBattery() {
         if (hasDump)     saveDump("/dump.bin", batteryDump, DUMP_SIZE);
         if (hasDump2438) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
         displayShow("СКИД. OK");
-        server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Battery counters reset\"}");
     } else {
         displayShow("СКИД. ЗБІЙ");
-        server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to write reset\"}");
     }
     Serial.println("=== Reset completed ===\n");
+    return ok;
+}
+
+// Веб-обработчик сброса (под паролем).
+void handleResetBattery() {
+    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
+        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}");
+        return;
+    }
+    if (!hasDump && !hasDump2438) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}");
+        return;
+    }
+    bool ok = performReset();
+    server.send(ok ? 200 : 500, "application/json",
+        ok ? "{\"status\":\"success\",\"message\":\"Battery counters reset\"}"
+           : "{\"status\":\"error\",\"message\":\"Failed to write reset\"}");
 }
 
 // Настройка веб-сервера
@@ -632,6 +653,7 @@ void setupWebServer() {
                  totalBytes, usedBytes, totalBytes - usedBytes);
     
     server.on("/", handleRoot);
+    server.on("/logo.png", HTTP_GET, handleLogo);
     server.on("/api/read", HTTP_GET, handleReadDump);
     server.on("/api/download", HTTP_GET, handleDownloadDump);
     server.on("/api/info", HTTP_GET, handleDumpInfo);

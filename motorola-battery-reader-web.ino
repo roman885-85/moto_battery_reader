@@ -122,6 +122,11 @@ void loop() {
         readAllChips(ok2433, ok2438);
     }
 
+    // Подтверждённый из меню сброс счётчиков/износа (рекалибровка).
+    if (displayConsumeResetRequest()) {
+        performReset();
+    }
+
     // Периодическое обновление дисплея (свежие статус/дампы) раз в секунду
     static unsigned long lastDisplay = 0;
     if (millis() - lastDisplay > 1000) {

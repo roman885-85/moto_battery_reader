@@ -4,6 +4,7 @@
 #include <SPIFFS.h>
 #include "settings.h"
 #include "battery_reader.h"
+#include "display.h"
 #include "web_server.h"
 
 // Глобальные объекты
@@ -20,7 +21,11 @@ void setup() {
     Serial.begin(115200);
     Serial.println("\n\nMotorola Battery Reader Web Server (AP Mode)");
     Serial.println("==============================================");
-    
+
+    // Инициализация дисплея
+    displayInit();
+    displayShow("BOOT...");
+
     // Настройка светодиодов
     pinMode(LED_GREEN_PIN, OUTPUT);
     pinMode(LED_RED_PIN, OUTPUT);
@@ -90,13 +95,23 @@ void setup() {
     digitalWrite(LED_GREEN_PIN, HIGH);
     delay(1000);
     digitalWrite(LED_GREEN_PIN, LOW);
+
+    // Готовность на дисплее
+    displayShow("READY");
 }
 
 void loop() {
     // Обработка всех клиентских запросов
     // WebServer автоматически обрабатывает multipart upload в handleClient()
     server.handleClient();
-    
+
+    // Периодическое обновление дисплея (свежие статус/дампы) раз в секунду
+    static unsigned long lastDisplay = 0;
+    if (millis() - lastDisplay > 1000) {
+        lastDisplay = millis();
+        displayRender();
+    }
+
     // Индикация работы: быстрый зеленый миг каждые 3 секунды
     static unsigned long lastBlink = 0;
     if (millis() - lastBlink > 3000) {

@@ -7,6 +7,7 @@
 #include <ArduinoJson.h>
 #include "battery_reader.h"
 #include "settings.h"
+#include "display.h"
 
 extern WebServer server;
 extern BatteryReader battery;
@@ -57,6 +58,7 @@ void handleRoot() {
 // Обработчик чтения дампа: считываем обе микросхемы (DS2433 + DS2438).
 void handleReadDump() {
     Serial.println("Starting battery read...");
+    displayShow("READING...");
 
     memset(batteryDump, 0, DUMP_SIZE);
     memset(batteryDump2438, 0, DS2438_MEM_SIZE);
@@ -80,11 +82,16 @@ void handleReadDump() {
                       ",\"ds2438\":" + (ok2438 ? "true" : "false") + "}";
         server.send(200, "application/json", json);
 
+        char st[22];
+        snprintf(st, sizeof(st), "READ 2433:%s 2438:%s", ok2433 ? "OK" : "-", ok2438 ? "OK" : "-");
+        displayShow(st);
+
         digitalWrite(LED_GREEN_PIN, HIGH);
         delay(200);
         digitalWrite(LED_GREEN_PIN, LOW);
     } else {
         server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to read battery\"}");
+        displayShow("READ FAIL: no chip");
 
         digitalWrite(LED_RED_PIN, HIGH);
         delay(500);
@@ -216,12 +223,14 @@ void handleWriteDump2438() {
     }
 
     Serial.println("Writing to DS2438 chip...");
+    displayShow("WRITE 2438...");
     if (battery.writeDS2438(buffer, DS2438_MEM_SIZE)) {
         memcpy(batteryDump2438, buffer, DS2438_MEM_SIZE);
         hasDump2438 = true;
         saveDump("/dump2438.bin", buffer, DS2438_MEM_SIZE);
 
         Serial.println("✓✓✓ DS2438 WRITE SUCCESSFUL ✓✓✓");
+        displayShow("2438 WRITE OK");
         server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"DS2438 written successfully\"}");
 
         for (int i = 0; i < 3; i++) {
@@ -232,6 +241,7 @@ void handleWriteDump2438() {
         }
     } else {
         Serial.println("✗✗✗ DS2438 WRITE FAILED ✗✗✗");
+        displayShow("2438 WRITE FAIL");
         server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to write DS2438\"}");
 
         digitalWrite(LED_RED_PIN, HIGH);
@@ -448,6 +458,7 @@ void handleWriteDump() {
     
     // Пишем в батарею
     Serial.println("Writing to battery chip...");
+    displayShow("WRITE 2433...");
     if (battery.writeBattery(buffer, DUMP_SIZE)) {
         memcpy(batteryDump, buffer, DUMP_SIZE);
         hasDump = true;
@@ -465,6 +476,7 @@ void handleWriteDump() {
         }
         
         Serial.println("✓✓✓ WRITE SUCCESSFUL ✓✓✓");
+        displayShow("2433 WRITE OK");
         server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Firmware written successfully\"}");
         
         // Индикация успеха
@@ -476,6 +488,7 @@ void handleWriteDump() {
         }
     } else {
         Serial.println("✗✗✗ WRITE FAILED ✗✗✗");
+        displayShow("2433 WRITE FAIL");
         server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to write battery\"}");
         
         digitalWrite(LED_RED_PIN, HIGH);

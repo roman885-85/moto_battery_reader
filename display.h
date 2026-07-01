@@ -351,6 +351,18 @@ inline void displayRender() {
 
 inline void displayButtonSetup() {
     pinMode(MENU_BTN_PIN, INPUT_PULLUP);
+    pinMode(MENU_BTN2_PIN, INPUT_PULLUP);
+}
+
+// Универсальный опрос кнопки с антидребезгом: возвращает true в момент нажатия.
+inline bool buttonPressed(int pin, bool &committed, bool &lastRaw, unsigned long &tChange) {
+    bool raw = digitalRead(pin);
+    if (raw != lastRaw) { lastRaw = raw; tChange = millis(); }
+    if ((millis() - tChange) > 30 && committed != lastRaw) {
+        committed = lastRaw;
+        if (committed == LOW) return true;
+    }
+    return false;
 }
 
 // true один раз после того, как кнопка провернула меню на полный круг.
@@ -359,24 +371,22 @@ inline bool displayConsumeReadRequest() {
     return false;
 }
 
-// Опрос кнопки с антидребезгом; по нажатию — следующая страница.
+// Опрос кнопок: BTN = следующая страница, BTN2 = предыдущая.
 inline void displayHandleButton() {
-    static bool committed = HIGH;     // устойчивое состояние
-    static bool lastRaw = HIGH;
-    static unsigned long tChange = 0;
+    static bool c1 = HIGH, r1 = HIGH; static unsigned long t1 = 0;
+    static bool c2 = HIGH, r2 = HIGH; static unsigned long t2 = 0;
 
-    bool raw = digitalRead(MENU_BTN_PIN);
-    if (raw != lastRaw) { lastRaw = raw; tChange = millis(); }
+    if (buttonPressed(MENU_BTN_PIN, c1, r1, t1)) {   // "Вперёд"
+        int prev = g_displayPage;
+        g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
+        // Полный круг (с последней страницы на первую) — запросить перечитывание.
+        if (g_displayPage == 0 && prev == NUM_DISPLAY_PAGES - 1) g_readRequested = true;
+        displayRender();
+    }
 
-    if ((millis() - tChange) > 30 && committed != lastRaw) {
-        committed = lastRaw;
-        if (committed == LOW) {       // нажатие (активный уровень LOW)
-            int prev = g_displayPage;
-            g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
-            // Полный круг (с последней страницы на первую) — запросить перечитывание.
-            if (g_displayPage == 0 && prev == NUM_DISPLAY_PAGES - 1) g_readRequested = true;
-            displayRender();
-        }
+    if (buttonPressed(MENU_BTN2_PIN, c2, r2, t2)) {  // "Назад"
+        g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
+        displayRender();
     }
 }
 

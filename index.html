@@ -225,7 +225,12 @@
         </div>
         
         <div class="card">
-            <h2>📤 Запись прошивки</h2>
+            <h2>📤 Запись / восстановление прошивки</h2>
+            <div class="warning-text" style="border-left-color:#3498db;color:#3498db;">
+                ℹ️ Восстановление прошивки: залейте <strong>заведомо исправный</strong> дамп
+                той же модели (512 байт) и запишите его. Это надёжный способ восстановить
+                повреждённую/залоченную АКБ. Автоподбор подписи невозможен — нужен эталон.
+            </div>
             <form id="uploadForm" enctype="multipart/form-data">
                 <div class="file-input">
                     <label class="file-label" for="fileUpload">📁 Выберите файл .bin</label>

@@ -142,6 +142,7 @@
             <div class="row"><span class="k">Модель</span><span class="v" id="ovModel">—</span></div>
             <div class="row"><span class="k">Ємність</span><span class="v" id="ovCap">—</span></div>
             <div class="row"><span class="k">Знос</span><span class="v" id="ovWear">—</span></div>
+            <div class="row"><span class="k">Циклів</span><span class="v" id="ovCycles">—</span></div>
             <div class="row"><span class="k">Справжність</span><span class="v" id="ovAuth">—</span></div>
         </div>
     </div>
@@ -286,9 +287,11 @@ async function refreshAll(){
             $('dV').textContent=d.voltage.toFixed(2)+' В'; $('dT').textContent=d.temperature.toFixed(1)+' °C';
             $('dI').textContent=(d.currentMa!==undefined?d.currentMa:'—')+' мА';
             const mah=(v,raw)=>(v!==undefined?('≈'+v+' мА·год (raw '+raw+')'):raw);
+            const cyc=(c,v,raw)=>(c!==undefined?(c+' циклів (≈'+v+' мА·год, raw '+raw+')'):mah(v,raw));
             $('dICA').textContent=mah(d.icaMah,d.ica);
-            $('dCCA').textContent=mah(d.ccaMah,d.cca);
-            $('dDCA').textContent=mah(d.dcaMah,d.dca);
+            $('dCCA').textContent=cyc(d.ccaCycles,d.ccaMah,d.cca);
+            $('dDCA').textContent=cyc(d.dcaCycles,d.dcaMah,d.dca);
+            if(d.ccaCycles!==undefined)$('ovCycles').textContent=d.ccaCycles+' зар. / '+d.dcaCycles+' розр. (ємн. '+d.ratedMah+' мА·год)';
             $('dSerial').textContent=d.serial||'—';
             $('dHex38').textContent=d.hex||d.preview||'—';
         }

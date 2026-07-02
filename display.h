@@ -28,10 +28,12 @@ extern bool hasSN2438;
 // Объект дисплея выбирается по модели из settings.h (полный буфер _F_).
 // DISP_W/DISP_H — разрешение; DISPLAY_USES_I2C — признак шины I2C.
 //
-// ВАЖНО (HW I2C): пины SCL/SDA передаются прямо в конструктор — тогда U8g2
-// сама вызывает Wire.begin(SDA, SCL) с нужными пинами. Отдельный вызов
-// Wire.begin() в коде НЕДОПУСТИМ: U8g2 повторно инициализирует шину на
-// пинах по умолчанию, дисплей "теряется" и программа виснет на I2C.
+// HW I2C: пины SCL/SDA передаются прямо в конструктор — U8g2 сама вызывает
+// Wire.begin(SDA, SCL). При включённом DISPLAY_HW_I2C дополнительно создаётся
+// запасной программный (SW) объект: если аппаратная шина не отвечает (нет
+// ACK — слабые подтяжки, длинные провода), displayInit автоматически
+// переключается на программный I2C на тех же пинах. Кадровый буфер у пары
+// объектов общий (статический в U8g2), лишней памяти это почти не ест.
 #if defined(DISPLAY_ST7567_SPI)
   #define DISP_W 128
   #define DISP_H 64
@@ -40,48 +42,71 @@ extern bool hasSN2438;
   // контраст — вариант OS12864 с bias 1/7 даёт тёмный засвеченный экран).
   // Сдвиг картинки +4px делается через x_offset в displayInit
   // (DISPLAY_ST7567_XOFF в settings.h).
-  U8G2_ST7567_ENH_DG128064_F_4W_HW_SPI u8g2(U8G2_R0, DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+  U8G2_ST7567_ENH_DG128064_F_4W_HW_SPI u8g2_spi(U8G2_R0, DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+  static U8G2 *g_u8g2p = &u8g2_spi;
 #elif defined(DISPLAY_PCD8544_SPI)
   #define DISP_W 84
   #define DISP_H 48
   // Nokia 5110 (PCD8544), 84x48, аппаратный SPI.
-  U8G2_PCD8544_84X48_F_4W_HW_SPI u8g2(U8G2_R0, DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+  U8G2_PCD8544_84X48_F_4W_HW_SPI u8g2_spi(U8G2_R0, DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+  static U8G2 *g_u8g2p = &u8g2_spi;
 #elif defined(DISPLAY_SH1107_128_I2C)
   #define DISPLAY_USES_I2C 1
   #define DISP_W 128
   #define DISP_H 128
+  U8G2_SH1107_128X128_F_SW_I2C u8g2_sw(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
   #if defined(DISPLAY_HW_I2C)
-    U8G2_SH1107_128X128_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN);
+    U8G2_SH1107_128X128_F_HW_I2C u8g2_hw(U8G2_R0, U8X8_PIN_NONE, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN);
+    static U8G2 *g_u8g2p = &u8g2_hw;
   #else
-    U8G2_SH1107_128X128_F_SW_I2C u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+    static U8G2 *g_u8g2p = &u8g2_sw;
   #endif
 #elif defined(DISPLAY_SSD1327_128_I2C)
   #define DISPLAY_USES_I2C 1
   #define DISP_W 128
   #define DISP_H 128
+  U8G2_SSD1327_MIDAS_128X128_F_SW_I2C u8g2_sw(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
   #if defined(DISPLAY_HW_I2C)
-    U8G2_SSD1327_MIDAS_128X128_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN);
+    U8G2_SSD1327_MIDAS_128X128_F_HW_I2C u8g2_hw(U8G2_R0, U8X8_PIN_NONE, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN);
+    static U8G2 *g_u8g2p = &u8g2_hw;
   #else
-    U8G2_SSD1327_MIDAS_128X128_F_SW_I2C u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+    static U8G2 *g_u8g2p = &u8g2_sw;
   #endif
 #elif defined(DISPLAY_SH1106_I2C)
   #define DISPLAY_USES_I2C 1
   #define DISP_W 128
   #define DISP_H 64
+  U8G2_SH1106_128X64_NONAME_F_SW_I2C u8g2_sw(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
   #if defined(DISPLAY_HW_I2C)
-    U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN);
+    U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2_hw(U8G2_R0, U8X8_PIN_NONE, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN);
+    static U8G2 *g_u8g2p = &u8g2_hw;
   #else
-    U8G2_SH1106_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+    static U8G2 *g_u8g2p = &u8g2_sw;
   #endif
 #else   // DISPLAY_SSD1306_I2C — по умолчанию
   #define DISPLAY_USES_I2C 1
   #define DISP_W 128
   #define DISP_H 64
+  U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2_sw(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
   #if defined(DISPLAY_HW_I2C)
-    U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN);
+    U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_hw(U8G2_R0, U8X8_PIN_NONE, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN);
+    static U8G2 *g_u8g2p = &u8g2_hw;
   #else
-    U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+    static U8G2 *g_u8g2p = &u8g2_sw;
   #endif
+#endif
+
+// Весь код ниже работает через указатель: обращения "u8g2." идут к активному
+// объекту (аппаратному либо запасному программному после fallback).
+#define u8g2 (*g_u8g2p)
+
+// Частота пробы аппаратной шины = рабочая частота дисплея.
+#if DISPLAY_I2C_KHZ > 0
+  #define DISPLAY_PROBE_HZ (DISPLAY_I2C_KHZ * 1000UL)
+#elif defined(DISPLAY_SSD1327_128_I2C)
+  #define DISPLAY_PROBE_HZ 100000UL   // предел SSD1327
+#else
+  #define DISPLAY_PROBE_HZ 400000UL
 #endif
 
 // Разметка меню под разрешение экрана: шрифты, шапка, строки тела (ROW),
@@ -184,30 +209,35 @@ inline void fixRecordChecksum(uint8_t *buf, int start, int len) {
 
 // ---------- базовая настройка ----------
 
-static bool g_displayOk = true;   // false: дисплей не найден, работаем без него
-
 inline void displayInit() {
+#if defined(DISPLAY_USES_I2C) && defined(DISPLAY_HW_I2C)
+    // Проба аппаратной шины НА РАБОЧЕЙ ЧАСТОТЕ до u8g2.begin(). Повторный
+    // Wire.begin теми же пинами внутри U8g2 безвреден ("already started").
+    // Если дисплей не отвечает (нет ACK: слабые подтяжки, длинные провода,
+    // капризный контроллер) — освобождаем пины и автоматически переходим
+    // на запасной ПРОГРАММНЫЙ I2C: дисплей работает всегда, только медленнее.
+    Wire.begin(DISPLAY_SDA_PIN, DISPLAY_SCL_PIN, DISPLAY_PROBE_HZ);
+    Wire.setTimeOut(50);
+    bool hwOk = true;
+    for (int i = 0; i < 3 && hwOk; i++) {
+        Wire.beginTransmission(DISPLAY_I2C_ADDR);
+        hwOk = (Wire.endTransmission() == 0);
+    }
+    if (!hwOk) {
+        Wire.end();                 // отдать пины бит-бэнгу
+        g_u8g2p = &u8g2_sw;         // запасной программный I2C
+        Serial.printf("DISPLAY: HW I2C no ACK at 0x%02X (SDA=%d SCL=%d) -> SW I2C fallback\n",
+                      DISPLAY_I2C_ADDR, DISPLAY_SDA_PIN, DISPLAY_SCL_PIN);
+    } else {
+        Serial.println("DISPLAY: HW I2C OK");
+    }
+#endif
 #if defined(DISPLAY_USES_I2C)
     u8g2.setI2CAddress(DISPLAY_I2C_ADDR << 1);
   #if DISPLAY_I2C_KHZ > 0
     // Ручное задание частоты. 0 (по умолчанию) = авто: U8g2 берёт безопасный
     // максимум из драйвера дисплея (SSD1327 держит только 100 кГц!).
     u8g2.setBusClock(DISPLAY_I2C_KHZ * 1000UL);
-  #endif
-  #if defined(DISPLAY_HW_I2C)
-    // Проба шины до u8g2.begin(): повторный Wire.begin с теми же пинами
-    // безвреден (ядро вернёт "already started"), частоту U8g2 потом ставит
-    // сама на каждой транзакции. Если дисплей не отвечает (ACK нет) —
-    // работаем без него, а не виснем на I2C-тайм-аутах.
-    Wire.begin(DISPLAY_SDA_PIN, DISPLAY_SCL_PIN, 100000UL);
-    Wire.setTimeOut(50);
-    Wire.beginTransmission(DISPLAY_I2C_ADDR);
-    if (Wire.endTransmission() != 0) {
-        Serial.printf("DISPLAY: no ACK at 0x%02X (SDA=%d SCL=%d) — running without display\n",
-                      DISPLAY_I2C_ADDR, DISPLAY_SDA_PIN, DISPLAY_SCL_PIN);
-        g_displayOk = false;
-        return;
-    }
   #endif
 #endif
     u8g2.begin();
@@ -223,7 +253,6 @@ inline void displayInit() {
 
 // Стартовая заставка: тризуб + "Національна Гвардія України".
 inline void displaySplash() {
-    if (!g_displayOk) return;
     u8g2.clearBuffer();
 #if DISP_H >= 128
     // 128x128: эмблема по центру сверху, текст под ней.
@@ -609,7 +638,6 @@ inline void drawPageReset() {
 // ---------- рендер и кнопка ----------
 
 inline void displayRender() {
-    if (!g_displayOk) return;
     u8g2.clearBuffer();
     switch (g_displayPage) {
         case 0:  drawPageMain();     break;

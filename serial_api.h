@@ -2,32 +2,32 @@
 #define SERIAL_API_H
 
 // ---------------------------------------------------------------------------
-// Командный протокол по USB-Serial (115200) — дублирует функционал веб-API,
-// чтобы Windows-клиент (Web Serial / нативный) работал по COM-порту.
-// Работает ПАРАЛЛЕЛЬНО с Wi-Fi: loop() вызывает и server.handleClient(), и
+// Командний протокол по USB-Serial (115200) — дублює функціонал веб-API,
+// щоб Windows-клієнт (Web Serial / нативний) працював по COM-порту.
+// Працює паралельно з Wi-Fi: loop() викликає і server.handleClient(), і
 // serialTask().
 //
-// Формат: клиент шлёт одну строку "CMD [аргумент]\n". Устройство отвечает
-// РОВНО одной строкой ответа с префиксом "#R#" + JSON. Отладочные строки
-// (без префикса) клиент игнорирует.
+// Формат: клієнт надсилає один рядок "CMD [аргумент]\n". Пристрій відповідає
+// рівно одним рядком відповіді з префіксом "#R#" + JSON. Відладкові рядки
+// (без префікса) клієнт ігнорує.
 //
-// Команды:
+// Команди:
 //   PING                 -> {"ok":true,"dev":"MotoBatteryReader","ver":2}
 //   READ                 -> {"ok":..,"ds2433":..,"ds2438":..}  (зчитати чіпи)
-//   INFO                 -> все декодированные поля (модель/%/цикли/цілісність/DS2438)
-//   GET33 / GET38        -> {"ok":true,"hex":"AA BB .."}  (сырой дамп)
-//   WRITE33 <hex512>     -> запис DS2433 как есть (для эталонного дампа)
-//   WRITEFIX33 <hex512>  -> запис DS2433 + автопочинка суммы заголовка и зеркала
+//   INFO                 -> усі декодовані поля (модель/%/цикли/цілісність/DS2438)
+//   GET33 / GET38        -> {"ok":true,"hex":"AA BB .."}  (сирий дамп)
+//   WRITE33 <hex512>     -> запис DS2433 як є (для еталонного дампа)
+//   WRITEFIX33 <hex512>  -> запис DS2433 + автовиправлення суми заголовка і дзеркала
 //   WRITE38 <hex64>      -> запис DS2438
 //   RESET                -> скидання лічильників (рекалібрування)
 //   REPAIR               -> ремонт цілісності (суми + дзеркало)
 //   SETCAP <0..100>      -> змінити ємність/знос %
 // ---------------------------------------------------------------------------
 
-#include "web_server.h"   // dump-буферы, readAllChips/performReset/repairDumps,
+#include "web_server.h"   // dump-буфери, readAllChips/performReset/repairDumps,
                           // hexToBytes/fixHeaderChecksum/mirrorOk/headerChecksumOk
 
-static String g_serIn;    // накопитель входной строки
+static String g_serIn;    // накопичувач вхідного рядка
 
 static void sResp(const String &json) {
     Serial.print("#R#");
@@ -41,7 +41,7 @@ static String serHex(const uint8_t *d, int n) {
     return s;
 }
 
-// Полный INFO: объединяет /api/info и /api/info2438.
+// Повний INFO: об'єднує /api/info і /api/info2438.
 static String serBuildInfo() {
     String j = "{\"ok\":true";
     j += ",\"has33\":" + String(hasDump ? "true" : "false");
@@ -90,7 +90,7 @@ static String serBuildInfo() {
     return j;
 }
 
-// Запись DS2433 из hex-аргумента. fix=true -> автопочинка суммы заголовка+зеркало.
+// Запис DS2433 з hex-аргументу. fix=true -> автовиправлення суми заголовка+дзеркало.
 static void serWrite33(const String &arg, bool fix) {
     static uint8_t buf[DUMP_SIZE];
     if (hexToBytes(arg, buf, DUMP_SIZE) != DUMP_SIZE) { sResp("{\"ok\":false,\"err\":\"need 512 bytes\"}"); return; }
@@ -115,7 +115,7 @@ static void serWrite38(const String &arg) {
     sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"write failed\"}");
 }
 
-// Изменить остаточную ёмкость (заряд) в мА·ч -> регистр ICA DS2438.
+// Змінити залишкову ємність (заряд) в мА·ч -> регістр ICA DS2438.
 static void serSetMah(const String &arg) {
     if (!hasDump2438) { sResp("{\"ok\":false,\"err\":\"read first\"}"); return; }
     long mah = arg.toInt();
@@ -177,7 +177,7 @@ static void serialExec(const String &line) {
     else                          sResp(String("{\"ok\":false,\"err\":\"unknown cmd '") + cmd + "'\"}");
 }
 
-// Вызывать в loop(): накапливает строку и выполняет команду по \n.
+// Викликати в loop(): накопичує рядок і виконує команду по \n.
 inline void serialTask() {
     while (Serial.available()) {
         char c = (char)Serial.read();
@@ -185,7 +185,7 @@ inline void serialTask() {
             if (g_serIn.length()) { serialExec(g_serIn); g_serIn = ""; }
         } else {
             g_serIn += c;
-            if (g_serIn.length() > 4200) g_serIn = "";   // защита от переполнения
+            if (g_serIn.length() > 4200) g_serIn = "";   // захист от переповнення
         }
     }
 }

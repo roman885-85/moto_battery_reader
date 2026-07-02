@@ -247,11 +247,11 @@ async function refresh(){
   try{
     const d=await cmd('INFO');
     if(!d.ok){return;}
-    // overview: залишкова ємність у мА·год (головне), заряд % — дрібно
+    // overview: заряд у відсотках (головне), залишок у мА·год — дрібно
     const pct=(typeof d.charge==='number'&&d.charge>=0)?d.charge:null;
     const rmah=(d.icaMah!==undefined)?d.icaMah:null;
-    $('pct').textContent=rmah!==null?(rmah+' mAh'):'-- mAh';
-    $('csrc').textContent=(pct!==null?('заряд '+pct+'% · '+(d.chargeSrc==='ICA'?'ICA':'напруга')):'');
+    $('pct').textContent=pct!==null?(pct+'%'):'--%';
+    $('csrc').textContent=(rmah!==null?('залишок '+rmah+' мА·год'):'')+(pct!==null?(' · '+(d.chargeSrc==='ICA'?'ICA':'напруга')):'');
     if(rmah!==null)$('mahv').value=rmah;
     $('fill').style.width=(pct!==null?pct:0)+'%';
     $('fill').style.background=pct===null?'#555':(pct<20?'#e74c3c':pct<50?'#f39c12':'#2ecc71');

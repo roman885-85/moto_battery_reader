@@ -5,24 +5,24 @@
 #include "settings.h"
 
 // ---------------------------------------------------------------------------
-// Индикация светодиодами (неблокирующая). Зелёный = LED_GREEN_PIN,
-// красный = LED_RED_PIN. Состояние задаётся ledSet(), рисуется ledTask()
-// в каждом проходе loop() — без delay(), чтобы не тормозить кнопки/веб.
-// Одноразовые сигналы OK/ERROR автоматически возвращаются в предыдущий режим.
+// Індикація світлодіодами (неблокуюча). Зелений = LED_GREEN_PIN,
+// червоний = LED_RED_PIN. Стан задається ledSet(), малюється ledTask()
+// в кожному проході loop() — без delay(), щоб не гальмувати кнопки/веб.
+// Одноразові сигнали OK/ERROR автоматично повертаються в попередній режим.
 // ---------------------------------------------------------------------------
 enum LedMode {
-    LED_BOOT,      // старт: оба выключены
-    LED_IDLE,      // ожидание: короткий зелёный «пульс» раз в 3 с
-    LED_READ,      // чтение чипа: зелёный мигает ~3 Гц
-    LED_WRITE,     // запись чипа: красный+зелёный поочерёдно (внимание!)
-    LED_OK,        // успех: зелёный горит ~1.2 с, затем возврат в idle
-    LED_ERROR      // ошибка: 4 быстрых красных мигания, затем возврат в idle
+    LED_BOOT,      // старт: обидва вимкнені
+    LED_IDLE,      // очікування: короткий зелений «пульс» раз на 3 с
+    LED_READ,      // читання чипа: зелений блимає ~3 Гц
+    LED_WRITE,     // запис чипа: червоний+зелений почергово (увага!)
+    LED_OK,        // успіх: зелений горить ~1.2 с, потім повернення в idle
+    LED_ERROR      // помилка: 4 швидких червоних блимання, потім повернення в idle
 };
 
-static LedMode  g_ledMode = LED_BOOT;   // текущий режим
-static LedMode  g_ledBase = LED_IDLE;   // куда вернуться после OK/ERROR
-static unsigned long g_ledT0 = 0;       // время входа в режим
-static unsigned long g_ledLast = 0;     // тайминг для мигания
+static LedMode  g_ledMode = LED_BOOT;   // поточний режим
+static LedMode  g_ledBase = LED_IDLE;   // куди повернутися після OK/ERROR
+static unsigned long g_ledT0 = 0;       // час входу в режим
+static unsigned long g_ledLast = 0;     // тайминг для блимання
 static bool     g_ledPhase = false;
 
 inline void ledInit() {
@@ -37,17 +37,19 @@ inline void ledWrite(bool g, bool r) {
     digitalWrite(LED_RED_PIN,   r ? HIGH : LOW);
 }
 
-// Установить режим. Долгоживущие режимы (IDLE/READ/WRITE) запоминаются как база,
-// в которую вернутся кратковременные OK/ERROR.
+// Задати режим. Стан спокою (IDLE/BOOT) запам'ятовується як база, у яку
+// повертаються короткочасні OK/ERROR. READ/WRITE — теж перехідні: тримаються
+// до наступного ledSet(), але базою НЕ стають (інакше після читання/запису
+// індикатор застрягав би в миготінні читання/запису і не повертався в спокій).
 inline void ledSet(LedMode m) {
     if (m == g_ledMode) return;
-    if (m == LED_IDLE || m == LED_READ || m == LED_WRITE || m == LED_BOOT) g_ledBase = m;
+    if (m == LED_IDLE || m == LED_BOOT) g_ledBase = m;
     g_ledMode = m;
     g_ledT0 = g_ledLast = millis();
     g_ledPhase = false;
 }
 
-// Вызывать часто из loop(). Реализует паттерны миганий по millis().
+// Викликати часто з loop(). Реалізує патерни блимань по millis().
 inline void ledTask() {
     unsigned long now = millis();
     switch (g_ledMode) {
@@ -56,7 +58,7 @@ inline void ledTask() {
             break;
 
         case LED_IDLE:
-            // короткий зелёный пульс раз в 3 c
+            // короткий зелений пульс раз на 3 c
             if (!g_ledPhase && now - g_ledLast > 3000) { g_ledPhase = true;  g_ledLast = now; ledWrite(true,  false); }
             else if (g_ledPhase && now - g_ledLast > 30) { g_ledPhase = false; g_ledLast = now; ledWrite(false, false); }
             break;
@@ -66,7 +68,7 @@ inline void ledTask() {
             break;
 
         case LED_WRITE:
-            // поочерёдно зелёный/красный — «идёт запись, не отключать»
+            // почергово зелений/червоний — «триває запис, не відключати»
             if (now - g_ledLast > 120) { g_ledPhase = !g_ledPhase; g_ledLast = now; ledWrite(g_ledPhase, !g_ledPhase); }
             break;
 
@@ -76,7 +78,7 @@ inline void ledTask() {
             break;
 
         case LED_ERROR:
-            // 4 быстрых красных мигания (~1.6 c), затем возврат
+            // 4 швидких червоних блимання (~1.6 c), потім повернення
             if (now - g_ledLast > 200) { g_ledPhase = !g_ledPhase; g_ledLast = now; ledWrite(false, g_ledPhase); }
             if (now - g_ledT0 > 1600) ledSet(g_ledBase);
             break;

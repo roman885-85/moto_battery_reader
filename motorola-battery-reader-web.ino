@@ -10,9 +10,9 @@
 #include "web_server.h"
 #include "serial_api.h"
 
-// Глобальные объекты
+// Глобальні об'єкти
 WebServer server(HTTP_PORT);
-DNSServer dnsServer;                 // captive-portal: авто-открытие страницы
+DNSServer dnsServer;                 // captive-portal: авто-відкриття сторінки
 BatteryReader battery(DS_PIN, PULLUP_PIN);
 
 uint8_t batteryDump[DUMP_SIZE];
@@ -21,7 +21,7 @@ bool hasDump = false;
 uint8_t batteryDump2438[DS2438_MEM_SIZE];
 bool hasDump2438 = false;
 
-// Серийный номер (лазерный 1-Wire ROM-ID) чипа DS2438 из последнего чтения
+// Серійний номер (лазерний 1-Wire ROM-ID) чипа DS2438 з останнього читання
 uint8_t chipSN2438[8] = {0};
 bool hasSN2438 = false;
 
@@ -30,25 +30,25 @@ void setup() {
     Serial.println("\n\nMotorola Battery Reader Web Server (AP Mode)");
     Serial.println("==============================================");
 
-    // Инициализация дисплея и кнопок меню + стартовая заставка
+    // Ініціалізація дисплея і кнопок меню + стартова заставка
     displayInit();
     displayButtonSetup();
     displaySplash();
     delay(2500);
     displaySetStatus("ЗАПУСК...");
 
-    // Настройка светодиодов (неблокирующая индикация)
+    // Налаштування світлодіодів (неблокуюча індикація)
     ledInit();
 
-    // Инициализация батареи
+    // Ініціалізація батареї
     if (!battery.begin()) {
         Serial.println("ERROR: Failed to initialize battery reader");
-        ledWrite(false, true);   // постоянный красный — фатальная ошибка
+        ledWrite(false, true);   // постійний червоний — фатальна помилка
         while(1) delay(1000);
     }
     Serial.println("Battery reader initialized");
     
-    // Создаем точку доступа
+    // Створюємо точку доступу
     Serial.printf("Creating Access Point: %s\n", AP_SSID);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
     
@@ -56,15 +56,15 @@ void setup() {
     Serial.print("AP IP Address: ");
     Serial.println(IP);
 
-    // Captive-portal DNS: отвечаем адресом ESP на ЛЮБОЙ домен, чтобы телефон/ПК
-    // при подключении к Wi-Fi сразу предложил открыть нашу страницу.
+    // Captive-portal DNS: відповідаємо адресою ESP на будь-який домен, щоб телефон/ПК
+    // при підключенні до Wi-Fi одразу запропонував відкрити нашу сторінку.
     dnsServer.start(53, "*", IP);
     Serial.println("Captive-portal DNS started");
 
-    // Короткий зелёный сигнал успешного старта AP
+    // Короткий зелений сигнал успішного старта AP
     ledSet(LED_OK);
     
-    // Загружаем сохраненные дампы из SPIFFS
+    // Завантажуємо збережені дампи з SPIFFS
     if (SPIFFS.begin(true)) {
         File file = SPIFFS.open("/dump.bin", "r");
         if (file) {
@@ -89,7 +89,7 @@ void setup() {
         Serial.println("SPIFFS mount failed!");
     }
     
-    // Запускаем веб-сервер
+    // Запускаємо веб-сервер
     setupWebServer();
     
     Serial.println("\n==============================================");
@@ -99,7 +99,7 @@ void setup() {
     Serial.printf("Open browser: http://%s\n", ESP_IP);
     Serial.println("==============================================");
     
-    // Переходим в режим ожидания (зелёный «пульс» раз в 3 с)
+    // Переходимо в режим очікування (зелений «пульс» раз на 3 с)
     ledSet(LED_IDLE);
 
     // Готовність на дисплеї
@@ -107,35 +107,35 @@ void setup() {
 }
 
 void loop() {
-    // Captive-portal: обрабатываем DNS-запросы (все домены -> 192.168.4.1).
+    // Captive-portal: обробляємо DNS-запити (усі домени -> 192.168.4.1).
     dnsServer.processNextRequest();
 
-    // Обработка всех клиентских запросов
-    // WebServer автоматически обрабатывает multipart upload в handleClient()
+    // Обробка усіх клієнтських запитів
+    // WebServer автоматично обробляє multipart upload в handleClient()
     server.handleClient();
 
-    // Командный протокол по USB-Serial (Windows-клиент). Работает параллельно с Wi-Fi.
+    // Командний протокол по USB-Serial (Windows-клієнт). Працює паралельно з Wi-Fi.
     serialTask();
 
-    // Опрос кнопки перелистывания меню
+    // Опитування кнопки перегортання меню
     displayHandleButton();
 
-    // После полного цикла перелистывания (возврат на 1-ю страницу) —
-    // перечитываем аккумулятор, чтобы обновить данные.
+    // Після повного циклу перегортання (повернення на 1-ю сторінку) —
+    // перечитуємо акумулятор, щоб оновити дані.
     if (displayConsumeReadRequest()) {
         bool ok2433, ok2438;
         readAllChips(ok2433, ok2438);
     }
 
-    // Подтверждённый из меню сброс счётчиков/износа (рекалибровка).
+    // Підтверджений з меню скидання лічильників/зносу (рекалібрування).
     if (displayConsumeResetRequest()) {
         performReset();
     }
 
-    // Дисплей перерисовывается по событиям (нажатие кнопки, чтение/запись),
-    // поэтому цикл не блокируется медленным рендером и кнопки отзывчивы.
+    // Дисплей перемальовується по подіям (натискання кнопки, читання/запис),
+    // тому цикл не блокується повільним рендером і кнопки чутливі.
 
-    // Неблокирующая индикация светодиодами (пульс ожидания / чтение / запись
-    // / успех / ошибка — режим задают обработчики через ledSet()).
+    // Неблокуюча індикація світлодіодами (пульс очікування / читання / запис
+    // / успіх / помилка — режим задають обробники через ledSet()).
     ledTask();
 }

@@ -8,22 +8,22 @@ BatteryReader::BatteryReader(int pin, int pullupPin) {
 
 bool BatteryReader::begin() {
     pinMode(_pullupPin, OUTPUT);
-    // Подтяжка будет включена позже, в методе readBattery/writeBattery
+    // Підтяжка буде увімкнена пізніше, в методі readBattery/writeBattery
     return true;
 }
 
-// --- ВСПОМОГАТЕЛЬНЫЙ МЕТОД ДЛЯ ПОИСКА УСТРОЙСТВ ---
-// Возвращает true, если удалось найти оба чипа и сохранить их адреса
+// --- Допоміжний Метод ДЛЯ Пошуку Пристроїв ---
+// Повертає true, якщо вдалося знайти обидва чипа і зберегти їх адреси
 bool BatteryReader::findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr) {
     uint8_t addr[8];
     bool found2433 = false, found2438 = false;
 
-    // Зануляем буферы адресов: тогда addr[0]==0x00 надёжно означает
-    // "чип не найден" (иначе в буфере остаётся мусор со стека).
+    // Занулюємо буфери адрес: тоді addr[0]==0x00 надійно означає
+    // "чип не знайдений" (інакше в буфері залишається сміття зі стека).
     memset(ds2433_addr, 0, 8);
     memset(ds2438_addr, 0, 8);
 
-    // Включаем подтяжку перед поиском
+    // Вмикаємо підтяжку перед пошуком
     digitalWrite(_pullupPin, HIGH);
     
     _ow->reset_search();
@@ -39,14 +39,14 @@ bool BatteryReader::findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr) {
         }
     }
 
-    // Сбрасываем поиск для следующего раза
+    // Скидаємо пошук для наступного разу
     _ow->reset_search();
 
-    // Запоминаем ROM-ID (серийники) найденных чипов
+    // Запам’ятовуємо ROM-ID (серійники) знайдених чипів
     if (found2433) { memcpy(_rom2433, ds2433_addr, 8); _haveRom2433 = true; }
     if (found2438) { memcpy(_rom2438, ds2438_addr, 8); _haveRom2438 = true; }
 
-    // Выключаем подтяжку, если не нашли ни одного устройства
+    // Вимикаємо підтяжку, якщо не знайшли ні жодного пристрою
     if (!found2433 && !found2438) {
         digitalWrite(_pullupPin, LOW);
         return false;
@@ -59,30 +59,30 @@ bool BatteryReader::readBattery(uint8_t *buffer, size_t size) {
     uint8_t ds2433_addr[8];
     uint8_t ds2438_addr[8];
 
-    // 1. Ищем устройства на шине
+    // 1. Шукаємо пристрою на шині
     if (!findDevices(ds2433_addr, ds2438_addr)) {
         Serial.println("Error: No devices found on 1-Wire bus!");
         digitalWrite(_pullupPin, LOW);
         return false;
     }
 
-    // 2. Читаем данные из DS2438 (монитор)
-    // Небольшая задержка для стабильности
+    // 2. Читаємо дані з DS2438 (монітор)
+    // Невелика затримка для стабільності
     delay(10);
     if (ds2438_addr[0] != 0x00) {
         _ow->reset();
         _ow->select(ds2438_addr);
-        _ow->write(0x44); // Команда запуска измерения температуры
-        delay(10);        // Ждем завершения измерения
+        _ow->write(0x44); // Команда запуску вимірювання температури
+        delay(10);        // Чекаємо завершення вимірювання
         
         _ow->reset();
         _ow->select(ds2438_addr);
-        _ow->write(0xBE); // Читаем страницу памяти (пример)
-        // Здесь можно считать данные из DS2438, если нужно
+        _ow->write(0xBE); // Читаємо сторінку пам'яті (приклад)
+        // Тут можна зчитати дані з DS2438, якщо потрібно
         // ...
     }
 
-    // 3. Читаем основную память из DS2433
+    // 3. Читаємо основну пам'ять з DS2433
     if (ds2433_addr[0] == 0x00) {
         Serial.println("Error: DS2433 not found!");
         digitalWrite(_pullupPin, LOW);
@@ -91,16 +91,16 @@ bool BatteryReader::readBattery(uint8_t *buffer, size_t size) {
 
     _ow->reset();
     _ow->select(ds2433_addr);
-    _ow->write(0xF0); // Команда чтения памяти
-    _ow->write(0x00); // Адрес (младший байт)
-    _ow->write(0x00); // Адрес (старший байт)
+    _ow->write(0xF0); // Команда читання пам'яті
+    _ow->write(0x00); // Адреса (молодший байт)
+    _ow->write(0x00); // Адреса (старший байт)
 
     for (size_t i = 0; i < size; i++) {
         buffer[i] = _ow->read();
     }
 
     _ow->reset();
-    digitalWrite(_pullupPin, LOW); // Выключаем подтяжку
+    digitalWrite(_pullupPin, LOW); // Вимикаємо підтяжку
     return true;
 }
 
@@ -108,7 +108,7 @@ bool BatteryReader::writeBattery(const uint8_t *buffer, size_t size) {
     uint8_t ds2433_addr[8];
     uint8_t ds2438_addr[8];
 
-    // 1. Ищем устройства
+    // 1. Шукаємо пристрою
     if (!findDevices(ds2433_addr, ds2438_addr)) {
         Serial.println("Error: No devices found on 1-Wire bus!");
         digitalWrite(_pullupPin, LOW);
@@ -121,17 +121,17 @@ bool BatteryReader::writeBattery(const uint8_t *buffer, size_t size) {
         return false;
     }
 
-    // 2. Запись в DS2433 постранично.
-    // Scratchpad и страница памяти = 32 байта, поэтому 512 байт нельзя
-    // записать одной командой: нужен цикл по 16 страницам, и на каждой:
-    //   Write Scratchpad -> Read Scratchpad (сверка + чтение E/S) ->
-    //   Copy Scratchpad (с авторизацией TA1, TA2, E/S) -> пауза tPROG.
+    // 2. Запис в DS2433 посторінково.
+    // Scratchpad і сторінка пам'яті = 32 байта, тому 512 байт не можна
+    // записати однієї командою: потрібен цикл по 16 сторінкам, і на кожної:
+    //   Write Scratchpad -> Read Scratchpad (звірка + читання E/S) ->
+    //   Copy Scratchpad (з авторизацією TA1, TA2, E/S) -> пауза tPROG.
     const size_t pageSize = DS2433_PAGE_SIZE;
 
     for (size_t offset = 0; offset < size; offset += pageSize) {
         size_t chunk = (offset + pageSize <= size) ? pageSize : (size - offset);
-        uint8_t ta1 = offset & 0xFF;        // адрес: младший байт
-        uint8_t ta2 = (offset >> 8) & 0xFF; // адрес: старший байт
+        uint8_t ta1 = offset & 0xFF;        // адреса: молодший байт
+        uint8_t ta2 = (offset >> 8) & 0xFF; // адреса: старший байт
 
         // --- Write Scratchpad ---
         _ow->reset();
@@ -143,7 +143,7 @@ bool BatteryReader::writeBattery(const uint8_t *buffer, size_t size) {
             _ow->write(buffer[offset + i]);
         }
 
-        // --- Read Scratchpad: сверяем данные и читаем настоящий E/S ---
+        // --- Read Scratchpad: звіряємо дані і читаємо справжній E/S ---
         _ow->reset();
         _ow->select(ds2433_addr);
         _ow->write(DS2433_READ_SCRATCH);
@@ -158,7 +158,7 @@ bool BatteryReader::writeBattery(const uint8_t *buffer, size_t size) {
             digitalWrite(_pullupPin, LOW);
             return false;
         }
-        // Бит PF (E/S bit 5): данные scratchpad неполные/недостоверны.
+        // Біт PF (E/S bit 5): дані scratchpad неповні/недостовірні.
         if (es & 0x20) {
             Serial.printf("ERROR: partial-write flag set @0x%04X (E/S=%02X)\n",
                           (unsigned)offset, es);
@@ -166,7 +166,7 @@ bool BatteryReader::writeBattery(const uint8_t *buffer, size_t size) {
             digitalWrite(_pullupPin, LOW);
             return false;
         }
-        // Сверяем содержимое scratchpad с исходными данными.
+        // Звіряємо вміст scratchpad з вихідними даними.
         bool dataOk = true;
         for (size_t i = 0; i < chunk; i++) {
             if (_ow->read() != buffer[offset + i]) dataOk = false;
@@ -178,24 +178,24 @@ bool BatteryReader::writeBattery(const uint8_t *buffer, size_t size) {
             return false;
         }
 
-        // --- Copy Scratchpad: авторизация ровно TA1, TA2, E/S ---
+        // --- Copy Scratchpad: авторизація рівно TA1, TA2, E/S ---
         _ow->reset();
         _ow->select(ds2433_addr);
         _ow->write(DS2433_COPY_SCRATCH);
         _ow->write(ta1);
         _ow->write(ta2);
-        // Последний байт авторизации (E/S) шлём с включённой сильной подтяжкой,
-        // которую удерживаем на время программирования EEPROM (tPROG max 5 мс).
+        // Останній байт авторизації (E/S) надсилаємо з увімкненою сильною підтяжкою,
+        // яку утримуємо на час програмування EEPROM (tPROG max 5 мс).
         _ow->write(es, 1);
         delay(6);
         _ow->depower();
     }
 
-    // 3. Верификация: читаем всю память обратно и сравниваем с исходником.
+    // 3. Верифікація: читаємо усю пам'ять назад і порівнюємо з джерелом.
     _ow->reset();
     _ow->select(ds2433_addr);
     _ow->write(DS2433_READ_MEMORY);
-    _ow->write(0x00); // адрес 0x0000
+    _ow->write(0x00); // адреса 0x0000
     _ow->write(0x00);
 
     bool verifyOk = true;
@@ -221,10 +221,10 @@ bool BatteryReader::writeBattery(const uint8_t *buffer, size_t size) {
     return true;
 }
 
-// --- Чтение всей памяти DS2438 (8 страниц по 8 байт = 64 байта) ---
-// Порядок на страницу: Recall Memory (0xB8) -> Read Scratchpad (0xBE) ->
-// 9 байт (8 данных + CRC8). Перед чтением запускаем измерения, чтобы
-// страница 0 содержала свежие значения напряжения/температуры.
+// --- Читання усієї пам'яті DS2438 (8 сторінок по 8 байт = 64 байта) ---
+// Порядок на сторінку: Recall Memory (0xB8) -> Read Scratchpad (0xBE) ->
+// 9 байт (8 даних + CRC8). Перед читанням запускаємо вимірювання, щоб
+// сторінка 0 містила свіжі значення напруги/температури.
 bool BatteryReader::readDS2438(uint8_t *buffer, size_t size) {
     uint8_t ds2433_addr[8];
     uint8_t ds2438_addr[8];
@@ -245,7 +245,7 @@ bool BatteryReader::readDS2438(uint8_t *buffer, size_t size) {
         return false;
     }
 
-    // Запускаем измерение напряжения и температуры (tCONV макс 10 мс).
+    // Запускаємо вимірювання напруги і температури (tCONV макс 10 мс).
     _ow->reset();
     _ow->select(ds2438_addr);
     _ow->write(DS2438_CONVERT_V);
@@ -256,13 +256,13 @@ bool BatteryReader::readDS2438(uint8_t *buffer, size_t size) {
     delay(10);
 
     for (uint8_t page = 0; page < DS2438_PAGES; page++) {
-        // Recall Memory: копируем страницу EEPROM/SRAM в scratchpad.
+        // Recall Memory: копіюємо сторінку EEPROM/SRAM в scratchpad.
         _ow->reset();
         _ow->select(ds2438_addr);
         _ow->write(DS2438_RECALL_MEMORY);
         _ow->write(page);
 
-        // Read Scratchpad: 8 байт данных + CRC8.
+        // Read Scratchpad: 8 байт даних + CRC8.
         _ow->reset();
         _ow->select(ds2438_addr);
         _ow->write(DS2438_READ_SCRATCH);
@@ -286,13 +286,13 @@ bool BatteryReader::readDS2438(uint8_t *buffer, size_t size) {
     return true;
 }
 
-// --- Запись всей памяти DS2438 (8 страниц по 8 байт) ---
-// Порядок на страницу: Write Scratchpad (0x4E) -> Read Scratchpad (сверка +
+// --- Запис усієї пам'яті DS2438 (8 сторінок по 8 байт) ---
+// Порядок на сторінку: Write Scratchpad (0x4E) -> Read Scratchpad (звірка +
 // CRC8) -> Copy Scratchpad (0x48) -> пауза tWR (2..10 мс). Strong pullup не
-// требуется. Внимание: байты измерений в стр. 0 (temp/voltage/current) и
-// прочие волатильные регистры энергонезависимо не сохраняются — устройство
-// перезапишет их при следующем измерении; поэтому финальная сверка чтением
-// памяти по всей странице здесь неприменима, проверяем только scratchpad.
+// потрібне. Увага: байти вимірювань в стр. 0 (temp/voltage/current) і
+// інші волатильні регістри енергонезалежно не зберігаються — пристрій
+// перезапише їх при наступному вимірюванні; тому фінальна звірка читанням
+// пам'яті по усієї сторінці тут незастосовна, перевіряємо лише scratchpad.
 bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
     uint8_t ds2433_addr[8];
     uint8_t ds2438_addr[8];
@@ -316,14 +316,14 @@ bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
     for (uint8_t page = 0; page < DS2438_PAGES; page++) {
         const uint8_t *pageData = buffer + page * DS2438_PAGE_SIZE;
 
-        // Write Scratchpad (запись всегда начинается с байта 0 scratchpad).
+        // Write Scratchpad (запис завжди починається з байта 0 scratchpad).
         _ow->reset();
         _ow->select(ds2438_addr);
         _ow->write(DS2438_WRITE_SCRATCH);
         _ow->write(page);
         for (int i = 0; i < DS2438_PAGE_SIZE; i++) _ow->write(pageData[i]);
 
-        // Read Scratchpad: убеждаемся, что данные легли верно (данные + CRC8).
+        // Read Scratchpad: переконуємося, що дані лягли правильно (дані + CRC8).
         _ow->reset();
         _ow->select(ds2438_addr);
         _ow->write(DS2438_READ_SCRATCH);
@@ -344,7 +344,7 @@ bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
             return false;
         }
 
-        // Copy Scratchpad -> страница памяти; ждём завершения (tWR макс 10 мс).
+        // Copy Scratchpad -> сторінка пам'яті; чекаємо завершення (tWR макс 10 мс).
         _ow->reset();
         _ow->select(ds2438_addr);
         _ow->write(DS2438_COPY_SCRATCH);

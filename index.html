@@ -125,10 +125,10 @@
     <!-- ========== OVERVIEW ========== -->
     <div class="page active" id="overview">
         <div class="card">
-            <h2>🔋 Заряд (залишкова ємність)</h2>
+            <h2>🔋 Заряд</h2>
             <div class="charge">
                 <div class="batt"><div class="fill" id="battFill"></div></div>
-                <div><div class="pct" id="chargeMah">-- mAh</div><div class="src" id="chargeSub"></div></div>
+                <div><div class="pct" id="chargePct">--%</div><div class="src" id="chargeSub"></div></div>
             </div>
             <div class="row" style="margin-top:12px"><span class="k">Напруга</span><span class="v" id="ovVolt">—</span></div>
             <div class="row"><span class="k">Температура</span><span class="v" id="ovTemp">—</span></div>
@@ -336,8 +336,8 @@ async function refreshAll(){
             const d=await r.json();
             const pct=(typeof d.charge==='number'&&d.charge>=0)?d.charge:null;
             const rmah=(d.icaMah!==undefined)?d.icaMah:null;   // залишкова ємність, мА·год
-            $('chargeMah').textContent=rmah!==null?(rmah+' mAh'):'-- mAh';
-            $('chargeSub').textContent=(pct!==null?('заряд '+pct+'%'):'')+
+            $('chargePct').textContent=pct!==null?pct+'%':'--%';
+            $('chargeSub').textContent=(rmah!==null?('залишок '+rmah+' мА·год'):'')+
                 (pct!==null?(' · '+(d.chargeSrc==='ICA'?'ICA':'напруга')):'');
             if(rmah!==null){$('mahVal').value=rmah;$('mahNow').textContent=rmah+' мА·год';}
             const fill=$('battFill');

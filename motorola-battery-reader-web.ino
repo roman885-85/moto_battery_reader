@@ -4,6 +4,7 @@
 #include <DNSServer.h>
 #include <SPIFFS.h>
 #include "settings.h"
+#include "leds.h"
 #include "battery_reader.h"
 #include "display.h"
 #include "web_server.h"
@@ -35,16 +36,13 @@ void setup() {
     delay(2500);
     displaySetStatus("ЗАПУСК...");
 
-    // Настройка светодиодов
-    pinMode(LED_GREEN_PIN, OUTPUT);
-    pinMode(LED_RED_PIN, OUTPUT);
-    digitalWrite(LED_GREEN_PIN, LOW);
-    digitalWrite(LED_RED_PIN, LOW);
-    
+    // Настройка светодиодов (неблокирующая индикация)
+    ledInit();
+
     // Инициализация батареи
     if (!battery.begin()) {
         Serial.println("ERROR: Failed to initialize battery reader");
-        digitalWrite(LED_RED_PIN, HIGH);
+        ledWrite(false, true);   // постоянный красный — фатальная ошибка
         while(1) delay(1000);
     }
     Serial.println("Battery reader initialized");
@@ -61,14 +59,9 @@ void setup() {
     // при подключении к Wi-Fi сразу предложил открыть нашу страницу.
     dnsServer.start(53, "*", IP);
     Serial.println("Captive-portal DNS started");
-    
-    // Мигаем зеленым при успешном создании AP
-    for (int i = 0; i < 5; i++) {
-        digitalWrite(LED_GREEN_PIN, HIGH);
-        delay(100);
-        digitalWrite(LED_GREEN_PIN, LOW);
-        delay(100);
-    }
+
+    // Короткий зелёный сигнал успешного старта AP
+    ledSet(LED_OK);
     
     // Загружаем сохраненные дампы из SPIFFS
     if (SPIFFS.begin(true)) {
@@ -105,10 +98,8 @@ void setup() {
     Serial.printf("Open browser: http://%s\n", ESP_IP);
     Serial.println("==============================================");
     
-    // Долгий зеленый сигнал готовности
-    digitalWrite(LED_GREEN_PIN, HIGH);
-    delay(1000);
-    digitalWrite(LED_GREEN_PIN, LOW);
+    // Переходим в режим ожидания (зелёный «пульс» раз в 3 с)
+    ledSet(LED_IDLE);
 
     // Готовність на дисплеї
     displayShow("ГОТОВО");
@@ -140,12 +131,7 @@ void loop() {
     // Дисплей перерисовывается по событиям (нажатие кнопки, чтение/запись),
     // поэтому цикл не блокируется медленным рендером и кнопки отзывчивы.
 
-    // Индикация работы: неблокирующий зелёный миг ~раз в 3 секунды.
-    static unsigned long lastBlink = 0;
-    static bool blinkOn = false;
-    if (!blinkOn && millis() - lastBlink > 3000) {
-        digitalWrite(LED_GREEN_PIN, HIGH); blinkOn = true; lastBlink = millis();
-    } else if (blinkOn && millis() - lastBlink > 30) {
-        digitalWrite(LED_GREEN_PIN, LOW); blinkOn = false;
-    }
+    // Неблокирующая индикация светодиодами (пульс ожидания / чтение / запись
+    // / успех / ошибка — режим задают обработчики через ledSet()).
+    ledTask();
 }

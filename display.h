@@ -338,13 +338,37 @@ inline int batteryPercent(const char **src) {
     return (int)pct;
 }
 
-// Найти модель (Motorola part number, напр. "PMNN4409A") в дампе DS2433.
-// Ищем компактную строку из заглавных букв и цифр длиной 7..11, содержащую
-// цифру, — так отсекаем длинный блок "COPYRIGHT...MOTOROLASOLUTIONS".
+// Найти модель (part number, напр. "PMNN4409A"/"PT4409A") в дампе DS2433.
+// Приоритет — авторитетная запись модели: тег 0x0B, затем ASCII-название,
+// начинающееся с 'P' (проверено на всех дампах: 0B 50 4D 4E 4E ... = "PMNN...";
+// 0B 50 54 ... = "PT..."). Запасной путь — компактная алфавитно-цифровая
+// строка 7..11 с цифрой (отсекает "COPYRIGHT...MOTOROLASOLUTIONS").
 inline bool decodeModel(char *out, size_t n) {
     if (!hasDump) return false;
-    int best = -1, bestLen = 0;
-    int i = 0;
+
+    // 1) Запись 0x0B c названием модели (0x0B 'P' ...).
+    for (int i = 0x100; i < (int)DUMP_SIZE - 12; i++) {
+        if (batteryDump[i] == 0x0B && batteryDump[i + 1] == 'P') {
+            int j = i + 1, len = 0;
+            char tmp[16];
+            while (j < (int)DUMP_SIZE && len < 12) {
+                uint8_t d = batteryDump[j];
+                if ((d >= '0' && d <= '9') || (d >= 'A' && d <= 'Z')) { tmp[len++] = (char)d; j++; }
+                else break;
+            }
+            // валидная модель: длина 6..11 и есть цифра
+            bool digit = false;
+            for (int k = 0; k < len; k++) if (tmp[k] >= '0' && tmp[k] <= '9') digit = true;
+            if (len >= 6 && len <= 11 && digit) {
+                if ((size_t)len >= n) len = n - 1;
+                memcpy(out, tmp, len); out[len] = '\0';
+                return true;
+            }
+        }
+    }
+
+    // 2) Запасной вариант: самая длинная компактная строка [A-Z0-9] с цифрой.
+    int best = -1, bestLen = 0, i = 0;
     while (i < (int)DUMP_SIZE) {
         uint8_t c = batteryDump[i];
         if (c >= 'A' && c <= 'Z') {
@@ -359,9 +383,7 @@ inline bool decodeModel(char *out, size_t n) {
             int len = j - i;
             if (hasDigit && len >= 7 && len <= 11 && len > bestLen) { bestLen = len; best = i; }
             i = j;
-        } else {
-            i++;
-        }
+        } else i++;
     }
     if (best < 0) return false;
     int len = bestLen;

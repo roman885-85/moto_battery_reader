@@ -223,6 +223,47 @@
             <input type="password" class="pw" id="pwRst" placeholder="🔑 Пароль адміністратора">
             <button class="btn btn-warn" style="width:100%" onclick="resetBattery()">♻️ СКИНУТИ ЛІЧИЛЬНИКИ</button>
         </div>
+
+        <div class="card">
+            <h2>🔋 Змінити ємність (знос)</h2>
+            <div class="note i">ℹ️ Записує показник ємності/зносу (0–100 %) у запис історії 0x17 і
+                перераховує контрольну суму. 100 % = «як нова». Поточне: <b id="capNow">—</b></div>
+            <div class="row"><span class="k">Ємність, %</span>
+                <input type="number" id="capVal" min="0" max="100" value="100"
+                       style="width:90px;text-align:center;font-size:1.1em;border-radius:8px;border:none;padding:6px"></div>
+            <input type="password" class="pw" id="pwCap" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="setCapacity()">💾 ЗАПИСАТИ ЄМНІСТЬ</button>
+        </div>
+
+        <div class="card">
+            <h2>🛠 Ремонт цілісності прошивки</h2>
+            <div class="note i">ℹ️ Перераховує контрольну суму заголовка (Σ≡0x41), контрольні суми
+                відомих записів (Σ≡0x5A) та відновлює дзеркало калібрування з уцілілого DS2438
+                (DS2438[24:50]→DS2433[1:27]). Для повністю стертого DS2433 — запишіть еталонний дамп
+                тієї ж моделі вище. Статус: заголовок <b id="intHdr">—</b>, дзеркало <b id="intMir">—</b>.</div>
+            <input type="password" class="pw" id="pwRep" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="repairFw()">🛠 ВІДНОВИТИ ЦІЛІСНІСТЬ</button>
+        </div>
+
+        <div class="card">
+            <h2>✏️ Редактор байтів (експертний)</h2>
+            <div class="note w">⚠️ Пряме редагування. «Автовиправлення» перераховує контрольну суму
+                заголовка DS2433 і тримає дзеркало калібрування узгодженим. Невірні дані можуть
+                зробити АКБ невизначеною — спочатку збережіть резервну копію.</div>
+            <div class="row"><span class="k">Мікросхема</span>
+                <select id="hxTarget" onchange="loadHex()" style="border-radius:8px;border:none;padding:6px">
+                    <option value="2433">DS2433 (512 Б)</option>
+                    <option value="2438">DS2438 (64 Б)</option>
+                </select>
+                <button class="btn btn-info" style="width:auto;padding:6px 12px" onclick="loadHex()">↻ Завантажити</button>
+            </div>
+            <textarea id="hxData" spellcheck="false" style="width:100%;height:150px;font-family:monospace;
+                font-size:.8em;margin-top:8px;border-radius:8px;border:none;padding:8px;box-sizing:border-box"></textarea>
+            <label style="display:block;margin:6px 0"><input type="checkbox" id="hxFix" checked>
+                Автовиправлення контрольних сум (DS2433)</label>
+            <input type="password" class="pw" id="pwHex" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-danger" style="width:100%" onclick="writeHex()">⚡ ЗАПИСАТИ БАЙТИ</button>
+        </div>
     </div>
 </div>
 
@@ -263,6 +304,11 @@ async function refreshAll(){
             $('ovModel').textContent=d.model||'—'; $('dModel').textContent=d.model||'—';
             if(typeof d.capacity==='number'&&d.capacity>=0){
                 $('ovCap').textContent=d.capacity+' %'; $('ovWear').textContent=d.wear+' %';
+                $('capNow').textContent=d.capacity+' %'; $('capVal').value=d.capacity;
+            }
+            if(typeof d.headerOk==='boolean'){
+                $('intHdr').textContent=d.headerOk?'✅ OK':'❌ пошкоджено';
+                $('intMir').textContent=d.mirrorOk?'✅ OK':'❌ розсинхрон';
             }
             if(typeof d.genuine==='boolean'){
                 $('ovAuth').innerHTML=d.genuine
@@ -340,6 +386,67 @@ async function resetBattery(){
     try{
         const r=await(await fetch('/api/reset?password='+encodeURIComponent(pw),{method:'POST'})).json();
         toast(r.status==='success'?'✅ Лічильники скинуто':('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+// POST form-urlencoded helper
+async function postForm(url,obj){
+    const body=Object.entries(obj).map(([k,v])=>k+'='+encodeURIComponent(v)).join('&');
+    return (await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body})).json();
+}
+
+async function setCapacity(){
+    const pw=$('pwCap').value; if(!pw){toast('Введіть пароль','err');return}
+    const cap=parseInt($('capVal').value); if(isNaN(cap)||cap<0||cap>100){toast('Ємність 0..100','err');return}
+    if(!confirm('🔋 Записати ємність '+cap+'% у АКБ? Незворотньо.'))return;
+    prog(true,'Запис ємності...');
+    try{
+        const r=await postForm('/api/setcapacity',{password:pw,cap:cap});
+        toast(r.status==='success'?('✅ Ємність '+cap+'% записано'):('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+async function repairFw(){
+    const pw=$('pwRep').value; if(!pw){toast('Введіть пароль','err');return}
+    if(!confirm('🛠 Відновити цілісність (контрольні суми + дзеркало) і записати у чіп?'))return;
+    prog(true,'Ремонт...');
+    try{
+        const r=await postForm('/api/repair',{password:pw});
+        toast(r.status==='success'?'✅ Цілісність відновлено':('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+async function loadHex(){
+    const t=$('hxTarget').value;
+    try{
+        const r=await fetch(t==='2438'?'/api/info2438':'/api/info');
+        if(r.status===404){$('hxData').value='';toast('Спочатку зчитайте АКБ','err');return}
+        const d=await r.json();
+        // hex приходит строкой "AA BB ..." — раскладываем по 16 в ряд
+        const parts=(d.hex||'').trim().split(/\s+/);
+        let out='';
+        for(let i=0;i<parts.length;i+=16) out+=parts.slice(i,i+16).join(' ')+'\n';
+        $('hxData').value=out.trim();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+}
+
+async function writeHex(){
+    const pw=$('pwHex').value; if(!pw){toast('Введіть пароль','err');return}
+    const t=$('hxTarget').value;
+    const data=$('hxData').value.replace(/[^0-9a-fA-F]/g,'');
+    const need=(t==='2438'?64:512)*2;
+    if(data.length!==need){toast('Треба '+(need/2)+' байт, зараз '+Math.floor(data.length/2),'err');return}
+    if(!confirm('⚡ Запис '+ (need/2) +' байт у '+t+' НЕЗВОРОТНІЙ. Продовжити?'))return;
+    prog(true,'Запис байтів...');
+    try{
+        const r=await postForm('/api/writehex',{password:pw,target:t,autofix:$('hxFix').checked?'1':'0',data:$('hxData').value});
+        toast(r.status==='success'?'✅ Байти записано':('Помилка: '+r.message),r.status==='success'?'ok':'err');
         if(r.status==='success')await refreshAll();
     }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);

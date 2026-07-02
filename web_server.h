@@ -7,6 +7,7 @@
 #include <ArduinoJson.h>
 #include "battery_reader.h"
 #include "settings.h"
+#include "leds.h"
 #include "display.h"
 
 extern WebServer server;
@@ -46,6 +47,40 @@ static String hexPreview(const uint8_t *data, size_t n) {
     return s;
 }
 
+// ---------------------------------------------------------------------------
+// Целостность прошивки IMPRES (выяснено анализом дампов, см. README):
+//   * Заголовок DS2433: сумма байт 0x00..0x1F ≡ 0x41; байт 0x1F — контрольный.
+//   * TLV-записи: сумма всех байт записи (вместе с её контрольным байтом) ≡ 0x5A.
+//   * Блок калибровки ЗЕРКАЛИТСЯ: DS2438[24:50] == DS2433[1:27]. Он одинаков для
+//     всех батарей одной модели (4488A и 4493A совпадают; 4409A отличается) —
+//     т.е. привязки к серийному номеру чипа НЕТ, прошивка привязана к МОДЕЛИ.
+// Отсюда механизм ремонта: пересчитать контрольную сумму заголовка и
+// синхронизировать зеркало из уцелевшего DS2438 в DS2433 (или наоборот).
+// ---------------------------------------------------------------------------
+
+// Контрольная сумма заголовка DS2433 (0x00..0x1F ≡ 0x41).
+static void fixHeaderChecksum(uint8_t *d) {
+    int s = 0;
+    for (int i = 0; i < 0x1F; i++) s += d[i];
+    d[0x1F] = (0x41 - s) & 0xFF;
+}
+static bool headerChecksumOk(const uint8_t *d) {
+    int s = 0;
+    for (int i = 0; i <= 0x1F; i++) s += d[i];
+    return (s & 0xFF) == 0x41;
+}
+
+// Синхронизация зеркала калибровки: DS2438[24:50] -> DS2433[1:27] (+ контр. сумма
+// заголовка). DS2438 переживает стирание DS2433, поэтому это основной путь ремонта.
+static void syncMirrorFrom2438(uint8_t *d33, const uint8_t *d38) {
+    for (int i = 0; i < 26; i++) d33[1 + i] = d38[24 + i];
+    fixHeaderChecksum(d33);
+}
+static bool mirrorOk(const uint8_t *d33, const uint8_t *d38) {
+    for (int i = 0; i < 26; i++) if (d33[1 + i] != d38[24 + i]) return false;
+    return true;
+}
+
 // Логотип: отдаём /logo.png из SPIFFS, если он загружен (иначе 404 -> в вебе
 // показывается встроенный SVG-тризуб). Позволяет использовать точный логотип НГУ.
 void handleLogo() {
@@ -72,6 +107,7 @@ void handleRoot() {
 // Чтение обеих микросхем (DS2433 + DS2438) с сохранением в SPIFFS и на дисплей.
 // Возвращает true, если считана хотя бы одна микросхема.
 bool readAllChips(bool &ok2433, bool &ok2438) {
+    ledSet(LED_READ);
     displayShow("ЗЧИТУВАННЯ...");
 
     memset(batteryDump, 0, DUMP_SIZE);
@@ -102,6 +138,7 @@ bool readAllChips(bool &ok2433, bool &ok2438) {
     else                  snprintf(st, sizeof(st), "ПОМИЛКА: нема чіпа");
     displayShow(st);
 
+    ledSet((ok2433 || ok2438) ? LED_OK : LED_ERROR);
     return ok2433 || ok2438;
 }
 
@@ -116,16 +153,8 @@ void handleReadDump() {
         String json = String("{\"status\":\"success\",\"ds2433\":") + (ok2433 ? "true" : "false") +
                       ",\"ds2438\":" + (ok2438 ? "true" : "false") + "}";
         server.send(200, "application/json", json);
-
-        digitalWrite(LED_GREEN_PIN, HIGH);
-        delay(200);
-        digitalWrite(LED_GREEN_PIN, LOW);
     } else {
         server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to read battery\"}");
-
-        digitalWrite(LED_RED_PIN, HIGH);
-        delay(500);
-        digitalWrite(LED_RED_PIN, LOW);
     }
 }
 
@@ -253,6 +282,7 @@ void handleWriteDump2438() {
     }
 
     Serial.println("Writing to DS2438 chip...");
+    ledSet(LED_WRITE);
     displayShow("ЗАПИС 2438...");
     if (battery.writeDS2438(buffer, DS2438_MEM_SIZE)) {
         memcpy(batteryDump2438, buffer, DS2438_MEM_SIZE);
@@ -263,20 +293,12 @@ void handleWriteDump2438() {
         displayShow("2438 ЗАПИС OK");
         server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"DS2438 written successfully\"}");
 
-        for (int i = 0; i < 3; i++) {
-            digitalWrite(LED_GREEN_PIN, HIGH);
-            delay(200);
-            digitalWrite(LED_GREEN_PIN, LOW);
-            delay(200);
-        }
+        ledSet(LED_OK);
     } else {
         Serial.println("✗✗✗ DS2438 WRITE FAILED ✗✗✗");
         displayShow("2438 ЗАПИС ЗБІЙ");
         server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to write DS2438\"}");
-
-        digitalWrite(LED_RED_PIN, HIGH);
-        delay(500);
-        digitalWrite(LED_RED_PIN, LOW);
+        ledSet(LED_ERROR);
     }
     Serial.println("=== DS2438 write request completed ===\n");
 }
@@ -519,6 +541,7 @@ void handleWriteDump() {
     
     // Пишем в батарею
     Serial.println("Writing to battery chip...");
+    ledSet(LED_WRITE);
     displayShow("ЗАПИС 2433...");
     if (battery.writeBattery(buffer, DUMP_SIZE)) {
         memcpy(batteryDump, buffer, DUMP_SIZE);
@@ -541,20 +564,12 @@ void handleWriteDump() {
         server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Firmware written successfully\"}");
         
         // Индикация успеха
-        for (int i = 0; i < 3; i++) {
-            digitalWrite(LED_GREEN_PIN, HIGH);
-            delay(200);
-            digitalWrite(LED_GREEN_PIN, LOW);
-            delay(200);
-        }
+        ledSet(LED_OK);
     } else {
         Serial.println("✗✗✗ WRITE FAILED ✗✗✗");
         displayShow("2433 ЗАПИС ЗБІЙ");
         server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Failed to write battery\"}");
-        
-        digitalWrite(LED_RED_PIN, HIGH);
-        delay(500);
-        digitalWrite(LED_RED_PIN, LOW);
+        ledSet(LED_ERROR);
     }
     Serial.println("=== Write request completed ===\n");
 }
@@ -574,12 +589,17 @@ void handleDumpInfo() {
     const char *reason;
     bool genuine = batteryGenuine(&reason);
 
+    bool hdrOk = headerChecksumOk(batteryDump);
+    bool mirOk = hasDump2438 ? mirrorOk(batteryDump, batteryDump2438) : true;
+
     String json = "{\"size\":512,\"hasData\":true";
     json += ",\"model\":\"" + modelStr + "\"";
     json += ",\"capacity\":" + String(cap);
     json += ",\"wear\":" + String(wear);
     json += ",\"genuine\":" + String(genuine ? "true" : "false");
     json += ",\"authReason\":\"" + String(reason) + "\"";
+    json += ",\"headerOk\":" + String(hdrOk ? "true" : "false");
+    json += ",\"mirrorOk\":" + String(mirOk ? "true" : "false");
     json += ",\"preview\":\"";
     
     json += hexPreview(batteryDump, 16);
@@ -631,6 +651,7 @@ bool performReset() {
     if (!hasDump && !hasDump2438) { displayShow("СПОЧАТКУ ЧИТАЙ"); return false; }
 
     Serial.println("\n=== Battery reset (recalibration) ===");
+    ledSet(LED_WRITE);
     displayShow("СКИДАННЯ...");
     resetBatteryData();
 
@@ -645,8 +666,139 @@ bool performReset() {
     } else {
         displayShow("СКИД. ЗБІЙ");
     }
+    ledSet(ok ? LED_OK : LED_ERROR);
     Serial.println("=== Reset completed ===\n");
     return ok;
+}
+
+// ------------------- Ремонт / правка / изменение ёмкости -------------------
+
+// Пересчёт "восстановимых" полей текущих дампов: контрольная сумма заголовка
+// DS2433, зеркало калибровки (из уцелевшего DS2438 в DS2433), контрольные суммы
+// известных записей (0x0D CCA/DCA и 0x17 история ёмкости). НЕ трогает данные —
+// только чинит целостность, чтобы рация снова приняла подправленную прошивку.
+void repairDumps() {
+    if (hasDump && hasDump2438 && !mirrorOk(batteryDump, batteryDump2438)) {
+        // DS2438 обычно уцелевает при повреждении DS2433 — берём калибровку из него.
+        syncMirrorFrom2438(batteryDump, batteryDump2438);
+        Serial.println("repair: mirror DS2438->DS2433 restored");
+    }
+    if (hasDump) {
+        fixHeaderChecksum(batteryDump);
+        // Пересчёт контрольной суммы записи истории ёмкости 0x17 (если найдена).
+        for (int i = 0x100; i < 0x1F0 - 23; i++)
+            if (batteryDump[i] == 0x17 && batteryDump[i + 1] == 0x00) { fixRecordChecksum(batteryDump, i, 23); break; }
+    }
+}
+
+// Веб-ремонт: чинит целостность и пишет обе микросхемы. Это "восстановление
+// битой прошивки" для случая повреждённого заголовка/калибровки. Полное
+// восстановление стёртого DS2433 делается загрузкой эталонного дампа той же
+// модели (вкладка «Прошивка» → запись).
+void handleRepair() {
+    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
+        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
+    }
+    if (!hasDump && !hasDump2438) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return;
+    }
+    ledSet(LED_WRITE); displayShow("РЕМОНТ...");
+    repairDumps();
+    bool ok = true;
+    if (hasDump)     ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (hasDump2438) ok &= battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (ok) {
+        if (hasDump)     saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+        if (hasDump2438) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+        displayShow("РЕМОНТ OK");
+    } else displayShow("РЕМОНТ ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    server.send(ok ? 200 : 500, "application/json",
+        ok ? "{\"status\":\"success\",\"message\":\"Firmware integrity repaired\"}"
+           : "{\"status\":\"error\",\"message\":\"Repair write failed\"}");
+}
+
+// Изменить отображаемую ёмкость/износ (0..100 %) и записать в АКБ. Правит
+// последнюю пробу в записи истории ёмкости 0x17 + её контрольную сумму.
+void handleSetCapacity() {
+    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
+        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
+    }
+    if (!hasDump) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return; }
+    if (!server.hasArg("cap")) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No cap\"}"); return; }
+    int cap = server.arg("cap").toInt();
+    if (cap < 0) cap = 0; if (cap > 100) cap = 100;
+
+    int rec = -1;
+    for (int i = 0x100; i < 0x1F0 - 23; i++)
+        if (batteryDump[i] == 0x17 && batteryDump[i + 1] == 0x00) { rec = i; break; }
+    if (rec < 0) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Capacity record not found\"}"); return; }
+
+    batteryDump[rec + 21] = (uint8_t)cap;      // последняя проба ёмкости, %
+    fixRecordChecksum(batteryDump, rec, 23);   // контрольная сумма записи (Σ≡0x5A)
+
+    ledSet(LED_WRITE); displayShow("ЗАПИС ЄМН...");
+    bool ok = battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (ok) { saveDump("/dump.bin", batteryDump, DUMP_SIZE); displayShow("ЄМН. OK"); }
+    else displayShow("ЄМН. ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    server.send(ok ? 200 : 500, "application/json",
+        ok ? "{\"status\":\"success\",\"message\":\"Capacity written\"}"
+           : "{\"status\":\"error\",\"message\":\"Write failed\"}");
+}
+
+// Универсальная запись сырых байт из браузера. Аргументы: target=2433|2438,
+// data=hex-строка (512 или 64 байта), autofix=1 (для 2433 — пересчёт контр.
+// суммы заголовка и синхронизация зеркала). Позволяет менять ЛЮБЫЕ данные и
+// писать их в АКБ прямо из веб-редактора.
+static int hexToBytes(const String &s, uint8_t *out, int maxn) {
+    int n = 0; int hi = -1;
+    for (size_t i = 0; i < s.length() && n < maxn; i++) {
+        char c = s[i]; int v;
+        if (c >= '0' && c <= '9') v = c - '0';
+        else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
+        else continue;                       // пропускаем пробелы/переводы строк
+        if (hi < 0) hi = v; else { out[n++] = (hi << 4) | v; hi = -1; }
+    }
+    return n;
+}
+
+void handleWriteHex() {
+    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
+        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
+    }
+    String target = server.arg("target");
+    String data   = server.arg("data");
+    bool autofix  = server.arg("autofix") == "1";
+    bool is38 = (target == "2438");
+    int need = is38 ? DS2438_MEM_SIZE : DUMP_SIZE;
+
+    static uint8_t buf[DUMP_SIZE];
+    int got = hexToBytes(data, buf, need);
+    if (got != need) {
+        String m = String("{\"status\":\"error\",\"message\":\"Expected ") + need + " bytes, got " + got + "\"}";
+        server.send(400, "application/json", m); return;
+    }
+
+    ledSet(LED_WRITE); displayShow(is38 ? "ЗАПИС HEX 2438" : "ЗАПИС HEX 2433");
+    bool ok;
+    if (is38) {
+        ok = battery.writeDS2438(buf, DS2438_MEM_SIZE);
+        if (ok) { memcpy(batteryDump2438, buf, DS2438_MEM_SIZE); hasDump2438 = true; saveDump("/dump2438.bin", buf, DS2438_MEM_SIZE); }
+    } else {
+        if (autofix) {
+            fixHeaderChecksum(buf);
+            if (hasDump2438) { /* держим зеркало согласованным */ for (int i=0;i<26;i++) buf[1+i]=batteryDump2438[24+i]; fixHeaderChecksum(buf); }
+        }
+        ok = battery.writeBattery(buf, DUMP_SIZE);
+        if (ok) { memcpy(batteryDump, buf, DUMP_SIZE); hasDump = true; saveDump("/dump.bin", buf, DUMP_SIZE); }
+    }
+    displayShow(ok ? "HEX ЗАПИС OK" : "HEX ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    server.send(ok ? 200 : 500, "application/json",
+        ok ? "{\"status\":\"success\",\"message\":\"Bytes written\"}"
+           : "{\"status\":\"error\",\"message\":\"Write failed\"}");
 }
 
 // Веб-обработчик сброса (под паролем).
@@ -707,6 +859,9 @@ void setupWebServer() {
     server.on("/api/write2438", HTTP_POST, handleWriteDump2438);
     server.on("/upload2438", HTTP_POST, handleUploadDone2438, handleUploadDump2438);
     server.on("/api/reset", HTTP_POST, handleResetBattery);
+    server.on("/api/repair", HTTP_POST, handleRepair);          // ремонт целостности
+    server.on("/api/setcapacity", HTTP_POST, handleSetCapacity); // изменить ёмкость %
+    server.on("/api/writehex", HTTP_POST, handleWriteHex);       // сырая запись из редактора
 
     // Captive-portal: все прочие URL -> редирект на главную (авто-открытие страницы).
     server.onNotFound(handleCaptive);

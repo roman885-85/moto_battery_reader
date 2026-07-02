@@ -225,6 +225,16 @@
         </div>
 
         <div class="card">
+            <h2>🧹 Очистити (крім критичних даних)</h2>
+            <div class="note w">⚠️ Стирає ВСІ дані використання/історії/статистики (лічильники, знос,
+                таблиці 0x16), зберігаючи <b>критичне</b>: модель, серійний/ID, криву калібрування,
+                блок автентифікації, дзеркало DS2438↔DS2433. Контрольні суми перераховуються, запис у чіп.
+                Незворотньо — спочатку резервна копія.</div>
+            <input type="password" class="pw" id="pwCln" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-danger" style="width:100%" onclick="cleanBattery()">🧹 ОЧИСТИТИ ДАНІ</button>
+        </div>
+
+        <div class="card">
             <h2>🔋 Змінити залишкову ємність (mAh)</h2>
             <div class="note i">ℹ️ Записує рівень заряду в <b>мА·год</b> у регістр ICA монітора DS2438
                 (це те, що рація показує як заряд). Поточне: <b id="mahNow">—</b>.</div>
@@ -432,6 +442,18 @@ async function setMah(){
     try{
         const r=await postForm('/api/setmah',{password:pw,mah:mah});
         toast(r.status==='success'?('✅ Записано ≈'+r.mah+' мА·год (ICA='+r.ica+')'):('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+async function cleanBattery(){
+    const pw=$('pwCln').value; if(!pw){toast('Введіть пароль','err');return}
+    if(!confirm('🧹 Стерти ВСІ дані використання/історії, лишивши модель/ID/калібрування?\nНезворотньо. Продовжити?'))return;
+    prog(true,'Очистка...');
+    try{
+        const r=await postForm('/api/clean',{password:pw});
+        toast(r.status==='success'?'✅ Дані очищено (ідентичність збережено)':('Помилка: '+r.message),r.status==='success'?'ok':'err');
         if(r.status==='success')await refreshAll();
     }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);

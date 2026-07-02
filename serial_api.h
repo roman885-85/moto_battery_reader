@@ -21,7 +21,9 @@
 //   WRITE38 <hex64>      -> запис DS2438
 //   RESET                -> скидання лічильників (рекалібрування)
 //   REPAIR               -> ремонт цілісності (суми + дзеркало)
+//   CLEAN                -> очистка (стерти все, крім ідентичності/калібрування)
 //   SETCAP <0..100>      -> змінити ємність/знос %
+//   SETMAH <мА·год>      -> змінити залишкову ємність (регістр ICA)
 // ---------------------------------------------------------------------------
 
 #include "web_server.h"   // dump-буфери, readAllChips/performReset/repairDumps,
@@ -174,6 +176,7 @@ static void serialExec(const String &line) {
                                          sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"write failed\"}"); } }
     else if (cmd == "SETCAP")     serSetCap(arg);
     else if (cmd == "SETMAH")     serSetMah(arg);
+    else if (cmd == "CLEAN")    { bool ok = performFactoryClean(); sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"clean failed\"}"); }
     else                          sResp(String("{\"ok\":false,\"err\":\"unknown cmd '") + cmd + "'\"}");
 }
 

@@ -21,9 +21,9 @@ extern bool hasSN2438;
 //   3 - здоров'я: ємність / знос / цикли
 //   4 - сирий дамп DS2438 (hex)
 //   5 - сирий дамп DS2433 (перші 64/128 байт — за висотою екрана, hex)
-//   6 - скидання лічильників (рекалібрування)
+//   6 - дії з АКБ (скидання / ремонт / очистка)
 #define NUM_DISPLAY_PAGES 7
-#define RESET_PAGE        6
+#define RESET_PAGE        6   // сторінка «Дії» (історична назва константи)
 
 // Об'єкт дисплея вибирається по моделі з settings.h (повний буфер _F_).
 // DISP_W/DISP_H — роздільність; DISPLAY_USES_I2C — ознака шини I2C.
@@ -168,9 +168,9 @@ extern bool hasSN2438;
 static char g_displayStatus[36] = "ЗАПУСК";  // нижня рядок статусу (UTF-8)
 static int  g_displayPage = 0;             // поточна сторінка меню
 static bool g_readRequested = false;       // запит повторного читання після циклу
-static bool g_resetRequested = false;      // запит скидання з меню (кнопкою)
-static bool g_resetArmed = false;          // скидання "зведений" (перше натискання)
-static unsigned long g_resetArmedAt = 0;   // час зведення (авто-скидання через 5с)
+// Сторінка «Дії»: вибір операції (BTN2 коротко) + виконання (BTN2 довго).
+static int  g_actionSel = 0;               // 0=Скидання 1=Ремонт 2=Очистка
+static int  g_actionRequested = -1;        // -1 нема; інакше — обрана дія для .ino
 
 inline void displayRender(); // визначення нижче
 
@@ -662,16 +662,26 @@ inline void drawPageRaw2438() { drawRawPage("DS2438 дамп 0-63", batteryDump2
 inline void drawPageRaw2433() { drawRawPage((DISP_H >= 128) ? "DS2433 дамп 0-127" : "DS2433 дамп 0-63",
                                             batteryDump, hasDump, RAW2433_COUNT); }
 
-inline void drawPageReset() {
-    drawHeader("Скидання");
+// Сторінка «Дії»: 3 операції із записом у чіп. Вибір — коротке [<], виконання —
+// довге утримання [<] (свідоме підтвердження). [>] — вихід на наступну сторінку.
+inline void drawPageActions() {
+    static const char *names[3] = { "Скидання", "Ремонт", "Очистка" };
+    static const char *desc[3]  = { "лічильники/знос->свіжі",
+                                    "полагодити суми/дзеркало",
+                                    "стерти все, крім ID" };
+    drawHeader("Дії з АКБ");
     u8g2.setFont(BODY_FONT);
-    u8g2.drawUTF8(0, ROW(0), "Скинути лічильники");
-    u8g2.drawUTF8(0, ROW(1), "(цикли/знос) для");
-    u8g2.drawUTF8(0, ROW(2), "рекалібрування.");
-    if (g_resetArmed)
-        u8g2.drawUTF8(0, ROW(3) + 2, "Ще раз [<] = СКИДАННЯ!");
-    else
-        u8g2.drawUTF8(0, ROW(3) + 2, "[<] двічі = скидання");
+    for (int i = 0; i < 3; i++) {
+        char line[40];
+        snprintf(line, sizeof(line), "%c %s", (i == g_actionSel ? '>' : ' '), names[i]);
+        u8g2.drawUTF8(0, ROW(i), line);
+    }
+    u8g2.drawUTF8(0, ROW(3), desc[g_actionSel]);
+#if DISP_H >= 128
+    u8g2.drawUTF8(0, ROW(4), "[<] вибір · утрим.=пуск");
+    u8g2.drawUTF8(0, ROW(5), "[>] далі");
+#endif
+    // У підвалі — підказка керування (на 64px там статус, тож коротко).
     drawFooter();
 }
 
@@ -686,7 +696,7 @@ inline void displayRender() {
         case 3:  drawPageHealth();   break;
         case 4:  drawPageRaw2438();  break;
         case 5:  drawPageRaw2433();  break;
-        case 6:  drawPageReset();    break;
+        case 6:  drawPageActions();  break;
         default: drawPageMain();     break;
     }
     u8g2.sendBuffer();
@@ -736,45 +746,42 @@ inline bool displayConsumeReadRequest() {
     return false;
 }
 
-// true один раз, коли користувач підтвердив скидання з меню (подвійне [<]).
-inline bool displayConsumeResetRequest() {
-    if (g_resetRequested) { g_resetRequested = false; return true; }
-    return false;
+// Повертає обрану дію (0=Скидання 1=Ремонт 2=Очистка) один раз після
+// підтвердження в меню, інакше -1.
+inline int displayConsumeActionRequest() {
+    int a = g_actionRequested; g_actionRequested = -1; return a;
 }
 
-// Опитування кнопок. BTN1: коротке — наступна сторінка, довге (0.8с) — повторне
-// читання АКБ. BTN2: коротке — назад, а на сторінці скидання — зведення/підтвердження.
+// Опитування кнопок.
+//  BTN1: коротке — наступна сторінка; довге (0.8с) — повторне читання АКБ.
+//  BTN2: на сторінці «Дії» — коротке = вибір операції, довге (0.8с) = ВИКОНАТИ;
+//        на інших сторінках — коротке = попередня сторінка.
 inline void displayHandleButton() {
     static BtnState b1, b2;
 
     int e1 = pollButton(MENU_BTN_PIN, b1, 800);
     if (e1 == 2) {                                   // довге -> перечитати
-        g_resetArmed = false;
         g_readRequested = true;
         displaySetStatus("ЗЧИТУВАННЯ...");
         displayRender();
     } else if (e1 == 1) {                            // коротке -> наступна сторінка
-        g_resetArmed = false;
         g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
         displayRender();
     }
 
-    int e2 = pollButton(MENU_BTN2_PIN, b2, 0);
-    if (e2 == 1) {
-        if (g_displayPage == RESET_PAGE) {           // зведення -> підтвердження скидання
-            if (!g_resetArmed) { g_resetArmed = true; g_resetArmedAt = millis(); }
-            else               { g_resetArmed = false; g_resetRequested = true; }
+    int e2 = pollButton(MENU_BTN2_PIN, b2, 800);
+    if (g_displayPage == RESET_PAGE) {               // сторінка «Дії»
+        if (e2 == 1) {                               // коротке -> наступна операція
+            g_actionSel = (g_actionSel + 1) % 3;
             displayRender();
-        } else {                                     // назад
-            g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
+        } else if (e2 == 2) {                        // довге -> виконати обране
+            g_actionRequested = g_actionSel;
+            displaySetStatus("ВИКОНУЮ...");
             displayRender();
         }
-    }
-
-    // Авто-зняття зведення скидання через 5 з без підтвердження.
-    if (g_resetArmed && millis() - g_resetArmedAt > 5000) {
-        g_resetArmed = false;
-        if (g_displayPage == RESET_PAGE) displayRender();
+    } else if (e2 == 1) {                            // інші сторінки: коротке -> назад
+        g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
+        displayRender();
     }
 }
 

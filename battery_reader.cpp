@@ -316,6 +316,13 @@ bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
     for (uint8_t page = 0; page < DS2438_PAGES; page++) {
         const uint8_t *pageData = buffer + page * DS2438_PAGE_SIZE;
 
+        // Сторінки 0..2 містять "живі"/вимірювані регістри (Status, Temp, U, I,
+        // ETM, ICA), які чіп оновлює сам. Їх scratchpad читається зі значеннями
+        // АЦП, тож БАЙТ-У-БАЙТ звірка тут дала б хибну помилку — для них
+        // розбіжність лише попередження. Сторінки 3..7 — EEPROM (калібрування,
+        // CCA/DCA), для них звірка строга.
+        bool volatilePage = (page <= 2);
+
         // Write Scratchpad (запис завжди починається з байта 0 scratchpad).
         _ow->reset();
         _ow->select(ds2438_addr);
@@ -323,7 +330,7 @@ bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
         _ow->write(page);
         for (int i = 0; i < DS2438_PAGE_SIZE; i++) _ow->write(pageData[i]);
 
-        // Read Scratchpad: переконуємося, що дані лягли правильно (дані + CRC8).
+        // Read Scratchpad: перевіряємо CRC і (для EEPROM-сторінок) співпадіння.
         _ow->reset();
         _ow->select(ds2438_addr);
         _ow->write(DS2438_READ_SCRATCH);
@@ -338,10 +345,14 @@ bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
             return false;
         }
         if (memcmp(sp, pageData, DS2438_PAGE_SIZE) != 0) {
-            Serial.printf("ERROR: DS2438 scratchpad data mismatch on page %d\n", (int)page);
-            _ow->reset();
-            digitalWrite(_pullupPin, LOW);
-            return false;
+            if (volatilePage) {
+                Serial.printf("WARN: DS2438 page %d scratchpad differs (live registers) — ok\n", (int)page);
+            } else {
+                Serial.printf("ERROR: DS2438 scratchpad data mismatch on page %d\n", (int)page);
+                _ow->reset();
+                digitalWrite(_pullupPin, LOW);
+                return false;
+            }
         }
 
         // Copy Scratchpad -> сторінка пам'яті; чекаємо завершення (tWR макс 10 мс).

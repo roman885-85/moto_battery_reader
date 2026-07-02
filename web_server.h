@@ -671,6 +671,47 @@ bool performReset() {
     return ok;
 }
 
+// ------------------- Очистка (крім критичних даних) -------------------
+
+// Очистка "до заводського": стирає ВСІ дані використання/історії/статистики,
+// зберігаючи КРИТИЧНЕ (модель, серійний/ID, крива калібрування, блок автент.,
+// дзеркало DS2438↔DS2433, заголовок). Виконує повне скидання лічильників плюс
+// обнуляє записи статистики використання 0x16 (22 байти, Σ==0x5A -> дані 0,
+// контрольна сума 0x44 — перевірено: у робочого 4488A такий "порожній" 0x16 є).
+void factoryCleanData() {
+    resetBatteryData();                 // ETM/CCA/DCA/0x0D/ємність 0x17 -> свіжі
+    if (hasDump) {
+        // Обидві записи статистики 0x16 -> порожні. Шукаємо валідні (Σ==0x5A).
+        for (int i = 0x140; i < 0x1C0 - 22; i++) {
+            if (batteryDump[i] == 0x16 && batteryDump[i + 1] == 0x00) {
+                int s = 0; for (int k = 0; k < 22; k++) s += batteryDump[i + k];
+                if ((s & 0xFF) != 0x5A) continue;      // не запис 0x16 — пропускаємо
+                for (int k = 1; k < 21; k++) batteryDump[i + k] = 0;
+                fixRecordChecksum(batteryDump, i, 22); // -> 0x44
+            }
+        }
+        fixHeaderChecksum(batteryDump);
+    }
+}
+
+bool performFactoryClean() {
+    if (!hasDump && !hasDump2438) { displayShow("СПОЧАТКУ ЧИТАЙ"); return false; }
+    Serial.println("\n=== Factory clean (keep identity) ===");
+    ledSet(LED_WRITE); displayShow("ОЧИСТКА...");
+    factoryCleanData();
+    bool ok = true;
+    if (hasDump)     ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (hasDump2438) ok &= battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (ok) {
+        if (hasDump)     saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+        if (hasDump2438) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+        displayShow("ОЧИСТКА OK");
+    } else displayShow("ОЧИСТКА ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    Serial.println("=== Clean completed ===\n");
+    return ok;
+}
+
 // ------------------- Ремонт / правка / зміна ємності -------------------
 
 // Перерахунок "відновних" полів поточних дампів: контрольна сума заголовка
@@ -695,13 +736,9 @@ void repairDumps() {
 // пошкодженої прошивки" для випадку пошкодженого заголовка/калібрування. Повне
 // відновлення стертого DS2433 робиться завантаженням еталонного дампа той же
 // моделі (вкладка «Прошивка» → запис).
-void handleRepair() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
-    }
-    if (!hasDump && !hasDump2438) {
-        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return;
-    }
+// Ядро ремонту без HTTP — викликається і з веб-обробника, і з меню дисплея.
+bool performRepair() {
+    if (!hasDump && !hasDump2438) { displayShow("СПОЧАТКУ ЧИТАЙ"); return false; }
     ledSet(LED_WRITE); displayShow("РЕМОНТ...");
     repairDumps();
     bool ok = true;
@@ -713,9 +750,34 @@ void handleRepair() {
         displayShow("РЕМОНТ OK");
     } else displayShow("РЕМОНТ ЗБІЙ");
     ledSet(ok ? LED_OK : LED_ERROR);
+    return ok;
+}
+
+void handleRepair() {
+    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
+        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
+    }
+    if (!hasDump && !hasDump2438) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return;
+    }
+    bool ok = performRepair();
     server.send(ok ? 200 : 500, "application/json",
         ok ? "{\"status\":\"success\",\"message\":\"Firmware integrity repaired\"}"
            : "{\"status\":\"error\",\"message\":\"Repair write failed\"}");
+}
+
+// Веб-очистка (крім критичних даних), під паролем.
+void handleClean() {
+    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
+        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
+    }
+    if (!hasDump && !hasDump2438) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return;
+    }
+    bool ok = performFactoryClean();
+    server.send(ok ? 200 : 500, "application/json",
+        ok ? "{\"status\":\"success\",\"message\":\"Usage data cleared (identity kept)\"}"
+           : "{\"status\":\"error\",\"message\":\"Clean write failed\"}");
 }
 
 // Змінити відображувану ємність/знос (0..100 %) і записати в АКБ. Редагує
@@ -882,6 +944,7 @@ void setupWebServer() {
     server.on("/api/write2438", HTTP_POST, handleWriteDump2438);
     server.on("/upload2438", HTTP_POST, handleUploadDone2438, handleUploadDump2438);
     server.on("/api/reset", HTTP_POST, handleResetBattery);
+    server.on("/api/clean", HTTP_POST, handleClean);            // очистка (крім критичних)
     server.on("/api/repair", HTTP_POST, handleRepair);          // ремонт цілісності
     server.on("/api/setcapacity", HTTP_POST, handleSetCapacity); // змінити ємність %
     server.on("/api/setmah", HTTP_POST, handleSetMah);           // змінити залишок, мА·ч

@@ -127,11 +127,12 @@ void loop() {
         readAllChips(ok2433, ok2438);
     }
 
-    // Підтверджена в меню дисплея дія: 0=Скидання 1=Ремонт 2=Очистка.
+    // Підтверджена в меню дисплея дія: 0=Скидання 1=Ремонт 2=Очистка 3=Стерти2433.
     int act = displayConsumeActionRequest();
     if      (act == 0) performReset();
     else if (act == 1) performRepair();
     else if (act == 2) performFactoryClean();
+    else if (act == 3) performWipe2433();
 
     // Дисплей перемальовується по подіям (натискання кнопки, читання/запис),
     // тому цикл не блокується повільним рендером і кнопки чутливі.

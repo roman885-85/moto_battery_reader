@@ -694,6 +694,27 @@ void factoryCleanData() {
     }
 }
 
+// ПОВНЕ стирання DS2433 (КРАЙНІЙ ВИПАДОК). Заповнює всі 512 байт 0xFF (стан
+// стертого EEPROM) — чіп стає "чистим". Стирає ВСЕ, включно з моделлю/ID/
+// калібруванням DS2433! Після цього АКБ не працюватиме, доки не запишете
+// еталонний дамп тієї ж моделі. DS2438 (його калібрування/дзеркало) НЕ чіпаємо
+// — з нього потім можна відновити калібрувальний блок ("Ремонт").
+bool performWipe2433() {
+    static uint8_t blank[DUMP_SIZE];
+    memset(blank, 0xFF, DUMP_SIZE);
+    Serial.println("\n=== FULL WIPE DS2433 ===");
+    ledSet(LED_WRITE); displayShow("СТИРАННЯ 2433..");
+    bool ok = battery.writeBattery(blank, DUMP_SIZE);
+    if (ok) {
+        memcpy(batteryDump, blank, DUMP_SIZE); hasDump = true;
+        saveDump("/dump.bin", blank, DUMP_SIZE);
+        displayShow("2433 СТЕРТО");
+    } else displayShow("СТИР. ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    Serial.println("=== Wipe completed ===\n");
+    return ok;
+}
+
 bool performFactoryClean() {
     if (!hasDump && !hasDump2438) { displayShow("СПОЧАТКУ ЧИТАЙ"); return false; }
     Serial.println("\n=== Factory clean (keep identity) ===");
@@ -764,6 +785,17 @@ void handleRepair() {
     server.send(ok ? 200 : 500, "application/json",
         ok ? "{\"status\":\"success\",\"message\":\"Firmware integrity repaired\"}"
            : "{\"status\":\"error\",\"message\":\"Repair write failed\"}");
+}
+
+// Веб-стирання DS2433 (крайній випадок), під паролем.
+void handleWipe2433() {
+    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
+        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
+    }
+    bool ok = performWipe2433();
+    server.send(ok ? 200 : 500, "application/json",
+        ok ? "{\"status\":\"success\",\"message\":\"DS2433 fully erased\"}"
+           : "{\"status\":\"error\",\"message\":\"Wipe write failed\"}");
 }
 
 // Веб-очистка (крім критичних даних), під паролем.
@@ -945,6 +977,7 @@ void setupWebServer() {
     server.on("/upload2438", HTTP_POST, handleUploadDone2438, handleUploadDump2438);
     server.on("/api/reset", HTTP_POST, handleResetBattery);
     server.on("/api/clean", HTTP_POST, handleClean);            // очистка (крім критичних)
+    server.on("/api/wipe2433", HTTP_POST, handleWipe2433);      // ПОВНЕ стирання DS2433
     server.on("/api/repair", HTTP_POST, handleRepair);          // ремонт цілісності
     server.on("/api/setcapacity", HTTP_POST, handleSetCapacity); // змінити ємність %
     server.on("/api/setmah", HTTP_POST, handleSetMah);           // змінити залишок, мА·ч

@@ -72,6 +72,9 @@
         .note{font-size:.82em;padding:10px;border-radius:8px;margin-top:10px;border-left:3px solid}
         .note.i{background:#12233a;color:#9cc4ee;border-color:var(--info)}
         .note.w{background:#3a2a10;color:#f0c274;border-color:var(--warn)}
+        .zone{font-weight:700;font-size:.9em;padding:9px 12px;border-radius:8px;margin:20px 0 8px}
+        .zone.zi{background:#16324a;color:#bfe0ff}
+        .zone.zd{background:#4a1512;color:#ff9b8f;border:1px solid #e74c3c}
         .hex{font-family:'Courier New',monospace;font-size:.82em;color:#9fe3c0;word-break:break-all;
              background:var(--card2);padding:10px;border-radius:8px;border:1px solid var(--line)}
         #toast{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:9;padding:12px 20px;
@@ -175,70 +178,44 @@
 
     <!-- ========== FIRMWARE ========== -->
     <div class="page" id="fw">
+
+        <!-- КРОК 1 -->
+        <div class="zone zi">📦 Крок 1 — резервна копія (робіть ЗАВЖДИ перед записом)</div>
         <div class="card">
-            <h2>💾 Зчитування та резервна копія</h2>
+            <h2>💾 Зчитати та зберегти</h2>
             <div class="btns">
                 <button class="btn btn-primary" onclick="readDump()">🔍 Зчитати АКБ</button>
-                <button class="btn btn-ok" onclick="downloadDump()">⬇ Дамп DS2433 (.bin)</button>
-                <button class="btn btn-ok" onclick="downloadDump2438()">⬇ Дамп DS2438 (.bin)</button>
+                <button class="btn btn-ok" onclick="downloadDump()">⬇ Копія DS2433</button>
+                <button class="btn btn-ok" onclick="downloadDump2438()">⬇ Копія DS2438</button>
             </div>
-            <div class="note i">ℹ️ Перед будь-яким записом зробіть резервну копію — завантажте дампи.</div>
+            <div class="note i">ℹ️ Спочатку «Зчитати АКБ», потім збережіть обидві копії (.bin). Якщо щось
+                піде не так — цей файл поверне АКБ у попередній стан («Відновлення» нижче).</div>
         </div>
 
-        <div class="card">
-            <h2>📤 Запис / відновлення прошивки</h2>
-            <div class="note i">ℹ️ Відновлення заблокованої/пошкодженої АКБ = запис <b>завідомо справного</b>
-                дампа тієї ж моделі (512 байт). Автопідбір підпису неможливий — потрібен еталон.</div>
-            <form enctype="multipart/form-data">
-                <div class="file">
-                    <label for="fu33">📁 Файл .bin (512 байт)</label>
-                    <input type="file" id="fu33" accept=".bin">
-                    <span class="fname" id="fn33">не обрано</span>
-                </div>
-            </form>
-            <input type="password" class="pw" id="pw33" placeholder="🔑 Пароль адміністратора">
-            <button class="btn btn-danger" style="width:100%" onclick="writeDump()">⚡ ЗАПИСАТИ DS2433</button>
-            <div class="note w">⚠️ Запис незворотний. Невірний файл може вивести АКБ з ладу.</div>
-        </div>
-
-        <div class="card">
-            <h2>🔬 Запис DS2438 (монітор)</h2>
-            <form enctype="multipart/form-data">
-                <div class="file">
-                    <label for="fu38">📁 Файл .bin (64 байти)</label>
-                    <input type="file" id="fu38" accept=".bin">
-                    <span class="fname" id="fn38">не обрано</span>
-                </div>
-            </form>
-            <input type="password" class="pw" id="pw38" placeholder="🔑 Пароль адміністратора">
-            <button class="btn btn-danger" style="width:100%" onclick="writeDump2438()">⚡ ЗАПИСАТИ DS2438</button>
-        </div>
+        <!-- ОБСЛУГОВУВАННЯ -->
+        <div class="zone zi">🔧 Обслуговування — безпечно для ідентичності/калібрування</div>
 
         <div class="card">
             <h2>♻️ Скидання для рекалібрування</h2>
-            <div class="note w">⚠️ Обнуляє лічильники заряду/розряду (CCA/DCA/таймер) та знос (ємність→100%),
-                перераховує контрольні суми та пише у чіп. Калібрування (offset) зберігається.
-                Потім відкалібруйте АКБ на <b>оригінальному</b> зарядному пристрої IMPRES.
-                Точну поведінку ЗП перевірте на «жертовній» батареї. Запис незворотний.</div>
+            <div class="note i">Обнуляє лічильники заряд/розряд і знос (ємність→100 %), калібрування
+                зберігається. Далі — калібрування на <b>оригінальному</b> IMPRES-ЗП.</div>
             <input type="password" class="pw" id="pwRst" placeholder="🔑 Пароль адміністратора">
             <button class="btn btn-warn" style="width:100%" onclick="resetBattery()">♻️ СКИНУТИ ЛІЧИЛЬНИКИ</button>
         </div>
 
         <div class="card">
-            <h2>🧹 Очистити (крім критичних даних)</h2>
-            <div class="note w">⚠️ Стирає ВСІ дані використання/історії/статистики (лічильники, знос,
-                таблиці 0x16), зберігаючи <b>критичне</b>: модель, серійний/ID, криву калібрування,
-                блок автентифікації, дзеркало DS2438↔DS2433. Контрольні суми перераховуються, запис у чіп.
-                Незворотньо — спочатку резервна копія.</div>
-            <input type="password" class="pw" id="pwCln" placeholder="🔑 Пароль адміністратора">
-            <button class="btn btn-danger" style="width:100%" onclick="cleanBattery()">🧹 ОЧИСТИТИ ДАНІ</button>
+            <h2>🛠 Ремонт цілісності</h2>
+            <div class="note i">Перераховує контрольні суми (заголовок Σ≡0x41, записи Σ≡0x5A) і відновлює
+                дзеркало калібрування з уцілілого DS2438. Використовуйте, якщо рація «не бачить» АКБ, а чіп
+                читається. Стан: заголовок <b id="intHdr">—</b>, дзеркало <b id="intMir">—</b>.</div>
+            <input type="password" class="pw" id="pwRep" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="repairFw()">🛠 ВІДНОВИТИ ЦІЛІСНІСТЬ</button>
         </div>
 
         <div class="card">
-            <h2>🔋 Змінити залишкову ємність (mAh)</h2>
-            <div class="note i">ℹ️ Записує рівень заряду в <b>мА·год</b> у регістр ICA монітора DS2438
-                (це те, що рація показує як заряд). Поточне: <b id="mahNow">—</b>.</div>
-            <div class="row"><span class="k">Ємність, мА·год</span>
+            <h2>🔋 Заряд у мА·год</h2>
+            <div class="note i">Записує рівень заряду (регістр ICA DS2438). Поточне: <b id="mahNow">—</b>.</div>
+            <div class="row"><span class="k">мА·год</span>
                 <input type="number" id="mahVal" min="0" max="5000" value="0"
                        style="width:110px;text-align:center;font-size:1.1em;border-radius:8px;border:none;padding:6px"></div>
             <input type="password" class="pw" id="pwMah" placeholder="🔑 Пароль адміністратора">
@@ -246,31 +223,64 @@
         </div>
 
         <div class="card">
-            <h2>🔧 Змінити знос/здоров'я (%)</h2>
-            <div class="note i">ℹ️ Записує показник ємності/зносу (0–100 %) у запис історії 0x17 і
-                перераховує контрольну суму. 100 % = «як нова». Поточне: <b id="capNow">—</b></div>
+            <h2>🩺 Знос / здоров'я (%)</h2>
+            <div class="note i">Показник ємності/зносу 0–100 % (100 % = «як нова»). Поточне: <b id="capNow">—</b>.</div>
             <div class="row"><span class="k">Ємність, %</span>
                 <input type="number" id="capVal" min="0" max="100" value="100"
                        style="width:90px;text-align:center;font-size:1.1em;border-radius:8px;border:none;padding:6px"></div>
             <input type="password" class="pw" id="pwCap" placeholder="🔑 Пароль адміністратора">
-            <button class="btn btn-warn" style="width:100%" onclick="setCapacity()">💾 ЗАПИСАТИ ЄМНІСТЬ</button>
+            <button class="btn btn-warn" style="width:100%" onclick="setCapacity()">💾 ЗАПИСАТИ %</button>
+        </div>
+
+        <!-- НЕБЕЗПЕЧНА ЗОНА -->
+        <div class="zone zd">⛔ НЕБЕЗПЕЧНА ЗОНА — незворотні операції, стирають/переписують дані. Спочатку зробіть копію!</div>
+
+        <div class="card">
+            <h2>🧹 Очистити (крім критичних)</h2>
+            <div class="note w">⚠️ Стирає ВСІ дані використання/історії/статистики (лічильники, знос,
+                таблиці 0x16). <b>Зберігає:</b> модель, серійний/ID, криву калібрування, автентифікацію,
+                дзеркало. Батарея лишається робочою, але «як нова, без історії».</div>
+            <input type="password" class="pw" id="pwCln" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-danger" style="width:100%" onclick="cleanBattery()">🧹 ОЧИСТИТИ ДАНІ</button>
         </div>
 
         <div class="card">
-            <h2>🛠 Ремонт цілісності прошивки</h2>
-            <div class="note i">ℹ️ Перераховує контрольну суму заголовка (Σ≡0x41), контрольні суми
-                відомих записів (Σ≡0x5A) та відновлює дзеркало калібрування з уцілілого DS2438
-                (DS2438[24:50]→DS2433[1:27]). Для повністю стертого DS2433 — запишіть еталонний дамп
-                тієї ж моделі вище. Статус: заголовок <b id="intHdr">—</b>, дзеркало <b id="intMir">—</b>.</div>
-            <input type="password" class="pw" id="pwRep" placeholder="🔑 Пароль адміністратора">
-            <button class="btn btn-warn" style="width:100%" onclick="repairFw()">🛠 ВІДНОВИТИ ЦІЛІСНІСТЬ</button>
+            <h2>📤 Відновлення / запис DS2433</h2>
+            <div class="note w">⚠️ Записує <b>завідомо справний</b> дамп (512 Б) тієї ж моделі — так оживляють
+                стерту/пошкоджену АКБ. Невірний файл або чужа модель зроблять АКБ невизначеною.</div>
+            <form enctype="multipart/form-data"><div class="file">
+                <label for="fu33">📁 Файл .bin (512 байт)</label>
+                <input type="file" id="fu33" accept=".bin"><span class="fname" id="fn33">не обрано</span>
+            </div></form>
+            <input type="password" class="pw" id="pw33" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-danger" style="width:100%" onclick="writeDump()">⚡ ЗАПИСАТИ DS2433</button>
+        </div>
+
+        <div class="card">
+            <h2>🔬 Запис DS2438 (монітор)</h2>
+            <div class="note w">⚠️ Записує дамп монітора (64 Б). Зазвичай не потрібно окремо.</div>
+            <form enctype="multipart/form-data"><div class="file">
+                <label for="fu38">📁 Файл .bin (64 байти)</label>
+                <input type="file" id="fu38" accept=".bin"><span class="fname" id="fn38">не обрано</span>
+            </div></form>
+            <input type="password" class="pw" id="pw38" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-danger" style="width:100%" onclick="writeDump2438()">⚡ ЗАПИСАТИ DS2438</button>
+        </div>
+
+        <div class="card" style="border-color:#e74c3c">
+            <h2>🔥 ПОВНЕ стирання DS2433 (крайній випадок)</h2>
+            <div class="note w">🛑 Стирає <b>ВЕСЬ</b> чіп DS2433 у 0xFF, разом з моделлю, серійним/ID та
+                калібруванням! Після цього АКБ <b>НЕ ПРАЦЮЄ</b>, доки не запишете еталонний дамп тієї ж
+                моделі («Відновлення DS2433» вище). Робіть лише коли чіп остаточно «зіпсований» і ремонт
+                не допомагає. <b>DS2438 не чіпається</b> — з нього потім відновиться калібрування.</div>
+            <input type="password" class="pw" id="pwWipe" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-danger" style="width:100%;background:#c0392b" onclick="wipe2433()">🔥 СТЕРТИ DS2433 ПОВНІСТЮ</button>
         </div>
 
         <div class="card">
             <h2>✏️ Редактор байтів (експертний)</h2>
-            <div class="note w">⚠️ Пряме редагування. «Автовиправлення» перераховує контрольну суму
-                заголовка DS2433 і тримає дзеркало калібрування узгодженим. Невірні дані можуть
-                зробити АКБ невизначеною — спочатку збережіть резервну копію.</div>
+            <div class="note w">⚠️ Пряме редагування. «Автовиправлення» перераховує суму заголовка DS2433 і
+                тримає дзеркало узгодженим. Невірні дані можуть зробити АКБ невизначеною.</div>
             <div class="row"><span class="k">Мікросхема</span>
                 <select id="hxTarget" onchange="loadHex()" style="border-radius:8px;border:none;padding:6px">
                     <option value="2433">DS2433 (512 Б)</option>
@@ -442,6 +452,19 @@ async function setMah(){
     try{
         const r=await postForm('/api/setmah',{password:pw,mah:mah});
         toast(r.status==='success'?('✅ Записано ≈'+r.mah+' мА·год (ICA='+r.ica+')'):('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+async function wipe2433(){
+    const pw=$('pwWipe').value; if(!pw){toast('Введіть пароль','err');return}
+    if(!confirm('🔥 ПОВНЕ стирання DS2433!\n\nСтираються МОДЕЛЬ, СЕРІЙНИЙ/ID та КАЛІБРУВАННЯ.\nАКБ НЕ ПРАЦЮВАТИМЕ, доки не запишете еталонний дамп тієї ж моделі.\n\nВи зробили резервну копію? Продовжити?'))return;
+    if(!confirm('Останнє попередження: стерти DS2433 ПОВНІСТЮ?'))return;
+    prog(true,'Повне стирання DS2433...');
+    try{
+        const r=await postForm('/api/wipe2433',{password:pw});
+        toast(r.status==='success'?'✅ DS2433 стерто. Тепер запишіть еталонний дамп.':('Помилка: '+r.message),r.status==='success'?'ok':'err');
         if(r.status==='success')await refreshAll();
     }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);

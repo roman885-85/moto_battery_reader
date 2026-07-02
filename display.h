@@ -662,27 +662,39 @@ inline void drawPageRaw2438() { drawRawPage("DS2438 дамп 0-63", batteryDump2
 inline void drawPageRaw2433() { drawRawPage((DISP_H >= 128) ? "DS2433 дамп 0-127" : "DS2433 дамп 0-63",
                                             batteryDump, hasDump, RAW2433_COUNT); }
 
-// Сторінка «Дії»: 3 операції із записом у чіп. Вибір — коротке [<], виконання —
-// довге утримання [<] (свідоме підтвердження). [>] — вихід на наступну сторінку.
+#define NUM_ACTIONS 4
+// Сторінка «Дії»: показуємо ОДНУ обрану операцію крупно + опис + попередження.
+// [<] коротко — наступна операція; [<] утримати (0.8с) — ВИКОНАТИ; [>] — вихід.
 inline void drawPageActions() {
-    static const char *names[3] = { "Скидання", "Ремонт", "Очистка" };
-    static const char *desc[3]  = { "лічильники/знос->свіжі",
-                                    "полагодити суми/дзеркало",
-                                    "стерти все, крім ID" };
-    drawHeader("Дії з АКБ");
+    static const char *nm[NUM_ACTIONS] = { "Скидання", "Ремонт", "Очистка", "СТЕРТИ 2433" };
+    static const char *d1[NUM_ACTIONS] = { "обнулити лічильники",
+                                           "полагодити суми та",
+                                           "стерти все, окрім",
+                                           "ПОВНЕ стирання чіпа" };
+    static const char *d2[NUM_ACTIONS] = { "заряд/розряд, знос",
+                                           "дзеркало калібрув.",
+                                           "моделі/ID/калібрув.",
+                                           "DS2433 (крайній!)" };
+    static const bool  dg[NUM_ACTIONS] = { false, false, false, true };
+    int sel = g_actionSel;
+
+    char t[20]; snprintf(t, sizeof(t), "Дія  %d/%d", sel + 1, NUM_ACTIONS);
+    drawHeader(t);
+
+    // Назва обраної операції — крупним шрифтом.
+    u8g2.setFont(u8g2_font_6x12_t_cyrillic);
+    char nml[26]; snprintf(nml, sizeof(nml), "%s%s", dg[sel] ? "! " : "> ", nm[sel]);
+    u8g2.drawUTF8(0, HEAD_LINE + 13, nml);
+
+    // Опис.
     u8g2.setFont(BODY_FONT);
-    for (int i = 0; i < 3; i++) {
-        char line[40];
-        snprintf(line, sizeof(line), "%c %s", (i == g_actionSel ? '>' : ' '), names[i]);
-        u8g2.drawUTF8(0, ROW(i), line);
-    }
-    u8g2.drawUTF8(0, ROW(3), desc[g_actionSel]);
-#if DISP_H >= 128
-    u8g2.drawUTF8(0, ROW(4), "[<] вибір · утрим.=пуск");
-    u8g2.drawUTF8(0, ROW(5), "[>] далі");
-#endif
-    // У підвалі — підказка керування (на 64px там статус, тож коротко).
-    drawFooter();
+    u8g2.drawUTF8(0, HEAD_LINE + 25, d1[sel]);
+    u8g2.drawUTF8(0, HEAD_LINE + 34, d2[sel]);
+    if (dg[sel]) u8g2.drawUTF8(0, HEAD_LINE + 42, "!! НЕЗВОРОТНЬО !!");
+
+    // Підказка керування знизу.
+    u8g2.drawHLine(0, FOOT_HL, DISP_W);
+    u8g2.drawUTF8(0, FOOT_Y, "[<]вибір трим=пуск");
 }
 
 // ---------- рендер і кнопка ----------
@@ -772,7 +784,7 @@ inline void displayHandleButton() {
     int e2 = pollButton(MENU_BTN2_PIN, b2, 800);
     if (g_displayPage == RESET_PAGE) {               // сторінка «Дії»
         if (e2 == 1) {                               // коротке -> наступна операція
-            g_actionSel = (g_actionSel + 1) % 3;
+            g_actionSel = (g_actionSel + 1) % NUM_ACTIONS;
             displayRender();
         } else if (e2 == 2) {                        // довге -> виконати обране
             g_actionRequested = g_actionSel;

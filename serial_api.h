@@ -22,6 +22,7 @@
 //   RESET                -> скидання лічильників (рекалібрування)
 //   REPAIR               -> ремонт цілісності (суми + дзеркало)
 //   CLEAN                -> очистка (стерти все, крім ідентичності/калібрування)
+//   WIPE33               -> ПОВНЕ стирання DS2433 (крайній випадок, все у 0xFF)
 //   SETCAP <0..100>      -> змінити ємність/знос %
 //   SETMAH <мА·год>      -> змінити залишкову ємність (регістр ICA)
 // ---------------------------------------------------------------------------
@@ -177,6 +178,7 @@ static void serialExec(const String &line) {
     else if (cmd == "SETCAP")     serSetCap(arg);
     else if (cmd == "SETMAH")     serSetMah(arg);
     else if (cmd == "CLEAN")    { bool ok = performFactoryClean(); sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"clean failed\"}"); }
+    else if (cmd == "WIPE33")   { bool ok = performWipe2433();     sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"wipe failed\"}"); }
     else                          sResp(String("{\"ok\":false,\"err\":\"unknown cmd '") + cmd + "'\"}");
 }
 

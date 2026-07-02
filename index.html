@@ -125,10 +125,10 @@
     <!-- ========== OVERVIEW ========== -->
     <div class="page active" id="overview">
         <div class="card">
-            <h2>🔋 Заряд</h2>
+            <h2>🔋 Заряд (залишкова ємність)</h2>
             <div class="charge">
                 <div class="batt"><div class="fill" id="battFill"></div></div>
-                <div><div class="pct" id="chargePct">--%</div><div class="src" id="chargeSrc"></div></div>
+                <div><div class="pct" id="chargeMah">-- mAh</div><div class="src" id="chargeSub"></div></div>
             </div>
             <div class="row" style="margin-top:12px"><span class="k">Напруга</span><span class="v" id="ovVolt">—</span></div>
             <div class="row"><span class="k">Температура</span><span class="v" id="ovTemp">—</span></div>
@@ -225,7 +225,18 @@
         </div>
 
         <div class="card">
-            <h2>🔋 Змінити ємність (знос)</h2>
+            <h2>🔋 Змінити залишкову ємність (mAh)</h2>
+            <div class="note i">ℹ️ Записує рівень заряду в <b>мА·год</b> у регістр ICA монітора DS2438
+                (це те, що рація показує як заряд). Поточне: <b id="mahNow">—</b>.</div>
+            <div class="row"><span class="k">Ємність, мА·год</span>
+                <input type="number" id="mahVal" min="0" max="5000" value="0"
+                       style="width:110px;text-align:center;font-size:1.1em;border-radius:8px;border:none;padding:6px"></div>
+            <input type="password" class="pw" id="pwMah" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="setMah()">💾 ЗАПИСАТИ мА·год</button>
+        </div>
+
+        <div class="card">
+            <h2>🔧 Змінити знос/здоров'я (%)</h2>
             <div class="note i">ℹ️ Записує показник ємності/зносу (0–100 %) у запис історії 0x17 і
                 перераховує контрольну суму. 100 % = «як нова». Поточне: <b id="capNow">—</b></div>
             <div class="row"><span class="k">Ємність, %</span>
@@ -324,8 +335,11 @@ async function refreshAll(){
         if(r.status!==404){
             const d=await r.json();
             const pct=(typeof d.charge==='number'&&d.charge>=0)?d.charge:null;
-            $('chargePct').textContent=pct!==null?pct+'%':'--%';
-            $('chargeSrc').textContent=pct!==null?'джерело: '+(d.chargeSrc==='ICA'?'ICA (DS2438)':'напруга'):'';
+            const rmah=(d.icaMah!==undefined)?d.icaMah:null;   // залишкова ємність, мА·год
+            $('chargeMah').textContent=rmah!==null?(rmah+' mAh'):'-- mAh';
+            $('chargeSub').textContent=(pct!==null?('заряд '+pct+'%'):'')+
+                (pct!==null?(' · '+(d.chargeSrc==='ICA'?'ICA':'напруга')):'');
+            if(rmah!==null){$('mahVal').value=rmah;$('mahNow').textContent=rmah+' мА·год';}
             const fill=$('battFill');
             fill.style.width=(pct!==null?pct:0)+'%';
             fill.style.background=pct===null?'#555':(pct<20?'#e74c3c':pct<50?'#f39c12':'#2ecc71');
@@ -405,6 +419,19 @@ async function setCapacity(){
     try{
         const r=await postForm('/api/setcapacity',{password:pw,cap:cap});
         toast(r.status==='success'?('✅ Ємність '+cap+'% записано'):('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+async function setMah(){
+    const pw=$('pwMah').value; if(!pw){toast('Введіть пароль','err');return}
+    const mah=parseInt($('mahVal').value); if(isNaN(mah)||mah<0){toast('Вкажіть мА·год','err');return}
+    if(!confirm('🔋 Записати залишкову ємність '+mah+' мА·год у DS2438? Незворотньо.'))return;
+    prog(true,'Запис мА·год...');
+    try{
+        const r=await postForm('/api/setmah',{password:pw,mah:mah});
+        toast(r.status==='success'?('✅ Записано ≈'+r.mah+' мА·год (ICA='+r.ica+')'):('Помилка: '+r.message),r.status==='success'?'ok':'err');
         if(r.status==='success')await refreshAll();
     }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);

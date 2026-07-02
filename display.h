@@ -65,9 +65,23 @@ extern bool hasSN2438;
   #define DISPLAY_USES_I2C 1
   #define DISP_W 128
   #define DISP_H 128
-  U8G2_SSD1327_MIDAS_128X128_F_SW_I2C u8g2_sw(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+  // Вариант "распайки" SSD1327 (см. settings.h). По умолчанию MIDAS.
+  #if   defined(SSD1327_WS)
+    #define SSD1327_SW U8G2_SSD1327_WS_128X128_F_SW_I2C
+    #define SSD1327_HW U8G2_SSD1327_WS_128X128_F_HW_I2C
+  #elif defined(SSD1327_EA)
+    #define SSD1327_SW U8G2_SSD1327_EA_W128128_F_SW_I2C
+    #define SSD1327_HW U8G2_SSD1327_EA_W128128_F_HW_I2C
+  #elif defined(SSD1327_ZJY)
+    #define SSD1327_SW U8G2_SSD1327_ZJY_128X128_F_SW_I2C
+    #define SSD1327_HW U8G2_SSD1327_ZJY_128X128_F_HW_I2C
+  #else
+    #define SSD1327_SW U8G2_SSD1327_MIDAS_128X128_F_SW_I2C
+    #define SSD1327_HW U8G2_SSD1327_MIDAS_128X128_F_HW_I2C
+  #endif
+  SSD1327_SW u8g2_sw(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
   #if defined(DISPLAY_HW_I2C)
-    U8G2_SSD1327_MIDAS_128X128_F_HW_I2C u8g2_hw(U8G2_R0, U8X8_PIN_NONE, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN);
+    SSD1327_HW u8g2_hw(U8G2_R0, U8X8_PIN_NONE, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN);
     static U8G2 *g_u8g2p = &u8g2_hw;
   #else
     static U8G2 *g_u8g2p = &u8g2_sw;
@@ -100,13 +114,22 @@ extern bool hasSN2438;
 // объекту (аппаратному либо запасному программному после fallback).
 #define u8g2 (*g_u8g2p)
 
-// Частота пробы аппаратной шины = рабочая частота дисплея.
+// Разрешённая частота шины I2C: ручная (KHZ>0) или авто-безопасная из драйвера
+// (SSD1327 — 100 кГц, остальные — 400 кГц). Вызывается ВСЕГДА (как в рабочей
+// версии), а не пропускается — так надёжнее и для HW, и как no-op для SW.
 #if DISPLAY_I2C_KHZ > 0
-  #define DISPLAY_PROBE_HZ (DISPLAY_I2C_KHZ * 1000UL)
+  #define DISPLAY_CLK_HZ (DISPLAY_I2C_KHZ * 1000UL)
 #elif defined(DISPLAY_SSD1327_128_I2C)
-  #define DISPLAY_PROBE_HZ 100000UL   // предел SSD1327
+  #define DISPLAY_CLK_HZ 100000UL   // предел SSD1327
 #else
-  #define DISPLAY_PROBE_HZ 400000UL
+  #define DISPLAY_CLK_HZ 400000UL
+#endif
+#define DISPLAY_PROBE_HZ DISPLAY_CLK_HZ
+
+// SSD1327 (оттенки серого) на некоторых панелях стартует тускло/пусто —
+// задаём заметный контраст по умолчанию, если пользователь не указал свой.
+#if defined(DISPLAY_SSD1327_128_I2C) && !defined(DISPLAY_CONTRAST)
+  #define DISPLAY_CONTRAST 0x7F
 #endif
 
 // Разметка меню под разрешение экрана: шрифты, шапка, строки тела (ROW),
@@ -234,11 +257,7 @@ inline void displayInit() {
 #endif
 #if defined(DISPLAY_USES_I2C)
     u8g2.setI2CAddress(DISPLAY_I2C_ADDR << 1);
-  #if DISPLAY_I2C_KHZ > 0
-    // Ручное задание частоты. 0 (по умолчанию) = авто: U8g2 берёт безопасный
-    // максимум из драйвера дисплея (SSD1327 держит только 100 кГц!).
-    u8g2.setBusClock(DISPLAY_I2C_KHZ * 1000UL);
-  #endif
+    u8g2.setBusClock(DISPLAY_CLK_HZ);   // всегда (для HW важно, для SW no-op)
 #endif
     u8g2.begin();
 #if defined(DISPLAY_ST7567_SPI)
@@ -249,6 +268,7 @@ inline void displayInit() {
     u8g2.setContrast(DISPLAY_CONTRAST);
 #endif
     u8g2.setFont(BODY_FONT);
+    Serial.printf("DISPLAY: %dx%d, I2C clock=%lu Hz\n", (int)DISP_W, (int)DISP_H, (unsigned long)DISPLAY_CLK_HZ);
 }
 
 // Стартовая заставка: тризуб + "Національна Гвардія України".
@@ -449,75 +469,72 @@ inline bool batteryGenuine(const char **reason) {
 
 // ---------- страницы меню ----------
 
+// Остаточная ёмкость (заряд) в мА·ч из регистра ICA (DS2438 байт 12).
+inline int batteryRemainingMah() {
+    if (!hasDump2438) return -1;
+    return (int)(batteryDump2438[12] * DS2438_MAH_PER_LSB);
+}
+
 inline void drawPageMain() {
     char buf[40];
     const char *src;
     int pct = batteryPercent(&src);
+    int mah = batteryRemainingMah();            // остаток в мА·год (главный показатель)
 
     drawHeader("Moto IMPRES");
 
 #if DISP_H >= 128
-    // 128x128: крупная иконка и проценты, ниже — параметры и подсказка.
-    drawBatteryIcon(0, 22, 60, 22, pct);
+    // 128x128: крупно — остаток в мА·год, ниже — %, напряжение, IP.
+    drawBatteryIcon(0, 22, 56, 22, pct);
     u8g2.setFont(u8g2_font_10x20_tr);
-    if (pct >= 0) snprintf(buf, sizeof(buf), "%d%%", pct);
-    else          snprintf(buf, sizeof(buf), "--%%");
-    u8g2.drawStr(70, 41, buf);
+    if (mah >= 0) snprintf(buf, sizeof(buf), "%d", mah);
+    else          snprintf(buf, sizeof(buf), "--");
+    u8g2.drawStr(62, 40, buf);
     u8g2.setFont(BODY_FONT);
-    u8g2.drawUTF8(70, 56, src);                  // источник данных заряда
-
+    u8g2.drawUTF8(62, 54, "mAh");
+    if (pct >= 0) snprintf(buf, sizeof(buf), "заряд %d%% (%s)", pct, src);
+    else          snprintf(buf, sizeof(buf), "заряд -- (%s)", src);
+    u8g2.drawUTF8(0, 70, buf);
     if (hasDump2438) {
         uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
         int16_t traw = ((int16_t)((batteryDump2438[2] << 8) | batteryDump2438[1])) >> 3;
         snprintf(buf, sizeof(buf), "%.2f V   %.1f C", vraw * 0.01f, traw * 0.03125f);
-    } else {
-        snprintf(buf, sizeof(buf), "DS2438: немає даних");
-    }
-    u8g2.drawUTF8(0, 76, buf);
-
-    snprintf(buf, sizeof(buf), "IP: %s", ESP_IP);
-    u8g2.drawUTF8(0, 92, buf);
-    u8g2.drawUTF8(0, 106, "[>] довго - зчитати");
+    } else snprintf(buf, sizeof(buf), "DS2438: немає даних");
+    u8g2.drawUTF8(0, 84, buf);
+    snprintf(buf, sizeof(buf), "IP: %s", ESP_IP);        u8g2.drawUTF8(0, 98, buf);
+    u8g2.drawUTF8(0, 112, "[>] довго - зчитати");
 #elif DISP_W < 100
-    // Nokia 84x48: компактно, без источника данных (не влезает).
-    drawBatteryIcon(0, 12, 38, 12, pct);
+    // Nokia 84x48: компактно.
+    drawBatteryIcon(0, 12, 34, 12, pct);
     u8g2.setFont(u8g2_font_6x12_tr);
-    if (pct >= 0) snprintf(buf, sizeof(buf), "%d%%", pct);
-    else          snprintf(buf, sizeof(buf), "--%%");
-    u8g2.drawStr(46, 22, buf);
-
+    if (mah >= 0) snprintf(buf, sizeof(buf), "%dmAh", mah);
+    else          snprintf(buf, sizeof(buf), "--");
+    u8g2.drawStr(40, 22, buf);
     u8g2.setFont(BODY_FONT);
+    if (pct >= 0) snprintf(buf, sizeof(buf), "заряд %d%%", pct); else snprintf(buf, sizeof(buf), "заряд --");
+    u8g2.drawUTF8(0, 31, buf);
     if (hasDump2438) {
         uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
-        int16_t traw = ((int16_t)((batteryDump2438[2] << 8) | batteryDump2438[1])) >> 3;
-        snprintf(buf, sizeof(buf), "%.2fV %.1fC", vraw * 0.01f, traw * 0.03125f);
-    } else {
-        snprintf(buf, sizeof(buf), "2438: немає");
-    }
-    u8g2.drawUTF8(0, 30, buf);
-    snprintf(buf, sizeof(buf), "%s", ESP_IP);
-    u8g2.drawUTF8(0, 38, buf);
+        snprintf(buf, sizeof(buf), "%.2fV  %s", vraw * 0.01f, ESP_IP);
+    } else snprintf(buf, sizeof(buf), "%s", ESP_IP);
+    u8g2.drawUTF8(0, 39, buf);
 #else
-    // 128x64.
-    drawBatteryIcon(0, 13, 52, 14, pct);
-    u8g2.setFont(u8g2_font_6x12_tr);
-    if (pct >= 0) snprintf(buf, sizeof(buf), "%d%%", pct);
-    else          snprintf(buf, sizeof(buf), "--%%");
-    u8g2.drawStr(58, 24, buf);
+    // 128x64: крупно — остаток в мА·год, справа %, ниже напряжение/темп, IP.
+    drawBatteryIcon(0, 13, 46, 14, pct);
+    u8g2.setFont(u8g2_font_7x13B_tr);
+    if (mah >= 0) snprintf(buf, sizeof(buf), "%d mAh", mah);
+    else          snprintf(buf, sizeof(buf), "-- mAh");
+    u8g2.drawStr(52, 25, buf);
     u8g2.setFont(BODY_FONT);
-    u8g2.drawUTF8(90, 23, src);                  // источник данных заряда
-
+    if (pct >= 0) snprintf(buf, sizeof(buf), "заряд %d%% (%s)", pct, src);
+    else          snprintf(buf, sizeof(buf), "заряд -- (%s)", src);
+    u8g2.drawUTF8(0, 38, buf);
     if (hasDump2438) {
         uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
         int16_t traw = ((int16_t)((batteryDump2438[2] << 8) | batteryDump2438[1])) >> 3;
-        snprintf(buf, sizeof(buf), "%.2f V   %.1f C", vraw * 0.01f, traw * 0.03125f);
-    } else {
-        snprintf(buf, sizeof(buf), "DS2438: немає даних");
-    }
-    u8g2.drawUTF8(0, 40, buf);
-
-    snprintf(buf, sizeof(buf), "IP: %s", ESP_IP);
-    u8g2.drawUTF8(0, 49, buf);
+        snprintf(buf, sizeof(buf), "%.2f V  %.1f C  %s", vraw * 0.01f, traw * 0.03125f, ESP_IP);
+    } else snprintf(buf, sizeof(buf), "DS2438 нема  %s", ESP_IP);
+    u8g2.drawUTF8(0, 48, buf);
 #endif
 
     drawFooter();

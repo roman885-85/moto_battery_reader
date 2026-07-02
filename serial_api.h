@@ -115,6 +115,20 @@ static void serWrite38(const String &arg) {
     sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"write failed\"}");
 }
 
+// Изменить остаточную ёмкость (заряд) в мА·ч -> регистр ICA DS2438.
+static void serSetMah(const String &arg) {
+    if (!hasDump2438) { sResp("{\"ok\":false,\"err\":\"read first\"}"); return; }
+    long mah = arg.toInt();
+    long ica = (long)(mah / DS2438_MAH_PER_LSB + 0.5f);
+    if (ica < 0) ica = 0; if (ica > 255) ica = 255;
+    batteryDump2438[12] = (uint8_t)ica;
+    ledSet(LED_WRITE); displayShow("USB ЄМН mAh");
+    bool ok = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (ok) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+    ledSet(ok ? LED_OK : LED_ERROR); displayShow(ok ? "USB mAh OK" : "USB mAh ЗБІЙ");
+    sResp(ok ? (String("{\"ok\":true,\"ica\":") + ica + "}") : "{\"ok\":false,\"err\":\"write failed\"}");
+}
+
 static void serSetCap(const String &arg) {
     if (!hasDump) { sResp("{\"ok\":false,\"err\":\"read first\"}"); return; }
     int cap = arg.toInt(); if (cap < 0) cap = 0; if (cap > 100) cap = 100;
@@ -159,6 +173,7 @@ static void serialExec(const String &line) {
                                          ledSet(ok ? LED_OK : LED_ERROR); displayShow(ok ? "USB РЕМОНТ OK" : "USB РЕМОНТ ЗБІЙ");
                                          sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"write failed\"}"); } }
     else if (cmd == "SETCAP")     serSetCap(arg);
+    else if (cmd == "SETMAH")     serSetMah(arg);
     else                          sResp(String("{\"ok\":false,\"err\":\"unknown cmd '") + cmd + "'\"}");
 }
 

@@ -136,9 +136,15 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <button class="btn b-warn" onclick="cmdConfirm('RESET','♻️ Скинути лічильники і записати у чіп?')">♻️ СКИНУТИ</button>
     </div>
     <div class="card">
-      <h2>🔋 Змінити ємність (0–100 %)</h2>
+      <h2>🔋 Залишкова ємність (мА·год)</h2>
+      <div class="note i">ℹ️ Рівень заряду в мА·год у регістр ICA (DS2438).</div>
+      <div class="row"><span class="k">Ємність, мА·год</span><input type="number" id="mahv" min="0" max="5000" value="0" style="width:110px;text-align:center"></div>
+      <button class="btn b-warn" onclick="setMah()">💾 ЗАПИСАТИ мА·год</button>
+    </div>
+    <div class="card">
+      <h2>🔧 Знос/здоров'я (0–100 %)</h2>
       <div class="row"><span class="k">Ємність, %</span><input type="number" id="capv" min="0" max="100" value="100" style="width:90px;text-align:center"></div>
-      <button class="btn b-warn" onclick="setCap()">💾 ЗАПИСАТИ ЄМНІСТЬ</button>
+      <button class="btn b-warn" onclick="setCap()">💾 ЗАПИСАТИ %</button>
     </div>
     <div class="card">
       <h2>🛠 Ремонт цілісності</h2>
@@ -241,10 +247,12 @@ async function refresh(){
   try{
     const d=await cmd('INFO');
     if(!d.ok){return;}
-    // overview
+    // overview: залишкова ємність у мА·год (головне), заряд % — дрібно
     const pct=(typeof d.charge==='number'&&d.charge>=0)?d.charge:null;
-    $('pct').textContent=pct!==null?pct+'%':'--%';
-    $('csrc').textContent=pct!==null?('джерело: '+(d.chargeSrc==='ICA'?'ICA (DS2438)':'напруга')):'';
+    const rmah=(d.icaMah!==undefined)?d.icaMah:null;
+    $('pct').textContent=rmah!==null?(rmah+' mAh'):'-- mAh';
+    $('csrc').textContent=(pct!==null?('заряд '+pct+'% · '+(d.chargeSrc==='ICA'?'ICA':'напруга')):'');
+    if(rmah!==null)$('mahv').value=rmah;
     $('fill').style.width=(pct!==null?pct:0)+'%';
     $('fill').style.background=pct===null?'#555':(pct<20?'#e74c3c':pct<50?'#f39c12':'#2ecc71');
     if(d.voltage!==undefined){$('volt').textContent=d.voltage.toFixed(2)+' В';$('dV').textContent=d.voltage.toFixed(2)+' В';}
@@ -274,6 +282,13 @@ async function doRead(){ if(!connected){toast('Спочатку підключі
 async function cmdConfirm(c,q){ if(!connected){toast('Підключіться');return;} if(!confirm(q))return;
   setBusy(true); toast('Виконання...');
   try{ const r=await cmd(c,15000); toast(r.ok?'✅ Готово':'Помилка: '+(r.err||'')); await refresh(); }
+  catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
+
+async function setMah(){ if(!connected){toast('Підключіться');return;}
+  const v=parseInt($('mahv').value); if(isNaN(v)||v<0){toast('Вкажіть мА·год');return;}
+  if(!confirm('Записати залишкову ємність '+v+' мА·год?'))return;
+  setBusy(true);
+  try{ const r=await cmd('SETMAH '+v,15000); toast(r.ok?('✅ Записано (ICA='+r.ica+')'):'Помилка: '+(r.err||'')); await refresh(); }
   catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
 
 async function setCap(){ if(!connected){toast('Підключіться');return;}

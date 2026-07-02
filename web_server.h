@@ -747,6 +747,29 @@ void handleSetCapacity() {
            : "{\"status\":\"error\",\"message\":\"Write failed\"}");
 }
 
+// Изменить ОСТАТОЧНУЮ ёмкость (заряд) в мА·ч и записать в DS2438. Пишет регистр
+// ICA (байт 12): ICA = mAh / (0.4882/Rsense), 0..255. Это то, что рация
+// показывает как уровень заряда — теперь задаётся в мА·ч, а не в процентах.
+void handleSetMah() {
+    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
+        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
+    }
+    if (!hasDump2438) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return; }
+    if (!server.hasArg("mah")) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No mah\"}"); return; }
+    long mah = server.arg("mah").toInt();
+    long ica = (long)(mah / DS2438_MAH_PER_LSB + 0.5f);
+    if (ica < 0) ica = 0; if (ica > 255) ica = 255;
+    batteryDump2438[12] = (uint8_t)ica;
+    ledSet(LED_WRITE); displayShow("ЗАПИС ЄМН mAh");
+    bool ok = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (ok) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+    displayShow(ok ? "ЄМН mAh OK" : "ЄМН mAh ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    String m = String("{\"status\":\"") + (ok ? "success" : "error") +
+               "\",\"ica\":" + ica + ",\"mah\":" + (long)(ica * DS2438_MAH_PER_LSB) + "}";
+    server.send(ok ? 200 : 500, "application/json", m);
+}
+
 // Универсальная запись сырых байт из браузера. Аргументы: target=2433|2438,
 // data=hex-строка (512 или 64 байта), autofix=1 (для 2433 — пересчёт контр.
 // суммы заголовка и синхронизация зеркала). Позволяет менять ЛЮБЫЕ данные и
@@ -861,6 +884,7 @@ void setupWebServer() {
     server.on("/api/reset", HTTP_POST, handleResetBattery);
     server.on("/api/repair", HTTP_POST, handleRepair);          // ремонт целостности
     server.on("/api/setcapacity", HTTP_POST, handleSetCapacity); // изменить ёмкость %
+    server.on("/api/setmah", HTTP_POST, handleSetMah);           // изменить остаток, мА·ч
     server.on("/api/writehex", HTTP_POST, handleWriteHex);       // сырая запись из редактора
 
     // Captive-portal: все прочие URL -> редирект на главную (авто-открытие страницы).

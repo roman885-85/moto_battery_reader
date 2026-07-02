@@ -8,6 +8,7 @@
 #include "battery_reader.h"
 #include "display.h"
 #include "web_server.h"
+#include "serial_api.h"
 
 // Глобальные объекты
 WebServer server(HTTP_PORT);
@@ -112,6 +113,9 @@ void loop() {
     // Обработка всех клиентских запросов
     // WebServer автоматически обрабатывает multipart upload в handleClient()
     server.handleClient();
+
+    // Командный протокол по USB-Serial (Windows-клиент). Работает параллельно с Wi-Fi.
+    serialTask();
 
     // Опрос кнопки перелистывания меню
     displayHandleButton();

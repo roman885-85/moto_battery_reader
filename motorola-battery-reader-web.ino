@@ -4,13 +4,15 @@
 #include <DNSServer.h>
 #include <SPIFFS.h>
 #include "settings.h"
+#include "leds.h"
 #include "battery_reader.h"
 #include "display.h"
 #include "web_server.h"
+#include "serial_api.h"
 
-// Глобальные объекты
+// Глобальні об'єкти
 WebServer server(HTTP_PORT);
-DNSServer dnsServer;                 // captive-portal: авто-открытие страницы
+DNSServer dnsServer;                 // captive-portal: авто-відкриття сторінки
 BatteryReader battery(DS_PIN, PULLUP_PIN);
 
 uint8_t batteryDump[DUMP_SIZE];
@@ -19,7 +21,7 @@ bool hasDump = false;
 uint8_t batteryDump2438[DS2438_MEM_SIZE];
 bool hasDump2438 = false;
 
-// Серийный номер (лазерный 1-Wire ROM-ID) чипа DS2438 из последнего чтения
+// Серійний номер (лазерний 1-Wire ROM-ID) чипа DS2438 з останнього читання
 uint8_t chipSN2438[8] = {0};
 bool hasSN2438 = false;
 
@@ -28,28 +30,25 @@ void setup() {
     Serial.println("\n\nMotorola Battery Reader Web Server (AP Mode)");
     Serial.println("==============================================");
 
-    // Инициализация дисплея и кнопок меню + стартовая заставка
+    // Ініціалізація дисплея і кнопок меню + стартова заставка
     displayInit();
     displayButtonSetup();
     displaySplash();
     delay(2500);
     displaySetStatus("ЗАПУСК...");
 
-    // Настройка светодиодов
-    pinMode(LED_GREEN_PIN, OUTPUT);
-    pinMode(LED_RED_PIN, OUTPUT);
-    digitalWrite(LED_GREEN_PIN, LOW);
-    digitalWrite(LED_RED_PIN, LOW);
-    
-    // Инициализация батареи
+    // Налаштування світлодіодів (неблокуюча індикація)
+    ledInit();
+
+    // Ініціалізація батареї
     if (!battery.begin()) {
         Serial.println("ERROR: Failed to initialize battery reader");
-        digitalWrite(LED_RED_PIN, HIGH);
+        ledWrite(false, true);   // постійний червоний — фатальна помилка
         while(1) delay(1000);
     }
     Serial.println("Battery reader initialized");
     
-    // Создаем точку доступа
+    // Створюємо точку доступу
     Serial.printf("Creating Access Point: %s\n", AP_SSID);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
     
@@ -57,20 +56,15 @@ void setup() {
     Serial.print("AP IP Address: ");
     Serial.println(IP);
 
-    // Captive-portal DNS: отвечаем адресом ESP на ЛЮБОЙ домен, чтобы телефон/ПК
-    // при подключении к Wi-Fi сразу предложил открыть нашу страницу.
+    // Captive-portal DNS: відповідаємо адресою ESP на будь-який домен, щоб телефон/ПК
+    // при підключенні до Wi-Fi одразу запропонував відкрити нашу сторінку.
     dnsServer.start(53, "*", IP);
     Serial.println("Captive-portal DNS started");
+
+    // Короткий зелений сигнал успішного старта AP
+    ledSet(LED_OK);
     
-    // Мигаем зеленым при успешном создании AP
-    for (int i = 0; i < 5; i++) {
-        digitalWrite(LED_GREEN_PIN, HIGH);
-        delay(100);
-        digitalWrite(LED_GREEN_PIN, LOW);
-        delay(100);
-    }
-    
-    // Загружаем сохраненные дампы из SPIFFS
+    // Завантажуємо збережені дампи з SPIFFS
     if (SPIFFS.begin(true)) {
         File file = SPIFFS.open("/dump.bin", "r");
         if (file) {
@@ -95,7 +89,7 @@ void setup() {
         Serial.println("SPIFFS mount failed!");
     }
     
-    // Запускаем веб-сервер
+    // Запускаємо веб-сервер
     setupWebServer();
     
     Serial.println("\n==============================================");
@@ -105,47 +99,45 @@ void setup() {
     Serial.printf("Open browser: http://%s\n", ESP_IP);
     Serial.println("==============================================");
     
-    // Долгий зеленый сигнал готовности
-    digitalWrite(LED_GREEN_PIN, HIGH);
-    delay(1000);
-    digitalWrite(LED_GREEN_PIN, LOW);
+    // Переходимо в режим очікування (зелений «пульс» раз на 3 с)
+    ledSet(LED_IDLE);
 
     // Готовність на дисплеї
     displayShow("ГОТОВО");
 }
 
 void loop() {
-    // Captive-portal: обрабатываем DNS-запросы (все домены -> 192.168.4.1).
+    // Captive-portal: обробляємо DNS-запити (усі домени -> 192.168.4.1).
     dnsServer.processNextRequest();
 
-    // Обработка всех клиентских запросов
-    // WebServer автоматически обрабатывает multipart upload в handleClient()
+    // Обробка усіх клієнтських запитів
+    // WebServer автоматично обробляє multipart upload в handleClient()
     server.handleClient();
 
-    // Опрос кнопки перелистывания меню
+    // Командний протокол по USB-Serial (Windows-клієнт). Працює паралельно з Wi-Fi.
+    serialTask();
+
+    // Опитування кнопки перегортання меню
     displayHandleButton();
 
-    // После полного цикла перелистывания (возврат на 1-ю страницу) —
-    // перечитываем аккумулятор, чтобы обновить данные.
+    // Після повного циклу перегортання (повернення на 1-ю сторінку) —
+    // перечитуємо акумулятор, щоб оновити дані.
     if (displayConsumeReadRequest()) {
         bool ok2433, ok2438;
         readAllChips(ok2433, ok2438);
     }
 
-    // Подтверждённый из меню сброс счётчиков/износа (рекалибровка).
-    if (displayConsumeResetRequest()) {
-        performReset();
-    }
+    // Підтверджена в меню дисплея дія: 0=Скидання 1=Ремонт 2=Очистка 3=Стерти2433.
+    int act = displayConsumeActionRequest();
+    if      (act == 0) performReset();
+    else if (act == 1) performRepair();
+    else if (act == 2) performFactoryClean();
+    else if (act == 3) performWipe2433();
 
-    // Дисплей перерисовывается по событиям (нажатие кнопки, чтение/запись),
-    // поэтому цикл не блокируется медленным рендером и кнопки отзывчивы.
+    // Дисплей перемальовується по подіям (натискання кнопки, читання/запис),
+    // тому цикл не блокується повільним рендером і кнопки чутливі.
 
-    // Индикация работы: неблокирующий зелёный миг ~раз в 3 секунды.
-    static unsigned long lastBlink = 0;
-    static bool blinkOn = false;
-    if (!blinkOn && millis() - lastBlink > 3000) {
-        digitalWrite(LED_GREEN_PIN, HIGH); blinkOn = true; lastBlink = millis();
-    } else if (blinkOn && millis() - lastBlink > 30) {
-        digitalWrite(LED_GREEN_PIN, LOW); blinkOn = false;
-    }
+    // Неблокуюча індикація світлодіодами (пульс очікування / читання / запис
+    // / успіх / помилка — режим задають обробники через ledSet()).
+    ledTask();
 }

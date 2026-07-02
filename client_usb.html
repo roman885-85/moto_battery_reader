@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Moto IMPRES — USB-клієнт</title>
+<style>
+:root{--bg:#12161c;--card:#1b212b;--line:#2a323f;--txt:#e7ecf3;--mut:#8b97a7;
+ --grn:#2ecc71;--red:#e74c3c;--org:#f39c12;--blu:#3aa0ff;--gold:#d4af37}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;
+ background:var(--bg);color:var(--txt);font-size:15px}
+header{background:linear-gradient(180deg,#1b2430,#141a22);padding:12px 16px;border-bottom:1px solid var(--line);
+ display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:5}
+header h1{font-size:1.05em;margin:0;color:var(--gold)}
+.dot{width:11px;height:11px;border-radius:50%;background:var(--red);display:inline-block;margin-right:6px}
+.dot.on{background:var(--grn)}
+.wrap{max-width:820px;margin:0 auto;padding:12px}
+.tabs{display:flex;gap:6px;margin:10px 0}
+.tab{flex:1;text-align:center;padding:10px;background:var(--card);border-radius:10px;cursor:pointer;color:var(--mut);border:1px solid var(--line)}
+.tab.active{color:var(--txt);border-color:var(--gold)}
+.page{display:none}.page.active{display:block}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.card h2{font-size:1em;margin:0 0 10px}
+.row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);gap:10px}
+.row:last-child{border-bottom:none}.k{color:var(--mut)}.v{font-weight:600;text-align:right;word-break:break-all}
+.btn{border:none;border-radius:10px;padding:11px 14px;font-size:.95em;font-weight:600;color:#fff;cursor:pointer;margin:4px 0;width:100%}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.b-pri{background:var(--blu)}.b-ok{background:#2a9d5a}.b-warn{background:var(--org)}.b-dng{background:var(--red)}.b-inf{background:#40566e}
+.btns{display:flex;gap:8px;flex-wrap:wrap}.btns .btn{flex:1;min-width:130px;width:auto}
+.note{font-size:.82em;border-radius:8px;padding:8px 10px;margin:8px 0;line-height:1.35}
+.note.i{background:#16324a;color:#bfe0ff}.note.w{background:#4a2f10;color:#ffd9a8}
+input,select,textarea{background:#0e1218;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:8px}
+input,select{width:auto}.pw{width:100%;margin:6px 0}
+.bar{font-size:.8em;color:var(--mut)}
+.badge{padding:2px 8px;border-radius:20px;font-size:.85em}.bo{background:#123d24;color:var(--grn)}.bb{background:#4a1512;color:#ff9b8f}
+.zone{font-weight:700;font-size:.88em;padding:8px 11px;border-radius:8px;margin:16px 0 8px}
+.zone.zi{background:#16324a;color:#bfe0ff}.zone.zd{background:#4a1512;color:#ff9b8f;border:1px solid var(--red)}
+#log{font-family:monospace;font-size:.72em;background:#0e1218;border-radius:8px;padding:8px;height:120px;overflow:auto;white-space:pre-wrap;color:#8fb7d9}
+.charge{display:flex;align-items:center;gap:14px}
+.batt{width:110px;height:44px;border:3px solid var(--txt);border-radius:6px;position:relative}
+.batt:after{content:'';position:absolute;right:-8px;top:12px;width:5px;height:14px;background:var(--txt);border-radius:0 3px 3px 0}
+.fill{height:100%;border-radius:3px;background:#555;transition:.3s}
+.pct{font-size:1.8em;font-weight:700}
+</style>
+</head>
+<body>
+<header>
+  <h1>🔋 Moto IMPRES — USB</h1>
+  <span class="bar"><span class="dot" id="dot"></span><span id="st">Не підключено</span></span>
+  <div style="flex:1"></div>
+  <button class="btn b-pri" style="width:auto" id="btnConn" onclick="toggleConn()">🔌 Підключити</button>
+</header>
+
+<div class="wrap">
+  <div id="unsupported" class="note w" style="display:none">
+    ⚠️ Web Serial API недоступний. Відкрийте цей файл у <b>Chrome</b> або <b>Edge</b>.
+    Якщо не працює з <code>file://</code> — покладіть файл у теку й запустіть
+    <code>python -m http.server</code>, відкрийте <code>http://localhost:8000/client_usb.html</code>.
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" onclick="tab(this,'ov')">📊 Огляд</div>
+    <div class="tab" onclick="tab(this,'dt')">🔬 Дані</div>
+    <div class="tab" onclick="tab(this,'fw')">📤 Прошивка</div>
+  </div>
+
+  <!-- OVERVIEW -->
+  <div class="page active" id="ov">
+    <div class="card">
+      <h2>🔋 Заряд</h2>
+      <div class="charge">
+        <div class="batt"><div class="fill" id="fill"></div></div>
+        <div><div class="pct" id="pct">--%</div><div class="bar" id="csrc"></div></div>
+      </div>
+      <div class="row" style="margin-top:10px"><span class="k">Напруга</span><span class="v" id="volt">—</span></div>
+      <div class="row"><span class="k">Температура</span><span class="v" id="temp">—</span></div>
+      <div class="btns" style="margin-top:8px">
+        <button class="btn b-pri" onclick="doRead()">🔍 Зчитати АКБ</button>
+        <button class="btn b-inf" onclick="refresh()">🔄 Оновити</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>🪪 Батарея</h2>
+      <div class="row"><span class="k">Модель</span><span class="v" id="model">—</span></div>
+      <div class="row"><span class="k">Ємність</span><span class="v" id="cap">—</span></div>
+      <div class="row"><span class="k">Знос</span><span class="v" id="wear">—</span></div>
+      <div class="row"><span class="k">Циклів</span><span class="v" id="cyc">—</span></div>
+      <div class="row"><span class="k">Справжність</span><span class="v" id="auth">—</span></div>
+      <div class="row"><span class="k">Цілісність</span><span class="v" id="integ">—</span></div>
+    </div>
+  </div>
+
+  <!-- DATA -->
+  <div class="page" id="dt">
+    <div class="card">
+      <h2>🪪 Модель / Серійний</h2>
+      <div class="row"><span class="k">Модель</span><span class="v" id="dModel">—</span></div>
+      <div class="row"><span class="k">Серійний (DS2438)</span><span class="v" style="font-size:.85em" id="dSer">—</span></div>
+    </div>
+    <div class="card">
+      <h2>🔬 DS2438</h2>
+      <div class="row"><span class="k">Напруга</span><span class="v" id="dV">—</span></div>
+      <div class="row"><span class="k">Струм</span><span class="v" id="dI">—</span></div>
+      <div class="row"><span class="k">Температура</span><span class="v" id="dT">—</span></div>
+      <div class="row"><span class="k">Залишок (ICA)</span><span class="v" id="dICA">—</span></div>
+      <div class="row"><span class="k">Заряджено (CCA)</span><span class="v" id="dCCA">—</span></div>
+      <div class="row"><span class="k">Розряджено (DCA)</span><span class="v" id="dDCA">—</span></div>
+    </div>
+    <div class="card"><h2>📋 Дамп DS2438 (64 Б)</h2><div id="h38" style="font-family:monospace;font-size:.75em;word-break:break-all">—</div></div>
+    <div class="card"><h2>📋 Дамп DS2433 (512 Б)</h2><div id="h33" style="font-family:monospace;font-size:.75em;word-break:break-all">—</div></div>
+  </div>
+
+  <!-- FIRMWARE -->
+  <div class="page" id="fw">
+    <div class="zone zi">📦 Крок 1 — резервна копія (робіть ЗАВЖДИ перед записом)</div>
+    <div class="card">
+      <h2>💾 Зчитати та зберегти</h2>
+      <div class="btns">
+        <button class="btn b-pri" onclick="doRead()">🔍 Зчитати АКБ</button>
+        <button class="btn b-ok" onclick="download('GET33','ds2433',512)">⬇ Копія DS2433</button>
+        <button class="btn b-ok" onclick="download('GET38','ds2438',64)">⬇ Копія DS2438</button>
+      </div>
+      <div class="note i">ℹ️ Спочатку «Зчитати АКБ», потім збережіть обидві копії — вони повернуть АКБ у попередній стан.</div>
+    </div>
+
+    <div class="zone zi">🔧 Обслуговування — безпечно для ідентичності</div>
+    <div class="card">
+      <h2>♻️ Скидання для рекалібрування</h2>
+      <div class="note i">Обнуляє лічильники/знос, калібрування зберігається. Потім — калібрування на IMPRES-ЗП.</div>
+      <button class="btn b-warn" onclick="cmdConfirm('RESET','♻️ Скинути лічильники і записати у чіп?')">♻️ СКИНУТИ</button>
+    </div>
+    <div class="card">
+      <h2>🛠 Ремонт цілісності</h2>
+      <div class="note i">Суми (0x41/0x5A) + дзеркало калібрування з уцілілого DS2438. Якщо рація «не бачить» АКБ.</div>
+      <button class="btn b-warn" onclick="cmdConfirm('REPAIR','🛠 Відновити цілісність і записати?')">🛠 ВІДНОВИТИ</button>
+    </div>
+    <div class="card">
+      <h2>🔋 Заряд у мА·год</h2>
+      <div class="note i">Рівень заряду (регістр ICA DS2438).</div>
+      <div class="row"><span class="k">мА·год</span><input type="number" id="mahv" min="0" max="5000" value="0" style="width:110px;text-align:center"></div>
+      <button class="btn b-warn" onclick="setMah()">💾 ЗАПИСАТИ мА·год</button>
+    </div>
+    <div class="card">
+      <h2>🩺 Знос/здоров'я (0–100 %)</h2>
+      <div class="row"><span class="k">Ємність, %</span><input type="number" id="capv" min="0" max="100" value="100" style="width:90px;text-align:center"></div>
+      <button class="btn b-warn" onclick="setCap()">💾 ЗАПИСАТИ %</button>
+    </div>
+
+    <div class="zone zd">⛔ НЕБЕЗПЕЧНА ЗОНА — незворотні операції. Спочатку копія!</div>
+    <div class="card">
+      <h2>🧹 Очистити (крім критичних)</h2>
+      <div class="note w">⚠️ Стирає все використання/історію/статистику. Зберігає модель/серійний/ID/калібрування.</div>
+      <button class="btn b-dng" onclick="cmdConfirm('CLEAN','🧹 Стерти всі дані використання, лишивши ID/калібрування?')">🧹 ОЧИСТИТИ</button>
+    </div>
+    <div class="card">
+      <h2>📤 Відновлення / запис DS2433 (512 Б)</h2>
+      <div class="note w">⚠️ Запис завідомо справного дампа тієї ж моделі — оживляє стерту АКБ. Чужа модель зіпсує.</div>
+      <input type="file" id="f33" accept=".bin">
+      <button class="btn b-dng" onclick="writeFile('f33',512,'WRITE33')">⚡ ЗАПИСАТИ DS2433</button>
+    </div>
+    <div class="card">
+      <h2>🔬 Запис DS2438 (64 Б)</h2>
+      <div class="note w">⚠️ Зазвичай не потрібно окремо.</div>
+      <input type="file" id="f38" accept=".bin">
+      <button class="btn b-dng" onclick="writeFile('f38',64,'WRITE38')">⚡ ЗАПИСАТИ DS2438</button>
+    </div>
+    <div class="card" style="border-color:#e74c3c">
+      <h2>🔥 ПОВНЕ стирання DS2433 (крайній випадок)</h2>
+      <div class="note w">🛑 Стирає ВЕСЬ DS2433 у 0xFF: модель, серійний/ID, калібрування. АКБ НЕ ПРАЦЮВАТИМЕ,
+        доки не запишете еталонний дамп тієї ж моделі. DS2438 не чіпається.</div>
+      <button class="btn b-dng" style="background:#c0392b" onclick="wipe33()">🔥 СТЕРТИ DS2433 ПОВНІСТЮ</button>
+    </div>
+    <div class="card">
+      <h2>✏️ Редактор байтів</h2>
+      <div class="note w">⚠️ Пряма правка. Автовиправлення чинить суму заголовка DS2433 і дзеркало.</div>
+      <div class="row"><span class="k">Мікросхема</span>
+        <select id="hxT"><option value="33">DS2433 (512 Б)</option><option value="38">DS2438 (64 Б)</option></select>
+        <button class="btn b-inf" style="width:auto;padding:8px 12px" onclick="hxLoad()">↻ Завантажити</button></div>
+      <textarea id="hxD" spellcheck="false" style="width:100%;height:140px;font-family:monospace;font-size:.78em;margin-top:8px"></textarea>
+      <label style="display:block;margin:6px 0"><input type="checkbox" id="hxFix" checked> Автовиправлення (DS2433)</label>
+      <button class="btn b-dng" onclick="hxWrite()">⚡ ЗАПИСАТИ БАЙТИ</button>
+    </div>
+    <div class="card"><h2>📜 Журнал обміну</h2><div id="log"></div></div>
+  </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+let port=null, writer=null, reader=null, connected=false;
+let rxBuf='', pending=null;   // pending: {resolve,reject,timer}
+
+function tab(el,id){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  el.classList.add('active');$(id).classList.add('active');}
+function log(s){const l=$('log');l.textContent+=s+'\n';l.scrollTop=l.scrollHeight;}
+function setBusy(b){document.querySelectorAll('.btn').forEach(x=>{if(x.id!=='btnConn')x.disabled=b;});}
+
+if(!('serial' in navigator)) $('unsupported').style.display='block';
+
+async function toggleConn(){ connected? disconnect() : connect(); }
+
+async function connect(){
+  try{
+    port=await navigator.serial.requestPort();
+    await port.open({baudRate:115200});
+    const dec=new TextDecoderStream();
+    port.readable.pipeTo(dec.writable).catch(()=>{});
+    reader=dec.readable.getReader();
+    const enc=new TextEncoderStream();
+    enc.readable.pipeTo(port.writable).catch(()=>{});
+    writer=enc.writable.getWriter();
+    connected=true; $('dot').classList.add('on'); $('st').textContent='Підключення...';
+    $('btnConn').textContent='⏏ Відключити';
+    readLoop();
+    log('> порт відкрито, очікування завантаження ESP32 (1.5 с)...');
+    await new Promise(r=>setTimeout(r,1600));  // ESP32 перезагружается при открытии порта
+    const p=await cmd('PING',3000).catch(()=>null);
+    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')'; await refresh(); }
+    else { $('st').textContent='Немає відповіді (перевірте порт/швидкість)'; }
+  }catch(e){ log('! '+e.message); $('st').textContent='Помилка: '+e.message; disconnect(); }
+}
+async function disconnect(){
+  connected=false; $('dot').classList.remove('on'); $('st').textContent='Не підключено';
+  $('btnConn').textContent='🔌 Підключити';
+  try{ if(reader){await reader.cancel().catch(()=>{});reader.releaseLock&&reader.releaseLock();} }catch(e){}
+  try{ if(writer){await writer.close().catch(()=>{});} }catch(e){}
+  try{ if(port){await port.close().catch(()=>{});} }catch(e){}
+  port=writer=reader=null;
+}
+
+async function readLoop(){
+  try{
+    while(connected){
+      const {value,done}=await reader.read();
+      if(done)break;
+      rxBuf+=value;
+      let nl;
+      while((nl=rxBuf.indexOf('\n'))>=0){
+        let line=rxBuf.slice(0,nl).replace(/\r$/,''); rxBuf=rxBuf.slice(nl+1);
+        if(line.startsWith('#R#')){
+          const js=line.slice(3);
+          if(pending){ clearTimeout(pending.timer); const p=pending; pending=null;
+            try{ p.resolve(JSON.parse(js)); }catch(e){ p.resolve({ok:false,err:'bad json'}); } }
+          log('< '+js.slice(0,120));
+        } else if(line.length){ /* отладка ESP */ }
+      }
+    }
+  }catch(e){ if(connected)log('! read: '+e.message); }
+}
+
+// Отправить команду и дождаться ответа #R#
+function cmd(c,timeout=8000){
+  return new Promise(async(resolve,reject)=>{
+    if(!connected||!writer){reject(new Error('не підключено'));return;}
+    if(pending){reject(new Error('зайнято'));return;}
+    pending={resolve,reject,timer:setTimeout(()=>{pending=null;reject(new Error('таймаут'));},timeout)};
+    log('> '+c.slice(0,60)+(c.length>60?'…':''));
+    try{ await writer.write(c+'\n'); }catch(e){ clearTimeout(pending.timer); pending=null; reject(e); }
+  });
+}
+
+function toast(m){ $('st').textContent=m; }
+
+async function refresh(){
+  if(!connected)return;
+  try{
+    const d=await cmd('INFO');
+    if(!d.ok){return;}
+    // overview: заряд у відсотках (головне), залишок у мА·год — дрібно
+    const pct=(typeof d.charge==='number'&&d.charge>=0)?d.charge:null;
+    const rmah=(d.icaMah!==undefined)?d.icaMah:null;
+    $('pct').textContent=pct!==null?(pct+'%'):'--%';
+    $('csrc').textContent=(rmah!==null?('залишок '+rmah+' мА·год'):'')+(pct!==null?(' · '+(d.chargeSrc==='ICA'?'ICA':'напруга')):'');
+    if(rmah!==null)$('mahv').value=rmah;
+    $('fill').style.width=(pct!==null?pct:0)+'%';
+    $('fill').style.background=pct===null?'#555':(pct<20?'#e74c3c':pct<50?'#f39c12':'#2ecc71');
+    if(d.voltage!==undefined){$('volt').textContent=d.voltage.toFixed(2)+' В';$('dV').textContent=d.voltage.toFixed(2)+' В';}
+    if(d.temperature!==undefined){$('temp').textContent=d.temperature.toFixed(1)+' °C';$('dT').textContent=d.temperature.toFixed(1)+' °C';}
+    $('model').textContent=d.model||'—';$('dModel').textContent=d.model||'—';
+    if(typeof d.capacity==='number'&&d.capacity>=0){$('cap').textContent=d.capacity+' %';$('wear').textContent=d.wear+' %';$('capv').value=d.capacity;}
+    if(d.ccaCycles!==undefined)$('cyc').textContent=d.ccaCycles+' зар. / '+d.dcaCycles+' розр.';
+    if(typeof d.genuine==='boolean')$('auth').innerHTML=d.genuine?'<span class="badge bo">OK</span>':'<span class="badge bb">РИЗИК ('+d.authReason+')</span>';
+    if(typeof d.headerOk==='boolean')$('integ').innerHTML='заголовок '+(d.headerOk?'✅':'❌')+' · дзеркало '+(d.mirrorOk?'✅':'❌');
+    $('dI').textContent=(d.currentMa!==undefined?d.currentMa:'—')+' мА';
+    $('dSer').textContent=d.serial||'—';
+    const mah=(v,raw)=>v!==undefined?('≈'+v+' мА·год (raw '+raw+')'):'—';
+    const cyc=(c,v,raw)=>c!==undefined?(c+' циклів (≈'+v+' мА·год, raw '+raw+')'):mah(v,raw);
+    $('dICA').textContent=mah(d.icaMah,d.ica);
+    $('dCCA').textContent=cyc(d.ccaCycles,d.ccaMah,d.cca);
+    $('dDCA').textContent=cyc(d.dcaCycles,d.dcaMah,d.dca);
+    if(d.hex38)$('h38').textContent=d.hex38;
+    if(d.hex33)$('h33').textContent=d.hex33;
+  }catch(e){ toast('Оновлення: '+e.message); }
+}
+
+async function doRead(){ if(!connected){toast('Спочатку підключіться');return;}
+  setBusy(true); toast('Зчитування...');
+  try{ const r=await cmd('READ',15000); toast(r.ok?'Зчитано':'Помилка читання'); await refresh(); }
+  catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
+
+async function cmdConfirm(c,q){ if(!connected){toast('Підключіться');return;} if(!confirm(q))return;
+  setBusy(true); toast('Виконання...');
+  try{ const r=await cmd(c,15000); toast(r.ok?'✅ Готово':'Помилка: '+(r.err||'')); await refresh(); }
+  catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
+
+async function wipe33(){ if(!connected){toast('Підключіться');return;}
+  if(!confirm('🔥 ПОВНЕ стирання DS2433!\nСтираються МОДЕЛЬ, СЕРІЙНИЙ/ID та КАЛІБРУВАННЯ.\nАКБ НЕ ПРАЦЮВАТИМЕ, доки не запишете еталонний дамп.\nВи зробили копію? Продовжити?'))return;
+  if(!confirm('Останнє попередження: стерти DS2433 ПОВНІСТЮ?'))return;
+  setBusy(true); toast('Повне стирання DS2433...');
+  try{ const r=await cmd('WIPE33',20000); toast(r.ok?'✅ DS2433 стерто. Запишіть еталонний дамп.':'Помилка: '+(r.err||'')); await refresh(); }
+  catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
+
+async function setMah(){ if(!connected){toast('Підключіться');return;}
+  const v=parseInt($('mahv').value); if(isNaN(v)||v<0){toast('Вкажіть мА·год');return;}
+  if(!confirm('Записати залишкову ємність '+v+' мА·год?'))return;
+  setBusy(true);
+  try{ const r=await cmd('SETMAH '+v,15000); toast(r.ok?('✅ Записано (ICA='+r.ica+')'):'Помилка: '+(r.err||'')); await refresh(); }
+  catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
+
+async function setCap(){ if(!connected){toast('Підключіться');return;}
+  const v=parseInt($('capv').value); if(isNaN(v)||v<0||v>100){toast('0..100');return;}
+  if(!confirm('Записати ємність '+v+'%?'))return;
+  setBusy(true);
+  try{ const r=await cmd('SETCAP '+v,15000); toast(r.ok?'✅ Ємність записана':'Помилка: '+(r.err||'')); await refresh(); }
+  catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
+
+// файл .bin -> hex -> команда записи
+function writeFile(inputId,size,cmdName){
+  const f=$(inputId).files[0];
+  if(!f){toast('Оберіть файл');return;}
+  if(f.size!==size){toast('Файл має бути '+size+' байт');return;}
+  if(!confirm('⚡ Запис '+size+' байт НЕЗВОРОТНІЙ. Продовжити?'))return;
+  const rd=new FileReader();
+  rd.onload=async()=>{
+    const b=new Uint8Array(rd.result); let hex='';
+    for(const x of b)hex+=x.toString(16).padStart(2,'0');
+    setBusy(true); toast('Запис...');
+    try{ const r=await cmd(cmdName+' '+hex,20000); toast(r.ok?'✅ Записано':'Помилка: '+(r.err||'')); await refresh(); }
+    catch(e){ toast('Помилка: '+e.message); } setBusy(false);
+  };
+  rd.readAsArrayBuffer(f);
+}
+
+async function download(getCmd,name,size){
+  if(!connected){toast('Підключіться');return;}
+  try{
+    const r=await cmd(getCmd);
+    if(!r.ok||!r.hex){toast('Немає дампа — зчитайте АКБ');return;}
+    const bytes=r.hex.trim().split(/\s+/).map(x=>parseInt(x,16));
+    const blob=new Blob([new Uint8Array(bytes)],{type:'application/octet-stream'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+    a.download=name+'.bin';a.click();URL.revokeObjectURL(a.href);
+    toast('Завантажено '+name+'.bin');
+  }catch(e){ toast('Помилка: '+e.message); }
+}
+
+async function hxLoad(){
+  if(!connected){toast('Підключіться');return;}
+  const t=$('hxT').value;
+  try{
+    const r=await cmd(t==='38'?'GET38':'GET33');
+    if(!r.ok||!r.hex){$('hxD').value='';toast('Зчитайте АКБ');return;}
+    const parts=r.hex.trim().split(/\s+/); let out='';
+    for(let i=0;i<parts.length;i+=16)out+=parts.slice(i,i+16).join(' ')+'\n';
+    $('hxD').value=out.trim();
+  }catch(e){ toast('Помилка: '+e.message); }
+}
+async function hxWrite(){
+  if(!connected){toast('Підключіться');return;}
+  const t=$('hxT').value;
+  const hex=$('hxD').value.replace(/[^0-9a-fA-F]/g,'');
+  const need=(t==='38'?64:512)*2;
+  if(hex.length!==need){toast('Треба '+(need/2)+' байт, зараз '+Math.floor(hex.length/2));return;}
+  if(!confirm('⚡ Запис '+(need/2)+' байт НЕЗВОРОТНІЙ. Продовжити?'))return;
+  const c=(t==='38')?'WRITE38':($('hxFix').checked?'WRITEFIX33':'WRITE33');
+  setBusy(true); toast('Запис байтів...');
+  try{ const r=await cmd(c+' '+hex,20000); toast(r.ok?'✅ Записано':'Помилка: '+(r.err||'')); await refresh(); }
+  catch(e){ toast('Помилка: '+e.message); } setBusy(false);
+}
+</script>
+</body>
+</html>

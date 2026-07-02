@@ -6,7 +6,7 @@
 #include "settings.h"
 #include "battery_reader.h"
 
-// Состояние, которое отображаем (заполняется из .ino и обработчиков веб-сервера).
+// Стан, яке відображаємо (заповнюється з .ino і обробників веб-сервера).
 extern bool hasDump;
 extern bool hasDump2438;
 extern uint8_t batteryDump[DUMP_SIZE];
@@ -14,86 +14,165 @@ extern uint8_t batteryDump2438[DS2438_MEM_SIZE];
 extern uint8_t chipSN2438[8];
 extern bool hasSN2438;
 
-// Страницы меню (перелистываются кнопкой):
-//   0 - главная (заряд + статус)
-//   1 - модель и серийный номер
-//   2 - технические данные DS2438
-//   3 - здоровье: ёмкость / износ / циклы
-//   4 - сырой дамп DS2438 (hex)
-//   5 - сырой дамп DS2433 (первые 64 байта, hex)
-//   6 - сброс счётчиков (рекалибровка)
+// Сторінки меню (перегортаються кнопкою):
+//   0 - головна (заряд + статус)
+//   1 - модель і серійний номер
+//   2 - технічні дані DS2438
+//   3 - здоров'я: ємність / знос / цикли
+//   4 - сирий дамп DS2438 (hex)
+//   5 - сирий дамп DS2433 (перші 64/128 байт — за висотою екрана, hex)
+//   6 - дії з АКБ (скидання / ремонт / очистка)
 #define NUM_DISPLAY_PAGES 7
-#define RESET_PAGE        6
+#define RESET_PAGE        6   // сторінка «Дії» (історична назва константи)
 
-// Объект дисплея выбирается по модели из settings.h (полный буфер _F_).
-// DISP_W/DISP_H — разрешение; DISPLAY_USES_I2C — признак шины I2C.
+// Об'єкт дисплея вибирається по моделі з settings.h (повний буфер _F_).
+// DISP_W/DISP_H — роздільність; DISPLAY_USES_I2C — ознака шини I2C.
+//
+// HW I2C: піни SCL/SDA передаються прямо в конструктор — U8g2 сама викликає
+// Wire.begin(SDA, SCL). При увімкненому DISPLAY_HW_I2C додатково створюється
+// запасний програмний (SW) об'єкт: якщо апаратна шина не відповідає (немає
+// ACK — слабкі підтяжки, довгі проводи), displayInit автоматично
+// перемикається на програмний I2C на тех же пінах. Кадровий буфер у пари
+// об'єктів спільний (статичний в U8g2), зайвої пам'яті це майже не ест.
 #if defined(DISPLAY_ST7567_SPI)
   #define DISP_W 128
   #define DISP_H 64
-  // ST7567, 128x64, аппаратный SPI (SCK=18, MOSI=23). Если экран не тот —
-  // замените ENH_DG128064 на ваш вариант ST7567 (напр. ERC12864, JLX12864).
-  U8G2_ST7567_ENH_DG128064_F_4W_HW_SPI u8g2(U8G2_R0, DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+  // ST7567 (Open-Smart 1.8"), апаратний SPI (SCK=18, MOSI=23).
+  // Варіант ENH_DG128064: коректна електрика (bias 1/9, помірний
+  // контраст — варіант OS12864 з bias 1/7 дає темний засвічений екран).
+  // Зсув картинки +4px робиться через x_offset в displayInit
+  // (DISPLAY_ST7567_XOFF в settings.h).
+  U8G2_ST7567_ENH_DG128064_F_4W_HW_SPI u8g2_spi(U8G2_R0, DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+  static U8G2 *g_u8g2p = &u8g2_spi;
 #elif defined(DISPLAY_PCD8544_SPI)
   #define DISP_W 84
   #define DISP_H 48
-  // Nokia 5110 (PCD8544), 84x48, аппаратный SPI.
-  U8G2_PCD8544_84X48_F_4W_HW_SPI u8g2(U8G2_R0, DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+  // Nokia 5110 (PCD8544), 84x48, апаратний SPI.
+  U8G2_PCD8544_84X48_F_4W_HW_SPI u8g2_spi(U8G2_R0, DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+  static U8G2 *g_u8g2p = &u8g2_spi;
 #elif defined(DISPLAY_SH1107_128_I2C)
   #define DISPLAY_USES_I2C 1
   #define DISP_W 128
   #define DISP_H 128
+  U8G2_SH1107_128X128_F_SW_I2C u8g2_sw(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
   #if defined(DISPLAY_HW_I2C)
-    U8G2_SH1107_128X128_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
+    U8G2_SH1107_128X128_F_HW_I2C u8g2_hw(U8G2_R0, U8X8_PIN_NONE, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN);
+    static U8G2 *g_u8g2p = &u8g2_hw;
   #else
-    U8G2_SH1107_128X128_F_SW_I2C u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+    static U8G2 *g_u8g2p = &u8g2_sw;
   #endif
 #elif defined(DISPLAY_SSD1327_128_I2C)
   #define DISPLAY_USES_I2C 1
   #define DISP_W 128
   #define DISP_H 128
-  #if defined(DISPLAY_HW_I2C)
-    U8G2_SSD1327_MIDAS_128X128_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
+  // Варіант "розводки" SSD1327 (см. settings.h). за замовчуванням MIDAS.
+  #if   defined(SSD1327_WS)
+    #define SSD1327_SW U8G2_SSD1327_WS_128X128_F_SW_I2C
+    #define SSD1327_HW U8G2_SSD1327_WS_128X128_F_HW_I2C
+  #elif defined(SSD1327_EA)
+    #define SSD1327_SW U8G2_SSD1327_EA_W128128_F_SW_I2C
+    #define SSD1327_HW U8G2_SSD1327_EA_W128128_F_HW_I2C
+  #elif defined(SSD1327_ZJY)
+    #define SSD1327_SW U8G2_SSD1327_ZJY_128X128_F_SW_I2C
+    #define SSD1327_HW U8G2_SSD1327_ZJY_128X128_F_HW_I2C
   #else
-    U8G2_SSD1327_MIDAS_128X128_F_SW_I2C u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+    #define SSD1327_SW U8G2_SSD1327_MIDAS_128X128_F_SW_I2C
+    #define SSD1327_HW U8G2_SSD1327_MIDAS_128X128_F_HW_I2C
+  #endif
+  SSD1327_SW u8g2_sw(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+  #if defined(DISPLAY_HW_I2C)
+    SSD1327_HW u8g2_hw(U8G2_R0, U8X8_PIN_NONE, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN);
+    static U8G2 *g_u8g2p = &u8g2_hw;
+  #else
+    static U8G2 *g_u8g2p = &u8g2_sw;
   #endif
 #elif defined(DISPLAY_SH1106_I2C)
   #define DISPLAY_USES_I2C 1
   #define DISP_W 128
   #define DISP_H 64
+  U8G2_SH1106_128X64_NONAME_F_SW_I2C u8g2_sw(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
   #if defined(DISPLAY_HW_I2C)
-    U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
+    U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2_hw(U8G2_R0, U8X8_PIN_NONE, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN);
+    static U8G2 *g_u8g2p = &u8g2_hw;
   #else
-    U8G2_SH1106_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+    static U8G2 *g_u8g2p = &u8g2_sw;
   #endif
-#else   // DISPLAY_SSD1306_I2C — по умолчанию
+#else   // DISPLAY_SSD1306_I2C — за замовчуванням
   #define DISPLAY_USES_I2C 1
   #define DISP_W 128
   #define DISP_H 64
+  U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2_sw(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
   #if defined(DISPLAY_HW_I2C)
-    U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
+    U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_hw(U8G2_R0, U8X8_PIN_NONE, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN);
+    static U8G2 *g_u8g2p = &u8g2_hw;
   #else
-    U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE);
+    static U8G2 *g_u8g2p = &u8g2_sw;
   #endif
 #endif
 
-// Позиция нижней строки статуса: у экранов >=64px — в области 64px (верх),
-// у Nokia 84x48 — у нижней кромки.
-#if DISP_H >= 64
-  #define FOOT_HL 53
-  #define FOOT_Y  62
+// Весь код нижче працює через вказівник: звернення "u8g2." ідуть до активному
+// об'єкту (апаратному або запасному програмному після fallback).
+#define u8g2 (*g_u8g2p)
+
+// Дозволена частота шини I2C: ручна (KHZ>0) або авто-безпечна з драйвера
+// (SSD1327 — 100 кГц, решта — 400 кГц). Викликається Завжди (як в робочій
+// версії), а не пропускається — так надійніше і для HW, і як no-op для SW.
+#if DISPLAY_I2C_KHZ > 0
+  #define DISPLAY_CLK_HZ (DISPLAY_I2C_KHZ * 1000UL)
+#elif defined(DISPLAY_SSD1327_128_I2C)
+  #define DISPLAY_CLK_HZ 100000UL   // межа SSD1327
 #else
-  #define FOOT_HL (DISP_H - 9)
-  #define FOOT_Y  (DISP_H - 2)
+  #define DISPLAY_CLK_HZ 400000UL
+#endif
+#define DISPLAY_PROBE_HZ DISPLAY_CLK_HZ
+
+// SSD1327 (відтінки сірого) на деяких панелях стартує тьмяно/порожньо —
+// задаємо помітний контраст за замовчуванням, якщо користувач не вказав свій.
+#if defined(DISPLAY_SSD1327_128_I2C) && !defined(DISPLAY_CONTRAST)
+  #define DISPLAY_CONTRAST 0x7F
 #endif
 
-static char g_displayStatus[36] = "ЗАПУСК";  // нижняя строка статуса (UTF-8)
-static int  g_displayPage = 0;             // текущая страница меню
-static bool g_readRequested = false;       // запрос повторного чтения после цикла
-static bool g_resetRequested = false;      // запрос сброса из меню (кнопкой)
-static bool g_resetArmed = false;          // сброс "взведён" (первое нажатие)
-static unsigned long g_resetArmedAt = 0;   // время взведения (авто-сброс через 5с)
+// Розмітка меню под роздільність екрана: шрифти, шапка, рядки тела (ROW),
+// нижня рядок статусу. На 128x128 — більший шрифт і більше рядків.
+#if DISP_H >= 128            // 128x128 (GME128128-02 і т.п.)
+  #define HEAD_FONT  u8g2_font_6x12_t_cyrillic
+  #define HEAD_Y     10                // базова лінія заголовка
+  #define HEAD_LINE  13                // Y роздільної лінії шапки
+  #define BODY_FONT  u8g2_font_6x12_t_cyrillic
+  #define BODY_Y0    27                // базова лінія першої рядки тела
+  #define ROW_H      14                // крок рядків
+  #define FOOT_HL    (DISP_H - 15)     // лінія над статусом
+  #define FOOT_Y     (DISP_H - 3)      // базова лінія статусу
+#elif DISP_H >= 64           // 128x64 (SSD1306/SH1106/ST7567)
+  #define HEAD_FONT  u8g2_font_5x8_t_cyrillic
+  #define HEAD_Y     7
+  #define HEAD_LINE  9
+  #define BODY_FONT  u8g2_font_5x8_t_cyrillic
+  #define BODY_Y0    18
+  #define ROW_H      9
+  #define FOOT_HL    53
+  #define FOOT_Y     62
+#else                        // 84x48 (Nokia 5110)
+  #define HEAD_FONT  u8g2_font_5x8_t_cyrillic
+  #define HEAD_Y     7
+  #define HEAD_LINE  9
+  #define BODY_FONT  u8g2_font_5x8_t_cyrillic
+  #define BODY_Y0    16
+  #define ROW_H      8
+  #define FOOT_HL    (DISP_H - 9)
+  #define FOOT_Y     (DISP_H - 2)
+#endif
+// Базова лінія n-й рядки тела сторінки.
+#define ROW(n) (BODY_Y0 + (n) * ROW_H)
 
-inline void displayRender(); // определение ниже
+static char g_displayStatus[36] = "ЗАПУСК";  // нижня рядок статусу (UTF-8)
+static int  g_displayPage = 0;             // поточна сторінка меню
+static bool g_readRequested = false;       // запит повторного читання після циклу
+// Сторінка «Дії»: вибір операції (BTN2 коротко) + виконання (BTN2 довго).
+static int  g_actionSel = 0;               // 0=Скидання 1=Ремонт 2=Очистка
+static int  g_actionRequested = -1;        // -1 нема; інакше — обрана дія для .ino
+
+inline void displayRender(); // визначення нижче
 
 // Емблема Національної Гвардії України для стартової заставки (1-біт XBM).
 #define NGU_W 64
@@ -144,39 +223,73 @@ static const unsigned char ngu_xbm[] = {
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
-// Пересчёт контрольной суммы TLV-записи DS2433: сумма всех байт == 0x5A.
+// Перерахунок контрольної суми TLV-записи DS2433: сума усіх байт == 0x5A.
 inline void fixRecordChecksum(uint8_t *buf, int start, int len) {
     int s = 0;
     for (int k = 0; k < len - 1; k++) s += buf[start + k];
     buf[start + len - 1] = (0x5A - s) & 0xFF;
 }
 
-// ---------- базовая настройка ----------
+// ---------- базова налаштування ----------
 
 inline void displayInit() {
-#if defined(DISPLAY_USES_I2C)
-  #if defined(DISPLAY_HW_I2C)
-    Wire.begin(DISPLAY_SDA_PIN, DISPLAY_SCL_PIN);
-  #endif
-    u8g2.setI2CAddress(DISPLAY_I2C_ADDR << 1);
+#if defined(DISPLAY_USES_I2C) && defined(DISPLAY_HW_I2C)
+    // Проба апаратної шини НА Робочій Частоті до u8g2.begin(). Повторний
+    // Wire.begin теми же пінами всередині U8g2 безвреден ("already started").
+    // Якщо дисплей не відповідає (немає ACK: слабкі підтяжки, довгі проводи,
+    // примхливий контролер) — освобождаем піни і автоматично переходимо
+    // на запасний програмний I2C: дисплей працює завжди, лише медленнее.
+    Wire.begin(DISPLAY_SDA_PIN, DISPLAY_SCL_PIN, DISPLAY_PROBE_HZ);
+    Wire.setTimeOut(50);
+    bool hwOk = true;
+    for (int i = 0; i < 3 && hwOk; i++) {
+        Wire.beginTransmission(DISPLAY_I2C_ADDR);
+        hwOk = (Wire.endTransmission() == 0);
+    }
+    if (!hwOk) {
+        Wire.end();                 // отдать піни біт-бенгу
+        g_u8g2p = &u8g2_sw;         // запасний програмний I2C
+        Serial.printf("DISPLAY: HW I2C no ACK at 0x%02X (SDA=%d SCL=%d) -> SW I2C fallback\n",
+                      DISPLAY_I2C_ADDR, DISPLAY_SDA_PIN, DISPLAY_SCL_PIN);
+    } else {
+        Serial.println("DISPLAY: HW I2C OK");
+    }
 #endif
-    u8g2.setBusClock(400000);   // быстрый рендер -> отзывчивые кнопки
+#if defined(DISPLAY_USES_I2C)
+    u8g2.setI2CAddress(DISPLAY_I2C_ADDR << 1);
+    u8g2.setBusClock(DISPLAY_CLK_HZ);   // завжди (для HW важливо, для SW no-op)
+#endif
     u8g2.begin();
-    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+#if defined(DISPLAY_ST7567_SPI)
+    // Панель Open-Smart: RAM ST7567 на 132 колонки, скло показує 4..131.
+    u8g2.getU8x8()->x_offset = DISPLAY_ST7567_XOFF;
+#endif
+#if defined(DISPLAY_CONTRAST)
+    u8g2.setContrast(DISPLAY_CONTRAST);
+#endif
+    u8g2.setFont(BODY_FONT);
+    Serial.printf("DISPLAY: %dx%d, I2C clock=%lu Hz\n", (int)DISP_W, (int)DISP_H, (unsigned long)DISPLAY_CLK_HZ);
 }
 
-// Стартовая заставка: тризуб + "Національна Гвардія України".
+// Стартова заставка: тризуб + "Національна Гвардія України".
 inline void displaySplash() {
     u8g2.clearBuffer();
-#if (DISP_H >= 64) && (DISP_W >= 110)
-    // Полноразмерная эмблема + текст (128x64 / 128x128).
+#if DISP_H >= 128
+    // 128x128: емблема по центру зверху, текст под ній.
+    u8g2.drawXBM((DISP_W - NGU_W) / 2, 6, NGU_W, NGU_H, ngu_xbm);
+    u8g2.setFont(u8g2_font_6x12_t_cyrillic);
+    u8g2.drawUTF8(7,  88,  "Національна Гвардія");   // 19 зн. x 6px = 114
+    u8g2.drawUTF8(43, 103, "України");                //  7 зн. x 6px = 42
+    u8g2.drawUTF8(31, 121, "IMPRES tool");            // 11 зн. x 6px = 66
+#elif (DISP_H >= 64) && (DISP_W >= 110)
+    // 128x64: емблема зліва + текст справа.
     u8g2.drawXBM(0, 0, NGU_W, NGU_H, ngu_xbm);
     u8g2.setFont(u8g2_font_5x8_t_cyrillic);
     u8g2.drawUTF8(66, 18, "Національна");
     u8g2.drawUTF8(66, 34, "Гвардія");
     u8g2.drawUTF8(66, 50, "України");
 #else
-    // Мелкие экраны (Nokia 5110): только текст.
+    // Дрібні екрани (Nokia 5110): лише текст.
     u8g2.setFont(u8g2_font_5x8_t_cyrillic);
     u8g2.drawUTF8(0, 12, "Нац. Гвардія");
     u8g2.drawUTF8(0, 24, "України");
@@ -195,29 +308,29 @@ inline void displayShow(const char *s) {
     displayRender();
 }
 
-// ---------- вспомогательные элементы отрисовки ----------
+// ---------- допоміжні елементи відмальовування ----------
 
 inline void drawHeader(const char *title) {
     char h[16];
-    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
-    u8g2.drawUTF8(0, 7, title);
+    u8g2.setFont(HEAD_FONT);
+    u8g2.drawUTF8(0, HEAD_Y, title);
     snprintf(h, sizeof(h), "%d/%d", g_displayPage + 1, NUM_DISPLAY_PAGES);
-    u8g2.drawUTF8(DISP_W - 18, 7, h);
-    u8g2.drawHLine(0, 9, DISP_W);
+    u8g2.drawStr(DISP_W - u8g2.getStrWidth(h) - 1, HEAD_Y, h);
+    u8g2.drawHLine(0, HEAD_LINE, DISP_W);
 }
 
 inline void drawFooter() {
     char f[42];
-    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+    u8g2.setFont(BODY_FONT);
     u8g2.drawHLine(0, FOOT_HL, DISP_W);
     snprintf(f, sizeof(f), ">%s", g_displayStatus);
     u8g2.drawUTF8(0, FOOT_Y, f);
 }
 
-// Иконка батареи со шкалой заполнения; pct<0 — данных нет.
+// Іконка батареї зі шкалою заповнення; pct<0 — даних немає.
 inline void drawBatteryIcon(int x, int y, int w, int h, int pct) {
     u8g2.drawFrame(x, y, w, h);
-    u8g2.drawBox(x + w, y + h / 3, 3, h - 2 * (h / 3)); // "плюсовой" вывод
+    u8g2.drawBox(x + w, y + h / 3, 3, h - 2 * (h / 3)); // "плюсовий" вивід
     if (pct < 0) return;
     int fillw = (w - 4) * pct / 100;
     if (fillw < 0) fillw = 0;
@@ -225,19 +338,19 @@ inline void drawBatteryIcon(int x, int y, int w, int h, int pct) {
     if (fillw > 0) u8g2.drawBox(x + 2, y + 2, fillw, h - 4);
 }
 
-// Процент заряда. Приоритет — ICA (если включён учёт тока IAD=1),
-// иначе оценка по напряжению. src получает метку источника ("ICA"/"volt"/"--").
+// Відсоток заряду. Пріоритет — ICA (якщо увімкнений облік струму IAD=1),
+// інакше оцінка по напрузі. src отримує мітку джерела ("ICA"/"volt"/"--").
 inline int batteryPercent(const char **src) {
     if (!hasDump2438) { *src = "--"; return -1; }
 
     uint8_t config = batteryDump2438[0];       // стр.0 байт0 = Status/Config
-    if (config & 0x01) {                        // IAD=1 -> ICA поддерживается
+    if (config & 0x01) {                        // IAD=1 -> ICA підтримується
         *src = "ICA";
         int pct = (int)batteryDump2438[12] * 100 / ICA_FULL_SCALE; // стр.1 байт4 = ICA
         return pct > 100 ? 100 : pct;
     }
 
-    *src = "volt";                              // запасной вариант — по напряжению
+    *src = "volt";                              // запасний варіант — по напрузі
     long vmv = (long)(((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3]) * 10;
     long pct = (vmv - BATTERY_EMPTY_MV) * 100 / (BATTERY_FULL_MV - BATTERY_EMPTY_MV);
     if (pct < 0) pct = 0;
@@ -245,13 +358,37 @@ inline int batteryPercent(const char **src) {
     return (int)pct;
 }
 
-// Найти модель (Motorola part number, напр. "PMNN4409A") в дампе DS2433.
-// Ищем компактную строку из заглавных букв и цифр длиной 7..11, содержащую
-// цифру, — так отсекаем длинный блок "COPYRIGHT...MOTOROLASOLUTIONS".
+// Знайти модель (part number, напр. "PMNN4409A"/"PT4409A") в дампі DS2433.
+// Пріоритет — авторитетна запис моделі: тег 0x0B, потім ASCII-назва,
+// що починається з 'P' (перевірено на усіх дампах: 0B 50 4D 4E 4E ... = "PMNN...";
+// 0B 50 54 ... = "PT..."). Запасний шлях — компактна алфавітно-цифрова
+// рядок 7..11 з цифрою (відсікає "COPYRIGHT...MOTOROLASOLUTIONS").
 inline bool decodeModel(char *out, size_t n) {
     if (!hasDump) return false;
-    int best = -1, bestLen = 0;
-    int i = 0;
+
+    // 1) Запис 0x0B c назвою моделі (0x0B 'P' ...).
+    for (int i = 0x100; i < (int)DUMP_SIZE - 12; i++) {
+        if (batteryDump[i] == 0x0B && batteryDump[i + 1] == 'P') {
+            int j = i + 1, len = 0;
+            char tmp[16];
+            while (j < (int)DUMP_SIZE && len < 12) {
+                uint8_t d = batteryDump[j];
+                if ((d >= '0' && d <= '9') || (d >= 'A' && d <= 'Z')) { tmp[len++] = (char)d; j++; }
+                else break;
+            }
+            // валідна модель: довжина 6..11 і є цифра
+            bool digit = false;
+            for (int k = 0; k < len; k++) if (tmp[k] >= '0' && tmp[k] <= '9') digit = true;
+            if (len >= 6 && len <= 11 && digit) {
+                if ((size_t)len >= n) len = n - 1;
+                memcpy(out, tmp, len); out[len] = '\0';
+                return true;
+            }
+        }
+    }
+
+    // 2) Запасний варіант: найбільш довга компактна рядок [A-Z0-9] з цифрою.
+    int best = -1, bestLen = 0, i = 0;
     while (i < (int)DUMP_SIZE) {
         uint8_t c = batteryDump[i];
         if (c >= 'A' && c <= 'Z') {
@@ -266,9 +403,7 @@ inline bool decodeModel(char *out, size_t n) {
             int len = j - i;
             if (hasDigit && len >= 7 && len <= 11 && len > bestLen) { bestLen = len; best = i; }
             i = j;
-        } else {
-            i++;
-        }
+        } else i++;
     }
     if (best < 0) return false;
     int len = bestLen;
@@ -278,15 +413,15 @@ inline bool decodeModel(char *out, size_t n) {
     return true;
 }
 
-// Ёмкость/износ из записи истории ёмкости DS2433 (тег/длина 0x17, "17 00 ...").
-// Формат записи: [0x17][22 байта данных][контрольная сумма]; последний байт
-// данных (перед CRC) — самое свежее значение ёмкости в % (проверено на дампах
-// рабочих и залоченных PMNN4409/4493). Износ = 100 - ёмкость.
+// Ємність/знос з записи історії ємності DS2433 (тег/довжина 0x17, "17 00 ...").
+// Формат записи: [0x17][22 байта даних][контрольна сума]; останній байт
+// даних (перед CRC) — найбільш свіже значення ємності в % (перевірено на дампах
+// робочих і залочених PMNN4409/4493). Знос = 100 - ємність.
 inline bool decodeCapacity(int *capPct, int *wearPct) {
     if (!hasDump) return false;
     for (int i = 0x100; i < (int)DUMP_SIZE - 23; i++) {
         if (batteryDump[i] == 0x17 && batteryDump[i + 1] == 0x00) {
-            int cap = batteryDump[i + 21];   // последнее значение ёмкости, %
+            int cap = batteryDump[i + 21];   // останнє значення ємності, %
             if (cap <= 100) {
                 *capPct = cap;
                 *wearPct = 100 - cap;
@@ -297,13 +432,13 @@ inline bool decodeCapacity(int *capPct, int *wearPct) {
     return false;
 }
 
-// Эвристика подлинности / риска блокировки. Проверено на дампах рабочих
-// (6 шт.) и залоченных (2 шт.) PMNN4409/4493 — чётко разделяет их. Признаки
-// залоченной/подделанной после замены элементов АКБ:
-//   - отсутствует блок аутентификации "MOTOROLA..." (0xDF+ стёрт);
-//   - стёрта калибровочная подпись 0x1B-0x1E (все FF);
-//   - переполнен счётчик заряда CCA (0xFFFF) в DS2438.
-// Возвращает true, если признаков блокировки нет; в reason — краткая причина.
+// Евристика справжності / ризику блокування. Перевірено на дампах робочих
+// (6 шт.) і залочених (2 шт.) PMNN4409/4493 — чітко розділяє їх. Ознаки
+// залоченої/підробленої після заміни елементів АКБ:
+//   - відсутній блок автентифікації "MOTOROLA..." (0xDF+ стертий);
+//   - стерта калібрувальна підпис 0x1B-0x1E (усі FF);
+//   - переповнений лічильник заряду CCA (0xFFFF) в DS2438.
+// Повертає true, якщо ознак блокування немає; в reason — стисла причина.
 inline bool batteryGenuine(const char **reason) {
     if (!hasDump) { *reason = "нема дампу"; return false; }
 
@@ -332,34 +467,76 @@ inline bool batteryGenuine(const char **reason) {
     return true;
 }
 
-// ---------- страницы меню ----------
+// ---------- сторінки меню ----------
+
+// залишкова ємність (заряд) в мА·ч з регістра ICA (DS2438 байт 12).
+inline int batteryRemainingMah() {
+    if (!hasDump2438) return -1;
+    return (int)(batteryDump2438[12] * DS2438_MAH_PER_LSB);
+}
 
 inline void drawPageMain() {
     char buf[40];
     const char *src;
-    int pct = batteryPercent(&src);
+    int pct = batteryPercent(&src);             // рівень заряду, % (головний показник)
+    int mah = batteryRemainingMah();            // залишок у мА·год (додатково)
 
     drawHeader("Moto IMPRES");
 
-    drawBatteryIcon(0, 13, 52, 14, pct);
-    u8g2.setFont(u8g2_font_6x12_tr);
+#if DISP_H >= 128
+    // 128x128: великим — заряд %, нижче — мА·год, напруга, IP.
+    drawBatteryIcon(0, 22, 56, 22, pct);
+    u8g2.setFont(u8g2_font_10x20_tr);
     if (pct >= 0) snprintf(buf, sizeof(buf), "%d%%", pct);
     else          snprintf(buf, sizeof(buf), "--%%");
-    u8g2.drawUTF8(58, 24, buf);
-    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
-    u8g2.drawUTF8(90, 23, src);                  // источник данных заряда
-
+    u8g2.drawStr(62, 40, buf);
+    u8g2.setFont(BODY_FONT);
+    u8g2.drawUTF8(62, 54, src);                 // джерело заряду (ICA/напруга)
+    if (mah >= 0) snprintf(buf, sizeof(buf), "залишок %d мА·год", mah);
+    else          snprintf(buf, sizeof(buf), "залишок: --");
+    u8g2.drawUTF8(0, 70, buf);
     if (hasDump2438) {
         uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
         int16_t traw = ((int16_t)((batteryDump2438[2] << 8) | batteryDump2438[1])) >> 3;
         snprintf(buf, sizeof(buf), "%.2f V   %.1f C", vraw * 0.01f, traw * 0.03125f);
-    } else {
-        snprintf(buf, sizeof(buf), "DS2438: немає даних");
-    }
-    u8g2.drawUTF8(0, 40, buf);
-
-    snprintf(buf, sizeof(buf), "IP: %s", ESP_IP);
-    u8g2.drawUTF8(0, 49, buf);
+    } else snprintf(buf, sizeof(buf), "DS2438: немає даних");
+    u8g2.drawUTF8(0, 84, buf);
+    snprintf(buf, sizeof(buf), "IP: %s", ESP_IP);        u8g2.drawUTF8(0, 98, buf);
+    u8g2.drawUTF8(0, 112, "[>] довго - зчитати");
+#elif DISP_W < 100
+    // Nokia 84x48: компактно.
+    drawBatteryIcon(0, 12, 34, 12, pct);
+    u8g2.setFont(u8g2_font_6x12_tr);
+    if (pct >= 0) snprintf(buf, sizeof(buf), "%d%%", pct);
+    else          snprintf(buf, sizeof(buf), "--%%");
+    u8g2.drawStr(40, 22, buf);
+    u8g2.setFont(BODY_FONT);
+    if (mah >= 0) snprintf(buf, sizeof(buf), "%d мА·год", mah); else snprintf(buf, sizeof(buf), "залишок --");
+    u8g2.drawUTF8(0, 31, buf);
+    if (hasDump2438) {
+        uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
+        snprintf(buf, sizeof(buf), "%.2fV  %s", vraw * 0.01f, ESP_IP);
+    } else snprintf(buf, sizeof(buf), "%s", ESP_IP);
+    u8g2.drawUTF8(0, 39, buf);
+#else
+    // 128x64: великим — заряд %, справа джерело, нижче мА·год/напруга, IP.
+    drawBatteryIcon(0, 13, 52, 14, pct);
+    u8g2.setFont(u8g2_font_10x20_tr);
+    if (pct >= 0) snprintf(buf, sizeof(buf), "%d%%", pct);
+    else          snprintf(buf, sizeof(buf), "--%%");
+    u8g2.drawStr(58, 27, buf);
+    u8g2.setFont(BODY_FONT);
+    u8g2.drawUTF8(104, 20, src);
+    if (mah >= 0) snprintf(buf, sizeof(buf), "залишок %d мА·год", mah);
+    else          snprintf(buf, sizeof(buf), "залишок: --");
+    u8g2.drawUTF8(0, 39, buf);
+    if (hasDump2438) {
+        uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
+        int16_t traw = ((int16_t)((batteryDump2438[2] << 8) | batteryDump2438[1])) >> 3;
+        snprintf(buf, sizeof(buf), "%.2fV %.1fC %s", vraw * 0.01f, traw * 0.03125f, ESP_IP);
+    } else snprintf(buf, sizeof(buf), "DS2438 нема  %s", ESP_IP);
+    u8g2.drawUTF8(0, 48, buf);
+#endif
 
     drawFooter();
 }
@@ -368,26 +545,29 @@ inline void drawPageModel() {
     drawHeader("Модель / Серійний");
 
     char model[24];
-    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
-    u8g2.drawUTF8(0, 20, "Модель:");
+    u8g2.setFont(BODY_FONT);
+    u8g2.drawUTF8(0, ROW(0), "Модель:");
     if (decodeModel(model, sizeof(model))) {
         u8g2.setFont(u8g2_font_7x13B_tr);
-        u8g2.drawUTF8(6, 33, model);
+        u8g2.drawStr(6, ROW(1) + 4, model);
     } else {
-        u8g2.setFont(u8g2_font_5x8_t_cyrillic);
-        u8g2.drawUTF8(48, 20, hasDump ? "(невідомо)" : "(зчитайте)");
+        u8g2.setFont(BODY_FONT);
+        u8g2.drawUTF8(48, ROW(0), hasDump ? "(невідомо)" : "(зчитайте)");
     }
 
-    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
-    u8g2.drawUTF8(0, 46, "Серійний (DS2438):");
+    u8g2.setFont(BODY_FONT);
+    u8g2.drawUTF8(0, ROW(3), "Серійний (DS2438):");
     if (hasSN2438) {
         char sn[20];
         int p = 0;
         for (int i = 0; i < 8; i++) p += snprintf(sn + p, sizeof(sn) - p, "%02X", chipSN2438[i]);
-        u8g2.drawUTF8(6, 56, sn);
+        u8g2.drawStr(6, ROW(4), sn);
     } else {
-        u8g2.drawUTF8(6, 56, "(зчитайте АКБ)");
+        u8g2.drawUTF8(6, ROW(4), "(зчитайте АКБ)");
     }
+#if DISP_H >= 128
+    drawFooter();   // на малих екранах не вміщається — там сторінка без статусу
+#endif
 }
 
 inline void drawPageTech() {
@@ -395,9 +575,9 @@ inline void drawPageTech() {
     drawHeader("Дані батареї");
 
     if (!hasDump2438) {
-        u8g2.setFont(u8g2_font_5x8_t_cyrillic);
-        u8g2.drawUTF8(0, 24, "Немає даних DS2438.");
-        u8g2.drawUTF8(0, 34, "Спочатку зчитайте АКБ.");
+        u8g2.setFont(BODY_FONT);
+        u8g2.drawUTF8(0, ROW(0), "Немає даних DS2438.");
+        u8g2.drawUTF8(0, ROW(1), "Спочатку зчитайте АКБ.");
         drawFooter();
         return;
     }
@@ -407,17 +587,14 @@ inline void drawPageTech() {
     int16_t  iraw = (int16_t)(((uint16_t)batteryDump2438[6] << 8) | batteryDump2438[5]);
     float    i_mA = (float)iraw / (4096.0f * DS2438_RSENSE_OHM) * 1000.0f;
     uint8_t  rem  = batteryDump2438[12];                                             // ICA
-    uint16_t chg  = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];      // CCA
-    uint16_t dis  = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];      // DCA
 
-    int remMah = (int)(rem * DS2438_MAH_PER_LSB);   // остаток в мА*ч
-    (void)chg; (void)dis;                            // CCA/DCA показаны на стр. "Стан АКБ"
+    int remMah = (int)(rem * DS2438_MAH_PER_LSB);   // залишок в мА*ч
 
-    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
-    snprintf(buf, sizeof(buf), "Напруга:  %.2f V", vraw * 0.01f);      u8g2.drawUTF8(0, 18, buf);
-    snprintf(buf, sizeof(buf), "Струм:    %.0f mA", i_mA);             u8g2.drawUTF8(0, 27, buf);
-    snprintf(buf, sizeof(buf), "Темп:     %.1f C", traw * 0.03125f);   u8g2.drawUTF8(0, 36, buf);
-    snprintf(buf, sizeof(buf), "Залишок: ~%d mAh", remMah);            u8g2.drawUTF8(0, 45, buf);
+    u8g2.setFont(BODY_FONT);
+    snprintf(buf, sizeof(buf), "Напруга:  %.2f V", vraw * 0.01f);      u8g2.drawUTF8(0, ROW(0), buf);
+    snprintf(buf, sizeof(buf), "Струм:    %.0f mA", i_mA);             u8g2.drawUTF8(0, ROW(1), buf);
+    snprintf(buf, sizeof(buf), "Темп:     %.1f C", traw * 0.03125f);   u8g2.drawUTF8(0, ROW(2), buf);
+    snprintf(buf, sizeof(buf), "Залишок: ~%d mAh", remMah);            u8g2.drawUTF8(0, ROW(3), buf);
 
     drawFooter();
 }
@@ -425,74 +602,102 @@ inline void drawPageTech() {
 inline void drawPageHealth() {
     char buf[48];
     drawHeader("Стан АКБ");
-    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+    u8g2.setFont(BODY_FONT);
 
     int cap, wear;
     if (decodeCapacity(&cap, &wear)) {
-        snprintf(buf, sizeof(buf), "Ємність: %d %%", cap);  u8g2.drawUTF8(0, 17, buf);
-        snprintf(buf, sizeof(buf), "Знос:    %d %%", wear); u8g2.drawUTF8(0, 26, buf);
+        snprintf(buf, sizeof(buf), "Ємність: %d %%", cap);  u8g2.drawUTF8(0, ROW(0), buf);
+        snprintf(buf, sizeof(buf), "Знос:    %d %%", wear); u8g2.drawUTF8(0, ROW(1), buf);
     } else {
-        u8g2.drawUTF8(0, 17, "Ємність: (зчитайте)");
+        u8g2.drawUTF8(0, ROW(0), "Ємність: (зчитайте)");
     }
 
     if (hasDump2438) {
         uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
         uint16_t dca = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
-        int chgK = (int)(cca * DS2438_MAH_PER_LSB / 1000.0f);  // всего заряжено, тыс. мА*ч
-        int disK = (int)(dca * DS2438_MAH_PER_LSB / 1000.0f);  // всего разряжено
-        snprintf(buf, sizeof(buf), "Зар:%dk Розр:%dk mAh", chgK, disK);  u8g2.drawUTF8(0, 35, buf);
+        // Цикли: сумарний заряд (розряд) / паспортна ємність (settings.h).
+        int chgCyc = (int)(cca * DS2438_MAH_PER_LSB / BATTERY_RATED_MAH);
+        int disCyc = (int)(dca * DS2438_MAH_PER_LSB / BATTERY_RATED_MAH);
+        snprintf(buf, sizeof(buf), "Циклів: зар.%d роз.%d", chgCyc, disCyc);
+        u8g2.drawUTF8(0, ROW(2), buf);
     }
 
     const char *reason;
     if (batteryGenuine(&reason)) {
-        u8g2.drawUTF8(0, 44, "Справжня: ТАК");
+        u8g2.drawUTF8(0, ROW(3), "Справжня: ТАК");
     } else {
         snprintf(buf, sizeof(buf), "РИЗИК: %s", reason);
-        u8g2.drawUTF8(0, 44, buf);
+        u8g2.drawUTF8(0, ROW(3), buf);
     }
 
     drawFooter();
 }
 
-// Общая отрисовка сырого дампа (hex), шрифт 4x6, по 8 байт в строке.
+// Загальна відмальовування сирого дампа (hex), шрифт 4x6. На вузьких екранах (Nokia)
+// по 6 байт в рядку, інакше по 8; глибина — скільки вміщається по висоті.
 inline void drawRawPage(const char *title, const uint8_t *data, bool has, int count) {
     drawHeader(title);
     if (!has) {
-        u8g2.setFont(u8g2_font_5x8_t_cyrillic);
-        u8g2.drawUTF8(0, 26, "немає даних (зчитайте)");
+        u8g2.setFont(BODY_FONT);
+        u8g2.drawUTF8(0, ROW(0), "немає даних (зчитайте)");
         return;
     }
     u8g2.setFont(u8g2_font_4x6_tr);
     char buf[36];
-    const int perRow = 8;
-    int y = 16;
+    const int perRow = (DISP_W >= 100) ? 8 : 6;
+    int y = HEAD_LINE + 7;
     for (int off = 0; off < count; off += perRow) {
         int n = snprintf(buf, sizeof(buf), "%02X:", off);
         for (int c = 0; c < perRow && off + c < count; c++)
             n += snprintf(buf + n, sizeof(buf) - n, "%02X ", data[off + c]);
-        u8g2.drawUTF8(0, y, buf);
+        u8g2.drawStr(0, y, buf);
         y += 7;
         if (y > DISP_H) break;
     }
 }
 
+// На 128x128 вміщається вдвічі більше дампа DS2433.
+#define RAW2433_COUNT ((DISP_H >= 128) ? 128 : 64)
 inline void drawPageRaw2438() { drawRawPage("DS2438 дамп 0-63", batteryDump2438, hasDump2438, DS2438_MEM_SIZE); }
-inline void drawPageRaw2433() { drawRawPage("DS2433 дамп 0-63", batteryDump,     hasDump,     64); }
+inline void drawPageRaw2433() { drawRawPage((DISP_H >= 128) ? "DS2433 дамп 0-127" : "DS2433 дамп 0-63",
+                                            batteryDump, hasDump, RAW2433_COUNT); }
 
-inline void drawPageReset() {
-    drawHeader("Скидання");
-    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
-    u8g2.drawUTF8(0, 19, "Скинути лічильники");
-    u8g2.drawUTF8(0, 28, "(цикли/знос) для");
-    u8g2.drawUTF8(0, 37, "рекалібрування.");
-    if (g_resetArmed)
-        u8g2.drawUTF8(0, 50, "Ще раз [<] = СКИДАННЯ!");
-    else
-        u8g2.drawUTF8(0, 50, "[<] двічі = скидання");
-    drawFooter();
+#define NUM_ACTIONS 4
+// Сторінка «Дії»: показуємо ОДНУ обрану операцію крупно + опис + попередження.
+// [<] коротко — наступна операція; [<] утримати (0.8с) — ВИКОНАТИ; [>] — вихід.
+inline void drawPageActions() {
+    static const char *nm[NUM_ACTIONS] = { "Скидання", "Ремонт", "Очистка", "СТЕРТИ 2433" };
+    static const char *d1[NUM_ACTIONS] = { "обнулити лічильники",
+                                           "полагодити суми та",
+                                           "стерти все, окрім",
+                                           "ПОВНЕ стирання чіпа" };
+    static const char *d2[NUM_ACTIONS] = { "заряд/розряд, знос",
+                                           "дзеркало калібрув.",
+                                           "моделі/ID/калібрув.",
+                                           "DS2433 (крайній!)" };
+    static const bool  dg[NUM_ACTIONS] = { false, false, false, true };
+    int sel = g_actionSel;
+
+    char t[20]; snprintf(t, sizeof(t), "Дія  %d/%d", sel + 1, NUM_ACTIONS);
+    drawHeader(t);
+
+    // Назва обраної операції — крупним шрифтом.
+    u8g2.setFont(u8g2_font_6x12_t_cyrillic);
+    char nml[26]; snprintf(nml, sizeof(nml), "%s%s", dg[sel] ? "! " : "> ", nm[sel]);
+    u8g2.drawUTF8(0, HEAD_LINE + 13, nml);
+
+    // Опис.
+    u8g2.setFont(BODY_FONT);
+    u8g2.drawUTF8(0, HEAD_LINE + 25, d1[sel]);
+    u8g2.drawUTF8(0, HEAD_LINE + 34, d2[sel]);
+    if (dg[sel]) u8g2.drawUTF8(0, HEAD_LINE + 42, "!! НЕЗВОРОТНЬО !!");
+
+    // Підказка керування знизу.
+    u8g2.drawHLine(0, FOOT_HL, DISP_W);
+    u8g2.drawUTF8(0, FOOT_Y, "[<]вибір трим=пуск");
 }
 
-// ---------- рендер и кнопка ----------
+// ---------- рендер і кнопка ----------
 
 inline void displayRender() {
     u8g2.clearBuffer();
@@ -503,7 +708,7 @@ inline void displayRender() {
         case 3:  drawPageHealth();   break;
         case 4:  drawPageRaw2438();  break;
         case 5:  drawPageRaw2433();  break;
-        case 6:  drawPageReset();    break;
+        case 6:  drawPageActions();  break;
         default: drawPageMain();     break;
     }
     u8g2.sendBuffer();
@@ -514,84 +719,81 @@ inline void displayButtonSetup() {
     pinMode(MENU_BTN2_PIN, INPUT_PULLUP);
 }
 
-// Состояние одной кнопки для антидребезга + распознавания долгого нажатия.
+// Стан однієї кнопки для антидребезгу + розпізнавання довгого натискання.
 struct BtnState {
-    bool stable = HIGH;        // устойчивый (антидребезг) уровень
+    bool stable = HIGH;        // стійкий (антидребезг) рівень
     bool lastRaw = HIGH;
-    unsigned long tChange = 0; // время последнего изменения сырого уровня
-    unsigned long tPress = 0;  // время нажатия
+    unsigned long tChange = 0; // час останнього зміни сирого рівня
+    unsigned long tPress = 0;  // час натискання
     bool longFired = false;
 };
 
-// Опрос кнопки. Возвращает: 0 — ничего, 1 — короткое (по отпусканию),
-// 2 — долгое (при удержании longMs). longMs=0 отключает долгое нажатие.
+// Опитування кнопки. Повертає: 0 — нічого, 1 — коротке (по відпусканню),
+// 2 — довге (при утриманні longMs). longMs=0 вимикає довге натискання.
 inline int pollButton(int pin, BtnState &b, unsigned long longMs) {
     bool raw = digitalRead(pin);
     unsigned long now = millis();
     if (raw != b.lastRaw) { b.lastRaw = raw; b.tChange = now; }
 
     int ev = 0;
-    if (now - b.tChange > 25 && raw != b.stable) {   // устойчивое изменение
+    if (now - b.tChange > 25 && raw != b.stable) {   // стійке зміна
         b.stable = raw;
-        if (b.stable == LOW) {                        // нажатие
+        if (b.stable == LOW) {                        // натискання
             b.tPress = now;
             b.longFired = false;
-        } else {                                      // отпускание
-            if (!b.longFired) ev = 1;                 // короткое (если не было долгого)
+        } else {                                      // відпускання
+            if (!b.longFired) ev = 1;                 // коротке (якщо не було довгого)
         }
     }
     if (b.stable == LOW && longMs && !b.longFired && now - b.tPress >= longMs) {
         b.longFired = true;
-        ev = 2;                                        // долгое (единожды)
+        ev = 2;                                        // довге (один раз)
     }
     return ev;
 }
 
-// true один раз после того, как кнопка провернула меню на полный круг.
+// true один раз після того, як кнопка провернула меню на повний коло.
 inline bool displayConsumeReadRequest() {
     if (g_readRequested) { g_readRequested = false; return true; }
     return false;
 }
 
-// true один раз, когда пользователь подтвердил сброс из меню (двойное [<]).
-inline bool displayConsumeResetRequest() {
-    if (g_resetRequested) { g_resetRequested = false; return true; }
-    return false;
+// Повертає обрану дію (0=Скидання 1=Ремонт 2=Очистка) один раз після
+// підтвердження в меню, інакше -1.
+inline int displayConsumeActionRequest() {
+    int a = g_actionRequested; g_actionRequested = -1; return a;
 }
 
-// Опрос кнопок. BTN1: короткое — следующая страница, долгое (0.8с) — повторное
-// чтение АКБ. BTN2: короткое — назад, а на странице сброса — взвод/подтверждение.
+// Опитування кнопок.
+//  BTN1: коротке — наступна сторінка; довге (0.8с) — повторне читання АКБ.
+//  BTN2: на сторінці «Дії» — коротке = вибір операції, довге (0.8с) = ВИКОНАТИ;
+//        на інших сторінках — коротке = попередня сторінка.
 inline void displayHandleButton() {
     static BtnState b1, b2;
 
     int e1 = pollButton(MENU_BTN_PIN, b1, 800);
-    if (e1 == 2) {                                   // долгое -> перечитать
-        g_resetArmed = false;
+    if (e1 == 2) {                                   // довге -> перечитати
         g_readRequested = true;
         displaySetStatus("ЗЧИТУВАННЯ...");
         displayRender();
-    } else if (e1 == 1) {                            // короткое -> следующая страница
-        g_resetArmed = false;
+    } else if (e1 == 1) {                            // коротке -> наступна сторінка
         g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
         displayRender();
     }
 
-    int e2 = pollButton(MENU_BTN2_PIN, b2, 0);
-    if (e2 == 1) {
-        if (g_displayPage == RESET_PAGE) {           // взвод -> подтверждение сброса
-            if (!g_resetArmed) { g_resetArmed = true; g_resetArmedAt = millis(); }
-            else               { g_resetArmed = false; g_resetRequested = true; }
+    int e2 = pollButton(MENU_BTN2_PIN, b2, 800);
+    if (g_displayPage == RESET_PAGE) {               // сторінка «Дії»
+        if (e2 == 1) {                               // коротке -> наступна операція
+            g_actionSel = (g_actionSel + 1) % NUM_ACTIONS;
             displayRender();
-        } else {                                     // назад
-            g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
+        } else if (e2 == 2) {                        // довге -> виконати обране
+            g_actionRequested = g_actionSel;
+            displaySetStatus("ВИКОНУЮ...");
             displayRender();
         }
-    }
-
-    // Авто-снятие взвода сброса через 5 с без подтверждения.
-    if (g_resetArmed && millis() - g_resetArmedAt > 5000) {
-        g_resetArmed = false;
-        if (g_displayPage == RESET_PAGE) displayRender();
+    } else if (e2 == 1) {                            // інші сторінки: коротке -> назад
+        g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
+        displayRender();
     }
 }
 

@@ -35,11 +35,12 @@ extern bool hasSN2438;
 #if defined(DISPLAY_ST7567_SPI)
   #define DISP_W 128
   #define DISP_H 64
-  // Open-Smart 12864 (ST7567), аппаратный SPI (SCK=18, MOSI=23). Вариант
-  // OS12864 задаёт правильный сдвиг колонок (+4); ENH_DG128064 (сдвиг 0)
-  // смещает картинку на 4-5px влево. Для других панелей ST7567 попробуйте
-  // JLX12864 или ERC12864.
-  U8G2_ST7567_OS12864_F_4W_HW_SPI u8g2(U8G2_R0, DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+  // ST7567 (Open-Smart 1.8"), аппаратный SPI (SCK=18, MOSI=23).
+  // Вариант ENH_DG128064: корректная электрика (bias 1/9, умеренный
+  // контраст — вариант OS12864 с bias 1/7 даёт тёмный засвеченный экран).
+  // Сдвиг картинки +4px делается через x_offset в displayInit
+  // (DISPLAY_ST7567_XOFF в settings.h).
+  U8G2_ST7567_ENH_DG128064_F_4W_HW_SPI u8g2(U8G2_R0, DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
 #elif defined(DISPLAY_PCD8544_SPI)
   #define DISP_W 84
   #define DISP_H 48
@@ -183,19 +184,46 @@ inline void fixRecordChecksum(uint8_t *buf, int start, int len) {
 
 // ---------- базовая настройка ----------
 
+static bool g_displayOk = true;   // false: дисплей не найден, работаем без него
+
 inline void displayInit() {
 #if defined(DISPLAY_USES_I2C)
-    // Wire.begin() вручную НЕ вызывать: пины уже переданы в конструктор,
-    // U8g2 инициализирует шину сама (иначе HW I2C виснет — см. выше).
     u8g2.setI2CAddress(DISPLAY_I2C_ADDR << 1);
-    u8g2.setBusClock(DISPLAY_I2C_KHZ * 1000UL); // быстрый рендер -> отзывчивые кнопки
+  #if DISPLAY_I2C_KHZ > 0
+    // Ручное задание частоты. 0 (по умолчанию) = авто: U8g2 берёт безопасный
+    // максимум из драйвера дисплея (SSD1327 держит только 100 кГц!).
+    u8g2.setBusClock(DISPLAY_I2C_KHZ * 1000UL);
+  #endif
+  #if defined(DISPLAY_HW_I2C)
+    // Проба шины до u8g2.begin(): повторный Wire.begin с теми же пинами
+    // безвреден (ядро вернёт "already started"), частоту U8g2 потом ставит
+    // сама на каждой транзакции. Если дисплей не отвечает (ACK нет) —
+    // работаем без него, а не виснем на I2C-тайм-аутах.
+    Wire.begin(DISPLAY_SDA_PIN, DISPLAY_SCL_PIN, 100000UL);
+    Wire.setTimeOut(50);
+    Wire.beginTransmission(DISPLAY_I2C_ADDR);
+    if (Wire.endTransmission() != 0) {
+        Serial.printf("DISPLAY: no ACK at 0x%02X (SDA=%d SCL=%d) — running without display\n",
+                      DISPLAY_I2C_ADDR, DISPLAY_SDA_PIN, DISPLAY_SCL_PIN);
+        g_displayOk = false;
+        return;
+    }
+  #endif
 #endif
     u8g2.begin();
+#if defined(DISPLAY_ST7567_SPI)
+    // Панель Open-Smart: RAM ST7567 на 132 колонки, стекло показывает 4..131.
+    u8g2.getU8x8()->x_offset = DISPLAY_ST7567_XOFF;
+#endif
+#if defined(DISPLAY_CONTRAST)
+    u8g2.setContrast(DISPLAY_CONTRAST);
+#endif
     u8g2.setFont(BODY_FONT);
 }
 
 // Стартовая заставка: тризуб + "Національна Гвардія України".
 inline void displaySplash() {
+    if (!g_displayOk) return;
     u8g2.clearBuffer();
 #if DISP_H >= 128
     // 128x128: эмблема по центру сверху, текст под ней.
@@ -581,6 +609,7 @@ inline void drawPageReset() {
 // ---------- рендер и кнопка ----------
 
 inline void displayRender() {
+    if (!g_displayOk) return;
     u8g2.clearBuffer();
     switch (g_displayPage) {
         case 0:  drawPageMain();     break;

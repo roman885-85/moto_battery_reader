@@ -23,4 +23,44 @@
 // IP адрес ESP32 в режиме AP
 #define ESP_IP "192.168.4.1"
 
+// ======================= ДИСПЛЕЙ =======================
+// ШАГ 1. Выберите модель дисплея — раскомментируйте РОВНО ОДНУ строку.
+// (интерфейс/разрешение подставятся автоматически)
+#define DISPLAY_SSD1306_I2C        // 0.96" OLED 128x64 I2C (GME12864) — по умолчанию
+// #define DISPLAY_SH1106_I2C      // 1.3"  OLED 128x64 I2C (SH1106)
+// #define DISPLAY_SH1107_128_I2C  // 1.5"  OLED 128x128 I2C (GME128128-02, вариант SH1107)
+// #define DISPLAY_SSD1327_128_I2C // 1.5"  OLED 128x128 I2C (GME128128-02, вариант SSD1327)
+// #define DISPLAY_ST7567_SPI      // Open-Smart 1.8" ST7567, 128x64, SPI
+// #define DISPLAY_PCD8544_SPI     // Nokia 5110 (PCD8544), 84x48, SPI
+
+// ШАГ 2a. Пины I2C (для I2C-дисплеев). SW I2C работает на любых GPIO.
+#define DISPLAY_SDA_PIN   21     // I2C SDA
+#define DISPLAY_SCL_PIN   22     // I2C SCL
+#define DISPLAY_I2C_ADDR  0x3C   // адрес (обычно 0x3C, реже 0x3D)
+// Аппаратный I2C — рендер в ~10x быстрее, но ТОЛЬКО на GPIO21/22.
+// Если I2C-дисплей на 21/22 — раскомментируйте:
+// #define DISPLAY_HW_I2C
+
+// ШАГ 2b. Пины SPI (для ST7567 / Nokia 5110). Аппаратный SPI ESP32:
+// SCK=GPIO18, MOSI=GPIO23 (подключаются к CLK/DIN дисплея). Управляющие:
+#define DISPLAY_CS_PIN    5      // CS  (Chip Select)
+#define DISPLAY_DC_PIN    17     // DC  (Data/Command; у Nokia — «D/C»)
+#define DISPLAY_RST_PIN   16     // RST (Reset)
+
+// --- Кнопки меню (между GPIO и GND, активный уровень LOW, внутр. подтяжка) ---
+#define MENU_BTN_PIN  25   // "Вперёд": следующая страница
+#define MENU_BTN2_PIN 26   // "Назад": предыдущая страница
+
+// --- Индикатор заряда ---
+// Приоритет ICA (DS2438). При отключённом учёте тока (IAD=0) — по напряжению.
+#define ICA_FULL_SCALE    255      // значение ICA, соответствующее 100%
+#define BATTERY_EMPTY_MV  6000     // "пусто" для запасного расчёта по U, мВ
+#define BATTERY_FULL_MV   8400     // "полно", мВ
+// Токоизмерительный резистор DS2438, Ом. Влияет на ток (мА) и пересчёт
+// счётчиков ICA/CCA/DCA в мА·ч. Значение калибровочное — подберите под свою
+// АКБ, чтобы ёмкость сходилась с паспортной (типично 20..40 мОм).
+#define DS2438_RSENSE_OHM 0.025f
+// Цена младшего разряда счётчиков заряда в мА·ч (даташит DS2438): 0.4882/Rsense.
+#define DS2438_MAH_PER_LSB (0.4882f / DS2438_RSENSE_OHM)
+
 #endif

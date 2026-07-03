@@ -75,8 +75,14 @@ class SerialWorker(threading.Thread):
             return {"ok": False, "err": "порт не відкрито"}
         try:
             self.ser.reset_input_buffer()
-            self.ser.write((c + "\n").encode("utf-8"))
-            self.ser.flush()
+            # Великі команди (WRITE33 ~1 КБ) шлемо частинами по 200 Б із
+            # мікропаузами, щоб не переповнити 256-байтний UART-буфер ESP32.
+            data = (c + "\n").encode("utf-8")
+            for i in range(0, len(data), 200):
+                self.ser.write(data[i:i + 200])
+                self.ser.flush()
+                if len(data) > 200:
+                    time.sleep(0.01)
             deadline = time.time() + timeout
             buf = b""
             while time.time() < deadline:

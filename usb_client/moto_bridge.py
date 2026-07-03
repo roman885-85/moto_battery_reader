@@ -73,8 +73,14 @@ class Bridge:
         with self.lock:
             try:
                 self.ser.reset_input_buffer()      # відкинути асинхронні відладкові рядки
-                self.ser.write((c + "\n").encode("utf-8"))
-                self.ser.flush()
+                # Великі команди шлемо частинами по 200 Б із мікропаузами, щоб не
+                # переповнити 256-байтний UART-буфер ESP32 (без setRxBufferSize).
+                data = (c + "\n").encode("utf-8")
+                for i in range(0, len(data), 200):
+                    self.ser.write(data[i:i + 200])
+                    self.ser.flush()
+                    if len(data) > 200:
+                        time.sleep(0.01)
                 deadline = time.time() + timeout
                 buf = b""
                 while time.time() < deadline:

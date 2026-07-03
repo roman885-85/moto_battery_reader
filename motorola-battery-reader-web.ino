@@ -26,10 +26,10 @@ uint8_t chipSN2438[8] = {0};
 bool hasSN2438 = false;
 
 void setup() {
-    // Збільшуємо буфер прийому UART ДО Serial.begin(): типовий 256-байтний буфер
-    // переповнюється великими командами запису по USB (WRITE33 = 512 Б -> ~1 КБ
-    // hex), через що вони приходили побитими і запис не відбувався. 4 КБ вистачає.
-    Serial.setRxBufferSize(4096);
+    // ПРИМІТКА: setRxBufferSize() тут НЕ викликаємо. Великі команди запису по USB
+    // (WRITE33 ~1 КБ) надсилаються КЛІЄНТОМ частинами по ~200 Б із мікропаузами
+    // (client_usb.html / moto_gui.py / moto_bridge.py), тож типового 256-байтного
+    // UART-буфера достатньо і жодного втручання в ініціалізацію не потрібно.
     Serial.begin(115200);
     Serial.println("\n\nMotorola Battery Reader Web Server (AP Mode)");
     Serial.println("==============================================");

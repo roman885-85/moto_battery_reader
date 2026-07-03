@@ -75,6 +75,13 @@
         .zone{font-weight:700;font-size:.9em;padding:9px 12px;border-radius:8px;margin:20px 0 8px}
         .zone.zi{background:#16324a;color:#bfe0ff}
         .zone.zd{background:#4a1512;color:#ff9b8f;border:1px solid #e74c3c}
+        .hxwrap{margin-top:8px;font-family:monospace;font-size:.8em;line-height:1.4;background:#0e1218;border-radius:8px;overflow:hidden}
+        .hxbar{display:flex;color:#7fd0ff;background:#12233a;padding:4px 0;white-space:pre}
+        .hxrow{display:flex;height:170px}
+        .hxg{flex:none;width:46px;text-align:right;padding:0 6px;color:#6b8;white-space:pre;overflow:hidden}
+        .hxh{flex:1;padding-left:2px;white-space:pre;overflow:hidden}
+        .hxd{flex:1;min-width:0;font-family:monospace;font-size:1em;line-height:1.4;color:#e7ecf3;background:transparent;border:none;padding:0 2px;resize:none;white-space:pre;overflow-y:scroll}
+        .hxa{flex:none;width:150px;padding-left:8px;color:#8fb7d9;white-space:pre;overflow:hidden;border-left:1px solid #2a323f}
         .hex{font-family:'Courier New',monospace;font-size:.82em;color:#9fe3c0;word-break:break-all;
              background:var(--card2);padding:10px;border-radius:8px;border:1px solid var(--line)}
         #toast{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:9;padding:12px 20px;
@@ -232,6 +239,21 @@
             <button class="btn btn-warn" style="width:100%" onclick="setCapacity()">💾 ЗАПИСАТИ %</button>
         </div>
 
+        <div class="card">
+            <h2>🪪 Модель та серійний (ручний запис)</h2>
+            <div class="note i">Модель (part number) записується у DS2433: поле запису 0x0B + заголовок,
+                з перерахунком контрольних сум. Поточна: <b id="mdNow">—</b>.</div>
+            <div class="row"><span class="k">Модель</span>
+                <input type="text" id="mdVal" maxlength="9" placeholder="PMNN4409A" oninput="mdCheck()"
+                       style="width:150px;text-align:center;font-size:1.05em;letter-spacing:1px;text-transform:uppercase;border-radius:8px;border:none;padding:6px">
+                <span id="mdLen" class="k" style="min-width:44px;text-align:right">0/9</span></div>
+            <input type="password" class="pw" id="pwMd" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="setModel()">💾 ЗАПИСАТИ МОДЕЛЬ</button>
+            <div class="note w">ℹ️ <b>Серійний номер</b> — це апаратний лазерний ROM чипа DS2438: він унікальний,
+                незмінний і <b>фізично не перезаписується</b>. Для власного інвентарного ID скористайтеся
+                редактором байтів (нижче) — там є лінійка адрес як у HxD.</div>
+        </div>
+
         <!-- НЕБЕЗПЕЧНА ЗОНА -->
         <div class="zone zd">⛔ НЕБЕЗПЕЧНА ЗОНА — незворотні операції, стирають/переписують дані. Спочатку зробіть копію!</div>
 
@@ -288,8 +310,14 @@
                 </select>
                 <button class="btn btn-info" style="width:auto;padding:6px 12px" onclick="loadHex()">↻ Завантажити</button>
             </div>
-            <textarea id="hxData" spellcheck="false" style="width:100%;height:150px;font-family:monospace;
-                font-size:.8em;margin-top:8px;border-radius:8px;border:none;padding:8px;box-sizing:border-box"></textarea>
+            <div class="hxwrap">
+                <div class="hxbar"><span class="hxg">Зсув</span><span class="hxh">00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F</span><span class="hxa">Текст</span></div>
+                <div class="hxrow">
+                    <div class="hxg" id="hxGut"></div>
+                    <textarea class="hxd" id="hxData" spellcheck="false" oninput="hexAux()"></textarea>
+                    <div class="hxa" id="hxAsc"></div>
+                </div>
+            </div>
             <label style="display:block;margin:6px 0"><input type="checkbox" id="hxFix" checked>
                 Автовиправлення контрольних сум (DS2433)</label>
             <input type="password" class="pw" id="pwHex" placeholder="🔑 Пароль адміністратора">
@@ -333,6 +361,7 @@ async function refreshAll(){
         if(r.status!==404){
             const d=await r.json();
             $('ovModel').textContent=d.model||'—'; $('dModel').textContent=d.model||'—';
+            if(d.model){$('mdNow').textContent=d.model; if(!$('mdVal').value)$('mdVal').placeholder=d.model;}
             if(typeof d.capacity==='number'&&d.capacity>=0){
                 $('ovCap').textContent=d.capacity+' %'; $('ovWear').textContent=d.wear+' %';
                 $('capNow').textContent=d.capacity+' %'; $('capVal').value=d.capacity;
@@ -482,6 +511,26 @@ async function cleanBattery(){
     prog(false);
 }
 
+function mdCheck(){
+    const v=$('mdVal').value.toUpperCase().replace(/[^A-Z0-9]/g,'');
+    if(v!==$('mdVal').value)$('mdVal').value=v;
+    const el=$('mdLen'); el.textContent=v.length+'/9';
+    el.style.color=(v.length>=3&&v.length<=9)?'var(--ok)':'var(--warn)';
+}
+async function setModel(){
+    const pw=$('pwMd').value; if(!pw){toast('Введіть пароль','err');return}
+    const m=$('mdVal').value.trim().toUpperCase();
+    if(!/^[A-Z0-9]{3,9}$/.test(m)){toast('Модель: 3–9 символів A–Z / 0–9','err');return}
+    if(!confirm('Записати модель «'+m+'» у DS2433?\nНевірна модель може зробити АКБ невизначеною для рації.'))return;
+    prog(true,'Запис моделі...');
+    try{
+        const r=await postForm('/api/setmodel',{password:pw,model:m});
+        toast(r.status==='success'?('✅ Модель записано: '+r.model):('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
 async function repairFw(){
     const pw=$('pwRep').value; if(!pw){toast('Введіть пароль','err');return}
     if(!confirm('🛠 Відновити цілісність (контрольні суми + дзеркало) і записати у чіп?'))return;
@@ -505,8 +554,34 @@ async function loadHex(){
         let out='';
         for(let i=0;i<parts.length;i+=16) out+=parts.slice(i,i+16).join(' ')+'\n';
         $('hxData').value=out.trim();
+        hexAux();
     }catch(e){toast('Помилка: '+e.message,'err')}
 }
+
+// Лінійка адресів + ASCII-колонка (як у HxD): перераховуємо при кожній зміні
+function hexAux(){
+    const bytes=($('hxData').value.match(/[0-9a-fA-F]{2}/g))||[];
+    let gut='', asc='';
+    for(let i=0;i<bytes.length;i+=16){
+        gut+=i.toString(16).toUpperCase().padStart(4,'0')+'\n';
+        let s='';
+        for(let j=i;j<i+16&&j<bytes.length;j++){
+            const v=parseInt(bytes[j],16);
+            s+=(v>=32&&v<127)?String.fromCharCode(v):'.';
+        }
+        asc+=s+'\n';
+    }
+    $('hxGut').textContent=gut;
+    $('hxAsc').textContent=asc;
+}
+// Синхронне прокручування гутера/тексту/ASCII
+document.addEventListener('DOMContentLoaded',function(){
+    const d=$('hxData');
+    if(d)d.addEventListener('scroll',function(){
+        $('hxGut').scrollTop=d.scrollTop;
+        $('hxAsc').scrollTop=d.scrollTop;
+    });
+});
 
 async function writeHex(){
     const pw=$('pwHex').value; if(!pw){toast('Введіть пароль','err');return}

@@ -25,6 +25,7 @@
 //   WIPE33               -> ПОВНЕ стирання DS2433 (крайній випадок, все у 0xFF)
 //   SETCAP <0..100>      -> змінити ємність/знос %
 //   SETMAH <мА·год>      -> змінити залишкову ємність (регістр ICA)
+//   SETMODEL <NAME>      -> ручний запис моделі (part number, 3..9 A-Z0-9)
 // ---------------------------------------------------------------------------
 
 #include "web_server.h"   // dump-буфери, readAllChips/performReset/repairDumps,
@@ -177,6 +178,10 @@ static void serialExec(const String &line) {
                                          sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"write failed\"}"); } }
     else if (cmd == "SETCAP")     serSetCap(arg);
     else if (cmd == "SETMAH")     serSetMah(arg);
+    else if (cmd == "SETMODEL") { String m = arg; m.trim(); m.toUpperCase();
+                                  bool ok = performSetModel(m.c_str());
+                                  sResp(ok ? (String("{\"ok\":true,\"model\":\"") + m + "\"}")
+                                           : "{\"ok\":false,\"err\":\"bad model (3..9 A-Z0-9) or write failed\"}"); }
     else if (cmd == "CLEAN")    { bool ok = performFactoryClean(); sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"clean failed\"}"); }
     else if (cmd == "WIPE33")   { bool ok = performWipe2433();     sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"wipe failed\"}"); }
     else                          sResp(String("{\"ok\":false,\"err\":\"unknown cmd '") + cmd + "'\"}");

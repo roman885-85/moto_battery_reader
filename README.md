@@ -152,6 +152,12 @@ portal** сам запропонує відкрити сторінку; інак
 > Якщо Web Serial недоступний з `file://` — запустіть `python -m http.server`
 > у теці й відкрийте `http://localhost:8000/client_usb.html`.
 
+> 🖥 **Standalone `.exe` (будь-який браузер, без Web Serial):** тека
+> **`usb_client/`** містить міст `moto_bridge.py`, що відкриває COM-порт
+> напряму (pyserial) і показує той самий інтерфейс у будь-якому браузері.
+> Збірка в один файл — `usb_client/build.bat` → `dist/moto_usb.exe` (не
+> потребує ні Python, ні Chrome у користувача). Деталі — `usb_client/README.md`.
+
 Протокол (`serial_api.h`, 115200 бод, відповідь одним рядком `#R#{json}`):
 
 | Команда | Дія |

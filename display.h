@@ -366,9 +366,9 @@ inline int batteryPercent(const char **src) {
 inline bool decodeModel(char *out, size_t n) {
     if (!hasDump) return false;
 
-    // 1) Запис 0x0B c назвою моделі (0x0B 'P' ...).
+    // 1) Запис 0x0B c назвою моделі (0x0B + літера: PMNN, NNTN, HNN…).
     for (int i = 0x100; i < (int)DUMP_SIZE - 12; i++) {
-        if (batteryDump[i] == 0x0B && batteryDump[i + 1] == 'P') {
+        if (batteryDump[i] == 0x0B && batteryDump[i + 1] >= 'A' && batteryDump[i + 1] <= 'Z') {
             int j = i + 1, len = 0;
             char tmp[16];
             while (j < (int)DUMP_SIZE && len < 12) {

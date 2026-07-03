@@ -221,6 +221,99 @@ bool BatteryReader::writeBattery(const uint8_t *buffer, size_t size) {
     return true;
 }
 
+// --- Запис ЛИШЕ зачеплених сторінок DS2433 ---
+// Пише тільки 32-байтові сторінки, що покривають [regionStart, regionStart+regionLen).
+// Той самий протокол, що й writeBattery (Write/Read/Copy Scratchpad + звірка),
+// але не чіпає решту чипа — точкова правка (напр. модель) вдається навіть якщо
+// деінде є непридатні до перезапису байти.
+bool BatteryReader::writeBatteryRange(const uint8_t *buffer, size_t regionStart, size_t regionLen) {
+    if (regionLen == 0) return true;
+    uint8_t ds2433_addr[8];
+    uint8_t ds2438_addr[8];
+
+    if (!findDevices(ds2433_addr, ds2438_addr)) {
+        Serial.println("Error: No devices found on 1-Wire bus!");
+        digitalWrite(_pullupPin, LOW);
+        return false;
+    }
+    if (ds2433_addr[0] != DS2433_ID) {
+        Serial.println("Error: DS2433 not found for writing!");
+        digitalWrite(_pullupPin, LOW);
+        return false;
+    }
+
+    const size_t pageSize = DS2433_PAGE_SIZE;
+    size_t firstPage = (regionStart / pageSize) * pageSize;
+    size_t lastByte  = regionStart + regionLen - 1;
+    size_t lastPage  = (lastByte / pageSize) * pageSize;
+
+    for (size_t offset = firstPage; offset <= lastPage; offset += pageSize) {
+        uint8_t ta1 = offset & 0xFF;
+        uint8_t ta2 = (offset >> 8) & 0xFF;
+
+        // --- Write Scratchpad (ціла сторінка 32 Б) ---
+        _ow->reset();
+        _ow->select(ds2433_addr);
+        _ow->write(DS2433_WRITE_SCRATCH);
+        _ow->write(ta1);
+        _ow->write(ta2);
+        for (size_t i = 0; i < pageSize; i++) _ow->write(buffer[offset + i]);
+
+        // --- Read Scratchpad: звірка адреси/даних + читання E/S ---
+        _ow->reset();
+        _ow->select(ds2433_addr);
+        _ow->write(DS2433_READ_SCRATCH);
+        uint8_t r_ta1 = _ow->read();
+        uint8_t r_ta2 = _ow->read();
+        uint8_t es    = _ow->read();
+        if (r_ta1 != ta1 || r_ta2 != ta2 || (es & 0x20)) {
+            Serial.printf("ERROR: scratchpad addr/PF @0x%04X (ta=%02X%02X es=%02X)\n",
+                          (unsigned)offset, r_ta2, r_ta1, es);
+            _ow->reset(); digitalWrite(_pullupPin, LOW); return false;
+        }
+        bool dataOk = true;
+        for (size_t i = 0; i < pageSize; i++) if (_ow->read() != buffer[offset + i]) dataOk = false;
+        if (!dataOk) {
+            Serial.printf("ERROR: scratchpad data mismatch @0x%04X\n", (unsigned)offset);
+            _ow->reset(); digitalWrite(_pullupPin, LOW); return false;
+        }
+
+        // --- Copy Scratchpad (авторизація TA1,TA2,E/S) + tPROG ---
+        _ow->reset();
+        _ow->select(ds2433_addr);
+        _ow->write(DS2433_COPY_SCRATCH);
+        _ow->write(ta1);
+        _ow->write(ta2);
+        _ow->write(es, 1);
+        delay(6);
+        _ow->depower();
+    }
+
+    // Верифікація тільки зачеплених сторінок.
+    bool verifyOk = true;
+    for (size_t offset = firstPage; offset <= lastPage && verifyOk; offset += pageSize) {
+        _ow->reset();
+        _ow->select(ds2433_addr);
+        _ow->write(DS2433_READ_MEMORY);
+        _ow->write(offset & 0xFF);
+        _ow->write((offset >> 8) & 0xFF);
+        for (size_t i = 0; i < pageSize; i++) {
+            uint8_t b = _ow->read();
+            if (b != buffer[offset + i]) {
+                Serial.printf("ERROR: range verify mismatch @0x%04X (got %02X, exp %02X)\n",
+                              (unsigned)(offset + i), b, buffer[offset + i]);
+                verifyOk = false; break;
+            }
+        }
+    }
+
+    _ow->reset();
+    digitalWrite(_pullupPin, LOW);
+    if (!verifyOk) { Serial.println("ERROR: Range write verification failed!"); return false; }
+    Serial.printf("Range write OK: pages 0x%04X..0x%04X\n", (unsigned)firstPage, (unsigned)lastPage);
+    return true;
+}
+
 // --- Читання усієї пам'яті DS2438 (8 сторінок по 8 байт = 64 байта) ---
 // Порядок на сторінку: Recall Memory (0xB8) -> Read Scratchpad (0xBE) ->
 // 9 байт (8 даних + CRC8). Перед читанням запускаємо вимірювання, щоб

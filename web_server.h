@@ -812,10 +812,18 @@ void handleClean() {
            : "{\"status\":\"error\",\"message\":\"Clean write failed\"}");
 }
 
-// Ручний запис МОДЕЛІ (part number) у DS2433: 9-байтове поле запису 0x0B
-// (доповнене пробілами) + ASCII-модель у заголовку 0x23 (якщо цей формат) +
-// перерахунок контрольних сум. Довжина 3..9, символи [A-Z0-9]. Повертає
-// позицію запису 0x0B або -1 (невірна довжина/символи чи запис не знайдено).
+// Знаходить зсув запису 0x0B з назвою моделі (0x0B + літера A-Z) або -1.
+int findModelRecord() {
+    for (int i = 0x100; i < (int)DUMP_SIZE - 11; i++)
+        if (batteryDump[i] == 0x0B && batteryDump[i + 1] >= 'A' && batteryDump[i + 1] <= 'Z') return i;
+    return -1;
+}
+
+// Правит дамп: МОДЕЛЬ (part number) зберігається у ДВОХ місцях —
+//   • запис 0x0B: 9-байтове поле, доповнене пробілами, Σ≡0x5A;
+//   • ASCII-модель у заголовку 0x23 (лише формат 4488/4493).
+// Оновлюємо ОБИДВІ копії, інакше рація читає стару. Довжина 3..9, [A-Z0-9].
+// Повертає к-сть оновлених копій (>0 — успіх), або -1 (невірне ім'я / жодної копії).
 int applyModel(const char *name) {
     int n = strlen(name);
     if (n < 3 || n > 9) return -1;
@@ -823,30 +831,43 @@ int applyModel(const char *name) {
         char c = name[k];
         if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) return -1;
     }
-    int rec = -1;
-    for (int i = 0x100; i < 0x1F0 - 11; i++)
-        if (batteryDump[i] == 0x0B && batteryDump[i + 1] >= 'A' && batteryDump[i + 1] <= 'Z') { rec = i; break; }
-    if (rec < 0) return -1;
-    // Поле моделі — 9 байт (rec+1..rec+9), ліворуч, доповнене пробілами.
-    for (int k = 0; k < 9; k++) batteryDump[rec + 1 + k] = (k < n) ? (uint8_t)name[k] : 0x20;
-    fixRecordChecksum(batteryDump, rec, 11);   // [0x0B][9][контр], Σ≡0x5A
-    // ASCII-модель у заголовку (0x23) — лише у форматі 4488/4493.
+    int updated = 0;
+    // (1) Запис 0x0B.
+    int rec = findModelRecord();
+    if (rec >= 0) {
+        for (int k = 0; k < 9; k++) batteryDump[rec + 1 + k] = (k < n) ? (uint8_t)name[k] : 0x20;
+        fixRecordChecksum(batteryDump, rec, 11);   // [0x0B][9][контр], Σ≡0x5A
+        updated++;
+    }
+    // (2) ASCII-модель у заголовку.
     if (batteryDump[0x23] >= 'A' && batteryDump[0x23] <= 'Z') {
         int L = 0, j = 0x23;
         while (j < 0x30 && ((batteryDump[j] >= 'A' && batteryDump[j] <= 'Z') ||
                             (batteryDump[j] >= '0' && batteryDump[j] <= '9'))) { j++; L++; }
         for (int k = 0; k < L; k++) batteryDump[0x23 + k] = (k < n) ? (uint8_t)name[k] : 0x00;
-        fixHeaderChecksum(batteryDump);
+        fixHeaderChecksum(batteryDump);            // заголовок 0x00..0x1F (модель поза ним — no-op, але узгоджено)
+        updated++;
     }
-    return rec;
+    return updated > 0 ? updated : -1;
 }
 
-// Ядро запису моделі: правит дамп + пише DS2433. Спільне для веб і USB.
+// Пише зачеплені моделлю сторінки DS2433 (запис 0x0B і заголовок), кожну окремо —
+// точковий запис не залежить від придатності решти чипа до перезапису.
+bool writeModelPages() {
+    bool ok = true;
+    int rec = findModelRecord();
+    if (rec >= 0) ok &= battery.writeBatteryRange(batteryDump, rec, 11);
+    if (batteryDump[0x23] >= 'A' && batteryDump[0x23] <= 'Z')
+        ok &= battery.writeBatteryRange(batteryDump, 0x23, 9);
+    return ok;
+}
+
+// Ядро запису моделі: правит дамп + пише зачеплені сторінки. Спільне для веб і USB.
 bool performSetModel(const char *name) {
     if (!hasDump) { displayShow("СПОЧАТКУ ЧИТАЙ"); return false; }
     if (applyModel(name) < 0) return false;
     ledSet(LED_WRITE); displayShow("ЗАПИС МОДЕЛІ");
-    bool ok = battery.writeBattery(batteryDump, DUMP_SIZE);
+    bool ok = writeModelPages();
     if (ok) { saveDump("/dump.bin", batteryDump, DUMP_SIZE); displayShow("МОДЕЛЬ OK"); }
     else displayShow("МОДЕЛЬ ЗБІЙ");
     ledSet(ok ? LED_OK : LED_ERROR);
@@ -860,16 +881,16 @@ void handleSetModel() {
     if (!hasDump) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return; }
     String m = server.arg("model"); m.trim(); m.toUpperCase();
     if (applyModel(m.c_str()) < 0) {
-        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Model must be 3..9 chars [A-Z0-9] and record must exist\"}"); return;
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Model must be 3..9 chars [A-Z0-9] and a model record/header must exist\"}"); return;
     }
     ledSet(LED_WRITE); displayShow("ЗАПИС МОДЕЛІ");
-    bool ok = battery.writeBattery(batteryDump, DUMP_SIZE);
+    bool ok = writeModelPages();
     if (ok) { saveDump("/dump.bin", batteryDump, DUMP_SIZE); displayShow("МОДЕЛЬ OK"); }
     else displayShow("МОДЕЛЬ ЗБІЙ");
     ledSet(ok ? LED_OK : LED_ERROR);
     server.send(ok ? 200 : 500, "application/json",
         ok ? (String("{\"status\":\"success\",\"model\":\"") + m + "\"}")
-           : "{\"status\":\"error\",\"message\":\"Write failed\"}");
+           : "{\"status\":\"error\",\"message\":\"Write failed (see serial log)\"}");
 }
 
 // Змінити відображувану ємність/знос (0..100 %) і записати в АКБ. Редагує

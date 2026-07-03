@@ -323,6 +323,14 @@
             <input type="password" class="pw" id="pwHex" placeholder="🔑 Пароль адміністратора">
             <button class="btn btn-danger" style="width:100%" onclick="writeHex()">⚡ ЗАПИСАТИ БАЙТИ</button>
         </div>
+
+        <div class="card">
+            <h2>🔁 Перезавантаження пристрою</h2>
+            <div class="note i">Перезапускає ESP32 (Wi-Fi/веб-сервер підніметься знову за кілька секунд).
+                Корисно після серії операцій або якщо 1-Wire шина «зависла».</div>
+            <input type="password" class="pw" id="pwReboot" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="rebootDevice()">🔁 ПЕРЕЗАВАНТАЖИТИ ESP32</button>
+        </div>
     </div>
 </div>
 
@@ -596,6 +604,18 @@ async function writeHex(){
         toast(r.status==='success'?'✅ Байти записано':('Помилка: '+r.message),r.status==='success'?'ok':'err');
         if(r.status==='success')await refreshAll();
     }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+async function rebootDevice(){
+    const pw=$('pwReboot').value; if(!pw){toast('Введіть пароль','err');return}
+    if(!confirm('🔁 Перезавантажити ESP32? На кілька секунд зникне Wi-Fi/сторінка.'))return;
+    prog(true,'Перезавантаження...');
+    try{
+        const r=await postForm('/api/reboot',{password:pw});
+        toast(r.status==='success'?'✅ Перезавантаження... Оновіть сторінку за 5–10 с':('Помилка: '+r.message),
+              r.status==='success'?'ok':'err');
+    }catch(e){toast('Перезавантаження ініційовано, оновіть сторінку за 5–10 с','info')}
     prog(false);
 }
 

@@ -12,7 +12,8 @@
 // (без префікса) клієнт ігнорує.
 //
 // Команди:
-//   PING                 -> {"ok":true,"dev":"MotoBatteryReader","ver":2}
+//   PING                 -> {"ok":true,"dev":"MotoBatteryReader","ver":3,"authed":..}
+//   AUTH <пароль>        -> авторизація для команд запису (пароль = ADMIN_PASSWORD)
 //   READ                 -> {"ok":..,"ds2433":..,"ds2438":..}  (зчитати чіпи)
 //   INFO                 -> усі декодовані поля (модель/%/цикли/цілісність/DS2438)
 //   GET33 / GET38        -> {"ok":true,"hex":"AA BB .."}  (сирий дамп)
@@ -26,12 +27,18 @@
 //   SETCAP <0..100>      -> змінити ємність/знос %
 //   SETMAH <мА·год>      -> змінити залишкову ємність (регістр ICA)
 //   SETMODEL <NAME>      -> ручний запис моделі (part number, 3..9 A-Z0-9)
+//   REBOOT               -> перезавантаження ESP32
+//
+// Команди ЗАПИСУ (WRITE33/WRITEFIX33/WRITE38/RESET/REPAIR/CLEAN/WIPE33/SETCAP/
+// SETMAH/SETMODEL/REBOOT) вимагають попередньої авторизації командою
+// "AUTH <пароль>". Команди читання (PING/READ/INFO/GET33/GET38) — без пароля.
 // ---------------------------------------------------------------------------
 
 #include "web_server.h"   // dump-буфери, readAllChips/performReset/repairDumps,
                           // hexToBytes/fixHeaderChecksum/mirrorOk/headerChecksumOk
 
-static String g_serIn;    // накопичувач вхідного рядка
+static String g_serIn;         // накопичувач вхідного рядка
+static bool   g_serAuthed = false;  // чи авторизований клієнт (AUTH <пароль>)
 
 static void sResp(const String &json) {
     Serial.print("#R#");
@@ -155,7 +162,24 @@ static void serialExec(const String &line) {
     String arg = (sp < 0) ? String("") : line.substring(sp + 1);
     cmd.toUpperCase(); cmd.trim();
 
-    if (cmd == "PING")            sResp("{\"ok\":true,\"dev\":\"MotoBatteryReader\",\"ver\":2}");
+    // Авторизація: AUTH <пароль> вмикає доступ до команд запису на час сесії.
+    if (cmd == "AUTH") {
+        g_serAuthed = (arg == ADMIN_PASSWORD);
+        sResp(g_serAuthed ? "{\"ok\":true,\"authed\":true}"
+                          : "{\"ok\":false,\"authed\":false,\"err\":\"невірний пароль\"}");
+        return;
+    }
+    // Команди запису/небезпечні — лише після успішного AUTH.
+    bool isWrite = (cmd == "WRITE33" || cmd == "WRITEFIX33" || cmd == "WRITE38" ||
+                    cmd == "RESET"   || cmd == "REPAIR"     || cmd == "CLEAN"   ||
+                    cmd == "WIPE33"  || cmd == "SETCAP"     || cmd == "SETMAH"  ||
+                    cmd == "SETMODEL"|| cmd == "REBOOT");
+    if (isWrite && !g_serAuthed) {
+        sResp("{\"ok\":false,\"err\":\"потрібна авторизація: AUTH <пароль>\",\"needAuth\":true}");
+        return;
+    }
+
+    if (cmd == "PING")            sResp(String("{\"ok\":true,\"dev\":\"MotoBatteryReader\",\"ver\":3,\"needAuth\":true,\"authed\":") + (g_serAuthed ? "true" : "false") + "}");
     else if (cmd == "READ")     { bool a, b; readAllChips(a, b);
                                   sResp(String("{\"ok\":") + ((a || b) ? "true" : "false") +
                                         ",\"ds2433\":" + (a ? "true" : "false") +
@@ -184,6 +208,7 @@ static void serialExec(const String &line) {
                                            : "{\"ok\":false,\"err\":\"bad model (3..9 A-Z0-9) or write failed\"}"); }
     else if (cmd == "CLEAN")    { bool ok = performFactoryClean(); sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"clean failed\"}"); }
     else if (cmd == "WIPE33")   { bool ok = performWipe2433();     sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"wipe failed\"}"); }
+    else if (cmd == "REBOOT")   { displayShow("ПЕРЕЗАВАНТАЖЕННЯ"); sResp("{\"ok\":true}"); Serial.flush(); delay(200); ESP.restart(); }
     else                          sResp(String("{\"ok\":false,\"err\":\"unknown cmd '") + cmd + "'\"}");
 }
 

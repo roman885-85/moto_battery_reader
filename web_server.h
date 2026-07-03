@@ -81,6 +81,24 @@ static bool mirrorOk(const uint8_t *d33, const uint8_t *d38) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Перевірка пароля адміністратора. РАНІШЕ: `if (hasArg && arg != PW)` —
+// якщо клієнт просто НЕ надсилав аргумент password, перевірка проходила і
+// запис виконувався БЕЗ пароля (діра в безпеці). Тепер пароль ОБОВ'ЯЗКОВИЙ:
+// має бути присутній І збігатися. Усі веб-обробники запису викликають
+// requireAdmin() першим рядком.
+static bool adminOk() {
+    return server.hasArg("password") && server.arg("password") == ADMIN_PASSWORD;
+}
+static bool requireAdmin() {
+    if (!adminOk()) {
+        server.send(403, "application/json",
+            "{\"status\":\"error\",\"message\":\"Невірний або відсутній пароль адміністратора\"}");
+        return false;
+    }
+    return true;
+}
+
 // Логотип: віддаємо /logo.png з SPIFFS, якщо він завантажений (інакше 404 -> в вебі
 // показується вбудований SVG-тризуб). Дозволяє використати точний логотип НГУ.
 void handleLogo() {
@@ -244,10 +262,7 @@ void handleUploadDone2438() {
 
 // Обробник записи дампа в DS2438
 void handleWriteDump2438() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}");
-        return;
-    }
+    if (!requireAdmin()) return;
 
     Serial.println("\n=== DS2438 write request received ===");
 
@@ -484,10 +499,7 @@ void handleUploadDone() {
 // Обробник записи дампа
 void handleWriteDump() {
     // Перевіряємо пароль
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}");
-        return;
-    }
+    if (!requireAdmin()) return;
     
     Serial.println("\n=== Write request received ===");
     
@@ -619,14 +631,20 @@ void resetBatteryData() {
         batteryDump2438[62] = batteryDump2438[63] = 0;         // DCA
     }
     if (hasDump) {
-        // Дзеркало CCA/DCA в записи 0x0D одразу після моделі ("0B 'PMNN' ... 0D ...")
+        // Дзеркало CCA/DCA в записи 0x0D одразу після моделі ("0B <модель> ... 0D ...").
+        // Модель — 0x0B + літера (PMNN…, PT…, NNTN… — перевірено на дампах), а не
+        // лише "PMN": інакше скидання дзеркала мовчки пропускалось для PT4409A тощо.
         for (int i = 0x100; i < 0x1F0 - 13; i++) {
-            if (batteryDump[i] == 0x0B && batteryDump[i + 1] == 'P' &&
-                batteryDump[i + 2] == 'M' && batteryDump[i + 3] == 'N') {
+            if (batteryDump[i] == 0x0B && batteryDump[i + 1] >= 'A' && batteryDump[i + 1] <= 'Z') {
                 for (int j = i + 10; j < i + 30 && j < 0x1F0 - 13; j++) {
                     if (batteryDump[j] == 0x0D) {
-                        batteryDump[j + 3] = batteryDump[j + 4] = 0; // CCA
-                        batteryDump[j + 5] = batteryDump[j + 6] = 0; // DCA
+                        // Дзеркало лічильників у записі 0x0D: CCA — 16-біт LE у
+                        // байтах [j+4,j+5], DCA — [j+6,j+7] (перевірено на реальних
+                        // дампах: значення збігаються з CCA/DCA у DS2438[60..63]).
+                        // Обнуляємо ОБИДВА байти кожного, інакше при лічильнику
+                        // ≥256 старший байт лишався ненульовим.
+                        batteryDump[j + 4] = batteryDump[j + 5] = 0; // CCA
+                        batteryDump[j + 6] = batteryDump[j + 7] = 0; // DCA
                         fixRecordChecksum(batteryDump, j, 0x0D);
                         break;
                     }
@@ -775,9 +793,7 @@ bool performRepair() {
 }
 
 void handleRepair() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
-    }
+    if (!requireAdmin()) return;
     if (!hasDump && !hasDump2438) {
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return;
     }
@@ -789,9 +805,7 @@ void handleRepair() {
 
 // Веб-стирання DS2433 (крайній випадок), під паролем.
 void handleWipe2433() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
-    }
+    if (!requireAdmin()) return;
     bool ok = performWipe2433();
     server.send(ok ? 200 : 500, "application/json",
         ok ? "{\"status\":\"success\",\"message\":\"DS2433 fully erased\"}"
@@ -800,9 +814,7 @@ void handleWipe2433() {
 
 // Веб-очистка (крім критичних даних), під паролем.
 void handleClean() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
-    }
+    if (!requireAdmin()) return;
     if (!hasDump && !hasDump2438) {
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return;
     }
@@ -811,6 +823,15 @@ void handleClean() {
         ok ? "{\"status\":\"success\",\"message\":\"Usage data cleared (identity kept)\"}"
            : "{\"status\":\"error\",\"message\":\"Clean write failed\"}");
 }
+
+// Зсуви/довжини ділянок, які востаннє змінив applyModel(), щоб writeModelPages()
+// записав РІВНО їх, не шукаючи запис заново. Це критично: після запису моделі,
+// що починається з цифри (напр. "4409A"), findModelRecord() вже НЕ знайшов би
+// щойно змінений запис 0x0B (він шукає 0x0B + літеру A-Z) — і сторінка мовчки
+// не записувалась. Тепер пишемо саме те, що змінили.
+static int g_mdRecOff = -1;   // зсув запису 0x0B моделі (або -1)
+static int g_mdHdrOff = -1;   // зсув ASCII-моделі у заголовку (або -1)
+static int g_mdHdrLen = 0;    // довжина ASCII-моделі у заголовку
 
 // Знаходить зсув запису 0x0B з назвою моделі (0x0B + літера A-Z) або -1.
 int findModelRecord() {
@@ -831,12 +852,14 @@ int applyModel(const char *name) {
         char c = name[k];
         if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) return -1;
     }
+    g_mdRecOff = -1; g_mdHdrOff = -1; g_mdHdrLen = 0;
     int updated = 0;
     // (1) Запис 0x0B.
     int rec = findModelRecord();
     if (rec >= 0) {
         for (int k = 0; k < 9; k++) batteryDump[rec + 1 + k] = (k < n) ? (uint8_t)name[k] : 0x20;
         fixRecordChecksum(batteryDump, rec, 11);   // [0x0B][9][контр], Σ≡0x5A
+        g_mdRecOff = rec;
         updated++;
     }
     // (2) ASCII-модель у заголовку.
@@ -846,20 +869,22 @@ int applyModel(const char *name) {
                             (batteryDump[j] >= '0' && batteryDump[j] <= '9'))) { j++; L++; }
         for (int k = 0; k < L; k++) batteryDump[0x23 + k] = (k < n) ? (uint8_t)name[k] : 0x00;
         fixHeaderChecksum(batteryDump);            // заголовок 0x00..0x1F (модель поза ним — no-op, але узгоджено)
+        g_mdHdrOff = 0x23; g_mdHdrLen = L;
         updated++;
     }
     return updated > 0 ? updated : -1;
 }
 
 // Пише зачеплені моделлю сторінки DS2433 (запис 0x0B і заголовок), кожну окремо —
-// точковий запис не залежить від придатності решти чипа до перезапису.
+// точковий запис не залежить від придатності решти чипа до перезапису. Пише
+// САМЕ ділянки, що змінив applyModel() (не шукає їх заново — інакше модель, що
+// починається з цифри, не знаходилась і мовчки не записувалась). Повертає false,
+// якщо не було записано жодної копії (щоб не рапортувати «успіх» без запису).
 bool writeModelPages() {
-    bool ok = true;
-    int rec = findModelRecord();
-    if (rec >= 0) ok &= battery.writeBatteryRange(batteryDump, rec, 11);
-    if (batteryDump[0x23] >= 'A' && batteryDump[0x23] <= 'Z')
-        ok &= battery.writeBatteryRange(batteryDump, 0x23, 9);
-    return ok;
+    bool ok = true, wrote = false;
+    if (g_mdRecOff >= 0) { ok &= battery.writeBatteryRange(batteryDump, g_mdRecOff, 11); wrote = true; }
+    if (g_mdHdrOff >= 0 && g_mdHdrLen > 0) { ok &= battery.writeBatteryRange(batteryDump, g_mdHdrOff, g_mdHdrLen); wrote = true; }
+    return wrote && ok;
 }
 
 // Ядро запису моделі: правит дамп + пише зачеплені сторінки. Спільне для веб і USB.
@@ -875,9 +900,7 @@ bool performSetModel(const char *name) {
 }
 
 void handleSetModel() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
-    }
+    if (!requireAdmin()) return;
     if (!hasDump) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return; }
     String m = server.arg("model"); m.trim(); m.toUpperCase();
     if (applyModel(m.c_str()) < 0) {
@@ -896,9 +919,7 @@ void handleSetModel() {
 // Змінити відображувану ємність/знос (0..100 %) і записати в АКБ. Редагує
 // останню пробу в записи історії ємності 0x17 + її контрольну суму.
 void handleSetCapacity() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
-    }
+    if (!requireAdmin()) return;
     if (!hasDump) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return; }
     if (!server.hasArg("cap")) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No cap\"}"); return; }
     int cap = server.arg("cap").toInt();
@@ -926,9 +947,7 @@ void handleSetCapacity() {
 // ICA (байт 12): ICA = mAh / (0.4882/Rsense), 0..255. Це то, що рація
 // показує як рівень заряду — тепер задається в мА·ч, а не в відсотках.
 void handleSetMah() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
-    }
+    if (!requireAdmin()) return;
     if (!hasDump2438) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return; }
     if (!server.hasArg("mah")) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No mah\"}"); return; }
     long mah = server.arg("mah").toInt();
@@ -963,9 +982,7 @@ static int hexToBytes(const String &s, uint8_t *out, int maxn) {
 }
 
 void handleWriteHex() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
-    }
+    if (!requireAdmin()) return;
     String target = server.arg("target");
     String data   = server.arg("data");
     bool autofix  = server.arg("autofix") == "1";
@@ -1001,10 +1018,7 @@ void handleWriteHex() {
 
 // Веб-обробник скидання (под паролем).
 void handleResetBattery() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}");
-        return;
-    }
+    if (!requireAdmin()) return;
     if (!hasDump && !hasDump2438) {
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}");
         return;
@@ -1013,6 +1027,17 @@ void handleResetBattery() {
     server.send(ok ? 200 : 500, "application/json",
         ok ? "{\"status\":\"success\",\"message\":\"Battery counters reset\"}"
            : "{\"status\":\"error\",\"message\":\"Failed to write reset\"}");
+}
+
+// Перезавантаження ESP32 (під паролем). Корисно після серії операцій або якщо
+// 1-Wire шина «зависла». Відповідь надсилаємо ДО restart, з невеликою затримкою,
+// щоб браузер встиг її отримати.
+void handleReboot() {
+    if (!requireAdmin()) return;
+    displayShow("ПЕРЕЗАВАНТАЖЕННЯ");
+    server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Reboot\"}");
+    delay(300);
+    ESP.restart();
 }
 
 // Captive-portal: будь-який невідомий URL (або запит по чужому домену) перенаправляємо
@@ -1064,6 +1089,7 @@ void setupWebServer() {
     server.on("/api/setcapacity", HTTP_POST, handleSetCapacity); // змінити ємність %
     server.on("/api/setmah", HTTP_POST, handleSetMah);           // змінити залишок, мА·ч
     server.on("/api/writehex", HTTP_POST, handleWriteHex);       // сира запис з редактора
+    server.on("/api/reboot", HTTP_POST, handleReboot);           // перезавантаження ESP32
 
     // Captive-portal: усі інші URL -> редирект на головну (авто-відкриття сторінки).
     server.onNotFound(handleCaptive);

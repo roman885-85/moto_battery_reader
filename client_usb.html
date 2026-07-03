@@ -120,6 +120,18 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 
   <!-- FIRMWARE -->
   <div class="page" id="fw">
+    <div class="card" style="border-color:var(--gold)">
+      <h2>🔑 Авторизація адміністратора</h2>
+      <div class="note i">Пароль потрібен для <b>будь-якого запису</b> у чіп (як у веб-інтерфейсі).
+        За замовчуванням <b>admin123</b> (змінюється у <code>settings.h</code> → <code>ADMIN_PASSWORD</code>).</div>
+      <input type="password" class="pw" id="pwAdm" placeholder="🔑 Пароль адміністратора" style="width:100%">
+      <div class="btns">
+        <button class="btn b-inf" onclick="ensureAuth(true)">🔓 Перевірити пароль</button>
+        <button class="btn b-dng" onclick="rebootDev()">🔁 Перезавантажити ESP32</button>
+      </div>
+      <div class="bar" id="authSt" style="margin-top:6px">🔒 не авторизовано</div>
+    </div>
+
     <div class="zone zi">📦 Крок 1 — резервна копія (робіть ЗАВЖДИ перед записом)</div>
     <div class="card">
       <h2>💾 Зчитати та зберегти</h2>
@@ -216,6 +228,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 const $=id=>document.getElementById(id);
 let port=null, writer=null, reader=null, connected=false;
 let rxBuf='', pending=null;   // pending: {resolve,reject,timer}
+let authed=false;             // чи авторизований сеанс (AUTH <пароль>)
 
 function tab(el,id){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
@@ -248,7 +261,9 @@ async function connect(){
   }catch(e){ log('! '+e.message); $('st').textContent='Помилка: '+e.message; disconnect(); }
 }
 async function disconnect(){
-  connected=false; $('dot').classList.remove('on'); $('st').textContent='Не підключено';
+  connected=false; authed=false;
+  const as=$('authSt'); if(as){as.textContent='🔒 не авторизовано';as.style.color='';}
+  $('dot').classList.remove('on'); $('st').textContent='Не підключено';
   $('btnConn').textContent='🔌 Підключити';
   try{ if(reader){await reader.cancel().catch(()=>{});reader.releaseLock&&reader.releaseLock();} }catch(e){}
   try{ if(writer){await writer.close().catch(()=>{});} }catch(e){}
@@ -282,12 +297,38 @@ function cmd(c,timeout=8000){
     if(!connected||!writer){reject(new Error('не підключено'));return;}
     if(pending){reject(new Error('зайнято'));return;}
     pending={resolve,reject,timer:setTimeout(()=>{pending=null;reject(new Error('таймаут'));},timeout)};
-    log('> '+c.slice(0,60)+(c.length>60?'…':''));
+    const disp=c.startsWith('AUTH ')?'AUTH ***':c;   // не світимо пароль у журналі
+    log('> '+disp.slice(0,60)+(disp.length>60?'…':''));
     try{ await writer.write(c+'\n'); }catch(e){ clearTimeout(pending.timer); pending=null; reject(e); }
   });
 }
 
 function toast(m){ $('st').textContent=m; }
+
+// Авторизація: надсилаємо AUTH <пароль> і запам'ятовуємо результат.
+// Викликається перед КОЖНОЮ операцією запису (як пароль у веб-формах).
+async function ensureAuth(verbose){
+  if(!connected){toast('Спочатку підключіться');return false;}
+  const pw=$('pwAdm').value;
+  if(!pw){toast('🔑 Введіть пароль адміністратора');return false;}
+  try{
+    const r=await cmd('AUTH '+pw,5000);
+    authed=!!(r&&r.ok);
+    $('authSt').textContent=authed?'🔓 авторизовано':'🔒 невірний пароль';
+    $('authSt').style.color=authed?'var(--grn)':'var(--red)';
+    if(!authed)toast('Невірний пароль адміністратора');
+    else if(verbose)toast('🔓 Авторизовано');
+    return authed;
+  }catch(e){toast('AUTH: '+e.message);return false;}
+}
+
+async function rebootDev(){
+  if(!await ensureAuth())return;
+  if(!confirm('🔁 Перезавантажити ESP32? USB-порт відключиться.'))return;
+  toast('Перезавантаження ESP32...');
+  try{ await cmd('REBOOT',3000); }catch(e){/* порт зникне під час рестарту — це норма */}
+  setTimeout(()=>disconnect(),600);
+}
 
 async function refresh(){
   if(!connected)return;
@@ -328,6 +369,7 @@ async function doRead(){ if(!connected){toast('Спочатку підключі
   catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
 
 async function cmdConfirm(c,q){ if(!connected){toast('Підключіться');return;} if(!confirm(q))return;
+  if(!await ensureAuth())return;
   setBusy(true); toast('Виконання...');
   try{ const r=await cmd(c,15000); toast(r.ok?'✅ Готово':'Помилка: '+(r.err||'')); await refresh(); }
   catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
@@ -335,6 +377,7 @@ async function cmdConfirm(c,q){ if(!connected){toast('Підключіться')
 async function wipe33(){ if(!connected){toast('Підключіться');return;}
   if(!confirm('🔥 ПОВНЕ стирання DS2433!\nСтираються МОДЕЛЬ, СЕРІЙНИЙ/ID та КАЛІБРУВАННЯ.\nАКБ НЕ ПРАЦЮВАТИМЕ, доки не запишете еталонний дамп.\nВи зробили копію? Продовжити?'))return;
   if(!confirm('Останнє попередження: стерти DS2433 ПОВНІСТЮ?'))return;
+  if(!await ensureAuth())return;
   setBusy(true); toast('Повне стирання DS2433...');
   try{ const r=await cmd('WIPE33',20000); toast(r.ok?'✅ DS2433 стерто. Запишіть еталонний дамп.':'Помилка: '+(r.err||'')); await refresh(); }
   catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
@@ -342,6 +385,7 @@ async function wipe33(){ if(!connected){toast('Підключіться');return
 async function setMah(){ if(!connected){toast('Підключіться');return;}
   const v=parseInt($('mahv').value); if(isNaN(v)||v<0){toast('Вкажіть мА·год');return;}
   if(!confirm('Записати залишкову ємність '+v+' мА·год?'))return;
+  if(!await ensureAuth())return;
   setBusy(true);
   try{ const r=await cmd('SETMAH '+v,15000); toast(r.ok?('✅ Записано (ICA='+r.ica+')'):'Помилка: '+(r.err||'')); await refresh(); }
   catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
@@ -349,16 +393,18 @@ async function setMah(){ if(!connected){toast('Підключіться');return
 async function setCap(){ if(!connected){toast('Підключіться');return;}
   const v=parseInt($('capv').value); if(isNaN(v)||v<0||v>100){toast('0..100');return;}
   if(!confirm('Записати ємність '+v+'%?'))return;
+  if(!await ensureAuth())return;
   setBusy(true);
   try{ const r=await cmd('SETCAP '+v,15000); toast(r.ok?'✅ Ємність записана':'Помилка: '+(r.err||'')); await refresh(); }
   catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
 
 // файл .bin -> hex -> команда записи
-function writeFile(inputId,size,cmdName){
+async function writeFile(inputId,size,cmdName){
   const f=$(inputId).files[0];
   if(!f){toast('Оберіть файл');return;}
   if(f.size!==size){toast('Файл має бути '+size+' байт');return;}
   if(!confirm('⚡ Запис '+size+' байт НЕЗВОРОТНІЙ. Продовжити?'))return;
+  if(!await ensureAuth())return;
   const rd=new FileReader();
   rd.onload=async()=>{
     const b=new Uint8Array(rd.result); let hex='';
@@ -424,6 +470,7 @@ async function setModel(){
   const m=$('mdVal').value.trim().toUpperCase();
   if(!/^[A-Z0-9]{3,9}$/.test(m)){toast('Модель: 3–9 символів A–Z / 0–9');return;}
   if(!confirm('Записати модель «'+m+'» у DS2433?\nНевірна модель може зробити АКБ невизначеною для рації.'))return;
+  if(!await ensureAuth())return;
   setBusy(true); toast('Запис моделі...');
   try{ const r=await cmd('SETMODEL '+m,15000); toast(r.ok?('✅ Модель записано: '+(r.model||m)):'Помилка: '+(r.err||'')); await refresh(); }
   catch(e){ toast('Помилка: '+e.message); } setBusy(false);
@@ -435,6 +482,7 @@ async function hxWrite(){
   const need=(t==='38'?64:512)*2;
   if(hex.length!==need){toast('Треба '+(need/2)+' байт, зараз '+Math.floor(hex.length/2));return;}
   if(!confirm('⚡ Запис '+(need/2)+' байт НЕЗВОРОТНІЙ. Продовжити?'))return;
+  if(!await ensureAuth())return;
   const c=(t==='38')?'WRITE38':($('hxFix').checked?'WRITEFIX33':'WRITE33');
   setBusy(true); toast('Запис байтів...');
   try{ const r=await cmd(c+' '+hex,20000); toast(r.ok?'✅ Записано':'Помилка: '+(r.err||'')); await refresh(); }

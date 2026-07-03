@@ -10,9 +10,15 @@ Moto IMPRES USB — нативний графічний клієнт (Tkinter, �
 Запуск із коду:  python moto_gui.py
 Збірка .exe:     build.bat
 """
-import sys, time, json, queue, threading
+import sys, os, time, json, queue, threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
+
+
+def resource_path(name):
+    """Шлях до вкладеного ресурсу і в звичайному запуску, і всередині .exe."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
 
 try:
     import serial
@@ -115,6 +121,13 @@ class App:
         self._cb = {}
         self.connected = False
         self.info = {}
+
+        try:
+            ico = resource_path("icon.ico")
+            if os.path.exists(ico):
+                root.iconbitmap(ico)
+        except Exception:
+            pass
 
         self._build()
         self.refresh_ports()
@@ -265,6 +278,7 @@ class App:
 
     def _build_hex(self):
         f = self.tabHex
+        mono = ("Consolas", 10)
         bar = ttk.Frame(f); bar.pack(fill="x")
         ttk.Label(bar, text="Мікросхема:").pack(side="left")
         self.hxTarget = ttk.Combobox(bar, width=16, state="readonly", values=["DS2433 (512 Б)", "DS2438 (64 Б)"])
@@ -273,7 +287,75 @@ class App:
         self.hxFix = tk.BooleanVar(value=True)
         ttk.Checkbutton(bar, text="Автовиправлення (DS2433)", variable=self.hxFix).pack(side="left", padx=8)
         ttk.Button(bar, text="⚡ Записати байти", command=self.hx_write).pack(side="left", padx=3)
-        self.hxText = scrolledtext.ScrolledText(f, font=("Consolas", 9)); self.hxText.pack(fill="both", expand=True, pady=6)
+
+        # Заголовок колонок (як у HxD): Offset | 16 байт (розбито по 8) | текст
+        hdr = tk.Frame(f); hdr.pack(fill="x", pady=(6, 0))
+        tk.Label(hdr, text="Offset(h) ", width=10, font=mono, anchor="w", fg="#2a7d4f").pack(side="left")
+        tk.Label(hdr, text="00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F ",
+                 font=mono, anchor="w", fg="#3a6d9a").pack(side="left")
+        tk.Label(hdr, text=" Декодований текст", font=mono, anchor="w", fg="#7a5").pack(side="left")
+
+        body = tk.Frame(f); body.pack(fill="both", expand=True)
+        self.hxSb = ttk.Scrollbar(body, orient="vertical", command=self._hx_yview)
+        self.hxSb.pack(side="right", fill="y")
+        self.hxGut = tk.Text(body, width=10, font=mono, wrap="none", padx=5, spacing1=0,
+                             bg="#eef1f4", fg="#2a6", relief="flat", state="disabled", cursor="arrow",
+                             takefocus=0)
+        self.hxGut.pack(side="left", fill="y")
+        self.hxHex = tk.Text(body, width=50, font=mono, wrap="none", undo=True, padx=5,
+                             relief="flat", bg="#ffffff", insertbackground="#111")
+        self.hxHex.pack(side="left", fill="both", expand=True)
+        self.hxAsc = tk.Text(body, width=18, font=mono, wrap="none", padx=5,
+                             bg="#eef1f4", fg="#357", relief="flat", state="disabled", cursor="arrow",
+                             takefocus=0)
+        self.hxAsc.pack(side="left", fill="y")
+        # Синхронне вертикальне прокручування трьох панелей: тягне лише hxHex,
+        # решта слідують; смуга/колесо рухають усі три.
+        self.hxHex.config(yscrollcommand=self._hx_on_scroll)
+        for w in (self.hxGut, self.hxHex, self.hxAsc):
+            w.bind("<MouseWheel>", self._hx_wheel)
+            w.bind("<Button-4>", self._hx_wheel)
+            w.bind("<Button-5>", self._hx_wheel)
+        self.hxHex.bind("<KeyRelease>", self._hx_aux)
+
+    # ---- синхронізація прокручування hex-панелей -----------------------
+    def _hx_yview(self, *args):
+        for w in (self.hxGut, self.hxHex, self.hxAsc):
+            w.yview(*args)
+
+    def _hx_on_scroll(self, first, last):
+        self.hxSb.set(first, last)
+        self.hxGut.yview_moveto(first)
+        self.hxAsc.yview_moveto(first)
+
+    def _hx_wheel(self, e):
+        step = -3 if (getattr(e, "delta", 0) > 0 or getattr(e, "num", 0) == 4) else 3
+        self.hxHex.yview_scroll(step, "units")
+        return "break"
+
+    def _set_ro(self, w, text):
+        w.config(state="normal")
+        w.delete("1.0", "end")
+        w.insert("1.0", text)
+        w.config(state="disabled")
+
+    # Перерахунок колонок Offset і ASCII з поточних байтів hex-панелі (як у HxD).
+    def _hx_aux(self, *_):
+        import re
+        hexs = re.sub(r"[^0-9a-fA-F]", "", self.hxHex.get("1.0", "end"))
+        n = len(hexs) // 2
+        guts, ascs = [], []
+        for i in range(0, max(n, 1), 16):
+            guts.append("%08X" % i)
+            row = ""
+            for j in range(i, min(i + 16, n)):
+                b = int(hexs[j * 2:j * 2 + 2], 16)
+                row += chr(b) if 32 <= b < 127 else "."
+            ascs.append((row[:8] + " " + row[8:]) if len(row) > 8 else row)
+        if n == 0:
+            guts, ascs = [], []
+        self._set_ro(self.hxGut, "\n".join(guts))
+        self._set_ro(self.hxAsc, "\n".join(ascs))
 
     def _build_log(self):
         self.txLog = scrolledtext.ScrolledText(self.tabLog, font=("Consolas", 8)); self.txLog.pack(fill="both", expand=True)
@@ -546,15 +628,22 @@ class App:
         if not r.get("ok") or not r.get("hex"):
             messagebox.showwarning("Дамп", "Зчитайте АКБ"); return
         parts = r["hex"].split()
-        out = "\n".join(" ".join(parts[i:i + 16]) for i in range(0, len(parts), 16))
-        self._set_text(self.hxText, out)
+        lines = []
+        for i in range(0, len(parts), 16):
+            row = parts[i:i + 16]
+            left = " ".join(row[:8])
+            right = " ".join(row[8:16])
+            lines.append((left + "  " + right).rstrip())
+        self.hxHex.delete("1.0", "end")
+        self.hxHex.insert("1.0", "\n".join(lines))
+        self._hx_aux()
 
     def hx_write(self):
         if not self.need_conn():
             return
         is38 = self.hxTarget.current() == 1
         import re
-        hexs = re.sub(r"[^0-9a-fA-F]", "", self.hxText.get("1.0", "end"))
+        hexs = re.sub(r"[^0-9a-fA-F]", "", self.hxHex.get("1.0", "end"))
         need = (64 if is38 else 512) * 2
         if len(hexs) != need:
             messagebox.showwarning("Байти", f"Треба {need // 2} байт, зараз {len(hexs) // 2}"); return

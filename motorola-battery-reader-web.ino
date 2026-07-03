@@ -127,12 +127,17 @@ void loop() {
         readAllChips(ok2433, ok2438);
     }
 
-    // Підтверджена в меню дисплея дія: 0=Скидання 1=Ремонт 2=Очистка 3=Стерти2433.
+    // Підтверджена в меню дисплея дія: 0=Скидання 1=Ремонт 2=Очистка 3=Стерти2433
+    // 4=Перезавантаження, 5..=«Новий АКБ <модель>» (ініціалізація порожнього чипа
+    // еталоном обраної моделі з паспортною ємністю BATTERY_RATED_MAH).
     int act = displayConsumeActionRequest();
     if      (act == 0) performReset();
     else if (act == 1) performRepair();
     else if (act == 2) performFactoryClean();
     else if (act == 3) performWipe2433();
+    else if (act == 4) { displayShow("ПЕРЕЗАВАНТАЖ."); Serial.flush(); delay(300); ESP.restart(); }
+    else if (act >= NUM_BASE_ACTIONS && act < NUM_BASE_ACTIONS + BATTERY_TEMPLATE_COUNT)
+        performInitBattery(BATTERY_TEMPLATES[act - NUM_BASE_ACTIONS].name, BATTERY_RATED_MAH);
 
     // Дисплей перемальовується по подіям (натискання кнопки, читання/запис),
     // тому цикл не блокується повільним рендером і кнопки чутливі.

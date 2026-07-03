@@ -5,6 +5,7 @@
 #include <Wire.h>
 #include "settings.h"
 #include "battery_reader.h"
+#include "templates.h"    // BATTERY_TEMPLATES/COUNT — для дій «Новий АКБ» у меню
 
 // Стан, яке відображаємо (заповнюється з .ino і обробників веб-сервера).
 extern bool hasDump;
@@ -664,35 +665,52 @@ inline void drawPageRaw2438() { drawRawPage("DS2438 дамп 0-63", batteryDump2
 inline void drawPageRaw2433() { drawRawPage((DISP_H >= 128) ? "DS2433 дамп 0-127" : "DS2433 дамп 0-63",
                                             batteryDump, hasDump, RAW2433_COUNT); }
 
-#define NUM_ACTIONS 4
+// Базові дії (індекси 0..4) + по одній дії «Новий АКБ» на кожен вшитий шаблон
+// (індекси 5..). Загальну к-сть дій рахує numActions() — вона динамічна.
+#define NUM_BASE_ACTIONS 5    // Скидання, Ремонт, Очистка, Стерти2433, Перезавантаж.
+inline int numActions() { return NUM_BASE_ACTIONS + BATTERY_TEMPLATE_COUNT; }
+
 // Сторінка «Дії»: показуємо ОДНУ обрану операцію крупно + опис + попередження.
 // [<] коротко — наступна операція; [<] утримати (0.8с) — ВИКОНАТИ; [>] — вихід.
 inline void drawPageActions() {
-    static const char *nm[NUM_ACTIONS] = { "Скидання", "Ремонт", "Очистка", "СТЕРТИ 2433" };
-    static const char *d1[NUM_ACTIONS] = { "обнулити лічильники",
-                                           "полагодити суми та",
-                                           "стерти все, окрім",
-                                           "ПОВНЕ стирання чіпа" };
-    static const char *d2[NUM_ACTIONS] = { "заряд/розряд, знос",
-                                           "дзеркало калібрув.",
-                                           "моделі/ID/калібрув.",
-                                           "DS2433 (крайній!)" };
-    static const bool  dg[NUM_ACTIONS] = { false, false, false, true };
+    static const char *nm[NUM_BASE_ACTIONS] = { "Скидання", "Ремонт", "Очистка", "СТЕРТИ 2433", "Перезавантаж." };
+    static const char *d1[NUM_BASE_ACTIONS] = { "обнулити лічильники",
+                                                "полагодити суми та",
+                                                "стерти все, окрім",
+                                                "ПОВНЕ стирання чіпа",
+                                                "рестарт пристрою" };
+    static const char *d2[NUM_BASE_ACTIONS] = { "заряд/розряд, знос",
+                                                "дзеркало калібрув.",
+                                                "моделі/ID/калібрув.",
+                                                "DS2433 (крайній!)",
+                                                "ESP32 (Wi-Fi/веб)" };
+    static const bool  dg[NUM_BASE_ACTIONS] = { false, false, false, true, false };
     int sel = g_actionSel;
+    int total = numActions();
 
-    char t[20]; snprintf(t, sizeof(t), "Дія  %d/%d", sel + 1, NUM_ACTIONS);
+    const char *name, *l1, *l2; bool danger;
+    char nbuf[26];
+    if (sel < NUM_BASE_ACTIONS) {
+        name = nm[sel]; l1 = d1[sel]; l2 = d2[sel]; danger = dg[sel];
+    } else {                                    // «Новий АКБ <модель>»
+        int ti = sel - NUM_BASE_ACTIONS;
+        snprintf(nbuf, sizeof(nbuf), "Новий %s", BATTERY_TEMPLATES[ti].name);
+        name = nbuf; l1 = "ініціаліз. порожній"; l2 = "чіп як новий АКБ"; danger = true;
+    }
+
+    char t[20]; snprintf(t, sizeof(t), "Дія  %d/%d", sel + 1, total);
     drawHeader(t);
 
     // Назва обраної операції — крупним шрифтом.
     u8g2.setFont(u8g2_font_6x12_t_cyrillic);
-    char nml[26]; snprintf(nml, sizeof(nml), "%s%s", dg[sel] ? "! " : "> ", nm[sel]);
+    char nml[30]; snprintf(nml, sizeof(nml), "%s%s", danger ? "! " : "> ", name);
     u8g2.drawUTF8(0, HEAD_LINE + 13, nml);
 
     // Опис.
     u8g2.setFont(BODY_FONT);
-    u8g2.drawUTF8(0, HEAD_LINE + 25, d1[sel]);
-    u8g2.drawUTF8(0, HEAD_LINE + 34, d2[sel]);
-    if (dg[sel]) u8g2.drawUTF8(0, HEAD_LINE + 42, "!! НЕЗВОРОТНЬО !!");
+    u8g2.drawUTF8(0, HEAD_LINE + 25, l1);
+    u8g2.drawUTF8(0, HEAD_LINE + 34, l2);
+    if (danger) u8g2.drawUTF8(0, HEAD_LINE + 42, "!! НЕЗВОРОТНЬО !!");
 
     // Підказка керування знизу.
     u8g2.drawHLine(0, FOOT_HL, DISP_W);
@@ -786,7 +804,7 @@ inline void displayHandleButton() {
     int e2 = pollButton(MENU_BTN2_PIN, b2, 800);
     if (g_displayPage == RESET_PAGE) {               // сторінка «Дії»
         if (e2 == 1) {                               // коротке -> наступна операція
-            g_actionSel = (g_actionSel + 1) % NUM_ACTIONS;
+            g_actionSel = (g_actionSel + 1) % numActions();
             displayRender();
         } else if (e2 == 2) {                        // довге -> виконати обране
             g_actionRequested = g_actionSel;

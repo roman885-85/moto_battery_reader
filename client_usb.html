@@ -121,9 +121,10 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
   <!-- FIRMWARE -->
   <div class="page" id="fw">
     <div class="card" style="border-color:var(--gold)">
-      <h2>🔑 Авторизація адміністратора</h2>
-      <div class="note i">Пароль потрібен для <b>будь-якого запису</b> у чіп (як у веб-інтерфейсі).
-        За замовчуванням <b>admin123</b> (змінюється у <code>settings.h</code> → <code>ADMIN_PASSWORD</code>).</div>
+      <h2>🔑 Авторизація адміністратора (опційно)</h2>
+      <div class="note i">По USB пароль <b>не обов'язковий</b> — фізичний доступ до кабелю вже є дозволом, запис
+        працює й з <b>порожнім</b> полем. Введіть пароль (<b>admin123</b>, <code>settings.h → ADMIN_PASSWORD</code>),
+        лише якщо хочете перевірити його й підсвітити статус. <b>Веб-інтерфейс</b> пароль вимагає завжди.</div>
       <input type="password" class="pw" id="pwAdm" placeholder="🔑 Пароль адміністратора" style="width:100%">
       <div class="btns">
         <button class="btn b-inf" onclick="ensureAuth(true)">🔓 Перевірити пароль</button>
@@ -320,21 +321,22 @@ function cmd(c,timeout=8000){
 
 function toast(m){ $('st').textContent=m; }
 
-// Авторизація: надсилаємо AUTH <пароль> і запам'ятовуємо результат.
-// Викликається перед КОЖНОЮ операцією запису (як пароль у веб-формах).
+// Авторизація по USB — ОПЦІЙНА (фізичний доступ до кабелю = дозвіл на запис).
+// Пароль НЕ блокує запис: якщо його введено — звіряємо й підсвічуємо статус,
+// якщо ні — просто продовжуємо. Тому ensureAuth() ЗАВЖДИ дозволяє операцію.
 async function ensureAuth(verbose){
   if(!connected){toast('Спочатку підключіться');return false;}
   const pw=$('pwAdm').value;
-  if(!pw){toast('🔑 Введіть пароль адміністратора');return false;}
-  try{
-    const r=await cmd('AUTH '+pw,5000);
-    authed=!!(r&&r.ok);
-    $('authSt').textContent=authed?'🔓 авторизовано':'🔒 невірний пароль';
-    $('authSt').style.color=authed?'var(--grn)':'var(--red)';
-    if(!authed)toast('Невірний пароль адміністратора');
-    else if(verbose)toast('🔓 Авторизовано');
-    return authed;
-  }catch(e){toast('AUTH: '+e.message);return false;}
+  if(pw){
+    try{
+      const r=await cmd('AUTH '+pw,5000);
+      authed=!!(r&&r.ok);
+      $('authSt').textContent=authed?'🔓 авторизовано':'🔒 пароль не підійшов (запис по USB усе одно дозволено)';
+      $('authSt').style.color=authed?'var(--grn)':'var(--org)';
+      if(authed&&verbose)toast('🔓 Авторизовано');
+    }catch(e){/* не блокуємо запис через помилку AUTH */}
+  }
+  return true;   // запис по USB дозволено завжди
 }
 
 async function rebootDev(){

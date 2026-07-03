@@ -13,7 +13,7 @@
 //
 // Команди:
 //   PING                 -> {"ok":true,"dev":"MotoBatteryReader","ver":3,"authed":..}
-//   AUTH <пароль>        -> авторизація для команд запису (пароль = ADMIN_PASSWORD)
+//   AUTH <пароль>        -> (опційно) звірити пароль ADMIN_PASSWORD, підсвітити статус
 //   READ                 -> {"ok":..,"ds2433":..,"ds2438":..}  (зчитати чіпи)
 //   INFO                 -> усі декодовані поля (модель/%/цикли/цілісність/DS2438)
 //   GET33 / GET38        -> {"ok":true,"hex":"AA BB .."}  (сирий дамп)
@@ -31,9 +31,9 @@
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
 //   REBOOT               -> перезавантаження ESP32
 //
-// Команди ЗАПИСУ (WRITE33/WRITEFIX33/WRITE38/RESET/REPAIR/CLEAN/WIPE33/SETCAP/
-// SETMAH/SETMODEL/INITBAT/REBOOT) вимагають попередньої авторизації командою
-// "AUTH <пароль>". Команди читання (PING/READ/INFO/GET33/GET38/TEMPLATES) — без пароля.
+// Пароль по USB — ОПЦІЙНИЙ: фізичний доступ до кабелю = дозвіл на запис, тож
+// команди запису працюють і без "AUTH". "AUTH <пароль>" лише звіряє пароль і
+// підсвічує статус у клієнті. (Мережевий веб-інтерфейс пароль вимагає.)
 // ---------------------------------------------------------------------------
 
 #include "web_server.h"   // dump-буфери, readAllChips/performReset/repairDumps,
@@ -164,24 +164,18 @@ static void serialExec(const String &line) {
     String arg = (sp < 0) ? String("") : line.substring(sp + 1);
     cmd.toUpperCase(); cmd.trim();
 
-    // Авторизація: AUTH <пароль> вмикає доступ до команд запису на час сесії.
+    // Авторизація по USB — ОПЦІЙНА (фізичний доступ до кабелю = дозвіл на запис).
+    // AUTH лише звіряє пароль і виставляє прапорець для індикатора у клієнті;
+    // команди запису НЕ блокуються його відсутністю — інакше без пароля запис не
+    // відбувався б зовсім. Мережевий веб-інтерфейс, навпаки, вимагає пароль.
     if (cmd == "AUTH") {
         g_serAuthed = (arg == ADMIN_PASSWORD);
         sResp(g_serAuthed ? "{\"ok\":true,\"authed\":true}"
                           : "{\"ok\":false,\"authed\":false,\"err\":\"невірний пароль\"}");
         return;
     }
-    // Команди запису/небезпечні — лише після успішного AUTH.
-    bool isWrite = (cmd == "WRITE33" || cmd == "WRITEFIX33" || cmd == "WRITE38" ||
-                    cmd == "RESET"   || cmd == "REPAIR"     || cmd == "CLEAN"   ||
-                    cmd == "WIPE33"  || cmd == "SETCAP"     || cmd == "SETMAH"  ||
-                    cmd == "SETMODEL"|| cmd == "REBOOT"     || cmd == "INITBAT");
-    if (isWrite && !g_serAuthed) {
-        sResp("{\"ok\":false,\"err\":\"потрібна авторизація: AUTH <пароль>\",\"needAuth\":true}");
-        return;
-    }
 
-    if (cmd == "PING")            sResp(String("{\"ok\":true,\"dev\":\"MotoBatteryReader\",\"ver\":3,\"needAuth\":true,\"authed\":") + (g_serAuthed ? "true" : "false") + "}");
+    if (cmd == "PING")            sResp(String("{\"ok\":true,\"dev\":\"MotoBatteryReader\",\"ver\":3,\"needAuth\":false,\"authed\":") + (g_serAuthed ? "true" : "false") + "}");
     else if (cmd == "READ")     { bool a, b; readAllChips(a, b);
                                   sResp(String("{\"ok\":") + ((a || b) ? "true" : "false") +
                                         ",\"ds2433\":" + (a ? "true" : "false") +

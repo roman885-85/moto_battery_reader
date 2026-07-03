@@ -26,6 +26,10 @@ uint8_t chipSN2438[8] = {0};
 bool hasSN2438 = false;
 
 void setup() {
+    // Збільшуємо буфер прийому UART ДО Serial.begin(): типовий 256-байтний буфер
+    // переповнюється великими командами запису по USB (WRITE33 = 512 Б -> ~1 КБ
+    // hex), через що вони приходили побитими і запис не відбувався. 4 КБ вистачає.
+    Serial.setRxBufferSize(4096);
     Serial.begin(115200);
     Serial.println("\n\nMotorola Battery Reader Web Server (AP Mode)");
     Serial.println("==============================================");

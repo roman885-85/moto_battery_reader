@@ -158,6 +158,8 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <h2>🪪 Модель та серійний (ручний запис)</h2>
       <div class="note i">Модель (part number) пишеться у DS2433: поле 0x0B + заголовок, із перерахунком сум.
         Поточна: <b id="mdNow">—</b>.</div>
+      <div class="note w">ℹ️ Змінює модель лише там, де вже <b>є</b> запис моделі. На порожньому/стертому/невідомому
+        чіпі спершу відновіть еталонний дамп цієї моделі («Відновлення / запис DS2433» нижче), і аж потім змінюйте модель.</div>
       <div class="row"><span class="k">Модель</span>
         <input type="text" id="mdVal" maxlength="9" placeholder="PMNN4409A" oninput="mdCheck()"
                style="width:150px;text-align:center;letter-spacing:1px;text-transform:uppercase">

@@ -203,9 +203,13 @@ static void serialExec(const String &line) {
     else if (cmd == "SETCAP")     serSetCap(arg);
     else if (cmd == "SETMAH")     serSetMah(arg);
     else if (cmd == "SETMODEL") { String m = arg; m.trim(); m.toUpperCase();
-                                  bool ok = performSetModel(m.c_str());
-                                  sResp(ok ? (String("{\"ok\":true,\"model\":\"") + m + "\"}")
-                                           : "{\"ok\":false,\"err\":\"bad model (3..9 A-Z0-9) or write failed\"}"); }
+                                  if (!modelNameValid(m.c_str()))
+                                      sResp("{\"ok\":false,\"err\":\"модель: 3-9 символів A-Z0-9\"}");
+                                  else if (!hasDump)
+                                      sResp("{\"ok\":false,\"err\":\"спочатку зчитайте АКБ (READ)\"}");
+                                  else { bool ok = performSetModel(m.c_str());
+                                         sResp(ok ? (String("{\"ok\":true,\"model\":\"") + m + "\"}")
+                                                  : "{\"ok\":false,\"err\":\"немає запису моделі у дампі (порожній/невідомий чіп) або збій запису — відновіть еталонний дамп\"}"); } }
     else if (cmd == "CLEAN")    { bool ok = performFactoryClean(); sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"clean failed\"}"); }
     else if (cmd == "WIPE33")   { bool ok = performWipe2433();     sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"wipe failed\"}"); }
     else if (cmd == "REBOOT")   { displayShow("ПЕРЕЗАВАНТАЖЕННЯ"); sResp("{\"ok\":true}"); Serial.flush(); delay(200); ESP.restart(); }

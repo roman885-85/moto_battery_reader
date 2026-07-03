@@ -833,9 +833,25 @@ static int g_mdRecOff = -1;   // зсув запису 0x0B моделі (або
 static int g_mdHdrOff = -1;   // зсув ASCII-моделі у заголовку (або -1)
 static int g_mdHdrLen = 0;    // довжина ASCII-моделі у заголовку
 
+// Валідність імені моделі: 3..9 символів [A-Z0-9]. Винесено окремо, щоб
+// відрізняти «невірне ім'я» від «у дампі немає куди писати» і давати точну
+// підказку користувачу.
+static bool modelNameValid(const char *name) {
+    int n = strlen(name);
+    if (n < 3 || n > 9) return false;
+    for (int k = 0; k < n; k++) {
+        char c = name[k];
+        if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) return false;
+    }
+    return true;
+}
+
 // Знаходить зсув запису 0x0B з назвою моделі (0x0B + літера A-Z) або -1.
+// Скануємо з 0x30 (одразу після заголовка/дзеркала) до кінця: на всіх реальних
+// дампах єдиний збіг «0x0B + літера» — саме запис моделі, тож ширший діапазон
+// безпечний і ловить запис навіть якщо він нижче 0x100.
 int findModelRecord() {
-    for (int i = 0x100; i < (int)DUMP_SIZE - 11; i++)
+    for (int i = 0x30; i < (int)DUMP_SIZE - 11; i++)
         if (batteryDump[i] == 0x0B && batteryDump[i + 1] >= 'A' && batteryDump[i + 1] <= 'Z') return i;
     return -1;
 }
@@ -846,12 +862,8 @@ int findModelRecord() {
 // Оновлюємо ОБИДВІ копії, інакше рація читає стару. Довжина 3..9, [A-Z0-9].
 // Повертає к-сть оновлених копій (>0 — успіх), або -1 (невірне ім'я / жодної копії).
 int applyModel(const char *name) {
+    if (!modelNameValid(name)) return -1;
     int n = strlen(name);
-    if (n < 3 || n > 9) return -1;
-    for (int k = 0; k < n; k++) {
-        char c = name[k];
-        if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) return -1;
-    }
     g_mdRecOff = -1; g_mdHdrOff = -1; g_mdHdrLen = 0;
     int updated = 0;
     // (1) Запис 0x0B.
@@ -901,10 +913,13 @@ bool performSetModel(const char *name) {
 
 void handleSetModel() {
     if (!requireAdmin()) return;
-    if (!hasDump) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return; }
+    if (!hasDump) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Спочатку зчитайте АКБ\"}"); return; }
     String m = server.arg("model"); m.trim(); m.toUpperCase();
+    if (!modelNameValid(m.c_str())) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Модель має містити 3–9 символів A–Z / 0–9\"}"); return;
+    }
     if (applyModel(m.c_str()) < 0) {
-        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Model must be 3..9 chars [A-Z0-9] and a model record/header must exist\"}"); return;
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"У поточному дампі немає запису моделі (0x0B) чи ASCII-заголовка для перезапису — це порожній/стертий/невідомий чіп. Спочатку відновіть еталонний дамп цієї моделі (Прошивка → «Відновлення / запис DS2433»), потім змінюйте модель.\"}"); return;
     }
     ledSet(LED_WRITE); displayShow("ЗАПИС МОДЕЛІ");
     bool ok = writeModelPages();

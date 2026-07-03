@@ -169,6 +169,19 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         <b>фізично не перезаписується</b>. Для власного інвентарного ID запишіть його у вільну область
         через редактор байтів нижче.</div>
     </div>
+    <div class="card" style="border-color:var(--grn)">
+      <h2>🆕 Новий акумулятор (порожній чип)</h2>
+      <div class="note i">Для <b>порожнього/стертого/невідомого</b> чипа: записує повний еталон обраної моделі
+        (DS2433 + DS2438 — ідентичність, калібрування, автентифікація), обнуляє історію, ставить здоров'я 100%,
+        а вказану ємність пише як поточний заряд (ICA).</div>
+      <div class="row"><span class="k">Модель</span>
+        <select id="initModel" style="min-width:150px"></select></div>
+      <div class="row"><span class="k">Ємність, мА·год</span>
+        <input type="number" id="initMah" min="1" max="6000" value="2500" style="width:110px;text-align:center"></div>
+      <div class="note w">⚠️ Перезапише ОБИДВІ мікросхеми. Лише для порожнього/невідомого чипа. Вкажіть паспортну
+        ємність саме вашої моделі.</div>
+      <button class="btn b-warn" onclick="initBattery()">🆕 ЗАПИСАТИ НОВИЙ АКБ</button>
+    </div>
     <div class="card">
       <h2>🔋 Заряд у мА·год</h2>
       <div class="note i">Рівень заряду (регістр ICA DS2438).</div>
@@ -258,7 +271,7 @@ async function connect(){
     log('> порт відкрито, очікування завантаження ESP32 (1.5 с)...');
     await new Promise(r=>setTimeout(r,1600));  // ESP32 перезагружается при открытии порта
     const p=await cmd('PING',3000).catch(()=>null);
-    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')'; await refresh(); }
+    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')'; await refresh(); await loadTemplates(); }
     else { $('st').textContent='Немає відповіді (перевірте порт/швидкість)'; }
   }catch(e){ log('! '+e.message); $('st').textContent='Помилка: '+e.message; disconnect(); }
 }
@@ -330,6 +343,32 @@ async function rebootDev(){
   toast('Перезавантаження ESP32...');
   try{ await cmd('REBOOT',3000); }catch(e){/* порт зникне під час рестарту — це норма */}
   setTimeout(()=>disconnect(),600);
+}
+
+async function loadTemplates(){
+  if(!connected)return;
+  try{
+    const r=await cmd('TEMPLATES',5000);
+    const sel=$('initModel'); if(!sel)return; sel.innerHTML='';
+    (r.models||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o)});
+    if(!(r.models||[]).length){const o=document.createElement('option');o.textContent='(немає шаблонів)';sel.appendChild(o)}
+  }catch(e){}
+}
+
+async function initBattery(){
+  if(!connected){toast('Підключіться');return;}
+  const model=$('initModel').value; const mah=parseInt($('initMah').value);
+  if(!model){toast('Оберіть модель');return;}
+  if(isNaN(mah)||mah<=0){toast('Вкажіть ємність у мА·год');return;}
+  if(!confirm('🆕 Ініціалізувати чип як НОВИЙ '+model+' ('+mah+' мА·год)?\nПерезапише ОБИДВІ мікросхеми (DS2433 + DS2438). Лише для порожнього чипа. Продовжити?'))return;
+  if(!await ensureAuth())return;
+  setBusy(true); toast('Запис нового АКБ...');
+  try{
+    const r=await cmd('INITBAT '+model+' '+mah,25000);
+    toast(r.ok?('✅ Новий '+model+' записано ('+mah+' мА·год)'):('Помилка: '+(r.err||'')));
+    await refresh();
+  }catch(e){ toast('Помилка: '+e.message); }
+  setBusy(false);
 }
 
 async function refresh(){

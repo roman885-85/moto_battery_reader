@@ -257,6 +257,22 @@
                 редактором байтів (нижче) — там є лінійка адрес як у HxD.</div>
         </div>
 
+        <div class="card" style="border-color:var(--ok)">
+            <h2>🆕 Новий акумулятор (ініціалізація порожнього чипа)</h2>
+            <div class="note i">Для <b>порожнього / стертого / невідомого</b> чипа: записує повний еталон обраної
+                моделі (DS2433 + DS2438 — ідентичність, калібрування, автентифікація), обнуляє історію/лічильники,
+                ставить здоров'я 100%, а вказану ємність пише як поточний заряд (ICA). Прошивка прив'язана до
+                <b>моделі</b>, тож серійник не потрібен.</div>
+            <div class="row"><span class="k">Модель</span>
+                <select id="initModel" style="border-radius:8px;border:none;padding:6px;min-width:150px"></select></div>
+            <div class="row"><span class="k">Ємність, мА·год</span>
+                <input type="number" id="initMah" min="1" max="6000" value="2500" style="width:110px;text-align:center;border-radius:8px;border:none;padding:6px"></div>
+            <div class="note w">⚠️ Перезапише <b>ОБИДВІ</b> мікросхеми. Робіть лише на порожньому/невідомому чипі
+                (для робочого АКБ використовуйте «Скидання»/«Ремонт»). Вкажіть паспортну ємність саме вашої моделі.</div>
+            <input type="password" class="pw" id="pwInit" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="initBattery()">🆕 ЗАПИСАТИ НОВИЙ АКБ</button>
+        </div>
+
         <!-- НЕБЕЗПЕЧНА ЗОНА -->
         <div class="zone zd">⛔ НЕБЕЗПЕЧНА ЗОНА — незворотні операції, стирають/переписують дані. Спочатку зробіть копію!</div>
 
@@ -610,6 +626,29 @@ async function writeHex(){
     prog(false);
 }
 
+async function loadTemplates(){
+    try{
+        const d=await(await fetch('/api/templates')).json();
+        const sel=$('initModel'); if(!sel)return; sel.innerHTML='';
+        (d.models||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o)});
+        if(!(d.models||[]).length){const o=document.createElement('option');o.textContent='(немає шаблонів)';sel.appendChild(o)}
+    }catch(e){}
+}
+async function initBattery(){
+    const pw=$('pwInit').value; if(!pw){toast('Введіть пароль','err');return}
+    const model=$('initModel').value; const mah=parseInt($('initMah').value);
+    if(!model){toast('Оберіть модель','err');return}
+    if(isNaN(mah)||mah<=0){toast('Вкажіть ємність у мА·год','err');return}
+    if(!confirm('🆕 Ініціалізувати чип як НОВИЙ '+model+' ('+mah+' мА·год)?\n\nПерезапише ОБИДВІ мікросхеми (DS2433 + DS2438).\nРобіть лише на порожньому/невідомому чипі. Продовжити?'))return;
+    prog(true,'Запис нового АКБ...');
+    try{
+        const r=await postForm('/api/initbattery',{password:pw,model:model,mah:mah});
+        toast(r.status==='success'?('✅ Новий '+model+' записано ('+mah+' мА·год)'):('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
 async function rebootDevice(){
     const pw=$('pwReboot').value; if(!pw){toast('Введіть пароль','err');return}
     if(!confirm('🔁 Перезавантажити ESP32? На кілька секунд зникне Wi-Fi/сторінка.'))return;
@@ -622,7 +661,7 @@ async function rebootDevice(){
     prog(false);
 }
 
-window.onload=function(){refreshAll();setInterval(refreshAll,10000)};
+window.onload=function(){refreshAll();loadTemplates();setInterval(refreshAll,10000)};
 </script>
 </body>
 </html>

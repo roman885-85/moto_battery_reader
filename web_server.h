@@ -9,6 +9,7 @@
 #include "settings.h"
 #include "leds.h"
 #include "display.h"
+#include "templates.h"
 
 extern WebServer server;
 extern BatteryReader battery;
@@ -1044,6 +1045,76 @@ void handleResetBattery() {
            : "{\"status\":\"error\",\"message\":\"Failed to write reset\"}");
 }
 
+// ------------------- Ініціалізація нового акумулятора -------------------
+// Порожній/стертий/невідомий чіп -> робочий АКБ обраної моделі. Вантажимо
+// вшитий genuine-еталон (DS2433 + DS2438), зануляємо всю історію/лічильники
+// (як заводська очистка), ставимо здоров'я 100%, а введену вручну ємність у
+// мА·год пишемо в ICA (поточний заряд). Дзеркало калібрування DS2438<->DS2433
+// у шаблоні вже узгоджене. Пишемо ОБИДВІ мікросхеми.
+bool performInitBattery(const char *model, long mah) {
+    int t = findTemplate(model);
+    if (t < 0) { displayShow("НЕМА ШАБЛОНУ"); return false; }
+
+    Serial.printf("\n=== Init new battery: %s, %ld mAh ===\n", model, mah);
+    memcpy_P(batteryDump,     BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
+    memcpy_P(batteryDump2438, BATTERY_TEMPLATES[t].d38, DS2438_MEM_SIZE);
+    hasDump = true; hasDump2438 = true;
+
+    // Свіжий стан: зануляємо лічильники/історію/статистику, лишаємо
+    // ідентичність/калібрування/дзеркало. Ставить і здоров'я 0x17 -> 100%.
+    factoryCleanData();
+
+    // Введена ємність (поточний заряд) у мА·год -> регістр ICA DS2438.
+    long ica = (long)(mah / DS2438_MAH_PER_LSB + 0.5f);
+    if (ica < 0) ica = 0; if (ica > 255) ica = 255;
+    batteryDump2438[12] = (uint8_t)ica;
+
+    fixHeaderChecksum(batteryDump);   // узгодити суму заголовка (дзеркало вже збігається)
+
+    ledSet(LED_WRITE); displayShow("НОВИЙ АКБ...");
+    bool ok = battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (ok) ok &= battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (ok) {
+        saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+        saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+        displayShow("НОВИЙ АКБ OK");
+    } else displayShow("НОВИЙ АКБ ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    Serial.println("=== Init completed ===\n");
+    return ok;
+}
+
+// Список доступних вшитих моделей-шаблонів (для випадаючого списку у вебі/USB).
+void handleTemplates() {
+    String j = "{\"status\":\"success\",\"models\":[";
+    for (int i = 0; i < BATTERY_TEMPLATE_COUNT; i++) {
+        if (i) j += ",";
+        j += "\""; j += BATTERY_TEMPLATES[i].name; j += "\"";
+    }
+    j += "]}";
+    server.send(200, "application/json", j);
+}
+
+// Веб-ініціалізація нового АКБ (під паролем): model + mah.
+void handleInitBattery() {
+    if (!requireAdmin()) return;
+    String model = server.arg("model"); model.trim(); model.toUpperCase();
+    if (findTemplate(model.c_str()) < 0) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Немає вшитого шаблону для цієї моделі\"}"); return;
+    }
+    if (!server.hasArg("mah")) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Вкажіть ємність у мА·год\"}"); return;
+    }
+    long mah = server.arg("mah").toInt();
+    if (mah <= 0) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Ємність має бути > 0 мА·год\"}"); return;
+    }
+    bool ok = performInitBattery(model.c_str(), mah);
+    server.send(ok ? 200 : 500, "application/json",
+        ok ? (String("{\"status\":\"success\",\"message\":\"Новий АКБ ") + model + " записано\"}")
+           : "{\"status\":\"error\",\"message\":\"Збій запису (див. Serial-лог)\"}");
+}
+
 // Перезавантаження ESP32 (під паролем). Корисно після серії операцій або якщо
 // 1-Wire шина «зависла». Відповідь надсилаємо ДО restart, з невеликою затримкою,
 // щоб браузер встиг її отримати.
@@ -1105,6 +1176,8 @@ void setupWebServer() {
     server.on("/api/setmah", HTTP_POST, handleSetMah);           // змінити залишок, мА·ч
     server.on("/api/writehex", HTTP_POST, handleWriteHex);       // сира запис з редактора
     server.on("/api/reboot", HTTP_POST, handleReboot);           // перезавантаження ESP32
+    server.on("/api/templates", HTTP_GET, handleTemplates);      // список вшитих моделей
+    server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
 
     // Captive-portal: усі інші URL -> редирект на головну (авто-відкриття сторінки).
     server.onNotFound(handleCaptive);

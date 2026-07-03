@@ -27,11 +27,13 @@
 //   SETCAP <0..100>      -> змінити ємність/знос %
 //   SETMAH <мА·год>      -> змінити залишкову ємність (регістр ICA)
 //   SETMODEL <NAME>      -> ручний запис моделі (part number, 3..9 A-Z0-9)
+//   TEMPLATES            -> список вшитих моделей для ініціалізації (без пароля)
+//   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
 //   REBOOT               -> перезавантаження ESP32
 //
 // Команди ЗАПИСУ (WRITE33/WRITEFIX33/WRITE38/RESET/REPAIR/CLEAN/WIPE33/SETCAP/
-// SETMAH/SETMODEL/REBOOT) вимагають попередньої авторизації командою
-// "AUTH <пароль>". Команди читання (PING/READ/INFO/GET33/GET38) — без пароля.
+// SETMAH/SETMODEL/INITBAT/REBOOT) вимагають попередньої авторизації командою
+// "AUTH <пароль>". Команди читання (PING/READ/INFO/GET33/GET38/TEMPLATES) — без пароля.
 // ---------------------------------------------------------------------------
 
 #include "web_server.h"   // dump-буфери, readAllChips/performReset/repairDumps,
@@ -173,7 +175,7 @@ static void serialExec(const String &line) {
     bool isWrite = (cmd == "WRITE33" || cmd == "WRITEFIX33" || cmd == "WRITE38" ||
                     cmd == "RESET"   || cmd == "REPAIR"     || cmd == "CLEAN"   ||
                     cmd == "WIPE33"  || cmd == "SETCAP"     || cmd == "SETMAH"  ||
-                    cmd == "SETMODEL"|| cmd == "REBOOT");
+                    cmd == "SETMODEL"|| cmd == "REBOOT"     || cmd == "INITBAT");
     if (isWrite && !g_serAuthed) {
         sResp("{\"ok\":false,\"err\":\"потрібна авторизація: AUTH <пароль>\",\"needAuth\":true}");
         return;
@@ -212,6 +214,19 @@ static void serialExec(const String &line) {
                                                   : "{\"ok\":false,\"err\":\"немає запису моделі у дампі (порожній/невідомий чіп) або збій запису — відновіть еталонний дамп\"}"); } }
     else if (cmd == "CLEAN")    { bool ok = performFactoryClean(); sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"clean failed\"}"); }
     else if (cmd == "WIPE33")   { bool ok = performWipe2433();     sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"wipe failed\"}"); }
+    else if (cmd == "TEMPLATES"){ String j = "{\"ok\":true,\"models\":[";
+                                  for (int i = 0; i < BATTERY_TEMPLATE_COUNT; i++) { if (i) j += ","; j += "\""; j += BATTERY_TEMPLATES[i].name; j += "\""; }
+                                  j += "]}"; sResp(j); }
+    else if (cmd == "INITBAT")  { int s2 = arg.indexOf(' ');
+                                  String md = (s2 < 0) ? arg : arg.substring(0, s2);
+                                  String mh = (s2 < 0) ? String("") : arg.substring(s2 + 1);
+                                  md.trim(); md.toUpperCase(); mh.trim();
+                                  long mah = mh.toInt();
+                                  if (findTemplate(md.c_str()) < 0) sResp("{\"ok\":false,\"err\":\"немає шаблону моделі\"}");
+                                  else if (mah <= 0)                sResp("{\"ok\":false,\"err\":\"вкажіть мА·год (INITBAT <модель> <мАг>)\"}");
+                                  else { bool ok = performInitBattery(md.c_str(), mah);
+                                         sResp(ok ? (String("{\"ok\":true,\"model\":\"") + md + "\"}")
+                                                  : "{\"ok\":false,\"err\":\"збій запису\"}"); } }
     else if (cmd == "REBOOT")   { displayShow("ПЕРЕЗАВАНТАЖЕННЯ"); sResp("{\"ok\":true}"); Serial.flush(); delay(200); ESP.restart(); }
     else                          sResp(String("{\"ok\":false,\"err\":\"unknown cmd '") + cmd + "'\"}");
 }

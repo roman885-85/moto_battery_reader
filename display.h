@@ -435,16 +435,37 @@ inline bool decodeCapacity(int *capPct, int *wearPct) {
     return false;
 }
 
-// Евристика справжності / ризику блокування. Перевірено на дампах робочих
-// (6 шт.) і залочених (2 шт.) PMNN4409/4493 — чітко розділяє їх. Ознаки
-// залоченої/підробленої після заміни елементів АКБ:
-//   - відсутній блок автентифікації "MOTOROLA..." (0xDF+ стертий);
-//   - стерта калібрувальна підпис 0x1B-0x1E (усі FF);
-//   - переповнений лічильник заряду CCA (0xFFFF) в DS2438.
-// Повертає true, якщо ознак блокування немає; в reason — стисла причина.
+// Евристика справжності / цілісності ПРОШИВКИ (не «чи живі елементи»).
+// МОДЕЛЬНО-ЗАЛЕЖНА: блок автентифікації "MOTOROLA" і калібрувальний підпис
+// 0x1B-0x1E є лише у частини моделей (PMNN4488A/4493A, формат 2017). У
+// PMNN4409A (формат 2014) їх штатно НЕМАЄ — перевірено на РОБОЧОМУ 4409A, який
+// рація приймає. Тому відсутність MOTOROLA-блоку — НЕ ознака підробки.
+// Червоні прапори (для будь-якої моделі): побитий заголовок (Σ≠0x41),
+// відсутній запис моделі (порожній/стертий чіп), переповнений CCA (0xFFFF).
+// Додатково, ЛИШЕ якщо MOTOROLA-блок присутній, вимагаємо непорожній підпис
+// 0x1B-0x1E (його стирання — ознака побитого 2017-калібрування).
+// Повертає true, якщо прошивка виглядає цілісною; в reason — стисла причина.
 inline bool batteryGenuine(const char **reason) {
     if (!hasDump) { *reason = "нема дампу"; return false; }
 
+    // Заголовок DS2433: сума 0x00..0x1F має бути ≡0x41 (інакше стертий/побитий).
+    int hs = 0; for (int i = 0; i <= 0x1F; i++) hs += batteryDump[i];
+    if ((hs & 0xFF) != 0x41) { *reason = "хибний заголовок"; return false; }
+
+    // Має бути запис моделі 0x0B (ідентичність). Немає — чіп без прошивки.
+    bool hasModel = false;
+    for (int i = 0x30; i < (int)DUMP_SIZE - 11 && !hasModel; i++)
+        if (batteryDump[i] == 0x0B && batteryDump[i + 1] >= 'A' && batteryDump[i + 1] <= 'Z') hasModel = true;
+    if (!hasModel) { *reason = "нема моделі"; return false; }
+
+    // Переповнений лічильник заряду CCA (0xFFFF) в DS2438 — типова ознака
+    // збитої/«залоченої» АКБ (часто після заміни елементів).
+    if (hasDump2438) {
+        uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
+        if (cca == 0xFFFF) { *reason = "CCA перепов."; return false; }
+    }
+
+    // Блок автентифікації "MOTOROLA" — лише у моделей формату 2017.
     bool auth = false;
     static const char pat[] = "MOTOROLA";
     const int plen = 8;
@@ -453,20 +474,18 @@ inline bool batteryGenuine(const char **reason) {
         while (k < plen && batteryDump[i + k] == (uint8_t)pat[k]) k++;
         if (k == plen) auth = true;
     }
-    if (!auth) { *reason = "нема автент."; return false; }
-
-    if (batteryDump[0x1B] == 0xFF && batteryDump[0x1C] == 0xFF &&
-        batteryDump[0x1D] == 0xFF && batteryDump[0x1E] == 0xFF) {
-        *reason = "нема калібр.";
-        return false;
+    if (auth) {
+        // Формат 2017: додатково вимагаємо непорожній калібрувальний підпис.
+        if (batteryDump[0x1B] == 0xFF && batteryDump[0x1C] == 0xFF &&
+            batteryDump[0x1D] == 0xFF && batteryDump[0x1E] == 0xFF) {
+            *reason = "стерте калібр."; return false;
+        }
+        *reason = "OK"; return true;
     }
 
-    if (hasDump2438) {
-        uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
-        if (cca == 0xFFFF) { *reason = "CCA перепов."; return false; }
-    }
-
-    *reason = "OK";
+    // Немає MOTOROLA-блоку — формат без автентифікації (напр. 4409A). Заголовок
+    // і модель у нормі, CCA не переповнений => прошивка ціла. Не підробка.
+    *reason = "OK (ф.2014)";
     return true;
 }
 

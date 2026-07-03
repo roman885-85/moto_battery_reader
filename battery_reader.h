@@ -40,6 +40,11 @@ public:
     bool begin();
     bool readBattery(uint8_t *buffer, size_t size);
     bool writeBattery(const uint8_t *buffer, size_t size);
+    // Запис ЛИШЕ сторінок DS2433, що покривають [regionStart, regionStart+regionLen).
+    // buffer — повний дамп 512 Б; пишуться тільки зачеплені 32-байтові сторінки.
+    // Надійніше за повний перезапис для точкових правок (модель, лічильники):
+    // не залежить від придатності решти чипа до перезапису.
+    bool writeBatteryRange(const uint8_t *buffer, size_t regionStart, size_t regionLen);
     bool readDS2438(uint8_t *buffer, size_t size);
     bool writeDS2438(const uint8_t *buffer, size_t size);
     void printDump(const uint8_t *buffer, size_t size);

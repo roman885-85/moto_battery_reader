@@ -36,6 +36,14 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 .zone{font-weight:700;font-size:.88em;padding:8px 11px;border-radius:8px;margin:16px 0 8px}
 .zone.zi{background:#16324a;color:#bfe0ff}.zone.zd{background:#4a1512;color:#ff9b8f;border:1px solid var(--red)}
 #log{font-family:monospace;font-size:.72em;background:#0e1218;border-radius:8px;padding:8px;height:120px;overflow:auto;white-space:pre-wrap;color:#8fb7d9}
+.hxwrap{margin-top:8px;font-family:monospace;font-size:.8em;line-height:1.4;background:#0e1218;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
+.hxbar{display:flex;color:#7fd0ff;background:#12233a;padding:4px 0;white-space:pre}
+.hxrow{display:flex;height:170px}
+.hxg{flex:none;width:46px;text-align:right;padding:0 6px;color:#6b8;white-space:pre;overflow:hidden}
+.hxh{flex:1;padding-left:2px;white-space:pre;overflow:hidden}
+.hxd{flex:1;min-width:0;font-family:monospace;font-size:1em;line-height:1.4;color:#e7ecf3;background:transparent;border:none;padding:0 2px;resize:none;white-space:pre;overflow-y:scroll}
+.hxa{flex:none;width:150px;padding-left:8px;color:#8fb7d9;white-space:pre;overflow:hidden;border-left:1px solid var(--line)}
+.mdlen{min-width:44px;text-align:right;color:var(--mut)}
 .charge{display:flex;align-items:center;gap:14px}
 .batt{width:110px;height:44px;border:3px solid var(--txt);border-radius:6px;position:relative}
 .batt:after{content:'';position:absolute;right:-8px;top:12px;width:5px;height:14px;background:var(--txt);border-radius:0 3px 3px 0}
@@ -135,6 +143,19 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <button class="btn b-warn" onclick="cmdConfirm('REPAIR','🛠 Відновити цілісність і записати?')">🛠 ВІДНОВИТИ</button>
     </div>
     <div class="card">
+      <h2>🪪 Модель та серійний (ручний запис)</h2>
+      <div class="note i">Модель (part number) пишеться у DS2433: поле 0x0B + заголовок, із перерахунком сум.
+        Поточна: <b id="mdNow">—</b>.</div>
+      <div class="row"><span class="k">Модель</span>
+        <input type="text" id="mdVal" maxlength="9" placeholder="PMNN4409A" oninput="mdCheck()"
+               style="width:150px;text-align:center;letter-spacing:1px;text-transform:uppercase">
+        <span id="mdLen" class="mdlen">0/9</span></div>
+      <button class="btn b-warn" onclick="setModel()">💾 ЗАПИСАТИ МОДЕЛЬ</button>
+      <div class="note w">ℹ️ <b>Серійний номер</b> — це апаратний лазерний ROM DS2438: унікальний, незмінний і
+        <b>фізично не перезаписується</b>. Для власного інвентарного ID запишіть його у вільну область
+        через редактор байтів нижче.</div>
+    </div>
+    <div class="card">
       <h2>🔋 Заряд у мА·год</h2>
       <div class="note i">Рівень заряду (регістр ICA DS2438).</div>
       <div class="row"><span class="k">мА·год</span><input type="number" id="mahv" min="0" max="5000" value="0" style="width:110px;text-align:center"></div>
@@ -174,9 +195,16 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <h2>✏️ Редактор байтів</h2>
       <div class="note w">⚠️ Пряма правка. Автовиправлення чинить суму заголовка DS2433 і дзеркало.</div>
       <div class="row"><span class="k">Мікросхема</span>
-        <select id="hxT"><option value="33">DS2433 (512 Б)</option><option value="38">DS2438 (64 Б)</option></select>
+        <select id="hxT" onchange="hxLoad()"><option value="33">DS2433 (512 Б)</option><option value="38">DS2438 (64 Б)</option></select>
         <button class="btn b-inf" style="width:auto;padding:8px 12px" onclick="hxLoad()">↻ Завантажити</button></div>
-      <textarea id="hxD" spellcheck="false" style="width:100%;height:140px;font-family:monospace;font-size:.78em;margin-top:8px"></textarea>
+      <div class="hxwrap">
+        <div class="hxbar"><span class="hxg">Зсув</span><span class="hxh">00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F</span><span class="hxa">Текст</span></div>
+        <div class="hxrow">
+          <div class="hxg" id="hxGut"></div>
+          <textarea class="hxd" id="hxD" spellcheck="false" oninput="hexAux()"></textarea>
+          <div class="hxa" id="hxAsc"></div>
+        </div>
+      </div>
       <label style="display:block;margin:6px 0"><input type="checkbox" id="hxFix" checked> Автовиправлення (DS2433)</label>
       <button class="btn b-dng" onclick="hxWrite()">⚡ ЗАПИСАТИ БАЙТИ</button>
     </div>
@@ -277,6 +305,7 @@ async function refresh(){
     if(d.voltage!==undefined){$('volt').textContent=d.voltage.toFixed(2)+' В';$('dV').textContent=d.voltage.toFixed(2)+' В';}
     if(d.temperature!==undefined){$('temp').textContent=d.temperature.toFixed(1)+' °C';$('dT').textContent=d.temperature.toFixed(1)+' °C';}
     $('model').textContent=d.model||'—';$('dModel').textContent=d.model||'—';
+    if(d.model){$('mdNow').textContent=d.model; if(!$('mdVal').value)$('mdVal').placeholder=d.model;}
     if(typeof d.capacity==='number'&&d.capacity>=0){$('cap').textContent=d.capacity+' %';$('wear').textContent=d.wear+' %';$('capv').value=d.capacity;}
     if(d.ccaCycles!==undefined)$('cyc').textContent=d.ccaCycles+' зар. / '+d.dcaCycles+' розр.';
     if(typeof d.genuine==='boolean')$('auth').innerHTML=d.genuine?'<span class="badge bo">OK</span>':'<span class="badge bb">РИЗИК ('+d.authReason+')</span>';
@@ -363,7 +392,41 @@ async function hxLoad(){
     const parts=r.hex.trim().split(/\s+/); let out='';
     for(let i=0;i<parts.length;i+=16)out+=parts.slice(i,i+16).join(' ')+'\n';
     $('hxD').value=out.trim();
+    hexAux();
   }catch(e){ toast('Помилка: '+e.message); }
+}
+
+// Лінійка адресів + ASCII-колонка (як у HxD)
+function hexAux(){
+  const bytes=($('hxD').value.match(/[0-9a-fA-F]{2}/g))||[];
+  let gut='', asc='';
+  for(let i=0;i<bytes.length;i+=16){
+    gut+=i.toString(16).toUpperCase().padStart(4,'0')+'\n';
+    let s='';
+    for(let j=i;j<i+16&&j<bytes.length;j++){
+      const v=parseInt(bytes[j],16);
+      s+=(v>=32&&v<127)?String.fromCharCode(v):'.';
+    }
+    asc+=s+'\n';
+  }
+  $('hxGut').textContent=gut; $('hxAsc').textContent=asc;
+}
+
+// Ручний запис моделі у DS2433
+function mdCheck(){
+  const v=$('mdVal').value.toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(v!==$('mdVal').value)$('mdVal').value=v;
+  const el=$('mdLen'); el.textContent=v.length+'/9';
+  el.style.color=(v.length>=3&&v.length<=9)?'var(--grn)':'var(--org)';
+}
+async function setModel(){
+  if(!connected){toast('Підключіться');return;}
+  const m=$('mdVal').value.trim().toUpperCase();
+  if(!/^[A-Z0-9]{3,9}$/.test(m)){toast('Модель: 3–9 символів A–Z / 0–9');return;}
+  if(!confirm('Записати модель «'+m+'» у DS2433?\nНевірна модель може зробити АКБ невизначеною для рації.'))return;
+  setBusy(true); toast('Запис моделі...');
+  try{ const r=await cmd('SETMODEL '+m,15000); toast(r.ok?('✅ Модель записано: '+(r.model||m)):'Помилка: '+(r.err||'')); await refresh(); }
+  catch(e){ toast('Помилка: '+e.message); } setBusy(false);
 }
 async function hxWrite(){
   if(!connected){toast('Підключіться');return;}
@@ -377,6 +440,14 @@ async function hxWrite(){
   try{ const r=await cmd(c+' '+hex,20000); toast(r.ok?'✅ Записано':'Помилка: '+(r.err||'')); await refresh(); }
   catch(e){ toast('Помилка: '+e.message); } setBusy(false);
 }
+
+// Синхронне прокручування гутера/тексту/ASCII
+window.addEventListener('DOMContentLoaded',function(){
+  const d=$('hxD');
+  if(d)d.addEventListener('scroll',function(){
+    $('hxGut').scrollTop=d.scrollTop; $('hxAsc').scrollTop=d.scrollTop;
+  });
+});
 </script>
 </body>
 </html>

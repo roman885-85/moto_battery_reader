@@ -219,6 +219,19 @@
             <button class="btn btn-warn" style="width:100%" onclick="repairFw()">🛠 ВІДНОВИТИ ЦІЛІСНІСТЬ</button>
         </div>
 
+        <div class="card" style="border-color:var(--warn)">
+            <h2>🔧 Ремонт після заміни елементів (підготовка до калібрування)</h2>
+            <div class="note i">Для АКБ, яку рація бачить як <b>«невідома»</b> після заміни банок. Стирає старе
+                <b>learned-калібрування</b> (запис 0x0A, який зарядка записала під СТАРІ банки і який тепер суперечить
+                новим — перевірено діффом дампа до/після калібрування), обнуляє лічильники, лишає модель/криву/ID.
+                Пакет стає <b>«валідний, не відкалібрований»</b>: рація приймає, а <b>IMPRES-ЗП запускає калібрування</b>
+                нових банок.</div>
+            <div class="note w">⚠️ Фізичну калібровку це <b>не замінює</b> — після цього обов'язково поставте АКБ
+                на оригінальну IMPRES-зарядку для повного циклу навчання.</div>
+            <input type="password" class="pw" id="pwRecal" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="recalPrep()">🔧 ПІДГОТУВАТИ ДО КАЛІБРУВАННЯ</button>
+        </div>
+
         <div class="card">
             <h2>🔋 Заряд у мА·год</h2>
             <div class="note i">Записує рівень заряду (регістр ICA DS2438). Поточне: <b id="mahNow">—</b>.</div>
@@ -553,6 +566,18 @@ async function setModel(){
     try{
         const r=await postForm('/api/setmodel',{password:pw,model:m});
         toast(r.status==='success'?('✅ Модель записано: '+r.model):('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+async function recalPrep(){
+    const pw=$('pwRecal').value; if(!pw){toast('Введіть пароль','err');return}
+    if(!confirm('🔧 Підготувати АКБ до рекалібрування?\nСтерти старе learned-калібрування і обнулити лічильники (модель/крива лишаються). Далі — калібрування на IMPRES-ЗП.'))return;
+    prog(true,'Підготовка до калібрування...');
+    try{
+        const r=await postForm('/api/recalprep',{password:pw});
+        toast(r.status==='success'?'✅ Готово. Поставте АКБ на IMPRES-ЗП.':('Помилка: '+r.message),r.status==='success'?'ok':'err');
         if(r.status==='success')await refreshAll();
     }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);

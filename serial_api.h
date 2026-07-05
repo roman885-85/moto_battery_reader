@@ -29,6 +29,7 @@
 //   SETMODEL <NAME>      -> ручний запис моделі (part number, 3..9 A-Z0-9)
 //   TEMPLATES            -> список вшитих моделей для ініціалізації (без пароля)
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
+//   RECAL                -> підготовка до рекалібрування (після заміни елементів)
 //   REBOOT               -> перезавантаження ESP32
 //
 // Пароль по USB — ОПЦІЙНИЙ: фізичний доступ до кабелю = дозвіл на запис, тож
@@ -221,6 +222,8 @@ static void serialExec(const String &line) {
                                   else { bool ok = performInitBattery(md.c_str(), mah);
                                          sResp(ok ? (String("{\"ok\":true,\"model\":\"") + md + "\"}")
                                                   : "{\"ok\":false,\"err\":\"збій запису\"}"); } }
+    else if (cmd == "RECAL")    { bool ok = performRecalPrepare();
+                                  sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"read first / write failed\"}"); }
     else if (cmd == "REBOOT")   { displayShow("ПЕРЕЗАВАНТАЖЕННЯ"); sResp("{\"ok\":true}"); Serial.flush(); delay(200); ESP.restart(); }
     else                          sResp(String("{\"ok\":false,\"err\":\"unknown cmd '") + cmd + "'\"}");
 }

@@ -251,6 +251,13 @@ class App:
         ttk.Button(b2, text="♻️ Скидання лічильників", command=lambda: self.simple_op("RESET", "Скинути лічильники і записати у чіп?")).pack(side="left", padx=3)
         ttk.Button(b2, text="🛠 Ремонт цілісності", command=lambda: self.simple_op("REPAIR", "Відновити цілісність і записати?")).pack(side="left", padx=3)
 
+        b2b = ttk.LabelFrame(p, text="Ремонт після заміни елементів (→ калібрування на ЗП)", padding=8); b2b.pack(fill="x", pady=4)
+        ttk.Label(b2b, text="Для АКБ, яку рація бачить «невідома» після заміни банок: стирає старе\n"
+                            "learned-калібрування (0x0A) + обнуляє лічильники. Далі — калібрування на IMPRES-ЗП.",
+                  justify="left").pack(anchor="w")
+        ttk.Button(b2b, text="🔧 Підготувати до калібрування",
+                   command=lambda: self.simple_op("RECAL", "Стерти старе learned-калібрування і обнулити лічильники?\nМодель/крива лишаються. Далі — калібрування на IMPRES-ЗП.", 25.0)).pack(anchor="w", pady=3)
+
         b3 = ttk.LabelFrame(p, text="Модель (ручний запис)", padding=8); b3.pack(fill="x", pady=4)
         self.eModel = self._row(b3, "Модель (3–9, A–Z0–9):", lambda fr: self._entry(fr, 12))
         ttk.Button(b3, text="💾 Записати модель", command=self.set_model).pack(anchor="w", pady=2)

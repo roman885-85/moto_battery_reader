@@ -713,6 +713,29 @@ void factoryCleanData() {
     }
 }
 
+// Стерти LEARNED-калібрування (TLV-записи 0x0A, Σ≡0x5A) у калібр-зоні DS2433.
+// Перевірено діффом однієї й тієї ж АКБ ДО/ПІСЛЯ калібрування на IMPRES-ЗП:
+// саме запис 0x0A ЗП створює під час навчання (він кодує виміряну ємність/
+// імпеданс РЕАЛЬНИХ банок). Після заміни елементів старий 0x0A суперечить новим
+// банкам → рація каже «невідома». Стирання його (→0xFF) повертає пакет у стан
+// «валідний, НЕ відкалібрований», який рація приймає, а ЗП бере на калібрування.
+// Повертає к-сть стертих записів.
+int eraseLearnedCalib() {
+    int erased = 0;
+    // Скануємо ПІСЛЯ кривої розряду (вона в 0x42..0x67) і до записів моделі —
+    // саме тут ЗП тримає learned-калібрування; так не зачепимо криву випадково.
+    for (int i = 0x68; i < 0x180 - 10; i++) {
+        if (batteryDump[i] == 0x0A) {
+            int s = 0; for (int k = 0; k < 10; k++) s += batteryDump[i + k];
+            if ((s & 0xFF) == 0x5A) {                  // валідний запис 0x0A
+                for (int k = 0; k < 10; k++) batteryDump[i + k] = 0xFF;
+                erased++; i += 9;
+            }
+        }
+    }
+    return erased;
+}
+
 // ПОВНЕ стирання DS2433 (КРАЙНІЙ ВИПАДОК). Заповнює всі 512 байт 0xFF (стан
 // стертого EEPROM) — чіп стає "чистим". Стирає ВСЕ, включно з моделлю/ID/
 // калібруванням DS2433! Після цього АКБ не працюватиме, доки не запишете
@@ -749,6 +772,41 @@ bool performFactoryClean() {
     } else displayShow("ОЧИСТКА ЗБІЙ");
     ledSet(ok ? LED_OK : LED_ERROR);
     Serial.println("=== Clean completed ===\n");
+    return ok;
+}
+
+// Підготовка до РЕКАЛІБРУВАННЯ (після заміни елементів). Не чіпає ідентичність/
+// модель/криву — лише прибирає СТАРЕ learned-калібрування і обнуляє лічильники,
+// щоб пакет став «валідним, але не відкаліброваним»: рація приймає («потребує
+// відновлення»), а IMPRES-ЗП запускає цикл калібрування нових банок.
+//   1) стерти learned-запис(и) 0x0A (→0xFF);
+//   2) обнулити лічильники/історію (0x0D CCA/DCA, 0x16, DS2438 ICA/CCA/DCA/ETM),
+//      здоров'я 0x17 → 100%;
+//   3) перерахувати суми, синхронізувати дзеркало.
+// ⚠️ Фізичну калібровку це НЕ замінює — далі АКБ обов'язково калібрувати на ЗП.
+bool performRecalPrepare() {
+    if (!hasDump && !hasDump2438) { displayShow("СПОЧАТКУ ЧИТАЙ"); return false; }
+    Serial.println("\n=== Prepare for recalibration ===");
+    ledSet(LED_WRITE); displayShow("ПІД КАЛІБР...");
+    int er = 0;
+    if (hasDump) {
+        er = eraseLearnedCalib();          // прибрати старе learned-калібрування
+        Serial.printf("erased learned-calib records: %d\n", er);
+    }
+    factoryCleanData();                     // лічильники/історія/0x17=100% + суми
+    if (hasDump && hasDump2438 && !mirrorOk(batteryDump, batteryDump2438))
+        syncMirrorFrom2438(batteryDump, batteryDump2438);
+    if (hasDump) fixHeaderChecksum(batteryDump);
+    bool ok = true;
+    if (hasDump)     ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (hasDump2438) ok &= battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (ok) {
+        if (hasDump)     saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+        if (hasDump2438) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+        displayShow("КАЛІБР: ГОТОВО");
+    } else displayShow("КАЛІБР ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    Serial.println("=== Recal-prepare completed ===\n");
     return ok;
 }
 
@@ -1045,6 +1103,18 @@ void handleResetBattery() {
            : "{\"status\":\"error\",\"message\":\"Failed to write reset\"}");
 }
 
+// Веб-обробник підготовки до рекалібрування (після заміни елементів), під паролем.
+void handleRecalPrepare() {
+    if (!requireAdmin()) return;
+    if (!hasDump && !hasDump2438) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Спочатку зчитайте АКБ\"}"); return;
+    }
+    bool ok = performRecalPrepare();
+    server.send(ok ? 200 : 500, "application/json",
+        ok ? "{\"status\":\"success\",\"message\":\"Готово. Тепер поставте АКБ на IMPRES-ЗП для калібрування.\"}"
+           : "{\"status\":\"error\",\"message\":\"Помилка запису\"}");
+}
+
 // ------------------- Ініціалізація нового акумулятора -------------------
 // Порожній/стертий/невідомий чіп -> робочий АКБ обраної моделі. Вантажимо
 // вшитий genuine-еталон (DS2433 + DS2438), зануляємо всю історію/лічильники
@@ -1063,6 +1133,12 @@ bool performInitBattery(const char *model, long mah) {
     // Свіжий стан: зануляємо лічильники/історію/статистику, лишаємо
     // ідентичність/калібрування/дзеркало. Ставить і здоров'я 0x17 -> 100%.
     factoryCleanData();
+    // ВАЖЛИВО: стерти learned-калібрування ДОНОРА (запис 0x0A). Інакше рація
+    // бачить чужі виміряні дані й каже «невідома» (саме тому «Новий АКБ» раніше
+    // не приймався). Без 0x0A пакет — «валідний, не відкалібрований»: рація
+    // приймає, а ЗП калібрує реальні банки.
+    eraseLearnedCalib();
+    fixHeaderChecksum(batteryDump);
 
     // Введена ємність (поточний заряд) у мА·год -> регістр ICA DS2438.
     long ica = (long)(mah / DS2438_MAH_PER_LSB + 0.5f);
@@ -1178,6 +1254,7 @@ void setupWebServer() {
     server.on("/api/reboot", HTTP_POST, handleReboot);           // перезавантаження ESP32
     server.on("/api/templates", HTTP_GET, handleTemplates);      // список вшитих моделей
     server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
+    server.on("/api/recalprep", HTTP_POST, handleRecalPrepare);  // підготовка до рекалібрування
 
     // Captive-portal: усі інші URL -> редирект на головну (авто-відкриття сторінки).
     server.onNotFound(handleCaptive);

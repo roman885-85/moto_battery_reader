@@ -686,24 +686,26 @@ inline void drawPageRaw2433() { drawRawPage((DISP_H >= 128) ? "DS2433 дамп 0
 
 // Базові дії (індекси 0..4) + по одній дії «Новий АКБ» на кожен вшитий шаблон
 // (індекси 5..). Загальну к-сть дій рахує numActions() — вона динамічна.
-#define NUM_BASE_ACTIONS 5    // Скидання, Ремонт, Очистка, Стерти2433, Перезавантаж.
+#define NUM_BASE_ACTIONS 6    // Скидання, Ремонт, Очистка, Стерти2433, Перезав., Рекалібр.
 inline int numActions() { return NUM_BASE_ACTIONS + BATTERY_TEMPLATE_COUNT; }
 
 // Сторінка «Дії»: показуємо ОДНУ обрану операцію крупно + опис + попередження.
 // [<] коротко — наступна операція; [<] утримати (0.8с) — ВИКОНАТИ; [>] — вихід.
 inline void drawPageActions() {
-    static const char *nm[NUM_BASE_ACTIONS] = { "Скидання", "Ремонт", "Очистка", "СТЕРТИ 2433", "Перезавантаж." };
+    static const char *nm[NUM_BASE_ACTIONS] = { "Скидання", "Ремонт", "Очистка", "СТЕРТИ 2433", "Перезавантаж.", "Рекалібр." };
     static const char *d1[NUM_BASE_ACTIONS] = { "обнулити лічильники",
                                                 "полагодити суми та",
                                                 "стерти все, окрім",
                                                 "ПОВНЕ стирання чіпа",
-                                                "рестарт пристрою" };
+                                                "рестарт пристрою",
+                                                "після заміни банок:" };
     static const char *d2[NUM_BASE_ACTIONS] = { "заряд/розряд, знос",
                                                 "дзеркало калібрув.",
                                                 "моделі/ID/калібрув.",
                                                 "DS2433 (крайній!)",
-                                                "ESP32 (Wi-Fi/веб)" };
-    static const bool  dg[NUM_BASE_ACTIONS] = { false, false, false, true, false };
+                                                "ESP32 (Wi-Fi/веб)",
+                                                "стерти learned, на ЗП" };
+    static const bool  dg[NUM_BASE_ACTIONS] = { false, false, false, true, false, false };
     int sel = g_actionSel;
     int total = numActions();
 

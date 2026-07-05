@@ -110,7 +110,7 @@ static void serWrite33(const String &arg, bool fix) {
     if (hexToBytes(arg, buf, DUMP_SIZE) != DUMP_SIZE) { sResp("{\"ok\":false,\"err\":\"need 512 bytes\"}"); return; }
     if (fix) {
         fixHeaderChecksum(buf);
-        if (hasDump2438) { for (int i = 0; i < 26; i++) buf[1 + i] = batteryDump2438[24 + i]; fixHeaderChecksum(buf); }
+        if (hasDump2438 && mirrorSourceValid(batteryDump2438)) { for (int i = 0; i < 26; i++) buf[1 + i] = batteryDump2438[24 + i]; fixHeaderChecksum(buf); }
     }
     ledSet(LED_WRITE); displayShow("USB ЗАПИС 2433");
     bool ok = battery.writeBattery(buf, DUMP_SIZE);

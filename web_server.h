@@ -81,6 +81,15 @@ static bool mirrorOk(const uint8_t *d33, const uint8_t *d38) {
     for (int i = 0; i < 26; i++) if (d33[1 + i] != d38[24 + i]) return false;
     return true;
 }
+// Чи придатне дзеркало DS2438[24:50] як ДЖЕРЕЛО для відновлення DS2433[1:27]:
+// лише якщо це реальні дані (не суцільні 0x00 чи 0xFF). У R7 (PMNN4809A/APLI4810C,
+// формат 2021) дзеркала в DS2438 може не бути — тоді синхронізація НЕ виконується,
+// інакше вона затерла б заголовок DS2433 нулями і зіпсувала ідентичність.
+static bool mirrorSourceValid(const uint8_t *d38) {
+    bool allZero = true, allFF = true;
+    for (int i = 24; i < 50; i++) { if (d38[i] != 0x00) allZero = false; if (d38[i] != 0xFF) allFF = false; }
+    return !allZero && !allFF;
+}
 
 // ---------------------------------------------------------------------------
 // Перевірка пароля адміністратора. РАНІШЕ: `if (hasArg && arg != PW)` —
@@ -794,7 +803,8 @@ bool performRecalPrepare() {
         Serial.printf("erased learned-calib records: %d\n", er);
     }
     factoryCleanData();                     // лічильники/історія/0x17=100% + суми
-    if (hasDump && hasDump2438 && !mirrorOk(batteryDump, batteryDump2438))
+    if (hasDump && hasDump2438 && mirrorSourceValid(batteryDump2438) &&
+        !mirrorOk(batteryDump, batteryDump2438))
         syncMirrorFrom2438(batteryDump, batteryDump2438);
     if (hasDump) fixHeaderChecksum(batteryDump);
     bool ok = true;
@@ -817,8 +827,10 @@ bool performRecalPrepare() {
 // відомих записів (0x0D CCA/DCA і 0x17 історія ємності). НЕ чіпає дані —
 // лише виправляє цілісність, щоб рація знову прийняла підправлену прошивку.
 void repairDumps() {
-    if (hasDump && hasDump2438 && !mirrorOk(batteryDump, batteryDump2438)) {
+    if (hasDump && hasDump2438 && mirrorSourceValid(batteryDump2438) &&
+        !mirrorOk(batteryDump, batteryDump2438)) {
         // DS2438 зазвичай зберігається при пошкодженні DS2433 — беремо калібрування з нього.
+        // ЛИШЕ якщо дзеркало DS2438 реальне (R7 його не має → не чіпаємо заголовок).
         syncMirrorFrom2438(batteryDump, batteryDump2438);
         Serial.println("repair: mirror DS2438->DS2433 restored");
     }
@@ -1078,7 +1090,7 @@ void handleWriteHex() {
     } else {
         if (autofix) {
             fixHeaderChecksum(buf);
-            if (hasDump2438) { /* держим зеркало согласованным */ for (int i=0;i<26;i++) buf[1+i]=batteryDump2438[24+i]; fixHeaderChecksum(buf); }
+            if (hasDump2438 && mirrorSourceValid(batteryDump2438)) { /* держим зеркало согласованным (не для R7 без дзеркала) */ for (int i=0;i<26;i++) buf[1+i]=batteryDump2438[24+i]; fixHeaderChecksum(buf); }
         }
         ok = battery.writeBattery(buf, DUMP_SIZE);
         if (ok) { memcpy(batteryDump, buf, DUMP_SIZE); hasDump = true; saveDump("/dump.bin", buf, DUMP_SIZE); }

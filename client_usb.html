@@ -6,7 +6,7 @@
 <title>Moto IMPRES — USB-клієнт</title>
 <style>
 :root{--bg:#12161c;--card:#1b212b;--line:#2a323f;--txt:#e7ecf3;--mut:#8b97a7;
- --grn:#2ecc71;--red:#e74c3c;--org:#f39c12;--blu:#3aa0ff;--gold:#d4af37}
+ --grn:#2ecc71;--red:#e74c3c;--org:#f39c12;--blu:#3aa0ff;--gold:#d4af37;--ok:#2ecc71;--warn:#f39c12}
 *{box-sizing:border-box}body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;
  background:var(--bg);color:var(--txt);font-size:15px}
 header{background:linear-gradient(180deg,#1b2430,#141a22);padding:12px 16px;border-bottom:1px solid var(--line);
@@ -21,7 +21,7 @@ header h1{font-size:1.05em;margin:0;color:var(--gold)}
 .page{display:none}.page.active{display:block}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
 .card h2{font-size:1em;margin:0 0 10px}
-.row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);gap:10px}
+.row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line);gap:10px}
 .row:last-child{border-bottom:none}.k{color:var(--mut)}.v{font-weight:600;text-align:right;word-break:break-all}
 .btn{border:none;border-radius:10px;padding:11px 14px;font-size:.95em;font-weight:600;color:#fff;cursor:pointer;margin:4px 0;width:100%}
 .btn:disabled{opacity:.45;cursor:not-allowed}
@@ -120,6 +120,19 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 
   <!-- FIRMWARE -->
   <div class="page" id="fw">
+    <div class="card" style="border-color:var(--gold)">
+      <h2>🔑 Авторизація адміністратора (опційно)</h2>
+      <div class="note i">По USB пароль <b>не обов'язковий</b> — фізичний доступ до кабелю вже є дозволом, запис
+        працює й з <b>порожнім</b> полем. Пароль (<b>admin123</b>, <code>settings.h → ADMIN_PASSWORD</code>) введіть,
+        лише якщо хочете перевірити його й підсвітити статус. Веб-інтерфейс пароль вимагає завжди.</div>
+      <input type="password" class="pw" id="pwAdm" placeholder="🔑 Пароль адміністратора (необов'язково)">
+      <div class="btns">
+        <button class="btn b-inf" onclick="ensureAuth(true)">🔓 Перевірити пароль</button>
+        <button class="btn b-dng" onclick="rebootDev()">🔁 Перезавантажити ESP32</button>
+      </div>
+      <div class="bar" id="authSt" style="margin-top:6px">🔒 не перевірено</div>
+    </div>
+
     <div class="zone zi">📦 Крок 1 — резервна копія (робіть ЗАВЖДИ перед записом)</div>
     <div class="card">
       <h2>💾 Зчитати та зберегти</h2>
@@ -135,30 +148,49 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
     <div class="card">
       <h2>♻️ Скидання для рекалібрування</h2>
       <div class="note i">Обнуляє лічильники/знос, калібрування зберігається. Потім — калібрування на IMPRES-ЗП.</div>
-      <button class="btn b-warn" onclick="cmdConfirm('RESET','♻️ Скинути лічильники і записати у чіп?')">♻️ СКИНУТИ</button>
+      <button class="btn b-warn" onclick="op('RESET','♻️ Скинути лічильники і записати у чіп?',15000)">♻️ СКИНУТИ</button>
     </div>
     <div class="card">
       <h2>🛠 Ремонт цілісності</h2>
       <div class="note i">Суми (0x41/0x5A) + дзеркало калібрування з уцілілого DS2438. Якщо рація «не бачить» АКБ.</div>
-      <button class="btn b-warn" onclick="cmdConfirm('REPAIR','🛠 Відновити цілісність і записати?')">🛠 ВІДНОВИТИ</button>
+      <button class="btn b-warn" onclick="op('REPAIR','🛠 Відновити цілісність і записати?',15000)">🛠 ВІДНОВИТИ</button>
+    </div>
+    <div class="card" style="border-color:var(--org)">
+      <h2>🔧 Ремонт після заміни елементів</h2>
+      <div class="note i">Для АКБ, яку рація бачить як <b>«невідома»</b> після заміни банок. Стирає старе
+        learned-калібрування (запис 0x0A донора/старих банок), обнуляє лічильники, лишає модель/криву. Пакет стає
+        «валідний, не відкалібрований» → рація приймає, а IMPRES-ЗП запускає калібрування.</div>
+      <div class="note w">⚠️ Фізичну калібровку не замінює — далі поставте АКБ на оригінальну IMPRES-зарядку.</div>
+      <button class="btn b-warn" onclick="op('RECAL','🔧 Підготувати до калібрування (стерти learned + обнулити лічильники)?',20000)">🔧 ПІДГОТУВАТИ ДО КАЛІБРУВАННЯ</button>
     </div>
     <div class="card">
-      <h2>🪪 Модель та серійний (ручний запис)</h2>
+      <h2>🪪 Модель (ручний запис)</h2>
       <div class="note i">Модель (part number) пишеться у DS2433: поле 0x0B + заголовок, із перерахунком сум.
-        Поточна: <b id="mdNow">—</b>.</div>
+        Поточна: <b id="mdNow">—</b>. Змінює модель лише там, де вже <b>є</b> запис — на порожньому чипі
+        спершу «Новий акумулятор» (нижче) або відновлення еталона.</div>
       <div class="row"><span class="k">Модель</span>
         <input type="text" id="mdVal" maxlength="9" placeholder="PMNN4409A" oninput="mdCheck()"
                style="width:150px;text-align:center;letter-spacing:1px;text-transform:uppercase">
         <span id="mdLen" class="mdlen">0/9</span></div>
       <button class="btn b-warn" onclick="setModel()">💾 ЗАПИСАТИ МОДЕЛЬ</button>
-      <div class="note w">ℹ️ <b>Серійний номер</b> — це апаратний лазерний ROM DS2438: унікальний, незмінний і
-        <b>фізично не перезаписується</b>. Для власного інвентарного ID запишіть його у вільну область
-        через редактор байтів нижче.</div>
+      <div class="note w">ℹ️ <b>Серійний номер</b> — апаратний лазерний ROM DS2438: унікальний, незмінний,
+        <b>фізично не перезаписується</b>. Для власного інвентарного ID — редактор байтів нижче.</div>
+    </div>
+    <div class="card" style="border-color:var(--grn)">
+      <h2>🆕 Новий акумулятор (порожній чип)</h2>
+      <div class="note i">Для <b>порожнього/стертого/невідомого</b> чипа: пише повний еталон обраної моделі
+        (DS2433 + DS2438 — ідентичність, калібрування), обнуляє історію, ставить здоров'я 100%,
+        а вказану ємність — як поточний заряд (ICA).</div>
+      <div class="row"><span class="k">Модель</span><select id="initModel" style="min-width:150px"></select></div>
+      <div class="row"><span class="k">Ємність, мА·год</span>
+        <input type="number" id="initMah" min="1" max="6000" value="2500" style="width:110px;text-align:center"></div>
+      <div class="note w">⚠️ Перезапише ОБИДВІ мікросхеми. Лише для порожнього/невідомого чипа. Вкажіть паспортну ємність вашої моделі.</div>
+      <button class="btn b-warn" onclick="initBattery()">🆕 ЗАПИСАТИ НОВИЙ АКБ</button>
     </div>
     <div class="card">
       <h2>🔋 Заряд у мА·год</h2>
       <div class="note i">Рівень заряду (регістр ICA DS2438).</div>
-      <div class="row"><span class="k">мА·год</span><input type="number" id="mahv" min="0" max="5000" value="0" style="width:110px;text-align:center"></div>
+      <div class="row"><span class="k">мА·год</span><input type="number" id="mahv" min="0" max="6000" value="0" style="width:110px;text-align:center"></div>
       <button class="btn b-warn" onclick="setMah()">💾 ЗАПИСАТИ мА·год</button>
     </div>
     <div class="card">
@@ -171,7 +203,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
     <div class="card">
       <h2>🧹 Очистити (крім критичних)</h2>
       <div class="note w">⚠️ Стирає все використання/історію/статистику. Зберігає модель/серійний/ID/калібрування.</div>
-      <button class="btn b-dng" onclick="cmdConfirm('CLEAN','🧹 Стерти всі дані використання, лишивши ID/калібрування?')">🧹 ОЧИСТИТИ</button>
+      <button class="btn b-dng" onclick="op('CLEAN','🧹 Стерти всі дані використання, лишивши ID/калібрування?',15000)">🧹 ОЧИСТИТИ</button>
     </div>
     <div class="card">
       <h2>📤 Відновлення / запис DS2433 (512 Б)</h2>
@@ -188,7 +220,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
     <div class="card" style="border-color:#e74c3c">
       <h2>🔥 ПОВНЕ стирання DS2433 (крайній випадок)</h2>
       <div class="note w">🛑 Стирає ВЕСЬ DS2433 у 0xFF: модель, серійний/ID, калібрування. АКБ НЕ ПРАЦЮВАТИМЕ,
-        доки не запишете еталонний дамп тієї ж моделі. DS2438 не чіпається.</div>
+        доки не запишете еталонний дамп. DS2438 не чіпається.</div>
       <button class="btn b-dng" style="background:#c0392b" onclick="wipe33()">🔥 СТЕРТИ DS2433 ПОВНІСТЮ</button>
     </div>
     <div class="card">
@@ -215,12 +247,14 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 <script>
 const $=id=>document.getElementById(id);
 let port=null, writer=null, reader=null, connected=false;
-let rxBuf='', pending=null;   // pending: {resolve,reject,timer}
+let rxBuf='', pending=null, queue=Promise.resolve();
+let authed=false;
 
 function tab(el,id){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   el.classList.add('active');$(id).classList.add('active');}
 function log(s){const l=$('log');l.textContent+=s+'\n';l.scrollTop=l.scrollHeight;}
+function toast(m){$('st').textContent=m;}
 function setBusy(b){document.querySelectorAll('.btn').forEach(x=>{if(x.id!=='btnConn')x.disabled=b;});}
 
 if(!('serial' in navigator)) $('unsupported').style.display='block';
@@ -237,23 +271,26 @@ async function connect(){
     const enc=new TextEncoderStream();
     enc.readable.pipeTo(port.writable).catch(()=>{});
     writer=enc.writable.getWriter();
-    connected=true; $('dot').classList.add('on'); $('st').textContent='Підключення...';
+    connected=true; rxBuf=''; pending=null; queue=Promise.resolve();
+    $('dot').classList.add('on'); $('st').textContent='Підключення...';
     $('btnConn').textContent='⏏ Відключити';
     readLoop();
-    log('> порт відкрито, очікування завантаження ESP32 (1.5 с)...');
-    await new Promise(r=>setTimeout(r,1600));  // ESP32 перезагружается при открытии порта
-    const p=await cmd('PING',3000).catch(()=>null);
-    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')'; await refresh(); }
+    log('> порт відкрито, очікування завантаження ESP32 (1.6 с)...');
+    await new Promise(r=>setTimeout(r,1600));   // ESP32 перезавантажується при відкритті порту
+    const p=await cmd('PING',3000);
+    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')'; await refresh(); await loadTemplates(); }
     else { $('st').textContent='Немає відповіді (перевірте порт/швидкість)'; }
   }catch(e){ log('! '+e.message); $('st').textContent='Помилка: '+e.message; disconnect(); }
 }
 async function disconnect(){
-  connected=false; $('dot').classList.remove('on'); $('st').textContent='Не підключено';
+  connected=false; authed=false;
+  const as=$('authSt'); if(as){as.textContent='🔒 не перевірено';as.style.color='';}
+  $('dot').classList.remove('on'); $('st').textContent='Не підключено';
   $('btnConn').textContent='🔌 Підключити';
   try{ if(reader){await reader.cancel().catch(()=>{});reader.releaseLock&&reader.releaseLock();} }catch(e){}
   try{ if(writer){await writer.close().catch(()=>{});} }catch(e){}
   try{ if(port){await port.close().catch(()=>{});} }catch(e){}
-  port=writer=reader=null;
+  port=writer=reader=null; pending=null;
 }
 
 async function readLoop(){
@@ -267,136 +304,231 @@ async function readLoop(){
         let line=rxBuf.slice(0,nl).replace(/\r$/,''); rxBuf=rxBuf.slice(nl+1);
         if(line.startsWith('#R#')){
           const js=line.slice(3);
-          if(pending){ clearTimeout(pending.timer); const p=pending; pending=null;
-            try{ p.resolve(JSON.parse(js)); }catch(e){ p.resolve({ok:false,err:'bad json'}); } }
-          log('< '+js.slice(0,120));
-        } else if(line.length){ /* отладка ESP */ }
+          log('< '+(js.length>140?js.slice(0,140)+'…':js));
+          if(pending){ const p=pending; pending=null;
+            let obj; try{obj=JSON.parse(js);}catch(e){obj={ok:false,err:'bad json'};}
+            p(obj);
+          }
+        }
       }
     }
   }catch(e){ if(connected)log('! read: '+e.message); }
 }
 
-// Отправить команду и дождаться ответа #R#
-function cmd(c,timeout=8000){
-  return new Promise(async(resolve,reject)=>{
-    if(!connected||!writer){reject(new Error('не підключено'));return;}
-    if(pending){reject(new Error('зайнято'));return;}
-    pending={resolve,reject,timer:setTimeout(()=>{pending=null;reject(new Error('таймаут'));},timeout)};
-    log('> '+c.slice(0,60)+(c.length>60?'…':''));
-    try{ await writer.write(c+'\n'); }catch(e){ clearTimeout(pending.timer); pending=null; reject(e); }
-  });
+// Надсилаємо великі команди частинами, щоб не переповнити UART-буфер ESP32.
+async function writeChunked(str){
+  const CH=200;
+  for(let i=0;i<str.length;i+=CH){
+    await writer.write(str.slice(i,i+CH));
+    if(str.length>CH) await new Promise(r=>setTimeout(r,10));
+  }
 }
 
-function toast(m){ $('st').textContent=m; }
+// Черга команд: усі cmd() виконуються послідовно, відповідь — рівно один #R#.
+// Ніколи не кидає виняток — повертає {ok:false,err:...} при помилці/таймауті.
+function cmd(c,timeout=8000){
+  const run=()=>new Promise(resolve=>{
+    if(!connected||!writer){resolve({ok:false,err:'не підключено'});return;}
+    let done=false;
+    const finish=v=>{ if(!done){done=true;clearTimeout(timer);pending=null;resolve(v);} };
+    const timer=setTimeout(()=>finish({ok:false,err:'таймаут'}),timeout);
+    pending=finish;
+    const disp=c.startsWith('AUTH ')?'AUTH ***':(c.length>60?c.slice(0,60)+'…':c);
+    log('> '+disp);
+    writeChunked(c+'\n').catch(e=>finish({ok:false,err:e.message}));
+  });
+  queue=queue.then(run,run);
+  return queue;
+}
+
+// Авторизація по USB — ОПЦІЙНА (фізичний доступ = дозвіл). Пароль НЕ блокує запис:
+// якщо введено — звіряємо й підсвічуємо статус, якщо ні — просто продовжуємо.
+async function ensureAuth(verbose){
+  if(!connected){toast('Спочатку підключіться');return false;}
+  const pw=$('pwAdm').value;
+  if(pw){
+    const r=await cmd('AUTH '+pw,5000);
+    authed=!!(r&&r.ok);
+    $('authSt').textContent=authed?'🔓 авторизовано':'🔒 пароль не підійшов (по USB запис усе одно дозволено)';
+    $('authSt').style.color=authed?'var(--grn)':'var(--org)';
+    if(authed&&verbose)toast('🔓 Авторизовано');
+    else if(!authed&&verbose)toast('Пароль не підійшов');
+  } else if(verbose){ toast('Пароль порожній — по USB не потрібен'); }
+  return true;   // запис по USB дозволено завжди
+}
+
+async function rebootDev(){
+  if(!connected){toast('Підключіться');return;}
+  await ensureAuth();
+  if(!confirm('🔁 Перезавантажити ESP32? USB-порт відключиться.'))return;
+  toast('Перезавантаження ESP32...');
+  await cmd('REBOOT',3000);
+  setTimeout(()=>disconnect(),600);
+}
 
 async function refresh(){
   if(!connected)return;
-  try{
-    const d=await cmd('INFO');
-    if(!d.ok){return;}
-    // overview: заряд у відсотках (головне), залишок у мА·год — дрібно
-    const pct=(typeof d.charge==='number'&&d.charge>=0)?d.charge:null;
-    const rmah=(d.icaMah!==undefined)?d.icaMah:null;
-    $('pct').textContent=pct!==null?(pct+'%'):'--%';
-    $('csrc').textContent=(rmah!==null?('залишок '+rmah+' мА·год'):'')+(pct!==null?(' · '+(d.chargeSrc==='ICA'?'ICA':'напруга')):'');
-    if(rmah!==null)$('mahv').value=rmah;
-    $('fill').style.width=(pct!==null?pct:0)+'%';
-    $('fill').style.background=pct===null?'#555':(pct<20?'#e74c3c':pct<50?'#f39c12':'#2ecc71');
-    if(d.voltage!==undefined){$('volt').textContent=d.voltage.toFixed(2)+' В';$('dV').textContent=d.voltage.toFixed(2)+' В';}
-    if(d.temperature!==undefined){$('temp').textContent=d.temperature.toFixed(1)+' °C';$('dT').textContent=d.temperature.toFixed(1)+' °C';}
-    $('model').textContent=d.model||'—';$('dModel').textContent=d.model||'—';
-    if(d.model){$('mdNow').textContent=d.model; if(!$('mdVal').value)$('mdVal').placeholder=d.model;}
-    if(typeof d.capacity==='number'&&d.capacity>=0){$('cap').textContent=d.capacity+' %';$('wear').textContent=d.wear+' %';$('capv').value=d.capacity;}
-    if(d.ccaCycles!==undefined)$('cyc').textContent=d.ccaCycles+' зар. / '+d.dcaCycles+' розр.';
-    if(typeof d.genuine==='boolean')$('auth').innerHTML=d.genuine?'<span class="badge bo">OK</span>':'<span class="badge bb">РИЗИК ('+d.authReason+')</span>';
-    if(typeof d.headerOk==='boolean')$('integ').innerHTML='заголовок '+(d.headerOk?'✅':'❌')+' · дзеркало '+(d.mirrorOk?'✅':'❌');
-    $('dI').textContent=(d.currentMa!==undefined?d.currentMa:'—')+' мА';
-    $('dSer').textContent=d.serial||'—';
-    const mah=(v,raw)=>v!==undefined?('≈'+v+' мА·год (raw '+raw+')'):'—';
-    const cyc=(c,v,raw)=>c!==undefined?(c+' циклів (≈'+v+' мА·год, raw '+raw+')'):mah(v,raw);
-    $('dICA').textContent=mah(d.icaMah,d.ica);
-    $('dCCA').textContent=cyc(d.ccaCycles,d.ccaMah,d.cca);
-    $('dDCA').textContent=cyc(d.dcaCycles,d.dcaMah,d.dca);
-    if(d.hex38)$('h38').textContent=d.hex38;
-    if(d.hex33)$('h33').textContent=d.hex33;
-  }catch(e){ toast('Оновлення: '+e.message); }
+  const d=await cmd('INFO',15000);
+  if(!d.ok){return;}
+  const pct=(typeof d.charge==='number'&&d.charge>=0)?d.charge:null;
+  const rmah=(d.icaMah!==undefined)?d.icaMah:null;
+  $('pct').textContent=pct!==null?(pct+'%'):'--%';
+  $('csrc').textContent=(rmah!==null?('залишок '+rmah+' мА·год'):'')+(pct!==null?(' · '+(d.chargeSrc==='ICA'?'ICA':'напруга')):'');
+  if(rmah!==null)$('mahv').value=rmah;
+  $('fill').style.width=(pct!==null?pct:0)+'%';
+  $('fill').style.background=pct===null?'#555':(pct<20?'#e74c3c':pct<50?'#f39c12':'#2ecc71');
+  if(d.voltage!==undefined){$('volt').textContent=d.voltage.toFixed(2)+' В';$('dV').textContent=d.voltage.toFixed(2)+' В';}
+  if(d.temperature!==undefined){$('temp').textContent=d.temperature.toFixed(1)+' °C';$('dT').textContent=d.temperature.toFixed(1)+' °C';}
+  $('model').textContent=d.model||'—';$('dModel').textContent=d.model||'—';
+  if(d.model){$('mdNow').textContent=d.model; if(!$('mdVal').value)$('mdVal').placeholder=d.model;}
+  if(typeof d.capacity==='number'&&d.capacity>=0){$('cap').textContent=d.capacity+' %';$('wear').textContent=d.wear+' %';$('capv').value=d.capacity;}
+  else {$('cap').textContent='—';$('wear').textContent='—';}
+  if(d.ccaCycles!==undefined)$('cyc').textContent=d.ccaCycles+' зар. / '+d.dcaCycles+' розр.';
+  if(typeof d.genuine==='boolean')$('auth').innerHTML=d.genuine?'<span class="badge bo">OK</span>':'<span class="badge bb">РИЗИК ('+(d.authReason||'')+')</span>';
+  if(typeof d.headerOk==='boolean')$('integ').innerHTML='заголовок '+(d.headerOk?'✅':'❌')+' · дзеркало '+(d.mirrorOk?'✅':'❌');
+  $('dI').textContent=(d.currentMa!==undefined?d.currentMa:'—')+' мА';
+  $('dSer').textContent=d.serial||'—';
+  const mah=(v,raw)=>v!==undefined?('≈'+v+' мА·год (raw '+raw+')'):'—';
+  const cyc=(c,v,raw)=>c!==undefined?(c+' циклів (≈'+v+' мА·год, raw '+raw+')'):mah(v,raw);
+  $('dICA').textContent=mah(d.icaMah,d.ica);
+  $('dCCA').textContent=cyc(d.ccaCycles,d.ccaMah,d.cca);
+  $('dDCA').textContent=cyc(d.dcaCycles,d.dcaMah,d.dca);
+  if(d.hex38)$('h38').textContent=d.hex38;
+  if(d.hex33)$('h33').textContent=d.hex33;
 }
 
-async function doRead(){ if(!connected){toast('Спочатку підключіться');return;}
+async function doRead(){
+  if(!connected){toast('Спочатку підключіться');return;}
   setBusy(true); toast('Зчитування...');
-  try{ const r=await cmd('READ',15000); toast(r.ok?'Зчитано':'Помилка читання'); await refresh(); }
-  catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
+  const r=await cmd('READ',15000);
+  toast(r.ok?'Зчитано':('Помилка читання'+(r.err?': '+r.err:'')));
+  await refresh();
+  setBusy(false);
+}
 
-async function cmdConfirm(c,q){ if(!connected){toast('Підключіться');return;} if(!confirm(q))return;
+// Універсальна проста операція (RESET/REPAIR/CLEAN) з підтвердженням.
+async function op(command,q,timeout){
+  if(!connected){toast('Підключіться');return;}
+  if(!confirm(q))return;
+  await ensureAuth();
   setBusy(true); toast('Виконання...');
-  try{ const r=await cmd(c,15000); toast(r.ok?'✅ Готово':'Помилка: '+(r.err||'')); await refresh(); }
-  catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
+  const r=await cmd(command,timeout||15000);
+  toast(r.ok?'✅ Готово':('Помилка: '+(r.err||'')));
+  await refresh(); setBusy(false);
+}
 
-async function wipe33(){ if(!connected){toast('Підключіться');return;}
+async function wipe33(){
+  if(!connected){toast('Підключіться');return;}
   if(!confirm('🔥 ПОВНЕ стирання DS2433!\nСтираються МОДЕЛЬ, СЕРІЙНИЙ/ID та КАЛІБРУВАННЯ.\nАКБ НЕ ПРАЦЮВАТИМЕ, доки не запишете еталонний дамп.\nВи зробили копію? Продовжити?'))return;
   if(!confirm('Останнє попередження: стерти DS2433 ПОВНІСТЮ?'))return;
+  await ensureAuth();
   setBusy(true); toast('Повне стирання DS2433...');
-  try{ const r=await cmd('WIPE33',20000); toast(r.ok?'✅ DS2433 стерто. Запишіть еталонний дамп.':'Помилка: '+(r.err||'')); await refresh(); }
-  catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
+  const r=await cmd('WIPE33',25000);
+  toast(r.ok?'✅ DS2433 стерто. Запишіть еталонний дамп.':('Помилка: '+(r.err||'')));
+  await refresh(); setBusy(false);
+}
 
-async function setMah(){ if(!connected){toast('Підключіться');return;}
+async function setMah(){
+  if(!connected){toast('Підключіться');return;}
   const v=parseInt($('mahv').value); if(isNaN(v)||v<0){toast('Вкажіть мА·год');return;}
   if(!confirm('Записати залишкову ємність '+v+' мА·год?'))return;
-  setBusy(true);
-  try{ const r=await cmd('SETMAH '+v,15000); toast(r.ok?('✅ Записано (ICA='+r.ica+')'):'Помилка: '+(r.err||'')); await refresh(); }
-  catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
+  await ensureAuth();
+  setBusy(true); toast('Запис мА·год...');
+  const r=await cmd('SETMAH '+v,15000);
+  toast(r.ok?('✅ Записано (ICA='+r.ica+')'):('Помилка: '+(r.err||'')));
+  await refresh(); setBusy(false);
+}
 
-async function setCap(){ if(!connected){toast('Підключіться');return;}
+async function setCap(){
+  if(!connected){toast('Підключіться');return;}
   const v=parseInt($('capv').value); if(isNaN(v)||v<0||v>100){toast('0..100');return;}
   if(!confirm('Записати ємність '+v+'%?'))return;
-  setBusy(true);
-  try{ const r=await cmd('SETCAP '+v,15000); toast(r.ok?'✅ Ємність записана':'Помилка: '+(r.err||'')); await refresh(); }
-  catch(e){ toast('Помилка: '+e.message); } setBusy(false); }
+  await ensureAuth();
+  setBusy(true); toast('Запис %...');
+  const r=await cmd('SETCAP '+v,15000);
+  toast(r.ok?'✅ Ємність записана':('Помилка: '+(r.err||'')));
+  await refresh(); setBusy(false);
+}
 
-// файл .bin -> hex -> команда записи
-function writeFile(inputId,size,cmdName){
+// Ручний запис моделі
+function mdCheck(){
+  const v=$('mdVal').value.toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(v!==$('mdVal').value)$('mdVal').value=v;
+  const el=$('mdLen'); el.textContent=v.length+'/9';
+  el.style.color=(v.length>=3&&v.length<=9)?'var(--grn)':'var(--org)';
+}
+async function setModel(){
+  if(!connected){toast('Підключіться');return;}
+  const m=$('mdVal').value.trim().toUpperCase();
+  if(!/^[A-Z0-9]{3,9}$/.test(m)){toast('Модель: 3–9 символів A–Z / 0–9');return;}
+  if(!confirm('Записати модель «'+m+'» у DS2433?\nНевірна модель може зробити АКБ невизначеною для рації.'))return;
+  await ensureAuth();
+  setBusy(true); toast('Запис моделі...');
+  const r=await cmd('SETMODEL '+m,15000);
+  toast(r.ok?('✅ Модель записано: '+(r.model||m)):('Помилка: '+(r.err||'')));
+  await refresh(); setBusy(false);
+}
+
+// Список вшитих моделей для «Новий акумулятор»
+async function loadTemplates(){
+  if(!connected)return;
+  const r=await cmd('TEMPLATES',5000);
+  const sel=$('initModel'); if(!sel)return; sel.innerHTML='';
+  (r.models||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);});
+  if(!(r.models||[]).length){const o=document.createElement('option');o.textContent='(немає шаблонів)';sel.appendChild(o);}
+}
+async function initBattery(){
+  if(!connected){toast('Підключіться');return;}
+  const model=$('initModel').value; const mah=parseInt($('initMah').value);
+  if(!model){toast('Оберіть модель');return;}
+  if(isNaN(mah)||mah<=0){toast('Вкажіть ємність у мА·год');return;}
+  if(!confirm('🆕 Ініціалізувати чип як НОВИЙ '+model+' ('+mah+' мА·год)?\nПерезапише ОБИДВІ мікросхеми (DS2433 + DS2438). Лише для порожнього чипа. Продовжити?'))return;
+  await ensureAuth();
+  setBusy(true); toast('Запис нового АКБ...');
+  const r=await cmd('INITBAT '+model+' '+mah,25000);
+  toast(r.ok?('✅ Новий '+model+' записано ('+mah+' мА·год)'):('Помилка: '+(r.err||'')));
+  await refresh(); setBusy(false);
+}
+
+// Запис .bin -> hex -> команда запису
+async function writeFile(inputId,size,cmdName){
+  if(!connected){toast('Підключіться');return;}
   const f=$(inputId).files[0];
   if(!f){toast('Оберіть файл');return;}
   if(f.size!==size){toast('Файл має бути '+size+' байт');return;}
   if(!confirm('⚡ Запис '+size+' байт НЕЗВОРОТНІЙ. Продовжити?'))return;
-  const rd=new FileReader();
-  rd.onload=async()=>{
-    const b=new Uint8Array(rd.result); let hex='';
-    for(const x of b)hex+=x.toString(16).padStart(2,'0');
-    setBusy(true); toast('Запис...');
-    try{ const r=await cmd(cmdName+' '+hex,20000); toast(r.ok?'✅ Записано':'Помилка: '+(r.err||'')); await refresh(); }
-    catch(e){ toast('Помилка: '+e.message); } setBusy(false);
-  };
-  rd.readAsArrayBuffer(f);
+  await ensureAuth();
+  const buf=new Uint8Array(await f.arrayBuffer());
+  let hex=''; for(const x of buf)hex+=x.toString(16).padStart(2,'0');
+  setBusy(true); toast('Запис...');
+  const r=await cmd(cmdName+' '+hex,25000);
+  toast(r.ok?'✅ Записано':('Помилка: '+(r.err||'')));
+  await refresh(); setBusy(false);
 }
 
 async function download(getCmd,name,size){
   if(!connected){toast('Підключіться');return;}
-  try{
-    const r=await cmd(getCmd);
-    if(!r.ok||!r.hex){toast('Немає дампа — зчитайте АКБ');return;}
-    const bytes=r.hex.trim().split(/\s+/).map(x=>parseInt(x,16));
-    const blob=new Blob([new Uint8Array(bytes)],{type:'application/octet-stream'});
-    const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-    a.download=name+'.bin';a.click();URL.revokeObjectURL(a.href);
-    toast('Завантажено '+name+'.bin');
-  }catch(e){ toast('Помилка: '+e.message); }
+  const r=await cmd(getCmd,15000);
+  if(!r.ok||!r.hex){toast('Немає дампа — зчитайте АКБ');return;}
+  const bytes=r.hex.trim().split(/\s+/).map(x=>parseInt(x,16));
+  if(bytes.length!==size){toast('Очікувалось '+size+' байт, отримано '+bytes.length);return;}
+  const blob=new Blob([new Uint8Array(bytes)],{type:'application/octet-stream'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download=name+'.bin';a.click();URL.revokeObjectURL(a.href);
+  toast('Завантажено '+name+'.bin');
 }
 
+// Редактор байтів
 async function hxLoad(){
   if(!connected){toast('Підключіться');return;}
   const t=$('hxT').value;
-  try{
-    const r=await cmd(t==='38'?'GET38':'GET33');
-    if(!r.ok||!r.hex){$('hxD').value='';toast('Зчитайте АКБ');return;}
-    const parts=r.hex.trim().split(/\s+/); let out='';
-    for(let i=0;i<parts.length;i+=16)out+=parts.slice(i,i+16).join(' ')+'\n';
-    $('hxD').value=out.trim();
-    hexAux();
-  }catch(e){ toast('Помилка: '+e.message); }
+  const r=await cmd(t==='38'?'GET38':'GET33',15000);
+  if(!r.ok||!r.hex){$('hxD').value='';toast('Зчитайте АКБ');return;}
+  const parts=r.hex.trim().split(/\s+/); let out='';
+  for(let i=0;i<parts.length;i+=16)out+=parts.slice(i,i+16).join(' ')+'\n';
+  $('hxD').value=out.trim();
+  hexAux();
 }
-
-// Лінійка адресів + ASCII-колонка (як у HxD)
 function hexAux(){
   const bytes=($('hxD').value.match(/[0-9a-fA-F]{2}/g))||[];
   let gut='', asc='';
@@ -411,23 +543,6 @@ function hexAux(){
   }
   $('hxGut').textContent=gut; $('hxAsc').textContent=asc;
 }
-
-// Ручний запис моделі у DS2433
-function mdCheck(){
-  const v=$('mdVal').value.toUpperCase().replace(/[^A-Z0-9]/g,'');
-  if(v!==$('mdVal').value)$('mdVal').value=v;
-  const el=$('mdLen'); el.textContent=v.length+'/9';
-  el.style.color=(v.length>=3&&v.length<=9)?'var(--grn)':'var(--org)';
-}
-async function setModel(){
-  if(!connected){toast('Підключіться');return;}
-  const m=$('mdVal').value.trim().toUpperCase();
-  if(!/^[A-Z0-9]{3,9}$/.test(m)){toast('Модель: 3–9 символів A–Z / 0–9');return;}
-  if(!confirm('Записати модель «'+m+'» у DS2433?\nНевірна модель може зробити АКБ невизначеною для рації.'))return;
-  setBusy(true); toast('Запис моделі...');
-  try{ const r=await cmd('SETMODEL '+m,15000); toast(r.ok?('✅ Модель записано: '+(r.model||m)):'Помилка: '+(r.err||'')); await refresh(); }
-  catch(e){ toast('Помилка: '+e.message); } setBusy(false);
-}
 async function hxWrite(){
   if(!connected){toast('Підключіться');return;}
   const t=$('hxT').value;
@@ -435,10 +550,12 @@ async function hxWrite(){
   const need=(t==='38'?64:512)*2;
   if(hex.length!==need){toast('Треба '+(need/2)+' байт, зараз '+Math.floor(hex.length/2));return;}
   if(!confirm('⚡ Запис '+(need/2)+' байт НЕЗВОРОТНІЙ. Продовжити?'))return;
+  await ensureAuth();
   const c=(t==='38')?'WRITE38':($('hxFix').checked?'WRITEFIX33':'WRITE33');
   setBusy(true); toast('Запис байтів...');
-  try{ const r=await cmd(c+' '+hex,20000); toast(r.ok?'✅ Записано':'Помилка: '+(r.err||'')); await refresh(); }
-  catch(e){ toast('Помилка: '+e.message); } setBusy(false);
+  const r=await cmd(c+' '+hex,25000);
+  toast(r.ok?'✅ Записано':('Помилка: '+(r.err||'')));
+  await refresh(); setBusy(false);
 }
 
 // Синхронне прокручування гутера/тексту/ASCII

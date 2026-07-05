@@ -5,6 +5,7 @@
 #include <Wire.h>
 #include "settings.h"
 #include "battery_reader.h"
+#include "templates.h"    // BATTERY_TEMPLATES/COUNT — для дій «Новий АКБ» у меню
 
 // Стан, яке відображаємо (заповнюється з .ino і обробників веб-сервера).
 extern bool hasDump;
@@ -367,7 +368,9 @@ inline bool decodeModel(char *out, size_t n) {
     if (!hasDump) return false;
 
     // 1) Запис 0x0B c назвою моделі (0x0B + літера: PMNN, NNTN, HNN…).
-    for (int i = 0x100; i < (int)DUMP_SIZE - 12; i++) {
+    // Скануємо з 0x30 (як і findModelRecord у web_server) — читання і запис
+    // мають дивитись на той самий запис.
+    for (int i = 0x30; i < (int)DUMP_SIZE - 12; i++) {
         if (batteryDump[i] == 0x0B && batteryDump[i + 1] >= 'A' && batteryDump[i + 1] <= 'Z') {
             int j = i + 1, len = 0;
             char tmp[16];
@@ -432,16 +435,37 @@ inline bool decodeCapacity(int *capPct, int *wearPct) {
     return false;
 }
 
-// Евристика справжності / ризику блокування. Перевірено на дампах робочих
-// (6 шт.) і залочених (2 шт.) PMNN4409/4493 — чітко розділяє їх. Ознаки
-// залоченої/підробленої після заміни елементів АКБ:
-//   - відсутній блок автентифікації "MOTOROLA..." (0xDF+ стертий);
-//   - стерта калібрувальна підпис 0x1B-0x1E (усі FF);
-//   - переповнений лічильник заряду CCA (0xFFFF) в DS2438.
-// Повертає true, якщо ознак блокування немає; в reason — стисла причина.
+// Евристика справжності / цілісності ПРОШИВКИ (не «чи живі елементи»).
+// МОДЕЛЬНО-ЗАЛЕЖНА: блок автентифікації "MOTOROLA" і калібрувальний підпис
+// 0x1B-0x1E є лише у частини моделей (PMNN4488A/4493A, формат 2017). У
+// PMNN4409A (формат 2014) їх штатно НЕМАЄ — перевірено на РОБОЧОМУ 4409A, який
+// рація приймає. Тому відсутність MOTOROLA-блоку — НЕ ознака підробки.
+// Червоні прапори (для будь-якої моделі): побитий заголовок (Σ≠0x41),
+// відсутній запис моделі (порожній/стертий чіп), переповнений CCA (0xFFFF).
+// Додатково, ЛИШЕ якщо MOTOROLA-блок присутній, вимагаємо непорожній підпис
+// 0x1B-0x1E (його стирання — ознака побитого 2017-калібрування).
+// Повертає true, якщо прошивка виглядає цілісною; в reason — стисла причина.
 inline bool batteryGenuine(const char **reason) {
     if (!hasDump) { *reason = "нема дампу"; return false; }
 
+    // Заголовок DS2433: сума 0x00..0x1F має бути ≡0x41 (інакше стертий/побитий).
+    int hs = 0; for (int i = 0; i <= 0x1F; i++) hs += batteryDump[i];
+    if ((hs & 0xFF) != 0x41) { *reason = "хибний заголовок"; return false; }
+
+    // Має бути запис моделі 0x0B (ідентичність). Немає — чіп без прошивки.
+    bool hasModel = false;
+    for (int i = 0x30; i < (int)DUMP_SIZE - 11 && !hasModel; i++)
+        if (batteryDump[i] == 0x0B && batteryDump[i + 1] >= 'A' && batteryDump[i + 1] <= 'Z') hasModel = true;
+    if (!hasModel) { *reason = "нема моделі"; return false; }
+
+    // Переповнений лічильник заряду CCA (0xFFFF) в DS2438 — типова ознака
+    // збитої/«залоченої» АКБ (часто після заміни елементів).
+    if (hasDump2438) {
+        uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
+        if (cca == 0xFFFF) { *reason = "CCA перепов."; return false; }
+    }
+
+    // Блок автентифікації "MOTOROLA" — лише у моделей формату 2017.
     bool auth = false;
     static const char pat[] = "MOTOROLA";
     const int plen = 8;
@@ -450,20 +474,18 @@ inline bool batteryGenuine(const char **reason) {
         while (k < plen && batteryDump[i + k] == (uint8_t)pat[k]) k++;
         if (k == plen) auth = true;
     }
-    if (!auth) { *reason = "нема автент."; return false; }
-
-    if (batteryDump[0x1B] == 0xFF && batteryDump[0x1C] == 0xFF &&
-        batteryDump[0x1D] == 0xFF && batteryDump[0x1E] == 0xFF) {
-        *reason = "нема калібр.";
-        return false;
+    if (auth) {
+        // Формат 2017: додатково вимагаємо непорожній калібрувальний підпис.
+        if (batteryDump[0x1B] == 0xFF && batteryDump[0x1C] == 0xFF &&
+            batteryDump[0x1D] == 0xFF && batteryDump[0x1E] == 0xFF) {
+            *reason = "стерте калібр."; return false;
+        }
+        *reason = "OK"; return true;
     }
 
-    if (hasDump2438) {
-        uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
-        if (cca == 0xFFFF) { *reason = "CCA перепов."; return false; }
-    }
-
-    *reason = "OK";
+    // Немає MOTOROLA-блоку — формат без автентифікації (напр. 4409A). Заголовок
+    // і модель у нормі, CCA не переповнений => прошивка ціла. Не підробка.
+    *reason = "OK (ф.2014)";
     return true;
 }
 
@@ -662,35 +684,54 @@ inline void drawPageRaw2438() { drawRawPage("DS2438 дамп 0-63", batteryDump2
 inline void drawPageRaw2433() { drawRawPage((DISP_H >= 128) ? "DS2433 дамп 0-127" : "DS2433 дамп 0-63",
                                             batteryDump, hasDump, RAW2433_COUNT); }
 
-#define NUM_ACTIONS 4
+// Базові дії (індекси 0..4) + по одній дії «Новий АКБ» на кожен вшитий шаблон
+// (індекси 5..). Загальну к-сть дій рахує numActions() — вона динамічна.
+#define NUM_BASE_ACTIONS 6    // Скидання, Ремонт, Очистка, Стерти2433, Перезав., Рекалібр.
+inline int numActions() { return NUM_BASE_ACTIONS + BATTERY_TEMPLATE_COUNT; }
+
 // Сторінка «Дії»: показуємо ОДНУ обрану операцію крупно + опис + попередження.
 // [<] коротко — наступна операція; [<] утримати (0.8с) — ВИКОНАТИ; [>] — вихід.
 inline void drawPageActions() {
-    static const char *nm[NUM_ACTIONS] = { "Скидання", "Ремонт", "Очистка", "СТЕРТИ 2433" };
-    static const char *d1[NUM_ACTIONS] = { "обнулити лічильники",
-                                           "полагодити суми та",
-                                           "стерти все, окрім",
-                                           "ПОВНЕ стирання чіпа" };
-    static const char *d2[NUM_ACTIONS] = { "заряд/розряд, знос",
-                                           "дзеркало калібрув.",
-                                           "моделі/ID/калібрув.",
-                                           "DS2433 (крайній!)" };
-    static const bool  dg[NUM_ACTIONS] = { false, false, false, true };
+    static const char *nm[NUM_BASE_ACTIONS] = { "Скидання", "Ремонт", "Очистка", "СТЕРТИ 2433", "Перезавантаж.", "Рекалібр." };
+    static const char *d1[NUM_BASE_ACTIONS] = { "обнулити лічильники",
+                                                "полагодити суми та",
+                                                "стерти все, окрім",
+                                                "ПОВНЕ стирання чіпа",
+                                                "рестарт пристрою",
+                                                "після заміни банок:" };
+    static const char *d2[NUM_BASE_ACTIONS] = { "заряд/розряд, знос",
+                                                "дзеркало калібрув.",
+                                                "моделі/ID/калібрув.",
+                                                "DS2433 (крайній!)",
+                                                "ESP32 (Wi-Fi/веб)",
+                                                "стерти learned, на ЗП" };
+    static const bool  dg[NUM_BASE_ACTIONS] = { false, false, false, true, false, false };
     int sel = g_actionSel;
+    int total = numActions();
 
-    char t[20]; snprintf(t, sizeof(t), "Дія  %d/%d", sel + 1, NUM_ACTIONS);
+    const char *name, *l1, *l2; bool danger;
+    char nbuf[26];
+    if (sel < NUM_BASE_ACTIONS) {
+        name = nm[sel]; l1 = d1[sel]; l2 = d2[sel]; danger = dg[sel];
+    } else {                                    // «Новий АКБ <модель>»
+        int ti = sel - NUM_BASE_ACTIONS;
+        snprintf(nbuf, sizeof(nbuf), "Новий %s", BATTERY_TEMPLATES[ti].name);
+        name = nbuf; l1 = "ініціаліз. порожній"; l2 = "чіп як новий АКБ"; danger = true;
+    }
+
+    char t[20]; snprintf(t, sizeof(t), "Дія  %d/%d", sel + 1, total);
     drawHeader(t);
 
     // Назва обраної операції — крупним шрифтом.
     u8g2.setFont(u8g2_font_6x12_t_cyrillic);
-    char nml[26]; snprintf(nml, sizeof(nml), "%s%s", dg[sel] ? "! " : "> ", nm[sel]);
+    char nml[30]; snprintf(nml, sizeof(nml), "%s%s", danger ? "! " : "> ", name);
     u8g2.drawUTF8(0, HEAD_LINE + 13, nml);
 
     // Опис.
     u8g2.setFont(BODY_FONT);
-    u8g2.drawUTF8(0, HEAD_LINE + 25, d1[sel]);
-    u8g2.drawUTF8(0, HEAD_LINE + 34, d2[sel]);
-    if (dg[sel]) u8g2.drawUTF8(0, HEAD_LINE + 42, "!! НЕЗВОРОТНЬО !!");
+    u8g2.drawUTF8(0, HEAD_LINE + 25, l1);
+    u8g2.drawUTF8(0, HEAD_LINE + 34, l2);
+    if (danger) u8g2.drawUTF8(0, HEAD_LINE + 42, "!! НЕЗВОРОТНЬО !!");
 
     // Підказка керування знизу.
     u8g2.drawHLine(0, FOOT_HL, DISP_W);
@@ -784,7 +825,7 @@ inline void displayHandleButton() {
     int e2 = pollButton(MENU_BTN2_PIN, b2, 800);
     if (g_displayPage == RESET_PAGE) {               // сторінка «Дії»
         if (e2 == 1) {                               // коротке -> наступна операція
-            g_actionSel = (g_actionSel + 1) % NUM_ACTIONS;
+            g_actionSel = (g_actionSel + 1) % numActions();
             displayRender();
         } else if (e2 == 2) {                        // довге -> виконати обране
             g_actionRequested = g_actionSel;

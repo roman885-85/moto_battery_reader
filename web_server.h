@@ -9,6 +9,7 @@
 #include "settings.h"
 #include "leds.h"
 #include "display.h"
+#include "templates.h"
 
 extern WebServer server;
 extern BatteryReader battery;
@@ -78,6 +79,33 @@ static void syncMirrorFrom2438(uint8_t *d33, const uint8_t *d38) {
 }
 static bool mirrorOk(const uint8_t *d33, const uint8_t *d38) {
     for (int i = 0; i < 26; i++) if (d33[1 + i] != d38[24 + i]) return false;
+    return true;
+}
+// Чи придатне дзеркало DS2438[24:50] як ДЖЕРЕЛО для відновлення DS2433[1:27]:
+// лише якщо це реальні дані (не суцільні 0x00 чи 0xFF). У R7 (PMNN4809A/APLI4810C,
+// формат 2021) дзеркала в DS2438 може не бути — тоді синхронізація НЕ виконується,
+// інакше вона затерла б заголовок DS2433 нулями і зіпсувала ідентичність.
+static bool mirrorSourceValid(const uint8_t *d38) {
+    bool allZero = true, allFF = true;
+    for (int i = 24; i < 50; i++) { if (d38[i] != 0x00) allZero = false; if (d38[i] != 0xFF) allFF = false; }
+    return !allZero && !allFF;
+}
+
+// ---------------------------------------------------------------------------
+// Перевірка пароля адміністратора. РАНІШЕ: `if (hasArg && arg != PW)` —
+// якщо клієнт просто НЕ надсилав аргумент password, перевірка проходила і
+// запис виконувався БЕЗ пароля (діра в безпеці). Тепер пароль ОБОВ'ЯЗКОВИЙ:
+// має бути присутній І збігатися. Усі веб-обробники запису викликають
+// requireAdmin() першим рядком.
+static bool adminOk() {
+    return server.hasArg("password") && server.arg("password") == ADMIN_PASSWORD;
+}
+static bool requireAdmin() {
+    if (!adminOk()) {
+        server.send(403, "application/json",
+            "{\"status\":\"error\",\"message\":\"Невірний або відсутній пароль адміністратора\"}");
+        return false;
+    }
     return true;
 }
 
@@ -244,10 +272,7 @@ void handleUploadDone2438() {
 
 // Обробник записи дампа в DS2438
 void handleWriteDump2438() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}");
-        return;
-    }
+    if (!requireAdmin()) return;
 
     Serial.println("\n=== DS2438 write request received ===");
 
@@ -484,10 +509,7 @@ void handleUploadDone() {
 // Обробник записи дампа
 void handleWriteDump() {
     // Перевіряємо пароль
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}");
-        return;
-    }
+    if (!requireAdmin()) return;
     
     Serial.println("\n=== Write request received ===");
     
@@ -619,14 +641,20 @@ void resetBatteryData() {
         batteryDump2438[62] = batteryDump2438[63] = 0;         // DCA
     }
     if (hasDump) {
-        // Дзеркало CCA/DCA в записи 0x0D одразу після моделі ("0B 'PMNN' ... 0D ...")
+        // Дзеркало CCA/DCA в записи 0x0D одразу після моделі ("0B <модель> ... 0D ...").
+        // Модель — 0x0B + літера (PMNN…, PT…, NNTN… — перевірено на дампах), а не
+        // лише "PMN": інакше скидання дзеркала мовчки пропускалось для PT4409A тощо.
         for (int i = 0x100; i < 0x1F0 - 13; i++) {
-            if (batteryDump[i] == 0x0B && batteryDump[i + 1] == 'P' &&
-                batteryDump[i + 2] == 'M' && batteryDump[i + 3] == 'N') {
+            if (batteryDump[i] == 0x0B && batteryDump[i + 1] >= 'A' && batteryDump[i + 1] <= 'Z') {
                 for (int j = i + 10; j < i + 30 && j < 0x1F0 - 13; j++) {
                     if (batteryDump[j] == 0x0D) {
-                        batteryDump[j + 3] = batteryDump[j + 4] = 0; // CCA
-                        batteryDump[j + 5] = batteryDump[j + 6] = 0; // DCA
+                        // Дзеркало лічильників у записі 0x0D: CCA — 16-біт LE у
+                        // байтах [j+4,j+5], DCA — [j+6,j+7] (перевірено на реальних
+                        // дампах: значення збігаються з CCA/DCA у DS2438[60..63]).
+                        // Обнуляємо ОБИДВА байти кожного, інакше при лічильнику
+                        // ≥256 старший байт лишався ненульовим.
+                        batteryDump[j + 4] = batteryDump[j + 5] = 0; // CCA
+                        batteryDump[j + 6] = batteryDump[j + 7] = 0; // DCA
                         fixRecordChecksum(batteryDump, j, 0x0D);
                         break;
                     }
@@ -694,6 +722,29 @@ void factoryCleanData() {
     }
 }
 
+// Стерти LEARNED-калібрування (TLV-записи 0x0A, Σ≡0x5A) у калібр-зоні DS2433.
+// Перевірено діффом однієї й тієї ж АКБ ДО/ПІСЛЯ калібрування на IMPRES-ЗП:
+// саме запис 0x0A ЗП створює під час навчання (він кодує виміряну ємність/
+// імпеданс РЕАЛЬНИХ банок). Після заміни елементів старий 0x0A суперечить новим
+// банкам → рація каже «невідома». Стирання його (→0xFF) повертає пакет у стан
+// «валідний, НЕ відкалібрований», який рація приймає, а ЗП бере на калібрування.
+// Повертає к-сть стертих записів.
+int eraseLearnedCalib() {
+    int erased = 0;
+    // Скануємо ПІСЛЯ кривої розряду (вона в 0x42..0x67) і до записів моделі —
+    // саме тут ЗП тримає learned-калібрування; так не зачепимо криву випадково.
+    for (int i = 0x68; i < 0x180 - 10; i++) {
+        if (batteryDump[i] == 0x0A) {
+            int s = 0; for (int k = 0; k < 10; k++) s += batteryDump[i + k];
+            if ((s & 0xFF) == 0x5A) {                  // валідний запис 0x0A
+                for (int k = 0; k < 10; k++) batteryDump[i + k] = 0xFF;
+                erased++; i += 9;
+            }
+        }
+    }
+    return erased;
+}
+
 // ПОВНЕ стирання DS2433 (КРАЙНІЙ ВИПАДОК). Заповнює всі 512 байт 0xFF (стан
 // стертого EEPROM) — чіп стає "чистим". Стирає ВСЕ, включно з моделлю/ID/
 // калібруванням DS2433! Після цього АКБ не працюватиме, доки не запишете
@@ -733,6 +784,42 @@ bool performFactoryClean() {
     return ok;
 }
 
+// Підготовка до РЕКАЛІБРУВАННЯ (після заміни елементів). Не чіпає ідентичність/
+// модель/криву — лише прибирає СТАРЕ learned-калібрування і обнуляє лічильники,
+// щоб пакет став «валідним, але не відкаліброваним»: рація приймає («потребує
+// відновлення»), а IMPRES-ЗП запускає цикл калібрування нових банок.
+//   1) стерти learned-запис(и) 0x0A (→0xFF);
+//   2) обнулити лічильники/історію (0x0D CCA/DCA, 0x16, DS2438 ICA/CCA/DCA/ETM),
+//      здоров'я 0x17 → 100%;
+//   3) перерахувати суми, синхронізувати дзеркало.
+// ⚠️ Фізичну калібровку це НЕ замінює — далі АКБ обов'язково калібрувати на ЗП.
+bool performRecalPrepare() {
+    if (!hasDump && !hasDump2438) { displayShow("СПОЧАТКУ ЧИТАЙ"); return false; }
+    Serial.println("\n=== Prepare for recalibration ===");
+    ledSet(LED_WRITE); displayShow("ПІД КАЛІБР...");
+    int er = 0;
+    if (hasDump) {
+        er = eraseLearnedCalib();          // прибрати старе learned-калібрування
+        Serial.printf("erased learned-calib records: %d\n", er);
+    }
+    factoryCleanData();                     // лічильники/історія/0x17=100% + суми
+    if (hasDump && hasDump2438 && mirrorSourceValid(batteryDump2438) &&
+        !mirrorOk(batteryDump, batteryDump2438))
+        syncMirrorFrom2438(batteryDump, batteryDump2438);
+    if (hasDump) fixHeaderChecksum(batteryDump);
+    bool ok = true;
+    if (hasDump)     ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (hasDump2438) ok &= battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (ok) {
+        if (hasDump)     saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+        if (hasDump2438) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+        displayShow("КАЛІБР: ГОТОВО");
+    } else displayShow("КАЛІБР ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    Serial.println("=== Recal-prepare completed ===\n");
+    return ok;
+}
+
 // ------------------- Ремонт / правка / зміна ємності -------------------
 
 // Перерахунок "відновних" полів поточних дампів: контрольна сума заголовка
@@ -740,8 +827,10 @@ bool performFactoryClean() {
 // відомих записів (0x0D CCA/DCA і 0x17 історія ємності). НЕ чіпає дані —
 // лише виправляє цілісність, щоб рація знову прийняла підправлену прошивку.
 void repairDumps() {
-    if (hasDump && hasDump2438 && !mirrorOk(batteryDump, batteryDump2438)) {
+    if (hasDump && hasDump2438 && mirrorSourceValid(batteryDump2438) &&
+        !mirrorOk(batteryDump, batteryDump2438)) {
         // DS2438 зазвичай зберігається при пошкодженні DS2433 — беремо калібрування з нього.
+        // ЛИШЕ якщо дзеркало DS2438 реальне (R7 його не має → не чіпаємо заголовок).
         syncMirrorFrom2438(batteryDump, batteryDump2438);
         Serial.println("repair: mirror DS2438->DS2433 restored");
     }
@@ -775,9 +864,7 @@ bool performRepair() {
 }
 
 void handleRepair() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
-    }
+    if (!requireAdmin()) return;
     if (!hasDump && !hasDump2438) {
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return;
     }
@@ -789,9 +876,7 @@ void handleRepair() {
 
 // Веб-стирання DS2433 (крайній випадок), під паролем.
 void handleWipe2433() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
-    }
+    if (!requireAdmin()) return;
     bool ok = performWipe2433();
     server.send(ok ? 200 : 500, "application/json",
         ok ? "{\"status\":\"success\",\"message\":\"DS2433 fully erased\"}"
@@ -800,9 +885,7 @@ void handleWipe2433() {
 
 // Веб-очистка (крім критичних даних), під паролем.
 void handleClean() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
-    }
+    if (!requireAdmin()) return;
     if (!hasDump && !hasDump2438) {
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return;
     }
@@ -812,9 +895,34 @@ void handleClean() {
            : "{\"status\":\"error\",\"message\":\"Clean write failed\"}");
 }
 
+// Зсуви/довжини ділянок, які востаннє змінив applyModel(), щоб writeModelPages()
+// записав РІВНО їх, не шукаючи запис заново. Це критично: після запису моделі,
+// що починається з цифри (напр. "4409A"), findModelRecord() вже НЕ знайшов би
+// щойно змінений запис 0x0B (він шукає 0x0B + літеру A-Z) — і сторінка мовчки
+// не записувалась. Тепер пишемо саме те, що змінили.
+static int g_mdRecOff = -1;   // зсув запису 0x0B моделі (або -1)
+static int g_mdHdrOff = -1;   // зсув ASCII-моделі у заголовку (або -1)
+static int g_mdHdrLen = 0;    // довжина ASCII-моделі у заголовку
+
+// Валідність імені моделі: 3..9 символів [A-Z0-9]. Винесено окремо, щоб
+// відрізняти «невірне ім'я» від «у дампі немає куди писати» і давати точну
+// підказку користувачу.
+static bool modelNameValid(const char *name) {
+    int n = strlen(name);
+    if (n < 3 || n > 9) return false;
+    for (int k = 0; k < n; k++) {
+        char c = name[k];
+        if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) return false;
+    }
+    return true;
+}
+
 // Знаходить зсув запису 0x0B з назвою моделі (0x0B + літера A-Z) або -1.
+// Скануємо з 0x30 (одразу після заголовка/дзеркала) до кінця: на всіх реальних
+// дампах єдиний збіг «0x0B + літера» — саме запис моделі, тож ширший діапазон
+// безпечний і ловить запис навіть якщо він нижче 0x100.
 int findModelRecord() {
-    for (int i = 0x100; i < (int)DUMP_SIZE - 11; i++)
+    for (int i = 0x30; i < (int)DUMP_SIZE - 11; i++)
         if (batteryDump[i] == 0x0B && batteryDump[i + 1] >= 'A' && batteryDump[i + 1] <= 'Z') return i;
     return -1;
 }
@@ -825,18 +933,16 @@ int findModelRecord() {
 // Оновлюємо ОБИДВІ копії, інакше рація читає стару. Довжина 3..9, [A-Z0-9].
 // Повертає к-сть оновлених копій (>0 — успіх), або -1 (невірне ім'я / жодної копії).
 int applyModel(const char *name) {
+    if (!modelNameValid(name)) return -1;
     int n = strlen(name);
-    if (n < 3 || n > 9) return -1;
-    for (int k = 0; k < n; k++) {
-        char c = name[k];
-        if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) return -1;
-    }
+    g_mdRecOff = -1; g_mdHdrOff = -1; g_mdHdrLen = 0;
     int updated = 0;
     // (1) Запис 0x0B.
     int rec = findModelRecord();
     if (rec >= 0) {
         for (int k = 0; k < 9; k++) batteryDump[rec + 1 + k] = (k < n) ? (uint8_t)name[k] : 0x20;
         fixRecordChecksum(batteryDump, rec, 11);   // [0x0B][9][контр], Σ≡0x5A
+        g_mdRecOff = rec;
         updated++;
     }
     // (2) ASCII-модель у заголовку.
@@ -846,20 +952,22 @@ int applyModel(const char *name) {
                             (batteryDump[j] >= '0' && batteryDump[j] <= '9'))) { j++; L++; }
         for (int k = 0; k < L; k++) batteryDump[0x23 + k] = (k < n) ? (uint8_t)name[k] : 0x00;
         fixHeaderChecksum(batteryDump);            // заголовок 0x00..0x1F (модель поза ним — no-op, але узгоджено)
+        g_mdHdrOff = 0x23; g_mdHdrLen = L;
         updated++;
     }
     return updated > 0 ? updated : -1;
 }
 
 // Пише зачеплені моделлю сторінки DS2433 (запис 0x0B і заголовок), кожну окремо —
-// точковий запис не залежить від придатності решти чипа до перезапису.
+// точковий запис не залежить від придатності решти чипа до перезапису. Пише
+// САМЕ ділянки, що змінив applyModel() (не шукає їх заново — інакше модель, що
+// починається з цифри, не знаходилась і мовчки не записувалась). Повертає false,
+// якщо не було записано жодної копії (щоб не рапортувати «успіх» без запису).
 bool writeModelPages() {
-    bool ok = true;
-    int rec = findModelRecord();
-    if (rec >= 0) ok &= battery.writeBatteryRange(batteryDump, rec, 11);
-    if (batteryDump[0x23] >= 'A' && batteryDump[0x23] <= 'Z')
-        ok &= battery.writeBatteryRange(batteryDump, 0x23, 9);
-    return ok;
+    bool ok = true, wrote = false;
+    if (g_mdRecOff >= 0) { ok &= battery.writeBatteryRange(batteryDump, g_mdRecOff, 11); wrote = true; }
+    if (g_mdHdrOff >= 0 && g_mdHdrLen > 0) { ok &= battery.writeBatteryRange(batteryDump, g_mdHdrOff, g_mdHdrLen); wrote = true; }
+    return wrote && ok;
 }
 
 // Ядро запису моделі: правит дамп + пише зачеплені сторінки. Спільне для веб і USB.
@@ -875,13 +983,14 @@ bool performSetModel(const char *name) {
 }
 
 void handleSetModel() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
-    }
-    if (!hasDump) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return; }
+    if (!requireAdmin()) return;
+    if (!hasDump) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Спочатку зчитайте АКБ\"}"); return; }
     String m = server.arg("model"); m.trim(); m.toUpperCase();
+    if (!modelNameValid(m.c_str())) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Модель має містити 3–9 символів A–Z / 0–9\"}"); return;
+    }
     if (applyModel(m.c_str()) < 0) {
-        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Model must be 3..9 chars [A-Z0-9] and a model record/header must exist\"}"); return;
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"У поточному дампі немає запису моделі (0x0B) чи ASCII-заголовка для перезапису — це порожній/стертий/невідомий чіп. Спочатку відновіть еталонний дамп цієї моделі (Прошивка → «Відновлення / запис DS2433»), потім змінюйте модель.\"}"); return;
     }
     ledSet(LED_WRITE); displayShow("ЗАПИС МОДЕЛІ");
     bool ok = writeModelPages();
@@ -896,9 +1005,7 @@ void handleSetModel() {
 // Змінити відображувану ємність/знос (0..100 %) і записати в АКБ. Редагує
 // останню пробу в записи історії ємності 0x17 + її контрольну суму.
 void handleSetCapacity() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
-    }
+    if (!requireAdmin()) return;
     if (!hasDump) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return; }
     if (!server.hasArg("cap")) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No cap\"}"); return; }
     int cap = server.arg("cap").toInt();
@@ -926,9 +1033,7 @@ void handleSetCapacity() {
 // ICA (байт 12): ICA = mAh / (0.4882/Rsense), 0..255. Це то, що рація
 // показує як рівень заряду — тепер задається в мА·ч, а не в відсотках.
 void handleSetMah() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
-    }
+    if (!requireAdmin()) return;
     if (!hasDump2438) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return; }
     if (!server.hasArg("mah")) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No mah\"}"); return; }
     long mah = server.arg("mah").toInt();
@@ -963,9 +1068,7 @@ static int hexToBytes(const String &s, uint8_t *out, int maxn) {
 }
 
 void handleWriteHex() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}"); return;
-    }
+    if (!requireAdmin()) return;
     String target = server.arg("target");
     String data   = server.arg("data");
     bool autofix  = server.arg("autofix") == "1";
@@ -987,7 +1090,7 @@ void handleWriteHex() {
     } else {
         if (autofix) {
             fixHeaderChecksum(buf);
-            if (hasDump2438) { /* держим зеркало согласованным */ for (int i=0;i<26;i++) buf[1+i]=batteryDump2438[24+i]; fixHeaderChecksum(buf); }
+            if (hasDump2438 && mirrorSourceValid(batteryDump2438)) { /* держим зеркало согласованным (не для R7 без дзеркала) */ for (int i=0;i<26;i++) buf[1+i]=batteryDump2438[24+i]; fixHeaderChecksum(buf); }
         }
         ok = battery.writeBattery(buf, DUMP_SIZE);
         if (ok) { memcpy(batteryDump, buf, DUMP_SIZE); hasDump = true; saveDump("/dump.bin", buf, DUMP_SIZE); }
@@ -1001,10 +1104,7 @@ void handleWriteHex() {
 
 // Веб-обробник скидання (под паролем).
 void handleResetBattery() {
-    if (server.hasArg("password") && server.arg("password") != ADMIN_PASSWORD) {
-        server.send(403, "application/json", "{\"status\":\"error\",\"message\":\"Invalid password\"}");
-        return;
-    }
+    if (!requireAdmin()) return;
     if (!hasDump && !hasDump2438) {
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}");
         return;
@@ -1013,6 +1113,105 @@ void handleResetBattery() {
     server.send(ok ? 200 : 500, "application/json",
         ok ? "{\"status\":\"success\",\"message\":\"Battery counters reset\"}"
            : "{\"status\":\"error\",\"message\":\"Failed to write reset\"}");
+}
+
+// Веб-обробник підготовки до рекалібрування (після заміни елементів), під паролем.
+void handleRecalPrepare() {
+    if (!requireAdmin()) return;
+    if (!hasDump && !hasDump2438) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Спочатку зчитайте АКБ\"}"); return;
+    }
+    bool ok = performRecalPrepare();
+    server.send(ok ? 200 : 500, "application/json",
+        ok ? "{\"status\":\"success\",\"message\":\"Готово. Тепер поставте АКБ на IMPRES-ЗП для калібрування.\"}"
+           : "{\"status\":\"error\",\"message\":\"Помилка запису\"}");
+}
+
+// ------------------- Ініціалізація нового акумулятора -------------------
+// Порожній/стертий/невідомий чіп -> робочий АКБ обраної моделі. Вантажимо
+// вшитий genuine-еталон (DS2433 + DS2438), зануляємо всю історію/лічильники
+// (як заводська очистка), ставимо здоров'я 100%, а введену вручну ємність у
+// мА·год пишемо в ICA (поточний заряд). Дзеркало калібрування DS2438<->DS2433
+// у шаблоні вже узгоджене. Пишемо ОБИДВІ мікросхеми.
+bool performInitBattery(const char *model, long mah) {
+    int t = findTemplate(model);
+    if (t < 0) { displayShow("НЕМА ШАБЛОНУ"); return false; }
+
+    Serial.printf("\n=== Init new battery: %s, %ld mAh ===\n", model, mah);
+    memcpy_P(batteryDump,     BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
+    memcpy_P(batteryDump2438, BATTERY_TEMPLATES[t].d38, DS2438_MEM_SIZE);
+    hasDump = true; hasDump2438 = true;
+
+    // Свіжий стан: зануляємо лічильники/історію/статистику, лишаємо
+    // ідентичність/калібрування/дзеркало. Ставить і здоров'я 0x17 -> 100%.
+    factoryCleanData();
+    // ВАЖЛИВО: стерти learned-калібрування ДОНОРА (запис 0x0A). Інакше рація
+    // бачить чужі виміряні дані й каже «невідома» (саме тому «Новий АКБ» раніше
+    // не приймався). Без 0x0A пакет — «валідний, не відкалібрований»: рація
+    // приймає, а ЗП калібрує реальні банки.
+    eraseLearnedCalib();
+    fixHeaderChecksum(batteryDump);
+
+    // Введена ємність (поточний заряд) у мА·год -> регістр ICA DS2438.
+    long ica = (long)(mah / DS2438_MAH_PER_LSB + 0.5f);
+    if (ica < 0) ica = 0; if (ica > 255) ica = 255;
+    batteryDump2438[12] = (uint8_t)ica;
+
+    fixHeaderChecksum(batteryDump);   // узгодити суму заголовка (дзеркало вже збігається)
+
+    ledSet(LED_WRITE); displayShow("НОВИЙ АКБ...");
+    bool ok = battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (ok) ok &= battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (ok) {
+        saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+        saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+        displayShow("НОВИЙ АКБ OK");
+    } else displayShow("НОВИЙ АКБ ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    Serial.println("=== Init completed ===\n");
+    return ok;
+}
+
+// Список доступних вшитих моделей-шаблонів (для випадаючого списку у вебі/USB).
+void handleTemplates() {
+    String j = "{\"status\":\"success\",\"models\":[";
+    for (int i = 0; i < BATTERY_TEMPLATE_COUNT; i++) {
+        if (i) j += ",";
+        j += "\""; j += BATTERY_TEMPLATES[i].name; j += "\"";
+    }
+    j += "]}";
+    server.send(200, "application/json", j);
+}
+
+// Веб-ініціалізація нового АКБ (під паролем): model + mah.
+void handleInitBattery() {
+    if (!requireAdmin()) return;
+    String model = server.arg("model"); model.trim(); model.toUpperCase();
+    if (findTemplate(model.c_str()) < 0) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Немає вшитого шаблону для цієї моделі\"}"); return;
+    }
+    if (!server.hasArg("mah")) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Вкажіть ємність у мА·год\"}"); return;
+    }
+    long mah = server.arg("mah").toInt();
+    if (mah <= 0) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Ємність має бути > 0 мА·год\"}"); return;
+    }
+    bool ok = performInitBattery(model.c_str(), mah);
+    server.send(ok ? 200 : 500, "application/json",
+        ok ? (String("{\"status\":\"success\",\"message\":\"Новий АКБ ") + model + " записано\"}")
+           : "{\"status\":\"error\",\"message\":\"Збій запису (див. Serial-лог)\"}");
+}
+
+// Перезавантаження ESP32 (під паролем). Корисно після серії операцій або якщо
+// 1-Wire шина «зависла». Відповідь надсилаємо ДО restart, з невеликою затримкою,
+// щоб браузер встиг її отримати.
+void handleReboot() {
+    if (!requireAdmin()) return;
+    displayShow("ПЕРЕЗАВАНТАЖЕННЯ");
+    server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Reboot\"}");
+    delay(300);
+    ESP.restart();
 }
 
 // Captive-portal: будь-який невідомий URL (або запит по чужому домену) перенаправляємо
@@ -1064,6 +1263,10 @@ void setupWebServer() {
     server.on("/api/setcapacity", HTTP_POST, handleSetCapacity); // змінити ємність %
     server.on("/api/setmah", HTTP_POST, handleSetMah);           // змінити залишок, мА·ч
     server.on("/api/writehex", HTTP_POST, handleWriteHex);       // сира запис з редактора
+    server.on("/api/reboot", HTTP_POST, handleReboot);           // перезавантаження ESP32
+    server.on("/api/templates", HTTP_GET, handleTemplates);      // список вшитих моделей
+    server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
+    server.on("/api/recalprep", HTTP_POST, handleRecalPrepare);  // підготовка до рекалібрування
 
     // Captive-portal: усі інші URL -> редирект на головну (авто-відкриття сторінки).
     server.onNotFound(handleCaptive);

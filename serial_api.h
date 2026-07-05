@@ -12,7 +12,8 @@
 // (без префікса) клієнт ігнорує.
 //
 // Команди:
-//   PING                 -> {"ok":true,"dev":"MotoBatteryReader","ver":2}
+//   PING                 -> {"ok":true,"dev":"MotoBatteryReader","ver":3,"authed":..}
+//   AUTH <пароль>        -> (опційно) звірити пароль ADMIN_PASSWORD, підсвітити статус
 //   READ                 -> {"ok":..,"ds2433":..,"ds2438":..}  (зчитати чіпи)
 //   INFO                 -> усі декодовані поля (модель/%/цикли/цілісність/DS2438)
 //   GET33 / GET38        -> {"ok":true,"hex":"AA BB .."}  (сирий дамп)
@@ -26,12 +27,21 @@
 //   SETCAP <0..100>      -> змінити ємність/знос %
 //   SETMAH <мА·год>      -> змінити залишкову ємність (регістр ICA)
 //   SETMODEL <NAME>      -> ручний запис моделі (part number, 3..9 A-Z0-9)
+//   TEMPLATES            -> список вшитих моделей для ініціалізації (без пароля)
+//   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
+//   RECAL                -> підготовка до рекалібрування (після заміни елементів)
+//   REBOOT               -> перезавантаження ESP32
+//
+// Пароль по USB — ОПЦІЙНИЙ: фізичний доступ до кабелю = дозвіл на запис, тож
+// команди запису працюють і без "AUTH". "AUTH <пароль>" лише звіряє пароль і
+// підсвічує статус у клієнті. (Мережевий веб-інтерфейс пароль вимагає.)
 // ---------------------------------------------------------------------------
 
 #include "web_server.h"   // dump-буфери, readAllChips/performReset/repairDumps,
                           // hexToBytes/fixHeaderChecksum/mirrorOk/headerChecksumOk
 
-static String g_serIn;    // накопичувач вхідного рядка
+static String g_serIn;         // накопичувач вхідного рядка
+static bool   g_serAuthed = false;  // чи авторизований клієнт (AUTH <пароль>)
 
 static void sResp(const String &json) {
     Serial.print("#R#");
@@ -100,7 +110,7 @@ static void serWrite33(const String &arg, bool fix) {
     if (hexToBytes(arg, buf, DUMP_SIZE) != DUMP_SIZE) { sResp("{\"ok\":false,\"err\":\"need 512 bytes\"}"); return; }
     if (fix) {
         fixHeaderChecksum(buf);
-        if (hasDump2438) { for (int i = 0; i < 26; i++) buf[1 + i] = batteryDump2438[24 + i]; fixHeaderChecksum(buf); }
+        if (hasDump2438 && mirrorSourceValid(batteryDump2438)) { for (int i = 0; i < 26; i++) buf[1 + i] = batteryDump2438[24 + i]; fixHeaderChecksum(buf); }
     }
     ledSet(LED_WRITE); displayShow("USB ЗАПИС 2433");
     bool ok = battery.writeBattery(buf, DUMP_SIZE);
@@ -155,7 +165,18 @@ static void serialExec(const String &line) {
     String arg = (sp < 0) ? String("") : line.substring(sp + 1);
     cmd.toUpperCase(); cmd.trim();
 
-    if (cmd == "PING")            sResp("{\"ok\":true,\"dev\":\"MotoBatteryReader\",\"ver\":2}");
+    // Авторизація по USB — ОПЦІЙНА (фізичний доступ до кабелю = дозвіл на запис).
+    // AUTH лише звіряє пароль і виставляє прапорець для індикатора у клієнті;
+    // команди запису НЕ блокуються його відсутністю — інакше без пароля запис не
+    // відбувався б зовсім. Мережевий веб-інтерфейс, навпаки, вимагає пароль.
+    if (cmd == "AUTH") {
+        g_serAuthed = (arg == ADMIN_PASSWORD);
+        sResp(g_serAuthed ? "{\"ok\":true,\"authed\":true}"
+                          : "{\"ok\":false,\"authed\":false,\"err\":\"невірний пароль\"}");
+        return;
+    }
+
+    if (cmd == "PING")            sResp(String("{\"ok\":true,\"dev\":\"MotoBatteryReader\",\"ver\":3,\"needAuth\":false,\"authed\":") + (g_serAuthed ? "true" : "false") + "}");
     else if (cmd == "READ")     { bool a, b; readAllChips(a, b);
                                   sResp(String("{\"ok\":") + ((a || b) ? "true" : "false") +
                                         ",\"ds2433\":" + (a ? "true" : "false") +
@@ -179,11 +200,31 @@ static void serialExec(const String &line) {
     else if (cmd == "SETCAP")     serSetCap(arg);
     else if (cmd == "SETMAH")     serSetMah(arg);
     else if (cmd == "SETMODEL") { String m = arg; m.trim(); m.toUpperCase();
-                                  bool ok = performSetModel(m.c_str());
-                                  sResp(ok ? (String("{\"ok\":true,\"model\":\"") + m + "\"}")
-                                           : "{\"ok\":false,\"err\":\"bad model (3..9 A-Z0-9) or write failed\"}"); }
+                                  if (!modelNameValid(m.c_str()))
+                                      sResp("{\"ok\":false,\"err\":\"модель: 3-9 символів A-Z0-9\"}");
+                                  else if (!hasDump)
+                                      sResp("{\"ok\":false,\"err\":\"спочатку зчитайте АКБ (READ)\"}");
+                                  else { bool ok = performSetModel(m.c_str());
+                                         sResp(ok ? (String("{\"ok\":true,\"model\":\"") + m + "\"}")
+                                                  : "{\"ok\":false,\"err\":\"немає запису моделі у дампі (порожній/невідомий чіп) або збій запису — відновіть еталонний дамп\"}"); } }
     else if (cmd == "CLEAN")    { bool ok = performFactoryClean(); sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"clean failed\"}"); }
     else if (cmd == "WIPE33")   { bool ok = performWipe2433();     sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"wipe failed\"}"); }
+    else if (cmd == "TEMPLATES"){ String j = "{\"ok\":true,\"models\":[";
+                                  for (int i = 0; i < BATTERY_TEMPLATE_COUNT; i++) { if (i) j += ","; j += "\""; j += BATTERY_TEMPLATES[i].name; j += "\""; }
+                                  j += "]}"; sResp(j); }
+    else if (cmd == "INITBAT")  { int s2 = arg.indexOf(' ');
+                                  String md = (s2 < 0) ? arg : arg.substring(0, s2);
+                                  String mh = (s2 < 0) ? String("") : arg.substring(s2 + 1);
+                                  md.trim(); md.toUpperCase(); mh.trim();
+                                  long mah = mh.toInt();
+                                  if (findTemplate(md.c_str()) < 0) sResp("{\"ok\":false,\"err\":\"немає шаблону моделі\"}");
+                                  else if (mah <= 0)                sResp("{\"ok\":false,\"err\":\"вкажіть мА·год (INITBAT <модель> <мАг>)\"}");
+                                  else { bool ok = performInitBattery(md.c_str(), mah);
+                                         sResp(ok ? (String("{\"ok\":true,\"model\":\"") + md + "\"}")
+                                                  : "{\"ok\":false,\"err\":\"збій запису\"}"); } }
+    else if (cmd == "RECAL")    { bool ok = performRecalPrepare();
+                                  sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"read first / write failed\"}"); }
+    else if (cmd == "REBOOT")   { displayShow("ПЕРЕЗАВАНТАЖЕННЯ"); sResp("{\"ok\":true}"); Serial.flush(); delay(200); ESP.restart(); }
     else                          sResp(String("{\"ok\":false,\"err\":\"unknown cmd '") + cmd + "'\"}");
 }
 

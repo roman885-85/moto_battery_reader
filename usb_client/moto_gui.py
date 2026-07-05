@@ -215,6 +215,8 @@ class App:
         box = ttk.LabelFrame(f, text="DS2438 / ідентичність", padding=8); box.pack(fill="x")
         self.dSerial = self._kv(box, "Серійний (ROM):", 0)
         self.dModel = self._kv(box, "Модель:", 1)
+        self.dFirst = self._kv(box, "Перше використання (≈):", 8)
+        self.dEtm = self._kv(box, "Наробіток (ETM):", 9)
         self.dV = self._kv(box, "Напруга:", 2)
         self.dI = self._kv(box, "Струм:", 3)
         self.dT = self._kv(box, "Температура:", 4)
@@ -272,6 +274,10 @@ class App:
         ttk.Button(b5, text="💾 Записати мА·год", command=self.set_mah).pack(anchor="w", pady=2)
         self.eCap = self._row(b5, "Ємність/здоров'я, %:", lambda fr: self._entry(fr, 10, "100"))
         ttk.Button(b5, text="💾 Записати %", command=self.set_cap).pack(anchor="w", pady=2)
+
+        b5c = ttk.LabelFrame(p, text="Дата першого використання (рація рахує як «час − ETM»)", padding=8); b5c.pack(fill="x", pady=4)
+        self.eEtmDate = self._row(b5c, "Дата (YYYY-MM-DD):", lambda fr: self._entry(fr, 12))
+        ttk.Button(b5c, text="📅 Записати дату (ETM)", command=self.set_etm).pack(anchor="w", pady=2)
 
         b6 = ttk.LabelFrame(p, text="⛔ Небезпечна зона (незворотно!)", padding=8); b6.pack(fill="x", pady=4)
         ttk.Button(b6, text="🧹 Очистити дані (лишити ID/калібр.)", command=lambda: self.simple_op("CLEAN", "Стерти всі дані використання, лишивши ID/калібрування?")).pack(anchor="w", pady=2)
@@ -479,6 +485,15 @@ class App:
         if "headerOk" in d:
             self.ovInteg.config(text=("заголовок " + ("OK" if d["headerOk"] else "✗") + " · дзеркало " + ("OK" if d.get("mirrorOk") else "✗")))
         self.dSerial.config(text=d.get("serial") or "—")
+        etm = d.get("etmSec")
+        if isinstance(etm, int):
+            import datetime
+            days = etm // 86400
+            self.dEtm.config(text=f"{days // 365} р {days % 365} дн ({etm} с)")
+            first = datetime.date.today() - datetime.timedelta(seconds=etm)
+            self.dFirst.config(text=first.isoformat())
+            if hasattr(self, "eEtmDate") and not self.eEtmDate.get():
+                self.eEtmDate.delete(0, "end"); self.eEtmDate.insert(0, first.isoformat())
         self.dI.config(text=(str(d.get("currentMa")) + " мА") if d.get("currentMa") is not None else "—")
         self.dICA.config(text=(f"≈{d.get('icaMah')} мА·год (raw {d.get('ica')})") if d.get("icaMah") is not None else "—")
         self.dCCA.config(text=(f"{d.get('ccaCycles')} ц (≈{d.get('ccaMah')} мА·год)") if d.get("ccaMah") is not None else "—")
@@ -562,6 +577,24 @@ class App:
         if not messagebox.askyesno("Здоров'я", f"Записати ємність {v}%?"):
             return
         self.maybe_auth(lambda: self.cmd(f"SETCAP {v}", 15.0, cb=lambda r: self._after_write(r, "✅ Записано")))
+
+    def set_etm(self):
+        if not self.need_conn():
+            return
+        import datetime
+        try:
+            y, m, dd = [int(x) for x in self.eEtmDate.get().strip().split("-")]
+            target = datetime.date(y, m, dd)
+        except Exception:
+            messagebox.showwarning("Дата", "Формат: YYYY-MM-DD"); return
+        sec = int((datetime.date.today() - target).total_seconds())
+        if sec < 0:
+            messagebox.showwarning("Дата", "Дата в майбутньому"); return
+        if sec > 0xFFFFFFFF:
+            sec = 0xFFFFFFFF
+        if not messagebox.askyesno("Дата", f"Записати дату «{target.isoformat()}» (ETM={sec} с)?\nПеревірте на рації."):
+            return
+        self.maybe_auth(lambda: self.cmd(f"SETETM {sec}", 15.0, cb=lambda r: self._after_write(r, "✅ Дату записано")))
 
     def wipe33(self):
         if not self.need_conn():

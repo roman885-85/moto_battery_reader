@@ -375,6 +375,11 @@ void handleDumpInfo2438() {
     json += ",\"ratedMah\":" + String((int)BATTERY_RATED_MAH);
     json += ",\"charge\":" + String(charge);
     json += ",\"chargeSrc\":\"" + String(csrc) + "\"";
+    // ETM (DS2438[8..11], сек наробітку). Рація показує «дату першого користування»
+    // як (свій поточний час − ETM) — перевірено діффом до/після калібрування.
+    uint32_t etm = ((uint32_t)batteryDump2438[11] << 24) | ((uint32_t)batteryDump2438[10] << 16) |
+                   ((uint32_t)batteryDump2438[9] << 8) | batteryDump2438[8];
+    json += ",\"etmSec\":" + String(etm);
     json += ",\"serial\":\"" + serial + "\"";
     json += ",\"preview\":\"" + hexPreview(batteryDump2438, 16) + "\"";
     json += ",\"hex\":\"" + hexPreview(batteryDump2438, 64) + "\"";
@@ -1050,6 +1055,29 @@ void handleSetMah() {
     server.send(ok ? 200 : 500, "application/json", m);
 }
 
+// Змінити ETM (наробіток, DS2438[8..11], сек) — так рація показує «дату першого
+// користування» = (її поточний час − ETM). Клієнт рахує sec = (сьогодні − цільова
+// дата) і надсилає сюди. Пише лише DS2438.
+void handleSetEtm() {
+    if (!requireAdmin()) return;
+    if (!hasDump2438) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Спочатку зчитайте АКБ\"}"); return; }
+    if (!server.hasArg("sec")) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No sec\"}"); return; }
+    // toInt() -> long може не вмістити >2^31; беремо як unsigned через strtoul.
+    uint32_t sec = (uint32_t)strtoul(server.arg("sec").c_str(), nullptr, 10);
+    batteryDump2438[8]  = sec & 0xFF;
+    batteryDump2438[9]  = (sec >> 8) & 0xFF;
+    batteryDump2438[10] = (sec >> 16) & 0xFF;
+    batteryDump2438[11] = (sec >> 24) & 0xFF;
+    ledSet(LED_WRITE); displayShow("ЗАПИС ДАТИ");
+    bool ok = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (ok) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+    displayShow(ok ? "ДАТА OK" : "ДАТА ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    server.send(ok ? 200 : 500, "application/json",
+        ok ? (String("{\"status\":\"success\",\"etmSec\":") + sec + "}")
+           : "{\"status\":\"error\",\"message\":\"Помилка запису\"}");
+}
+
 // Універсальна запис сирих байт з браузера. Аргументи: target=2433|2438,
 // data=hex-рядок (512 або 64 байта), autofix=1 (для 2433 — перерахунок контр.
 // суми заголовка і синхронізація дзеркала). Дозволяє змінювати Будь-які дані і
@@ -1262,6 +1290,7 @@ void setupWebServer() {
     server.on("/api/setmodel", HTTP_POST, handleSetModel);       // ручний запис моделі
     server.on("/api/setcapacity", HTTP_POST, handleSetCapacity); // змінити ємність %
     server.on("/api/setmah", HTTP_POST, handleSetMah);           // змінити залишок, мА·ч
+    server.on("/api/setetm", HTTP_POST, handleSetEtm);           // змінити ETM (дата першого викор.)
     server.on("/api/writehex", HTTP_POST, handleWriteHex);       // сира запис з редактора
     server.on("/api/reboot", HTTP_POST, handleReboot);           // перезавантаження ESP32
     server.on("/api/templates", HTTP_GET, handleTemplates);      // список вшитих моделей

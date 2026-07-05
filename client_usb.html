@@ -104,6 +104,8 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <h2>🪪 Модель / Серійний</h2>
       <div class="row"><span class="k">Модель</span><span class="v" id="dModel">—</span></div>
       <div class="row"><span class="k">Серійний (DS2438)</span><span class="v" style="font-size:.85em" id="dSer">—</span></div>
+      <div class="row"><span class="k">Перше використання (≈)</span><span class="v" id="dFirst">—</span></div>
+      <div class="row"><span class="k">Наробіток (ETM)</span><span class="v" id="dEtm">—</span></div>
     </div>
     <div class="card">
       <h2>🔬 DS2438</h2>
@@ -192,6 +194,13 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="note i">Рівень заряду (регістр ICA DS2438).</div>
       <div class="row"><span class="k">мА·год</span><input type="number" id="mahv" min="0" max="6000" value="0" style="width:110px;text-align:center"></div>
       <button class="btn b-warn" onclick="setMah()">💾 ЗАПИСАТИ мА·год</button>
+    </div>
+    <div class="card">
+      <h2>📅 Дата першого використання</h2>
+      <div class="note i">Рація рахує «перше користування» = її час − ETM (наробіток DS2438). Дата не зберігається
+        у батареї, на оригінальність не впливає. Зміна: ETM = (сьогодні − обрана дата).</div>
+      <div class="row"><span class="k">Бажана дата</span><input type="date" id="etmDate"></div>
+      <button class="btn b-warn" onclick="setEtm()">📅 ЗАПИСАТИ ДАТУ (ETM)</button>
     </div>
     <div class="card">
       <h2>🩺 Знос/здоров'я (0–100 %)</h2>
@@ -390,6 +399,13 @@ async function refresh(){
   $('dSer').textContent=d.serial||'—';
   const mah=(v,raw)=>v!==undefined?('≈'+v+' мА·год (raw '+raw+')'):'—';
   const cyc=(c,v,raw)=>c!==undefined?(c+' циклів (≈'+v+' мА·год, raw '+raw+')'):mah(v,raw);
+  if(typeof d.etmSec==='number'){
+    const days=Math.floor(d.etmSec/86400), y=Math.floor(days/365), dd=days%365;
+    $('dEtm').textContent=y+' р '+dd+' дн ('+d.etmSec+' с)';
+    const first=new Date(Date.now()-d.etmSec*1000);
+    $('dFirst').textContent=first.toLocaleDateString();
+    if($('etmDate')&&!$('etmDate').value)$('etmDate').value=first.toISOString().slice(0,10);
+  }
   $('dICA').textContent=mah(d.icaMah,d.ica);
   $('dCCA').textContent=cyc(d.ccaCycles,d.ccaMah,d.cca);
   $('dDCA').textContent=cyc(d.dcaCycles,d.dcaMah,d.dca);
@@ -436,6 +452,21 @@ async function setMah(){
   setBusy(true); toast('Запис мА·год...');
   const r=await cmd('SETMAH '+v,15000);
   toast(r.ok?('✅ Записано (ICA='+r.ica+')'):('Помилка: '+(r.err||'')));
+  await refresh(); setBusy(false);
+}
+
+async function setEtm(){
+  if(!connected){toast('Підключіться');return;}
+  const ds=$('etmDate').value; if(!ds){toast('Оберіть дату');return;}
+  const target=new Date(ds+'T00:00:00');
+  let sec=Math.floor((Date.now()-target.getTime())/1000);
+  if(sec<0){toast('Дата в майбутньому');return;}
+  if(sec>0xFFFFFFFF)sec=0xFFFFFFFF;
+  if(!confirm('📅 Записати дату «'+target.toLocaleDateString()+'» (ETM='+sec+' с)? Перевірте на рації.'))return;
+  await ensureAuth();
+  setBusy(true); toast('Запис дати...');
+  const r=await cmd('SETETM '+sec,15000);
+  toast(r.ok?('✅ Дату записано (ETM='+(r.etmSec||sec)+')'):('Помилка: '+(r.err||'')));
   await refresh(); setBusy(false);
 }
 

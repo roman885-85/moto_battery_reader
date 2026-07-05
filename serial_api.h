@@ -27,6 +27,7 @@
 //   SETCAP <0..100>      -> змінити ємність/знос %
 //   SETMAH <мА·год>      -> змінити залишкову ємність (регістр ICA)
 //   SETMODEL <NAME>      -> ручний запис моделі (part number, 3..9 A-Z0-9)
+//   SETETM <сек>         -> ETM (наробіток) -> «дата першого користування» у рації
 //   TEMPLATES            -> список вшитих моделей для ініціалізації (без пароля)
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
 //   RECAL                -> підготовка до рекалібрування (після заміни елементів)
@@ -89,7 +90,10 @@ static String serBuildInfo() {
         j += ",\"voltage\":" + String(vraw * 0.01f, 2);
         j += ",\"temperature\":" + String(traw * 0.03125f, 1);
         j += ",\"currentMa\":" + String(i_mA, 0);
+        uint32_t etm = ((uint32_t)batteryDump2438[11] << 24) | ((uint32_t)batteryDump2438[10] << 16) |
+                       ((uint32_t)batteryDump2438[9] << 8) | batteryDump2438[8];
         j += ",\"ica\":" + String(ica) + ",\"cca\":" + String(cca) + ",\"dca\":" + String(dca);
+        j += ",\"etmSec\":" + String(etm);
         j += ",\"icaMah\":" + String((int)(ica * DS2438_MAH_PER_LSB));
         j += ",\"ccaMah\":" + String((int)(cca * DS2438_MAH_PER_LSB));
         j += ",\"dcaMah\":" + String((int)(dca * DS2438_MAH_PER_LSB));
@@ -199,6 +203,15 @@ static void serialExec(const String &line) {
                                          sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"write failed\"}"); } }
     else if (cmd == "SETCAP")     serSetCap(arg);
     else if (cmd == "SETMAH")     serSetMah(arg);
+    else if (cmd == "SETETM")   { if (!hasDump2438) { sResp("{\"ok\":false,\"err\":\"read first\"}"); }
+                                  else { uint32_t sec = (uint32_t)strtoul(arg.c_str(), nullptr, 10);
+                                         batteryDump2438[8]=sec&0xFF; batteryDump2438[9]=(sec>>8)&0xFF;
+                                         batteryDump2438[10]=(sec>>16)&0xFF; batteryDump2438[11]=(sec>>24)&0xFF;
+                                         ledSet(LED_WRITE); displayShow("USB ДАТА");
+                                         bool ok = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+                                         if (ok) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+                                         ledSet(ok?LED_OK:LED_ERROR); displayShow(ok?"USB ДАТА OK":"USB ДАТА ЗБІЙ");
+                                         sResp(ok ? (String("{\"ok\":true,\"etmSec\":")+sec+"}") : "{\"ok\":false,\"err\":\"write failed\"}"); } }
     else if (cmd == "SETMODEL") { String m = arg; m.trim(); m.toUpperCase();
                                   if (!modelNameValid(m.c_str()))
                                       sResp("{\"ok\":false,\"err\":\"модель: 3-9 символів A-Z0-9\"}");

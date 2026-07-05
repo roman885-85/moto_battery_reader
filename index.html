@@ -163,6 +163,8 @@
             <h2>🪪 Модель / Серійний</h2>
             <div class="row"><span class="k">Модель</span><span class="v" id="dModel">—</span></div>
             <div class="row"><span class="k">Серійний (DS2438)</span><span class="v" style="font-size:.85em" id="dSerial">—</span></div>
+            <div class="row"><span class="k">Перше використання (≈)</span><span class="v" id="dFirst">—</span></div>
+            <div class="row"><span class="k">Наробіток (ETM)</span><span class="v" id="dEtm">—</span></div>
         </div>
         <div class="card">
             <h2>🔬 Дані батареї (DS2438)</h2>
@@ -219,6 +221,19 @@
             <button class="btn btn-warn" style="width:100%" onclick="repairFw()">🛠 ВІДНОВИТИ ЦІЛІСНІСТЬ</button>
         </div>
 
+        <div class="card" style="border-color:var(--warn)">
+            <h2>🔧 Ремонт після заміни елементів (підготовка до калібрування)</h2>
+            <div class="note i">Для АКБ, яку рація бачить як <b>«невідома»</b> після заміни банок. Стирає старе
+                <b>learned-калібрування</b> (запис 0x0A, який зарядка записала під СТАРІ банки і який тепер суперечить
+                новим — перевірено діффом дампа до/після калібрування), обнуляє лічильники, лишає модель/криву/ID.
+                Пакет стає <b>«валідний, не відкалібрований»</b>: рація приймає, а <b>IMPRES-ЗП запускає калібрування</b>
+                нових банок.</div>
+            <div class="note w">⚠️ Фізичну калібровку це <b>не замінює</b> — після цього обов'язково поставте АКБ
+                на оригінальну IMPRES-зарядку для повного циклу навчання.</div>
+            <input type="password" class="pw" id="pwRecal" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="recalPrep()">🔧 ПІДГОТУВАТИ ДО КАЛІБРУВАННЯ</button>
+        </div>
+
         <div class="card">
             <h2>🔋 Заряд у мА·год</h2>
             <div class="note i">Записує рівень заряду (регістр ICA DS2438). Поточне: <b id="mahNow">—</b>.</div>
@@ -227,6 +242,19 @@
                        style="width:110px;text-align:center;font-size:1.1em;border-radius:8px;border:none;padding:6px"></div>
             <input type="password" class="pw" id="pwMah" placeholder="🔑 Пароль адміністратора">
             <button class="btn btn-warn" style="width:100%" onclick="setMah()">💾 ЗАПИСАТИ мА·год</button>
+        </div>
+
+        <div class="card">
+            <h2>📅 Дата першого використання</h2>
+            <div class="note i">Рація показує «перше користування» = <b>її поточний час − ETM</b> (лічильник наробітку
+                DS2438). Дата <b>не зберігається</b> у батареї — обчислюється рацією; на «оригінальність» НЕ впливає.
+                Щоб змінити дату, пишемо ETM = (сьогодні − обрана дата). Поточне: <b id="etmNow">—</b>.</div>
+            <div class="row"><span class="k">Бажана дата</span>
+                <input type="date" id="etmDate" style="border-radius:8px;border:none;padding:6px"></div>
+            <input type="password" class="pw" id="pwEtm" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="setEtm()">📅 ЗАПИСАТИ ДАТУ (ETM)</button>
+            <div class="note w">⚠️ Записує лише DS2438. Точність залежить від того, що годинник рації ≈ сьогодні.
+                Перевірте на рації після запису.</div>
         </div>
 
         <div class="card">
@@ -243,6 +271,9 @@
             <h2>🪪 Модель та серійний (ручний запис)</h2>
             <div class="note i">Модель (part number) записується у DS2433: поле запису 0x0B + заголовок,
                 з перерахунком контрольних сум. Поточна: <b id="mdNow">—</b>.</div>
+            <div class="note w">ℹ️ Змінює модель лише на батареї, де вже <b>є</b> запис моделі. На порожньому/
+                стертому/невідомому чіпі спершу відновіть еталонний дамп цієї моделі («Відновлення / запис DS2433» нижче),
+                і аж потім змінюйте модель.</div>
             <div class="row"><span class="k">Модель</span>
                 <input type="text" id="mdVal" maxlength="9" placeholder="PMNN4409A" oninput="mdCheck()"
                        style="width:150px;text-align:center;font-size:1.05em;letter-spacing:1px;text-transform:uppercase;border-radius:8px;border:none;padding:6px">
@@ -252,6 +283,22 @@
             <div class="note w">ℹ️ <b>Серійний номер</b> — це апаратний лазерний ROM чипа DS2438: він унікальний,
                 незмінний і <b>фізично не перезаписується</b>. Для власного інвентарного ID скористайтеся
                 редактором байтів (нижче) — там є лінійка адрес як у HxD.</div>
+        </div>
+
+        <div class="card" style="border-color:var(--ok)">
+            <h2>🆕 Новий акумулятор (ініціалізація порожнього чипа)</h2>
+            <div class="note i">Для <b>порожнього / стертого / невідомого</b> чипа: записує повний еталон обраної
+                моделі (DS2433 + DS2438 — ідентичність, калібрування, автентифікація), обнуляє історію/лічильники,
+                ставить здоров'я 100%, а вказану ємність пише як поточний заряд (ICA). Прошивка прив'язана до
+                <b>моделі</b>, тож серійник не потрібен.</div>
+            <div class="row"><span class="k">Модель</span>
+                <select id="initModel" style="border-radius:8px;border:none;padding:6px;min-width:150px"></select></div>
+            <div class="row"><span class="k">Ємність, мА·год</span>
+                <input type="number" id="initMah" min="1" max="6000" value="2500" style="width:110px;text-align:center;border-radius:8px;border:none;padding:6px"></div>
+            <div class="note w">⚠️ Перезапише <b>ОБИДВІ</b> мікросхеми. Робіть лише на порожньому/невідомому чипі
+                (для робочого АКБ використовуйте «Скидання»/«Ремонт»). Вкажіть паспортну ємність саме вашої моделі.</div>
+            <input type="password" class="pw" id="pwInit" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="initBattery()">🆕 ЗАПИСАТИ НОВИЙ АКБ</button>
         </div>
 
         <!-- НЕБЕЗПЕЧНА ЗОНА -->
@@ -322,6 +369,14 @@
                 Автовиправлення контрольних сум (DS2433)</label>
             <input type="password" class="pw" id="pwHex" placeholder="🔑 Пароль адміністратора">
             <button class="btn btn-danger" style="width:100%" onclick="writeHex()">⚡ ЗАПИСАТИ БАЙТИ</button>
+        </div>
+
+        <div class="card">
+            <h2>🔁 Перезавантаження пристрою</h2>
+            <div class="note i">Перезапускає ESP32 (Wi-Fi/веб-сервер підніметься знову за кілька секунд).
+                Корисно після серії операцій або якщо 1-Wire шина «зависла».</div>
+            <input type="password" class="pw" id="pwReboot" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="rebootDevice()">🔁 ПЕРЕЗАВАНТАЖИТИ ESP32</button>
         </div>
     </div>
 </div>
@@ -402,6 +457,16 @@ async function refreshAll(){
             $('dDCA').textContent=cyc(d.dcaCycles,d.dcaMah,d.dca);
             if(d.ccaCycles!==undefined)$('ovCycles').textContent=d.ccaCycles+' зар. / '+d.dcaCycles+' розр. (ємн. '+d.ratedMah+' мА·год)';
             $('dSerial').textContent=d.serial||'—';
+            // ETM (наробіток) -> вік і приблизна дата першого користування = сьогодні − ETM.
+            // Рація рахує так само (свій годинник − ETM). Годинник ПК ≈ годинник рації.
+            if(typeof d.etmSec==='number'){
+                const days=Math.floor(d.etmSec/86400), y=Math.floor(days/365), dd=days%365;
+                $('dEtm').textContent=y+' р '+dd+' дн ('+d.etmSec+' с)';
+                const first=new Date(Date.now()-d.etmSec*1000);
+                $('dFirst').textContent=first.toLocaleDateString();
+                if($('etmNow'))$('etmNow').textContent=first.toLocaleDateString()+' ('+y+' р '+dd+' дн)';
+                if($('etmDate')&&!$('etmDate').value)$('etmDate').value=first.toISOString().slice(0,10);
+            }
             $('dHex38').textContent=d.hex||d.preview||'—';
         }
     }catch(e){}
@@ -473,6 +538,23 @@ async function setCapacity(){
     prog(false);
 }
 
+async function setEtm(){
+    const pw=$('pwEtm').value; if(!pw){toast('Введіть пароль','err');return}
+    const ds=$('etmDate').value; if(!ds){toast('Оберіть дату','err');return}
+    const target=new Date(ds+'T00:00:00');
+    let sec=Math.floor((Date.now()-target.getTime())/1000);
+    if(sec<0){toast('Дата в майбутньому','err');return}
+    if(sec>0xFFFFFFFF)sec=0xFFFFFFFF;
+    if(!confirm('📅 Записати дату першого використання «'+target.toLocaleDateString()+'»?\nETM='+sec+' с у DS2438. Перевірте на рації.'))return;
+    prog(true,'Запис дати (ETM)...');
+    try{
+        const r=await postForm('/api/setetm',{password:pw,sec:sec});
+        toast(r.status==='success'?'✅ Дату записано (ETM='+r.etmSec+')':('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
 async function setMah(){
     const pw=$('pwMah').value; if(!pw){toast('Введіть пароль','err');return}
     const mah=parseInt($('mahVal').value); if(isNaN(mah)||mah<0){toast('Вкажіть мА·год','err');return}
@@ -526,6 +608,18 @@ async function setModel(){
     try{
         const r=await postForm('/api/setmodel',{password:pw,model:m});
         toast(r.status==='success'?('✅ Модель записано: '+r.model):('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+async function recalPrep(){
+    const pw=$('pwRecal').value; if(!pw){toast('Введіть пароль','err');return}
+    if(!confirm('🔧 Підготувати АКБ до рекалібрування?\nСтерти старе learned-калібрування і обнулити лічильники (модель/крива лишаються). Далі — калібрування на IMPRES-ЗП.'))return;
+    prog(true,'Підготовка до калібрування...');
+    try{
+        const r=await postForm('/api/recalprep',{password:pw});
+        toast(r.status==='success'?'✅ Готово. Поставте АКБ на IMPRES-ЗП.':('Помилка: '+r.message),r.status==='success'?'ok':'err');
         if(r.status==='success')await refreshAll();
     }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);
@@ -599,7 +693,42 @@ async function writeHex(){
     prog(false);
 }
 
-window.onload=function(){refreshAll();setInterval(refreshAll,10000)};
+async function loadTemplates(){
+    try{
+        const d=await(await fetch('/api/templates')).json();
+        const sel=$('initModel'); if(!sel)return; sel.innerHTML='';
+        (d.models||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o)});
+        if(!(d.models||[]).length){const o=document.createElement('option');o.textContent='(немає шаблонів)';sel.appendChild(o)}
+    }catch(e){}
+}
+async function initBattery(){
+    const pw=$('pwInit').value; if(!pw){toast('Введіть пароль','err');return}
+    const model=$('initModel').value; const mah=parseInt($('initMah').value);
+    if(!model){toast('Оберіть модель','err');return}
+    if(isNaN(mah)||mah<=0){toast('Вкажіть ємність у мА·год','err');return}
+    if(!confirm('🆕 Ініціалізувати чип як НОВИЙ '+model+' ('+mah+' мА·год)?\n\nПерезапише ОБИДВІ мікросхеми (DS2433 + DS2438).\nРобіть лише на порожньому/невідомому чипі. Продовжити?'))return;
+    prog(true,'Запис нового АКБ...');
+    try{
+        const r=await postForm('/api/initbattery',{password:pw,model:model,mah:mah});
+        toast(r.status==='success'?('✅ Новий '+model+' записано ('+mah+' мА·год)'):('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+async function rebootDevice(){
+    const pw=$('pwReboot').value; if(!pw){toast('Введіть пароль','err');return}
+    if(!confirm('🔁 Перезавантажити ESP32? На кілька секунд зникне Wi-Fi/сторінка.'))return;
+    prog(true,'Перезавантаження...');
+    try{
+        const r=await postForm('/api/reboot',{password:pw});
+        toast(r.status==='success'?'✅ Перезавантаження... Оновіть сторінку за 5–10 с':('Помилка: '+r.message),
+              r.status==='success'?'ok':'err');
+    }catch(e){toast('Перезавантаження ініційовано, оновіть сторінку за 5–10 с','info')}
+    prog(false);
+}
+
+window.onload=function(){refreshAll();loadTemplates();setInterval(refreshAll,10000)};
 </script>
 </body>
 </html>

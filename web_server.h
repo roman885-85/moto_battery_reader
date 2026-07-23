@@ -794,9 +794,10 @@ bool performFactoryClean() {
 // щоб пакет став «валідним, але не відкаліброваним»: рація приймає («потребує
 // відновлення»), а IMPRES-ЗП запускає цикл калібрування нових банок.
 //   1) стерти learned-запис(и) 0x0A (→0xFF);
-//   2) обнулити лічильники/історію (0x0D CCA/DCA, 0x16, DS2438 ICA/CCA/DCA/ETM),
+//   2) обнулити лічильники/історію (0x0D CCA/DCA, 0x16, DS2438 CCA/DCA/ETM),
 //      здоров'я 0x17 → 100%;
-//   3) перерахувати суми, синхронізувати дзеркало.
+//   3) виставити паливомір ICA на повну номінальну ємність (чистий старт лічби);
+//   4) перерахувати суми, синхронізувати дзеркало.
 // ⚠️ Фізичну калібровку це НЕ замінює — далі АКБ обов'язково калібрувати на ЗП.
 bool performRecalPrepare() {
     if (!hasDump && !hasDump2438) { displayShow("СПОЧАТКУ ЧИТАЙ"); return false; }
@@ -807,7 +808,16 @@ bool performRecalPrepare() {
         er = eraseLearnedCalib();          // прибрати старе learned-калібрування
         Serial.printf("erased learned-calib records: %d\n", er);
     }
-    factoryCleanData();                     // лічильники/історія/0x17=100% + суми
+    factoryCleanData();                     // CCA/DCA/ETM/0x0D/0x16/0x17=100% + суми
+    // Паливомір (ICA, DS2438[12]) після заміни банок тримає СТАРЕ значення заряду,
+    // яке не відповідає новим елементам і збиває зарядку. Виставляємо його на повну
+    // номінальну ємність — чистий старт лічби (CCA/DCA вже обнулені у factoryClean).
+    if (hasDump2438) {
+        long ica = (long)(BATTERY_RATED_MAH / DS2438_MAH_PER_LSB + 0.5f);
+        if (ica < 0) ica = 0; if (ica > 255) ica = 255;
+        batteryDump2438[12] = (uint8_t)ica;
+        Serial.printf("ICA seeded to full (%d mAh, raw %ld)\n", (int)BATTERY_RATED_MAH, ica);
+    }
     if (hasDump && hasDump2438 && mirrorSourceValid(batteryDump2438) &&
         !mirrorOk(batteryDump, batteryDump2438))
         syncMirrorFrom2438(batteryDump, batteryDump2438);

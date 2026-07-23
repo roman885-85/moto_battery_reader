@@ -22,9 +22,11 @@
 Прошивка займає ~80 % флеша — підходить схема розділів за замовчуванням.
 
 **Бібліотеки** (Arduino Library Manager):
-- `U8g2` (oliver) — дисплей
+- `U8g2` (oliver) — монохромні OLED/LCD
 - `OneWire` — шина 1-Wire
 - `ArduinoJson`
+- *(лише для кольорових TFT ST7789)* `Adafruit GFX Library`,
+  `Adafruit ST7735 and ST7789 Library`, `Adafruit BusIO`, `U8g2_for_Adafruit_GFX`
 
 ---
 
@@ -57,10 +59,22 @@
 // #define DISPLAY_SSD1327_128_I2C // GME128128-02, 128x128 I2C (варіант SSD1327)
 // #define DISPLAY_ST7567_SPI      // Open-Smart 1.8" 128x64 SPI
 // #define DISPLAY_PCD8544_SPI     // Nokia 5110 (PCD8544) 84x48 SPI
+// --- КОЛЬОРОВІ TFT ST7789 (SPI): кольорове меню + заставка ---
+// #define DISPLAY_ST7789_SPI
+//   #define DISPLAY_ST7789_240X240 // ST7789VW 240x240
+//   #define DISPLAY_ST7789_240X280 // ST7789V3 240x280
 ```
 
 Роздільність, розкладка меню і шрифти підставляються автоматично
 (на 128×128 — більший шрифт і більше рядків).
+
+**Кольорові TFT ST7789** (240×240 VW / 240×280 V3): розкоментуйте
+`DISPLAY_ST7789_SPI` + один розмір. Піни SPI спільні з КРОК 2b
+(`SCK=18, MOSI=23, CS=5, DC=17, RST=16`), підсвітка — `DISPLAY_BLK_PIN`
+(необов'язково). Орієнтація — `DISPLAY_ST7789_ROT 0…3`, інверсія —
+`DISPLAY_ST7789_INVERT`. Потрібні 4 бібліотеки Adafruit + `U8g2_for_Adafruit_GFX`
+(див. розділ 1). Меню/заставка/індикатори — кольорові, реалізація у
+`display_color.h` (монохромний шлях не зачіпається).
 
 **КРОК 2a — I2C-дисплеї.** `SDA=21`, `SCL=22`, адреса `0x3C`. Працюють на
 будь-яких GPIO.

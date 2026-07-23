@@ -32,6 +32,20 @@
 // #define DISPLAY_SSD1327_128_I2C // 1.5"  OLED 128x128 I2C (GME128128-02, варіант SSD1327)
 // #define DISPLAY_ST7567_SPI      // Open-Smart 1.8" ST7567, 128x64, SPI
 // #define DISPLAY_PCD8544_SPI     // Nokia 5110 (PCD8544), 84x48, SPI
+// --- КОЛЬОРОВІ TFT на ST7789 (SPI) — кольорове меню + кольорова заставка ---
+// Розкоментуйте DISPLAY_ST7789_SPI + РІВНО ОДИН розмір нижче.
+// Потрібні бібліотеки: Adafruit GFX, Adafruit ST7735/ST7789, Adafruit BusIO,
+// U8g2_for_Adafruit_GFX (кириличні шрифти на кольоровому екрані).
+// #define DISPLAY_ST7789_SPI
+//   #define DISPLAY_ST7789_240X240   // ST7789VW — 240x240
+//   #define DISPLAY_ST7789_240X280   // ST7789V3 — 240x280
+// Орієнтація 0..3 (0 — портрет). Інверсія — для панелей із «негативом».
+// #define DISPLAY_ST7789_ROT     0
+// #define DISPLAY_ST7789_INVERT
+// Підсвітка (BLK/BL) — необов'язково; вкажіть GPIO, куди підключено:
+// #define DISPLAY_BLK_PIN        4
+// Піни SPI ST7789: SCK=GPIO18, MOSI(SDA)=GPIO23 (апаратний SPI ESP32);
+// CS/DC(RS)/RST — з блоку «Крок 2b» нижче (DISPLAY_CS/DC/RST_PIN).
 
 // Якщо обраний SSD1327 і він НЕ працює/порожній екран — панелі GME128128-02
 // бувають з різною "розводкою" контролера. Розкоментуйте один варіант:

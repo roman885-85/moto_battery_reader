@@ -488,10 +488,17 @@ class App:
         etm = d.get("etmSec")
         if isinstance(etm, int):
             import datetime
+            YS = 31557600  # 365.25 дн
             days = etm // 86400
-            self.dEtm.config(text=f"{days // 365} р {days % 365} дн ({etm} с)")
-            first = datetime.date.today() - datetime.timedelta(seconds=etm)
-            self.dFirst.config(text=first.isoformat())
+            first = datetime.date.today() - datetime.timedelta(seconds=etm)  # так рахує рація
+            if etm > 34 * YS:  # нереально як напрацювання -> у полі зашита Unix-дата
+                as_unix = datetime.datetime.utcfromtimestamp(etm).date()
+                self.dEtm.config(text=f"⚠ {days // 365} р ({etm} с) — некоректно", foreground="#c0392b")
+                self.dFirst.config(text=f"⚠ рація покаже {first.isoformat()} (поле=Unix {as_unix.isoformat()})",
+                                   foreground="#c0392b")
+            else:
+                self.dEtm.config(text=f"{days // 365} р {days % 365} дн ({etm} с)", foreground="")
+                self.dFirst.config(text=first.isoformat(), foreground="")
             if hasattr(self, "eEtmDate") and not self.eEtmDate.get():
                 self.eEtmDate.delete(0, "end"); self.eEtmDate.insert(0, first.isoformat())
         self.dI.config(text=(str(d.get("currentMa")) + " мА") if d.get("currentMa") is not None else "—")

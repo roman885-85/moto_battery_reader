@@ -1,8 +1,6 @@
 #ifndef DISPLAY_H
 #define DISPLAY_H
 
-#include <U8g2lib.h>
-#include <Wire.h>
 #include "settings.h"
 #include "battery_reader.h"
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — для дій «Новий АКБ» у меню
@@ -25,6 +23,17 @@ extern bool hasSN2438;
 //   6 - дії з АКБ (скидання / ремонт / очистка)
 #define NUM_DISPLAY_PAGES 7
 #define RESET_PAGE        6   // сторінка «Дії» (історична назва константи)
+
+// ========================================================================
+// Кольоровий TFT (ST7789VW 240x240 / ST7789V3 240x280) — окрема реалізація
+// в display_color.h (Adafruit_ST7789 + U8g2_for_Adafruit_GFX). Монохромний
+// u8g2-шлях нижче лишається без змін і збирається, коли ST7789 НЕ вибраний.
+// ========================================================================
+#if defined(DISPLAY_ST7789_SPI)
+#include "display_color.h"
+#else
+#include <U8g2lib.h>
+#include <Wire.h>
 
 // Об'єкт дисплея вибирається по моделі з settings.h (повний буфер _F_).
 // DISP_W/DISP_H — роздільність; DISPLAY_USES_I2C — ознака шини I2C.
@@ -838,4 +847,6 @@ inline void displayHandleButton() {
     }
 }
 
-#endif
+#endif  // DISPLAY_ST7789_SPI (кольоровий) / u8g2 (монохромний)
+
+#endif  // DISPLAY_H

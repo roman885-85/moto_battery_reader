@@ -32,6 +32,41 @@
 #define DISPLAY_SSD1327_128_I2C // 1.5"  OLED 128x128 I2C (GME128128-02, варіант SSD1327)
 // #define DISPLAY_ST7567_SPI      // Open-Smart 1.8" ST7567, 128x64, SPI
 // #define DISPLAY_PCD8544_SPI     // Nokia 5110 (PCD8544), 84x48, SPI
+// --- КОЛЬОРОВІ TFT на ST7789 (SPI) — кольорове меню + кольорова заставка ---
+// Розкоментуйте DISPLAY_ST7789_SPI + РІВНО ОДИН пресет розміру (або власний).
+// Потрібні бібліотеки: Adafruit GFX, Adafruit ST7735/ST7789, Adafruit BusIO,
+// U8g2_for_Adafruit_GFX (кириличні шрифти на кольоровому екрані).
+// #define DISPLAY_ST7789_SPI
+//   #define DISPLAY_ST7789_240X240   // 1.3"/1.54" ST7789VW — 240x240
+//   #define DISPLAY_ST7789_240X280   // 1.69"  ST7789V3 — 240x280
+//   #define DISPLAY_ST7789_240X320   // 2.0"/2.4" — 240x320
+//   #define DISPLAY_ST7789_135X240   // 1.14"  — 135x240
+//   #define DISPLAY_ST7789_170X320   // 1.9"   — 170x320
+//   #define DISPLAY_ST7789_172X320   // 1.47"  — 172x320
+// Власний розмір (будь-яка панель ST7789, макс. 240x320) — портретні розміри:
+//   #define DISPLAY_ST7789_W       240
+//   #define DISPLAY_ST7789_H       320
+// Оффсети пам'яті. За замовчуванням покладаємось на бібліотеку Adafruit (вона
+// знає стандартні панелі). Якщо картинка ЗСУНУТА — увімкніть ручні оффсети:
+//   #define DISPLAY_ST7789_MANUAL_OFFSET   // брати значення з пресету (нижче)
+// або задайте власні (вони ж вмикають ручний режим):
+//   #define DISPLAY_ST7789_XOFF    0
+//   #define DISPLAY_ST7789_YOFF    0
+// Орієнтація 0..3 (0/2 — портрет, 1/3 — ландшафт). Інверсія — «негатив».
+// #define DISPLAY_ST7789_ROT     0
+// #define DISPLAY_ST7789_INVERT
+// Заокруглені кути (ST7789V3 1.69" 240x280 зазвичай скруглений) — вмикає
+// безпечний відступ, щоб текст у кутах (заголовок/статус/hex) не обрізало.
+// Радіус можна підправити DISPLAY_ST7789_CORNER (типово 22 px).
+// #define DISPLAY_ST7789_ROUND
+// #define DISPLAY_ST7789_CORNER  22
+// Кастомна КОЛЬОРОВА заставка: згенеруйте custom_splash.h у папку скетчу
+// (python tools/make_color_splash.py logo.png -W 240 -H 240) і увімкніть:
+// #define DISPLAY_SPLASH_CUSTOM
+// Підсвітка (BLK/BL) — необов'язково; вкажіть GPIO, куди підключено:
+// #define DISPLAY_BLK_PIN        4
+// Піни SPI ST7789: SCK=GPIO18, MOSI(SDA)=GPIO23 (апаратний SPI ESP32);
+// CS/DC(RS)/RST — з блоку «Крок 2b» нижче (DISPLAY_CS/DC/RST_PIN).
 
 // Якщо обраний SSD1327 і він НЕ працює/порожній екран — панелі GME128128-02
 // бувають з різною "розводкою" контролера. Розкоментуйте один варіант:

@@ -400,10 +400,18 @@ async function refresh(){
   const mah=(v,raw)=>v!==undefined?('≈'+v+' мА·год (raw '+raw+')'):'—';
   const cyc=(c,v,raw)=>c!==undefined?(c+' циклів (≈'+v+' мА·год, raw '+raw+')'):mah(v,raw);
   if(typeof d.etmSec==='number'){
-    const days=Math.floor(d.etmSec/86400), y=Math.floor(days/365), dd=days%365;
-    $('dEtm').textContent=y+' р '+dd+' дн ('+d.etmSec+' с)';
-    const first=new Date(Date.now()-d.etmSec*1000);
-    $('dFirst').textContent=first.toLocaleDateString();
+    const etm=d.etmSec, YS=31557600;                 // 365.25 дн
+    const days=Math.floor(etm/86400), y=Math.floor(days/365), dd=days%365;
+    const first=new Date(Date.now()-etm*1000);        // так рахує рація (годинник − ETM)
+    if(etm>34*YS){                                    // нереально як напрацювання -> зашита Unix-дата
+      const asUnix=new Date(etm*1000);
+      $('dEtm').innerHTML='<span style="color:#c0392b">⚠ '+y+' р ('+etm+' с) — некоректно</span>';
+      $('dFirst').innerHTML='<span style="color:#c0392b">⚠ рація покаже '+first.toLocaleDateString()+
+        '</span> (поле = Unix-дата '+asUnix.toLocaleDateString()+'; перезапишіть кнопкою нижче)';
+    }else{
+      $('dEtm').textContent=y+' р '+dd+' дн ('+etm+' с)';
+      $('dFirst').textContent=first.toLocaleDateString();
+    }
     if($('etmDate')&&!$('etmDate').value)$('etmDate').value=first.toISOString().slice(0,10);
   }
   $('dICA').textContent=mah(d.icaMah,d.ica);

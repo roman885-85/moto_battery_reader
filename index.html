@@ -459,12 +459,24 @@ async function refreshAll(){
             $('dSerial').textContent=d.serial||'—';
             // ETM (наробіток) -> вік і приблизна дата першого користування = сьогодні − ETM.
             // Рація рахує так само (свій годинник − ETM). Годинник ПК ≈ годинник рації.
+            // УВАГА: якщо ETM > ~34 років, це не «час напрацювання», а «зашитий»
+            // Unix-timestamp (сек від 1970). Рація тоді покаже абсурдну дату (напр. 1976).
             if(typeof d.etmSec==='number'){
-                const days=Math.floor(d.etmSec/86400), y=Math.floor(days/365), dd=days%365;
-                $('dEtm').textContent=y+' р '+dd+' дн ('+d.etmSec+' с)';
-                const first=new Date(Date.now()-d.etmSec*1000);
-                $('dFirst').textContent=first.toLocaleDateString();
-                if($('etmNow'))$('etmNow').textContent=first.toLocaleDateString()+' ('+y+' р '+dd+' дн)';
+                const etm=d.etmSec, YS=31557600;               // 365.25 дн
+                const days=Math.floor(etm/86400), y=Math.floor(days/365), dd=days%365;
+                const first=new Date(Date.now()-etm*1000);       // так рахує рація
+                if(etm>34*YS){
+                    // Нереально як напрацювання -> схоже на Unix-дату, зашиту в поле.
+                    const asUnix=new Date(etm*1000);
+                    $('dEtm').innerHTML='<span style="color:#c0392b">⚠ '+y+' р ('+etm+' с) — некоректно</span>';
+                    $('dFirst').innerHTML='<span style="color:#c0392b">⚠ рація покаже '+first.toLocaleDateString()+
+                        '</span> <span style="opacity:.7">(поле = Unix-дата '+asUnix.toLocaleDateString()+'; треба перезаписати кнопкою нижче)</span>';
+                    if($('etmNow'))$('etmNow').textContent='⚠ '+first.toLocaleDateString()+' — некоректно, задайте вручну';
+                }else{
+                    $('dEtm').textContent=y+' р '+dd+' дн ('+etm+' с)';
+                    $('dFirst').textContent=first.toLocaleDateString();
+                    if($('etmNow'))$('etmNow').textContent=first.toLocaleDateString()+' ('+y+' р '+dd+' дн)';
+                }
                 if($('etmDate')&&!$('etmDate').value)$('etmDate').value=first.toISOString().slice(0,10);
             }
             $('dHex38').textContent=d.hex||d.preview||'—';

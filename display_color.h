@@ -73,6 +73,19 @@ static U8G2_FOR_ADAFRUIT_GFX u8g2Fonts;
 #define FOOT_H  26
 #define FOOT_Y  (TFT_H - FOOT_H)
 
+// Заокруглені кути (ST7789V3 1.69" 240x280 зазвичай має скруглені кути) —
+// безпечний горизонтальний відступ, щоб текст у кутах не обрізало дугою.
+// Вмикається DISPLAY_ST7789_ROUND; радіус можна задати DISPLAY_ST7789_CORNER.
+#if defined(DISPLAY_ST7789_ROUND)
+  #ifndef DISPLAY_ST7789_CORNER
+    #define DISPLAY_ST7789_CORNER 22
+  #endif
+  #define EDGE DISPLAY_ST7789_CORNER      // відступ біля кутів (шапка/статус/hex)
+#else
+  #define EDGE 6
+#endif
+#define CX (EDGE > 14 ? EDGE : 14)        // ліва межа основного контенту
+
 static char g_displayStatus[36] = "ЗАПУСК";
 static int  g_displayPage = 0;
 static bool g_readRequested = false;
@@ -276,11 +289,11 @@ inline void drawHeaderBar(const char *title) {
     tft.fillRect(0, 0, TFT_W, HDR_H, C_HDRBG);
     tft.drawFastHLine(0, HDR_H - 1, TFT_W, C_BLUE);
     tSet(FONT_HDR, C_YELLOW);
-    tPut(6, 21, title);
+    tPut(EDGE, 21, title);
     char h[16];
     snprintf(h, sizeof(h), "%d/%d", g_displayPage + 1, NUM_DISPLAY_PAGES);
     tSet(FONT_SMALL, C_TEXT);
-    tPut(TFT_W - tWidth(h) - 6, 20, h);
+    tPut(TFT_W - tWidth(h) - EDGE, 20, h);
 }
 
 inline void drawFooterBar() {
@@ -289,7 +302,7 @@ inline void drawFooterBar() {
     char f[42];
     snprintf(f, sizeof(f), "%s", g_displayStatus);
     tSet(FONT_BODY, C_GREEN);
-    tPut(8, TFT_H - 8, f);
+    tPut(EDGE, TFT_H - 8, f);
 }
 
 // Іконка батареї зі шкалою заповнення; pct<0 — даних немає.
@@ -338,8 +351,8 @@ inline void drawPageMain() {
 
     drawHeaderBar("Moto IMPRES");
 
-    // Велика батарея на всю ширину.
-    int bx = 14, by = 44, bw = TFT_W - 36, bh = 60;
+    // Велика батарея на всю ширину (з відступом від кутів).
+    int bx = CX, by = 44, bw = TFT_W - 2 * CX - 4, bh = 60;
     drawBatteryBar(bx, by, bw, bh, pct, col);
     // % великим по центру шкали (білим для контрасту).
     if (pct >= 0) snprintf(buf, sizeof(buf), "%d%%", pct);
@@ -356,21 +369,21 @@ inline void drawPageMain() {
     tSet(FONT_BODY, C_TEXT);
     if (mah >= 0) snprintf(buf, sizeof(buf), "Залишок: %d мА·год", mah);
     else          snprintf(buf, sizeof(buf), "Залишок: --");
-    tPut(14, y, buf); y += 24;
+    tPut(CX, y, buf); y += 24;
 
     if (hasDump2438) {
         uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
         int16_t  traw = ((int16_t)((batteryDump2438[2] << 8) | batteryDump2438[1])) >> 3;
         snprintf(buf, sizeof(buf), "%.2f В    %.1f °C", vraw * 0.01f, traw * 0.03125f);
     } else snprintf(buf, sizeof(buf), "DS2438: немає даних");
-    tPut(14, y, buf); y += 24;
+    tPut(CX, y, buf); y += 24;
 
     tSet(FONT_BODY, C_BLUE);
     snprintf(buf, sizeof(buf), "IP: %s", ESP_IP);
-    tPut(14, y, buf); y += 24;
+    tPut(CX, y, buf); y += 24;
 
     tSet(FONT_SMALL, C_MUTED);
-    tPut(14, y, "[>] довго — зчитати АКБ");
+    tPut(CX, y, "[>] довго — зчитати АКБ");
 
     drawFooterBar();
 }
@@ -380,25 +393,25 @@ inline void drawPageModel() {
     char model[24];
 
     tSet(FONT_BODY, C_MUTED);
-    tPut(14, 62, "Модель:");
+    tPut(CX, 62, "Модель:");
     if (decodeModel(model, sizeof(model))) {
         tSet(FONT_MODEL, C_YELLOW);
-        tPut(18, 92, model);
+        tPut(CX + 4, 92, model);
     } else {
         tSet(FONT_BODY, C_MUTED);
-        tPut(18, 92, hasDump ? "(невідомо)" : "(зчитайте)");
+        tPut(CX + 4, 92, hasDump ? "(невідомо)" : "(зчитайте)");
     }
 
     tSet(FONT_BODY, C_MUTED);
-    tPut(14, 140, "Серійний (DS2438):");
+    tPut(CX, 140, "Серійний (DS2438):");
     if (hasSN2438) {
         char sn[20]; int p = 0;
         for (int i = 0; i < 8; i++) p += snprintf(sn + p, sizeof(sn) - p, "%02X", chipSN2438[i]);
         tSet(FONT_BODY, C_TEXT);
-        tPut(18, 168, sn);
+        tPut(CX + 4, 168, sn);
     } else {
         tSet(FONT_BODY, C_MUTED);
-        tPut(18, 168, "(зчитайте АКБ)");
+        tPut(CX + 4, 168, "(зчитайте АКБ)");
     }
     drawFooterBar();
 }
@@ -409,8 +422,8 @@ inline void drawPageTech() {
 
     if (!hasDump2438) {
         tSet(FONT_BODY, C_MUTED);
-        tPut(14, 70, "Немає даних DS2438.");
-        tPut(14, 96, "Спочатку зчитайте АКБ.");
+        tPut(CX, 70, "Немає даних DS2438.");
+        tPut(CX, 96, "Спочатку зчитайте АКБ.");
         drawFooterBar();
         return;
     }
@@ -423,10 +436,10 @@ inline void drawPageTech() {
 
     int y = 66;
     tSet(FONT_BODY, C_TEXT);
-    snprintf(buf, sizeof(buf), "Напруга:   %.2f В", vraw * 0.01f);    tPut(14, y, buf); y += 30;
-    snprintf(buf, sizeof(buf), "Струм:     %.0f мА", i_mA);           tPut(14, y, buf); y += 30;
-    snprintf(buf, sizeof(buf), "Темп.:     %.1f °C", traw * 0.03125f); tPut(14, y, buf); y += 30;
-    snprintf(buf, sizeof(buf), "Залишок:   ~%d мА·год", remMah);      tPut(14, y, buf);
+    snprintf(buf, sizeof(buf), "Напруга:   %.2f В", vraw * 0.01f);    tPut(CX, y, buf); y += 30;
+    snprintf(buf, sizeof(buf), "Струм:     %.0f мА", i_mA);           tPut(CX, y, buf); y += 30;
+    snprintf(buf, sizeof(buf), "Темп.:     %.1f °C", traw * 0.03125f); tPut(CX, y, buf); y += 30;
+    snprintf(buf, sizeof(buf), "Залишок:   ~%d мА·год", remMah);      tPut(CX, y, buf);
 
     drawFooterBar();
 }
@@ -439,15 +452,16 @@ inline void drawPageHealth() {
     int y = 66;
     tSet(FONT_BODY, C_TEXT);
     if (decodeCapacity(&cap, &wear)) {
-        snprintf(buf, sizeof(buf), "Ємність: %d %%", cap);  tPut(14, y, buf);
-        // кольорова смуга ємності
+        snprintf(buf, sizeof(buf), "Ємність: %d %%", cap);  tPut(CX, y, buf);
+        // кольорова смуга ємності (у межах безпечної зони)
+        int barx = 150, barw = TFT_W - EDGE - barx;
         uint16_t cc = cap >= 80 ? C_GREEN : cap >= 50 ? C_YELLOW : C_RED;
-        tft.drawRect(150, y - 12, 78, 14, C_MUTED);
-        tft.fillRect(151, y - 11, 76 * (cap > 100 ? 100 : cap) / 100, 12, cc);
+        tft.drawRect(barx, y - 12, barw, 14, C_MUTED);
+        tft.fillRect(barx + 1, y - 11, (barw - 2) * (cap > 100 ? 100 : cap) / 100, 12, cc);
         y += 30;
-        snprintf(buf, sizeof(buf), "Знос:    %d %%", wear); tPut(14, y, buf); y += 30;
+        snprintf(buf, sizeof(buf), "Знос:    %d %%", wear); tPut(CX, y, buf); y += 30;
     } else {
-        tPut(14, y, "Ємність: (зчитайте)"); y += 30;
+        tPut(CX, y, "Ємність: (зчитайте)"); y += 30;
     }
 
     if (hasDump2438) {
@@ -456,18 +470,18 @@ inline void drawPageHealth() {
         int chgCyc = (int)(cca * DS2438_MAH_PER_LSB / BATTERY_RATED_MAH);
         int disCyc = (int)(dca * DS2438_MAH_PER_LSB / BATTERY_RATED_MAH);
         snprintf(buf, sizeof(buf), "Циклів: зар.%d роз.%d", chgCyc, disCyc);
-        tPut(14, y, buf); y += 30;
+        tPut(CX, y, buf); y += 30;
     }
 
     const char *reason;
     if (batteryGenuine(&reason)) {
         tSet(FONT_BODY, C_GREEN);
         snprintf(buf, sizeof(buf), "Справжня: ТАК  (%s)", reason);
-        tPut(14, y, buf);
+        tPut(CX, y, buf);
     } else {
         tSet(FONT_BODY, C_RED);
         snprintf(buf, sizeof(buf), "РИЗИК: %s", reason);
-        tPut(14, y, buf);
+        tPut(CX, y, buf);
     }
 
     drawFooterBar();
@@ -478,7 +492,7 @@ inline void drawRawColor(const char *title, const uint8_t *data, bool has, int c
     drawHeaderBar(title);
     if (!has) {
         tSet(FONT_BODY, C_MUTED);
-        tPut(14, 70, "немає даних (зчитайте)");
+        tPut(CX, 70, "немає даних (зчитайте)");
         drawFooterBar();
         return;
     }
@@ -490,7 +504,7 @@ inline void drawRawColor(const char *title, const uint8_t *data, bool has, int c
         int n = snprintf(buf, sizeof(buf), "%03X:", off);
         for (int c = 0; c < perRow && off + c < count; c++)
             n += snprintf(buf + n, sizeof(buf) - n, "%02X ", data[off + c]);
-        tPut(6, y, buf);
+        tPut(EDGE, y, buf);
         y += 14;
         if (y > FOOT_Y - 4) break;
     }
@@ -533,24 +547,26 @@ inline void drawPageActions() {
     char t[20]; snprintf(t, sizeof(t), "Дія %d/%d", sel + 1, total);
     drawHeaderBar(t);
 
-    // Картка операції.
+    // Картка операції (у межах безпечної зони кутів).
+    int cardx = EDGE > 10 ? EDGE - 4 : 10;
+    int txtx  = cardx + 10;
     uint16_t accent = danger ? C_RED : C_GREEN;
-    tft.drawRoundRect(10, 44, TFT_W - 20, 96, 6, accent);
+    tft.drawRoundRect(cardx, 44, TFT_W - 2 * cardx, 96, 6, accent);
     tSet(FONT_MODEL, accent);
-    tPut(20, 78, name);
+    tPut(txtx, 78, name);
     tSet(FONT_BODY, C_TEXT);
-    tPut(20, 106, l1);
-    tPut(20, 128, l2);
+    tPut(txtx, 106, l1);
+    tPut(txtx, 128, l2);
     if (danger) {
         tSet(FONT_BODY, C_RED);
-        tPut(20, 164, "!! НЕЗВОРОТНЬО !!");
+        tPut(txtx, 164, "!! НЕЗВОРОТНЬО !!");
     }
 
     // Підказка керування.
     tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
     tft.drawFastHLine(0, FOOT_Y, TFT_W, C_BLUE);
     tSet(FONT_SMALL, C_MUTED);
-    tPut(8, TFT_H - 8, "[<] вибір   [<] тримати = ПУСК");
+    tPut(EDGE, TFT_H - 8, "[<] вибір   [<] тримати = ПУСК");
 }
 
 // ===================== Рендер і кнопки =====================

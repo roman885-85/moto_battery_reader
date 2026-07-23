@@ -33,20 +33,87 @@ extern uint8_t batteryDump2438[DS2438_MEM_SIZE];
 extern uint8_t chipSN2438[8];
 extern bool hasSN2438;
 
-// -------------------- Роздільність / орієнтація --------------------
-#if defined(DISPLAY_ST7789_240X280)
-  #define TFT_W 240
-  #define TFT_H 280
-#else                                   // за замовчуванням 240x240 (ST7789VW)
-  #define TFT_W 240
-  #define TFT_H 240
-#endif
-#ifndef DISPLAY_ST7789_ROT
-  #define DISPLAY_ST7789_ROT 0          // 0..3; 0 — портрет (роз'єм знизу)
+// -------------------- Роздільність (будь-яка панель ST7789) --------------------
+// Пресети для типових панелей АБО власний розмір DISPLAY_ST7789_W/H.
+// PANEL_W/PANEL_H — рідні (портретні) розміри матриці; оффсети пам'яті
+// (XOFF/YOFF) для панелей, де видима зона зсунута в RAM 240x320 контролера.
+#if   defined(DISPLAY_ST7789_240X320)      // 2.0"/2.4" 240x320
+  #define PANEL_W 240
+  #define PANEL_H 320
+#elif defined(DISPLAY_ST7789_240X280)      // 1.69" ST7789V3 240x280
+  #define PANEL_W 240
+  #define PANEL_H 280
+  #define PANEL_XOFF 0
+  #define PANEL_YOFF 20
+#elif defined(DISPLAY_ST7789_240X240)      // 1.3"/1.54" ST7789VW 240x240
+  #define PANEL_W 240
+  #define PANEL_H 240
+#elif defined(DISPLAY_ST7789_135X240)      // 1.14" 135x240
+  #define PANEL_W 135
+  #define PANEL_H 240
+  #define PANEL_XOFF 52
+  #define PANEL_YOFF 40
+#elif defined(DISPLAY_ST7789_170X320)      // 1.9" 170x320
+  #define PANEL_W 170
+  #define PANEL_H 320
+  #define PANEL_XOFF 35
+  #define PANEL_YOFF 0
+#elif defined(DISPLAY_ST7789_172X320)      // 1.47" 172x320
+  #define PANEL_W 172
+  #define PANEL_H 320
+  #define PANEL_XOFF 34
+  #define PANEL_YOFF 0
+#elif defined(DISPLAY_ST7789_W) && defined(DISPLAY_ST7789_H)   // власний розмір
+  #define PANEL_W DISPLAY_ST7789_W
+  #define PANEL_H DISPLAY_ST7789_H
+#else                                       // за замовчуванням 240x240
+  #define PANEL_W 240
+  #define PANEL_H 240
 #endif
 
-// Апаратний SPI ESP32 (SCK=18, MOSI=23). Керуючі піни — з settings.h.
-static Adafruit_ST7789 tft = Adafruit_ST7789(DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+// Ручне перевизначення оффсетів пам'яті (мають пріоритет над пресетом).
+#if defined(DISPLAY_ST7789_XOFF)
+  #undef  PANEL_XOFF
+  #define PANEL_XOFF DISPLAY_ST7789_XOFF
+#endif
+#if defined(DISPLAY_ST7789_YOFF)
+  #undef  PANEL_YOFF
+  #define PANEL_YOFF DISPLAY_ST7789_YOFF
+#endif
+
+#ifndef DISPLAY_ST7789_ROT
+  #define DISPLAY_ST7789_ROT 0            // 0..3; 0/2 — портрет, 1/3 — ландшафт
+#endif
+
+// TFT_W/TFT_H — РОБОЧІ розміри екрана з урахуванням орієнтації (для верстки).
+#if (DISPLAY_ST7789_ROT & 1)
+  #define TFT_W PANEL_H
+  #define TFT_H PANEL_W
+#else
+  #define TFT_W PANEL_W
+  #define TFT_H PANEL_H
+#endif
+
+// Ручні оффсети пам'яті вмикаються, лише якщо користувач їх задав або явно
+// попросив DISPLAY_ST7789_MANUAL_OFFSET. Інакше — покладаємось на init()
+// бібліотеки Adafruit (вона знає стандартні панелі 240x240/240x320/135x240/
+// 240x280 у свіжих версіях), і підклас із доступом до protected-полів навіть
+// не компілюється — стандартний випадок максимально безпечний.
+#if defined(DISPLAY_ST7789_MANUAL_OFFSET) || defined(DISPLAY_ST7789_XOFF) || defined(DISPLAY_ST7789_YOFF)
+  #define ST7789_USE_OFFSET_CLASS 1
+  class ST7789Panel : public Adafruit_ST7789 {
+  public:
+    ST7789Panel(int8_t cs, int8_t dc, int8_t rst) : Adafruit_ST7789(cs, dc, rst) {}
+    void applyOffsets(uint8_t col, uint8_t row) {
+      _colstart = col; _rowstart = row;
+      _colstart2 = 0;  _rowstart2 = 0;
+      setRotation(rotation);             // перерахувати _xstart/_ystart
+    }
+  };
+  static ST7789Panel tft = ST7789Panel(DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+#else
+  static Adafruit_ST7789 tft = Adafruit_ST7789(DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+#endif
 static U8G2_FOR_ADAFRUIT_GFX u8g2Fonts;
 
 // -------------------- Палітра (RGB565) --------------------
@@ -61,12 +128,20 @@ static U8G2_FOR_ADAFRUIT_GFX u8g2Fonts;
 #define C_ORANGE  0xFC60     // середній
 #define C_RED     0xF800     // низький / небезпека
 
-// -------------------- Шрифти (кирилиця з U8g2) --------------------
-#define FONT_HDR    u8g2_font_9x18_t_cyrillic     // заголовок
-#define FONT_BODY   u8g2_font_9x15_t_cyrillic     // основний текст
-#define FONT_SMALL  u8g2_font_6x12_t_cyrillic     // дрібний / hex
-#define FONT_MODEL  u8g2_font_10x20_t_cyrillic    // назва моделі
-#define FONT_BIG    u8g2_font_fub30_tr            // великий % (цифри/латиниця)
+// -------------------- Шрифти (кирилиця з U8g2), адаптивно за шириною --------
+#if TFT_W < 200                                   // вузькі панелі (135/170/172)
+  #define FONT_HDR    u8g2_font_7x13_t_cyrillic
+  #define FONT_BODY   u8g2_font_6x12_t_cyrillic
+  #define FONT_SMALL  u8g2_font_5x8_t_cyrillic
+  #define FONT_MODEL  u8g2_font_7x14_t_cyrillic
+  #define FONT_BIG    u8g2_font_fub20_tr
+#else                                             // 240-піксельні панелі
+  #define FONT_HDR    u8g2_font_9x18_t_cyrillic
+  #define FONT_BODY   u8g2_font_9x15_t_cyrillic
+  #define FONT_SMALL  u8g2_font_6x12_t_cyrillic
+  #define FONT_MODEL  u8g2_font_10x20_t_cyrillic
+  #define FONT_BIG    u8g2_font_fub30_tr
+#endif
 
 // -------------------- Розмітка --------------------
 #define HDR_H   30
@@ -318,17 +393,33 @@ inline void drawBatteryBar(int x, int y, int w, int h, int pct, uint16_t col) {
 }
 
 // ===================== Заставка =====================
+//
+// Кастомна КОЛЬОРОВА заставка: покладіть у папку скетчу файл custom_splash.h
+// (згенерований tools/make_color_splash.py) і розкоментуйте в settings.h
+//   #define DISPLAY_SPLASH_CUSTOM
+// Він має визначати SPLASH_W, SPLASH_H і масив splash_rgb565[] (RGB565).
+#if defined(DISPLAY_SPLASH_CUSTOM)
+  #include "custom_splash.h"
+#endif
 
 inline void displaySplash() {
     tft.fillScreen(C_BG);
-    // Синьо-жовта смуга зверху (прапор UA) для акценту.
+
+#if defined(DISPLAY_SPLASH_CUSTOM)
+    // Кастомна кольорова картинка по центру екрана.
+    int sx = (TFT_W - (int)SPLASH_W) / 2;
+    int sy = (TFT_H - (int)SPLASH_H) / 2;
+    if (sx < 0) sx = 0;
+    if (sy < 0) sy = 0;
+    tft.drawRGBBitmap(sx, sy, (uint16_t *)splash_rgb565, SPLASH_W, SPLASH_H);
+#else
+    // Типова заставка НГУ (синьо-жовта, тризуб).
     tft.fillRect(0, 0, TFT_W, 6, C_BLUE);
     tft.fillRect(0, 6, TFT_W, 6, C_YELLOW);
-    // Тризуб — жовтим по центру.
     int gx = (TFT_W - NGU_W) / 2;
-    int gy = 40;
+    int gy = (TFT_H > 240) ? (TFT_H / 2 - NGU_H) : 34;   // трохи вище центру
+    if (gy < 20) gy = 20;
     tft.drawXBitmap(gx, gy, ngu_xbm, NGU_W, NGU_H, C_YELLOW);
-    // Підписи.
     const char *l1 = "Національна Гвардія";
     const char *l2 = "України";
     const char *l3 = "IMPRES tool";
@@ -338,6 +429,7 @@ inline void displaySplash() {
     tPut((TFT_W - tWidth(l2)) / 2, gy + NGU_H + 54, l2);
     tSet(FONT_BODY, C_MUTED);
     tPut((TFT_W - tWidth(l3)) / 2, gy + NGU_H + 82, l3);
+#endif
 }
 
 // ===================== Сторінки =====================
@@ -600,8 +692,18 @@ inline void displayInit() {
     pinMode(DISPLAY_BLK_PIN, OUTPUT);
     digitalWrite(DISPLAY_BLK_PIN, HIGH);      // підсвітка
 #endif
-    tft.init(TFT_W, TFT_H);                   // ST7789 (240x240 / 240x280)
+    tft.init(PANEL_W, PANEL_H);               // рідні (портретні) розміри матриці
     tft.setRotation(DISPLAY_ST7789_ROT);
+#if defined(ST7789_USE_OFFSET_CLASS)
+    // Ручні оффсети пам'яті (для нестандартних панелей або якщо авто-зсув хибний).
+    #ifndef PANEL_XOFF
+      #define PANEL_XOFF 0
+    #endif
+    #ifndef PANEL_YOFF
+      #define PANEL_YOFF 0
+    #endif
+    tft.applyOffsets(PANEL_XOFF, PANEL_YOFF);
+#endif
 #if defined(DISPLAY_ST7789_INVERT)
     tft.invertDisplay(true);                  // деякі панелі показують інверсно
 #endif
@@ -609,7 +711,8 @@ inline void displayInit() {
     u8g2Fonts.setFontMode(1);                 // прозорий фон тексту
     u8g2Fonts.setFontDirection(0);
     tft.fillScreen(C_BG);
-    Serial.printf("DISPLAY: ST7789 %dx%d color, rot=%d\n", (int)TFT_W, (int)TFT_H, (int)DISPLAY_ST7789_ROT);
+    Serial.printf("DISPLAY: ST7789 %dx%d (panel %dx%d) color, rot=%d\n",
+                  (int)TFT_W, (int)TFT_H, (int)PANEL_W, (int)PANEL_H, (int)DISPLAY_ST7789_ROT);
 }
 
 // ---- Кнопки (та ж логіка, що й у монохромній версії) ----

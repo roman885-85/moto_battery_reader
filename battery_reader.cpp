@@ -409,12 +409,15 @@ bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
     for (uint8_t page = 0; page < DS2438_PAGES; page++) {
         const uint8_t *pageData = buffer + page * DS2438_PAGE_SIZE;
 
-        // Сторінки 0..2 містять "живі"/вимірювані регістри (Status, Temp, U, I,
-        // ETM, ICA), які чіп оновлює сам. Їх scratchpad читається зі значеннями
-        // АЦП, тож БАЙТ-У-БАЙТ звірка тут дала б хибну помилку — для них
-        // розбіжність лише попередження. Сторінки 3..7 — EEPROM (калібрування,
-        // CCA/DCA), для них звірка строга.
-        bool volatilePage = (page <= 2);
+        // "Живі" регістри, які чіп оновлює сам і байт-у-байт звірка дала б хибну
+        // помилку "write failed":
+        //   стор.0 — Status/Temp/U/I (АЦП, read-only вимірювання);
+        //   стор.1 — ETM/ICA/offset (лічильники);
+        //   стор.2 — поточні;
+        //   стор.7 — CCA/DCA (акумулятори заряду/розряду — теж авто-оновлювані;
+        //            саме через строгу звірку тут падали SETETM/WIPE38).
+        // Пам'ять калібрування/дзеркала (стор.3..6) звіряємо СТРОГО.
+        bool volatilePage = (page <= 2 || page == 7);
 
         // Write Scratchpad (запис завжди починається з байта 0 scratchpad).
         _ow->reset();

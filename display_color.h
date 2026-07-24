@@ -450,7 +450,7 @@ inline void drawPageMain() {
     drawHeaderBar("Moto IMPRES");
 
     // Велика батарея на всю ширину (з відступом від кутів).
-    int bx = CX, by = 44, bw = TFT_W - 2 * CX - 4, bh = 60;
+    int bx = CX, by = HDR_H + 12, bw = TFT_W - 2 * CX - 4, bh = 52;
     drawBatteryBar(bx, by, bw, bh, pct, col);
     // % великим по центру шкали (вбудований шрифт GFX — завжди доступний).
     if (pct >= 0) snprintf(buf, sizeof(buf), "%d%%", pct);
@@ -467,25 +467,29 @@ inline void drawPageMain() {
     // Джерело показника (ICA/volt).
     tSet(FONT_SMALL, C_MUTED);
     snprintf(buf, sizeof(buf), "джерело: %s", src);
-    tPut(bx, by + bh + 16, buf);
+    tPut(bx, by + bh + 14, buf);
 
-    // Деталі.
-    int y = by + bh + 40;
+    // Деталі. Крок підібраний так, щоб 4 рядки влазили навіть на найнижчій
+    // портретній панелі (240 -> статус-смуга з ~214), тож на 280/320 і поготів.
+    const int rh = 22;
+    int y = by + bh + 34;                          // базова лінія 1-го рядка
+    if (y + 3 * rh > FOOT_Y - 6)                    // страховка від наїзду на смугу
+        y = FOOT_Y - 6 - 3 * rh;
     tSet(FONT_BODY, C_TEXT);
     if (mah >= 0) snprintf(buf, sizeof(buf), "Залишок: %d мА·год", mah);
     else          snprintf(buf, sizeof(buf), "Залишок: --");
-    tPut(CX, y, buf); y += 24;
+    tPut(CX, y, buf); y += rh;
 
     if (hasDump2438) {
         uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
         int16_t  traw = ((int16_t)((batteryDump2438[2] << 8) | batteryDump2438[1])) >> 3;
         snprintf(buf, sizeof(buf), "%.2f В    %.1f °C", vraw * 0.01f, traw * 0.03125f);
     } else snprintf(buf, sizeof(buf), "DS2438: немає даних");
-    tPut(CX, y, buf); y += 24;
+    tPut(CX, y, buf); y += rh;
 
     tSet(FONT_BODY, C_BLUE);
     snprintf(buf, sizeof(buf), "IP: %s", ESP_IP);
-    tPut(CX, y, buf); y += 24;
+    tPut(CX, y, buf); y += rh;
 
     tSet(FONT_SMALL, C_MUTED);
     tPut(CX, y, "[>] довго — зчитати АКБ");
@@ -606,12 +610,12 @@ inline void drawRawColor(const char *title, const uint8_t *data, bool has, int c
     const int perRow = 8;
     int y = HDR_H + 16;
     for (int off = 0; off < count; off += perRow) {
+        if (y > FOOT_Y - 10) break;                 // не заходити під статус-смугу
         int n = snprintf(buf, sizeof(buf), "%03X:", off);
         for (int c = 0; c < perRow && off + c < count; c++)
             n += snprintf(buf + n, sizeof(buf) - n, "%02X ", data[off + c]);
         tPut(EDGE, y, buf);
         y += 14;
-        if (y > FOOT_Y - 4) break;
     }
     drawFooterBar();
 }

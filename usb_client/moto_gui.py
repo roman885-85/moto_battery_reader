@@ -320,21 +320,26 @@ class App:
                              bg="#eef1f4", fg="#2a6", relief="flat", state="disabled", cursor="arrow",
                              takefocus=0)
         self.hxGut.pack(side="left", fill="y")
-        self.hxHex = tk.Text(body, width=50, font=mono, wrap="none", undo=True, padx=5,
+        self.hxHex = tk.Text(body, width=50, font=mono, wrap="none", padx=5,
                              relief="flat", bg="#ffffff", insertbackground="#111")
         self.hxHex.pack(side="left", fill="both", expand=True)
         self.hxAsc = tk.Text(body, width=18, font=mono, wrap="none", padx=5,
-                             bg="#eef1f4", fg="#357", relief="flat", state="disabled", cursor="arrow",
-                             takefocus=0)
+                             bg="#f4f7fa", fg="#357", relief="flat", insertbackground="#111")
         self.hxAsc.pack(side="left", fill="y")
-        # Синхронне вертикальне прокручування трьох панелей: тягне лише hxHex,
-        # решта слідують; смуга/колесо рухають усі три.
+        # Модель редактора: справжні байти. Обидві панелі (hex і текст) лише
+        # ВІДОБРАЖАЮТЬ модель; правки йдуть у модель через перехоплення клавіш,
+        # тож роздільники/адреси/вирівнювання НЕ псуються, а к-сть байт завжди точна.
+        self.edBytes = bytearray()
+        self.edSize = 512
+        # Синхронне вертикальне прокручування трьох панелей.
         self.hxHex.config(yscrollcommand=self._hx_on_scroll)
         for w in (self.hxGut, self.hxHex, self.hxAsc):
             w.bind("<MouseWheel>", self._hx_wheel)
             w.bind("<Button-4>", self._hx_wheel)
             w.bind("<Button-5>", self._hx_wheel)
-        self.hxHex.bind("<KeyRelease>", self._hx_aux)
+        # Редагування лише ніблів (hex) і символів (ASCII); решта клавіш — блок.
+        self.hxHex.bind("<Key>", self._hx_key)
+        self.hxAsc.bind("<Key>", self._hx_asc_key)
 
     # ---- синхронізація прокручування hex-панелей -----------------------
     def _hx_yview(self, *args):
@@ -357,23 +362,112 @@ class App:
         w.insert("1.0", text)
         w.config(state="disabled")
 
-    # Перерахунок колонок Offset і ASCII з поточних байтів hex-панелі (як у HxD).
-    def _hx_aux(self, *_):
-        import re
-        hexs = re.sub(r"[^0-9a-fA-F]", "", self.hxHex.get("1.0", "end"))
-        n = len(hexs) // 2
-        guts, ascs = [], []
+    # ---- геометрія сітки (16 байт/рядок, подвійний пробіл після 8-го) --------
+    @staticmethod
+    def _hx_col(j):            # колонка старшого нібла байта j у hex-панелі
+        return j * 3 if j < 8 else 25 + (j - 8) * 3
+
+    @classmethod
+    def _hx_byte_at(cls, col):  # (індекс_у_рядку, нібл 0/1) або None (роздільник)
+        for j in range(16):
+            c = cls._hx_col(j)
+            if col == c:     return (j, 0)
+            if col == c + 1: return (j, 1)
+        return None
+
+    @staticmethod
+    def _hx_asc_col(j):        # колонка байта j у текстовій панелі
+        return j if j < 8 else 10 + (j - 8)
+
+    # ---- рендер трьох панелей З МОДЕЛІ (єдине джерело правди) -----------------
+    def _hx_render(self):
+        n = len(self.edBytes)
+        guts, hexs, ascs = [], [], []
         for i in range(0, max(n, 1), 16):
             guts.append("%08X" % i)
-            row = ""
-            for j in range(i, min(i + 16, n)):
-                b = int(hexs[j * 2:j * 2 + 2], 16)
-                row += chr(b) if 32 <= b < 127 else "."
-            ascs.append((row[:8] + " " + row[8:]) if len(row) > 8 else row)
+            row = self.edBytes[i:i + 16]
+            hx = " ".join("%02X" % b for b in row[:8])
+            if len(row) > 8:
+                hx += "  " + " ".join("%02X" % b for b in row[8:16])
+            hexs.append(hx)
+            asc = "".join(chr(b) if 32 <= b < 127 else "." for b in row)
+            ascs.append((asc[:8] + "  " + asc[8:]) if len(asc) > 8 else asc)
         if n == 0:
-            guts, ascs = [], []
+            guts, hexs, ascs = [], [], []
         self._set_ro(self.hxGut, "\n".join(guts))
-        self._set_ro(self.hxAsc, "\n".join(ascs))
+        # hex/asc лишаємо редагованими (state=normal), просто перезаписуємо вміст
+        self.hxHex.delete("1.0", "end"); self.hxHex.insert("1.0", "\n".join(hexs))
+        self.hxAsc.delete("1.0", "end"); self.hxAsc.insert("1.0", "\n".join(ascs))
+
+    def _hx_setcur(self, w, r, c):
+        try:
+            w.mark_set("insert", "%d.%d" % (r, c)); w.see("insert")
+        except Exception:
+            pass
+
+    # ---- редагування hex-панелі: лише нібли -----------------------------------
+    def _hx_key(self, e):
+        if e.keysym in ("Left", "Right", "Up", "Down", "Home", "End",
+                        "Prior", "Next", "Tab", "Shift_L", "Shift_R"):
+            return None                                   # навігація — вільно
+        ch = e.char
+        if not ch or ch not in "0123456789abcdefABCDEF":
+            return "break"                                # пробіли/Backspace/букви — блок
+        try:
+            r, c = map(int, self.hxHex.index("insert").split("."))
+        except Exception:
+            return "break"
+        bn = self._hx_byte_at(c)
+        if bn is None:                                    # курсор на роздільнику
+            return "break"
+        j, nib = bn
+        bi = (r - 1) * 16 + j
+        if bi >= len(self.edBytes):
+            return "break"
+        d = int(ch, 16)
+        v = self.edBytes[bi]
+        v = ((d << 4) | (v & 0x0F)) if nib == 0 else ((v & 0xF0) | d)
+        self.edBytes[bi] = v
+        self._hx_render()
+        # перехід на наступний нібл
+        if nib == 0:
+            self._hx_setcur(self.hxHex, r, c + 1)
+        else:
+            nb = bi + 1
+            if nb < len(self.edBytes):
+                self._hx_setcur(self.hxHex, nb // 16 + 1, self._hx_col(nb % 16))
+            else:
+                self._hx_setcur(self.hxHex, r, c)
+        return "break"
+
+    # ---- редагування текстової панелі: друкований символ -> байт --------------
+    def _hx_asc_key(self, e):
+        if e.keysym in ("Left", "Right", "Up", "Down", "Home", "End",
+                        "Prior", "Next", "Tab", "Shift_L", "Shift_R"):
+            return None
+        ch = e.char
+        if not ch or not (32 <= ord(ch) < 127):
+            return "break"
+        try:
+            r, c = map(int, self.hxAsc.index("insert").split("."))
+        except Exception:
+            return "break"
+        # колонка -> індекс байта (пропускаємо подвійний пробіл між групами)
+        j = None
+        for k in range(16):
+            if c == self._hx_asc_col(k):
+                j = k; break
+        if j is None:
+            return "break"
+        bi = (r - 1) * 16 + j
+        if bi >= len(self.edBytes):
+            return "break"
+        self.edBytes[bi] = ord(ch)
+        self._hx_render()
+        nb = bi + 1
+        if nb < len(self.edBytes):
+            self._hx_setcur(self.hxAsc, nb // 16 + 1, self._hx_asc_col(nb % 16))
+        return "break"
 
     def _build_log(self):
         self.txLog = scrolledtext.ScrolledText(self.tabLog, font=("Consolas", 8)); self.txLog.pack(fill="both", expand=True)
@@ -684,37 +778,33 @@ class App:
         if not self.need_conn():
             return
         is38 = self.hxTarget.current() == 1
+        self.edSize = 64 if is38 else 512
         self.cmd("GET38" if is38 else "GET33", 15.0, cb=self._hx_show)
 
     def _hx_show(self, r):
         if not r.get("ok") or not r.get("hex"):
             messagebox.showwarning("Дамп", "Зчитайте АКБ"); return
-        parts = r["hex"].split()
-        lines = []
-        for i in range(0, len(parts), 16):
-            row = parts[i:i + 16]
-            left = " ".join(row[:8])
-            right = " ".join(row[8:16])
-            lines.append((left + "  " + right).rstrip())
-        self.hxHex.delete("1.0", "end")
-        self.hxHex.insert("1.0", "\n".join(lines))
-        self._hx_aux()
+        import re
+        hexs = re.sub(r"[^0-9a-fA-F]", "", r["hex"])
+        self.edBytes = bytearray(int(hexs[i:i + 2], 16) for i in range(0, len(hexs), 2))
+        self.edSize = len(self.edBytes)
+        self._hx_render()
 
     def hx_write(self):
         if not self.need_conn():
             return
         is38 = self.hxTarget.current() == 1
-        import re
-        hexs = re.sub(r"[^0-9a-fA-F]", "", self.hxHex.get("1.0", "end"))
-        need = (64 if is38 else 512) * 2
-        if len(hexs) != need:
-            messagebox.showwarning("Байти", f"Треба {need // 2} байт, зараз {len(hexs) // 2}"); return
-        if not messagebox.askyesno("Запис", f"⚡ Запис {need // 2} байт НЕЗВОРОТНІЙ. Продовжити?"):
+        need = 64 if is38 else 512
+        # Пишемо СТРОГО з моделі — рівно потрібна к-сть байт, без ризику
+        # зіпсувати вирівнювання/роздільники (звідси й були помилки запису).
+        if len(self.edBytes) != need:
+            messagebox.showwarning("Байти",
+                f"У редакторі {len(self.edBytes)} байт, треба {need}. Натисніть «↻ Завантажити».")
             return
-        if is38:
-            command = "WRITE38"
-        else:
-            command = "WRITEFIX33" if self.hxFix.get() else "WRITE33"
+        if not messagebox.askyesno("Запис", f"⚡ Запис {need} байт НЕЗВОРОТНІЙ. Продовжити?"):
+            return
+        command = "WRITE38" if is38 else ("WRITEFIX33" if self.hxFix.get() else "WRITE33")
+        hexs = "".join("%02x" % b for b in self.edBytes)
         self.maybe_auth(lambda: (self.status("Запис байтів..."),
                                  self.cmd(command + " " + hexs, 25.0, cb=lambda r: self._after_write(r, "✅ Записано"))))
 

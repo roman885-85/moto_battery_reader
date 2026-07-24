@@ -128,19 +128,22 @@ static U8G2_FOR_ADAFRUIT_GFX u8g2Fonts;
 #define C_ORANGE  0xFC60     // середній
 #define C_RED     0xF800     // низький / небезпека
 
-// -------------------- Шрифти (кирилиця з U8g2), адаптивно за шириною --------
+// -------------------- Шрифти, адаптивно за шириною --------------------
+// ВАЖЛИВО: беремо ЛИШЕ ті кириличні шрифти, що зашиті в U8g2_for_Adafruit_GFX
+// (це підмножина u8g2: 4x6/5x8/6x12/7x13/8x13/9x15/10x20 *_t_cyrillic).
+// Немає 9x18_t_cyrillic і fub* — тому великий % малюємо вбудованим шрифтом GFX.
 #if TFT_W < 200                                   // вузькі панелі (135/170/172)
   #define FONT_HDR    u8g2_font_7x13_t_cyrillic
   #define FONT_BODY   u8g2_font_6x12_t_cyrillic
   #define FONT_SMALL  u8g2_font_5x8_t_cyrillic
-  #define FONT_MODEL  u8g2_font_7x14_t_cyrillic
-  #define FONT_BIG    u8g2_font_fub20_tr
+  #define FONT_MODEL  u8g2_font_8x13_t_cyrillic
+  #define BIG_TSIZE   3                           // масштаб вбудованого шрифту GFX
 #else                                             // 240-піксельні панелі
-  #define FONT_HDR    u8g2_font_9x18_t_cyrillic
+  #define FONT_HDR    u8g2_font_10x20_t_cyrillic
   #define FONT_BODY   u8g2_font_9x15_t_cyrillic
   #define FONT_SMALL  u8g2_font_6x12_t_cyrillic
   #define FONT_MODEL  u8g2_font_10x20_t_cyrillic
-  #define FONT_BIG    u8g2_font_fub30_tr
+  #define BIG_TSIZE   4
 #endif
 
 // -------------------- Розмітка --------------------
@@ -446,11 +449,18 @@ inline void drawPageMain() {
     // Велика батарея на всю ширину (з відступом від кутів).
     int bx = CX, by = 44, bw = TFT_W - 2 * CX - 4, bh = 60;
     drawBatteryBar(bx, by, bw, bh, pct, col);
-    // % великим по центру шкали (білим для контрасту).
+    // % великим по центру шкали (вбудований шрифт GFX — завжди доступний).
     if (pct >= 0) snprintf(buf, sizeof(buf), "%d%%", pct);
     else          snprintf(buf, sizeof(buf), "--%%");
-    tSet(FONT_BIG, C_TEXT);
-    tPut(bx + (bw - tWidth(buf)) / 2, by + bh / 2 + 12, buf);
+    {
+        int cw = 6 * BIG_TSIZE * (int)strlen(buf);   // ширина рядка GFX-шрифтом
+        int ch = 8 * BIG_TSIZE;
+        tft.setTextColor(C_TEXT);
+        tft.setTextSize(BIG_TSIZE);
+        tft.setCursor(bx + (bw - cw) / 2, by + (bh - ch) / 2);
+        tft.print(buf);
+        tft.setTextSize(1);
+    }
     // Джерело показника (ICA/volt).
     tSet(FONT_SMALL, C_MUTED);
     snprintf(buf, sizeof(buf), "джерело: %s", src);

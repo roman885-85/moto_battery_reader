@@ -348,11 +348,14 @@ inline int numActions() { return NUM_BASE_ACTIONS + BATTERY_TEMPLATE_COUNT; }
 
 // ===================== Примітиви малювання (кольорові) =====================
 
-inline void tSet(const uint8_t *font, uint16_t fg) {
+// Малюємо текст у НЕПРОЗОРОМУ режимі (setFontMode(0)), задаючи фон гліфа
+// РІВНИМ кольору ділянки. Так немає чорних ореолів навколо символів на
+// кольорових смугах (шапка/статус). За замовчуванням фон = C_BG (чорний).
+inline void tSet(const uint8_t *font, uint16_t fg, uint16_t bg = C_BG) {
     u8g2Fonts.setFont(font);
     u8g2Fonts.setForegroundColor(fg);
+    u8g2Fonts.setBackgroundColor(bg);
 }
-// Текст із базовою лінією y (як у u8g2). Фон — прозорий (setFontMode(1) в init).
 inline void tPut(int x, int y, const char *s) { u8g2Fonts.drawUTF8(x, y, s); }
 inline int  tWidth(const char *s) { return u8g2Fonts.getUTF8Width(s); }
 
@@ -366,11 +369,11 @@ inline uint16_t chargeColor(int pct) {
 inline void drawHeaderBar(const char *title) {
     tft.fillRect(0, 0, TFT_W, HDR_H, C_HDRBG);
     tft.drawFastHLine(0, HDR_H - 1, TFT_W, C_BLUE);
-    tSet(FONT_HDR, C_YELLOW);
+    tSet(FONT_HDR, C_YELLOW, C_HDRBG);
     tPut(EDGE, 21, title);
     char h[16];
     snprintf(h, sizeof(h), "%d/%d", g_displayPage + 1, NUM_DISPLAY_PAGES);
-    tSet(FONT_SMALL, C_TEXT);
+    tSet(FONT_SMALL, C_TEXT, C_HDRBG);
     tPut(TFT_W - tWidth(h) - EDGE, 20, h);
 }
 
@@ -379,7 +382,7 @@ inline void drawFooterBar() {
     tft.drawFastHLine(0, FOOT_Y, TFT_W, C_BLUE);
     char f[42];
     snprintf(f, sizeof(f), "%s", g_displayStatus);
-    tSet(FONT_BODY, C_GREEN);
+    tSet(FONT_BODY, C_GREEN, C_CARD);
     tPut(EDGE, TFT_H - 8, f);
 }
 
@@ -667,7 +670,7 @@ inline void drawPageActions() {
     // Підказка керування.
     tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
     tft.drawFastHLine(0, FOOT_Y, TFT_W, C_BLUE);
-    tSet(FONT_SMALL, C_MUTED);
+    tSet(FONT_SMALL, C_MUTED, C_CARD);
     tPut(EDGE, TFT_H - 8, "[<] вибір   [<] тримати = ПУСК");
 }
 
@@ -718,7 +721,8 @@ inline void displayInit() {
     tft.invertDisplay(true);                  // деякі панелі показують інверсно
 #endif
     u8g2Fonts.begin(tft);
-    u8g2Fonts.setFontMode(1);                 // прозорий фон тексту
+    u8g2Fonts.setFontMode(0);                 // НЕпрозорий: фон гліфа малюємо
+                                              // під колір ділянки (без чорних ореолів)
     u8g2Fonts.setFontDirection(0);
     tft.fillScreen(C_BG);
     Serial.printf("DISPLAY: ST7789 %dx%d (panel %dx%d) color, rot=%d\n",

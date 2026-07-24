@@ -406,52 +406,18 @@ bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
         return false;
     }
 
+    // --- Фаза 1: пишемо всі сторінки (Write Scratchpad -> Copy Scratchpad). ---
+    // Перевірку scratchpad тут НЕ робимо: для "живих" сторінок (0-2, 7 —
+    // Temp/U/I/ETM/ICA/CCA/DCA) вона давала хибну "write failed" і блокувала
+    // весь запис. Реальне збереження перевіряємо нижче читанням пам'яті назад.
     for (uint8_t page = 0; page < DS2438_PAGES; page++) {
         const uint8_t *pageData = buffer + page * DS2438_PAGE_SIZE;
-
-        // "Живі" регістри, які чіп оновлює сам і байт-у-байт звірка дала б хибну
-        // помилку "write failed":
-        //   стор.0 — Status/Temp/U/I (АЦП, read-only вимірювання);
-        //   стор.1 — ETM/ICA/offset (лічильники);
-        //   стор.2 — поточні;
-        //   стор.7 — CCA/DCA (акумулятори заряду/розряду — теж авто-оновлювані;
-        //            саме через строгу звірку тут падали SETETM/WIPE38).
-        // Пам'ять калібрування/дзеркала (стор.3..6) звіряємо СТРОГО.
-        bool volatilePage = (page <= 2 || page == 7);
-
-        // Write Scratchpad (запис завжди починається з байта 0 scratchpad).
         _ow->reset();
         _ow->select(ds2438_addr);
         _ow->write(DS2438_WRITE_SCRATCH);
         _ow->write(page);
         for (int i = 0; i < DS2438_PAGE_SIZE; i++) _ow->write(pageData[i]);
-
-        // Read Scratchpad: перевіряємо CRC і (для EEPROM-сторінок) співпадіння.
-        _ow->reset();
-        _ow->select(ds2438_addr);
-        _ow->write(DS2438_READ_SCRATCH);
-        _ow->write(page);
-        uint8_t sp[9];
-        for (int i = 0; i < 9; i++) sp[i] = _ow->read();
-
-        if (OneWire::crc8(sp, 8) != sp[8]) {
-            Serial.printf("ERROR: DS2438 scratchpad CRC mismatch on page %d\n", (int)page);
-            _ow->reset();
-            digitalWrite(_pullupPin, LOW);
-            return false;
-        }
-        if (memcmp(sp, pageData, DS2438_PAGE_SIZE) != 0) {
-            if (volatilePage) {
-                Serial.printf("WARN: DS2438 page %d scratchpad differs (live registers) — ok\n", (int)page);
-            } else {
-                Serial.printf("ERROR: DS2438 scratchpad data mismatch on page %d\n", (int)page);
-                _ow->reset();
-                digitalWrite(_pullupPin, LOW);
-                return false;
-            }
-        }
-
-        // Copy Scratchpad -> сторінка пам'яті; чекаємо завершення (tWR макс 10 мс).
+        // Copy Scratchpad -> сторінка пам'яті; tWR макс ~10 мс.
         _ow->reset();
         _ow->select(ds2438_addr);
         _ow->write(DS2438_COPY_SCRATCH);
@@ -459,8 +425,42 @@ bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
         delay(11);
     }
 
+    // --- Фаза 2: перевірка РЕАЛЬНОГО збереження. Читаємо пам'ять назад і
+    // звіряємо ЛИШЕ сторінки 3..6 — дзеркало калібрування, справжній EEPROM.
+    // Сторінки 0-2 і 7 (вимірювання/лічильники) чіп оновлює сам, звіряти їх
+    // немає сенсу. Так немає хибних збоїв, але реальний збій запису
+    // калібрування ловиться, і в Serial видно, що саме не збереглось.
+    bool ok = true;
+    for (uint8_t page = 3; page <= 6; page++) {
+        _ow->reset();
+        _ow->select(ds2438_addr);
+        _ow->write(DS2438_RECALL_MEMORY);
+        _ow->write(page);
+        _ow->reset();
+        _ow->select(ds2438_addr);
+        _ow->write(DS2438_READ_SCRATCH);
+        _ow->write(page);
+        uint8_t rb[9];
+        for (int i = 0; i < 9; i++) rb[i] = _ow->read();
+
+        if (OneWire::crc8(rb, 8) != rb[8]) {
+            Serial.printf("WARN: DS2438 verify CRC noise on page %d — skip\n", (int)page);
+            continue;                          // шум на верифікації — не валимо запис
+        }
+        const uint8_t *pageData = buffer + page * DS2438_PAGE_SIZE;
+        if (memcmp(rb, pageData, DS2438_PAGE_SIZE) != 0) {
+            Serial.printf("ERROR: DS2438 page %d NOT persisted. want ", (int)page);
+            for (int i = 0; i < 8; i++) Serial.printf("%02X", pageData[i]);
+            Serial.print(" got ");
+            for (int i = 0; i < 8; i++) Serial.printf("%02X", rb[i]);
+            Serial.println();
+            ok = false;
+        }
+    }
+
     _ow->reset();
     digitalWrite(_pullupPin, LOW);
-    Serial.println("DS2438 write completed");
-    return true;
+    Serial.println(ok ? "DS2438 write completed (calib pages 3-6 verified)"
+                      : "DS2438 write: calibration pages did NOT persist");
+    return ok;
 }

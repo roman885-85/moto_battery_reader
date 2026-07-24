@@ -28,12 +28,27 @@ extern bool hasSN2438;
 // Кольоровий TFT (ST7789VW 240x240 / ST7789V3 240x280) — окрема реалізація
 // в display_color.h (Adafruit_ST7789 + U8g2_for_Adafruit_GFX). Монохромний
 // u8g2-шлях нижче лишається без змін і збирається, коли ST7789 НЕ вибраний.
+//
+// Кольоровий режим вмикається, якщо задано DISPLAY_ST7789_SPI АБО будь-який
+// пресет розміру ST7789 (щоб не ловити помилку, коли забули головний перемикач).
 // ========================================================================
-#if defined(DISPLAY_ST7789_SPI)
+#if defined(DISPLAY_ST7789_SPI)    || defined(DISPLAY_ST7789_240X240) || \
+    defined(DISPLAY_ST7789_240X280) || defined(DISPLAY_ST7789_240X320) || \
+    defined(DISPLAY_ST7789_135X240) || defined(DISPLAY_ST7789_170X320) || \
+    defined(DISPLAY_ST7789_172X320) || (defined(DISPLAY_ST7789_W) && defined(DISPLAY_ST7789_H))
+  #ifndef DISPLAY_ST7789_SPI
+    #define DISPLAY_ST7789_SPI       // авто-вмикання за наявності пресету розміру
+  #endif
 #include "display_color.h"
 #else
 #include <U8g2lib.h>
 #include <Wire.h>
+
+// Адреса I2C дисплея. Дефолт 0x3C, якщо користувач закоментував/не задав —
+// щоб монохромна збірка не падала «DISPLAY_I2C_ADDR was not declared».
+#ifndef DISPLAY_I2C_ADDR
+  #define DISPLAY_I2C_ADDR 0x3C
+#endif
 
 // Об'єкт дисплея вибирається по моделі з settings.h (повний буфер _F_).
 // DISP_W/DISP_H — роздільність; DISPLAY_USES_I2C — ознака шини I2C.

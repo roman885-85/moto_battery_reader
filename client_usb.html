@@ -231,6 +231,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="note w">🛑 Стирає ВЕСЬ DS2433 у 0xFF: модель, серійний/ID, калібрування. АКБ НЕ ПРАЦЮВАТИМЕ,
         доки не запишете еталонний дамп. DS2438 не чіпається.</div>
       <button class="btn b-dng" style="background:#c0392b" onclick="wipe33()">🔥 СТЕРТИ DS2433 ПОВНІСТЮ</button>
+      <button class="btn b-dng" style="background:#922b21" onclick="wipe38()">🔥 СТЕРТИ DS2438 ПОВНІСТЮ</button>
     </div>
     <div class="card">
       <h2>✏️ Редактор байтів</h2>
@@ -449,6 +450,17 @@ async function wipe33(){
   setBusy(true); toast('Повне стирання DS2433...');
   const r=await cmd('WIPE33',25000);
   toast(r.ok?'✅ DS2433 стерто. Запишіть еталонний дамп.':('Помилка: '+(r.err||'')));
+  await refresh(); setBusy(false);
+}
+
+async function wipe38(){
+  if(!connected){toast('Підключіться');return;}
+  if(!confirm('🔥 ПОВНЕ стирання DS2438!\nСтирається дзеркало калібрування.\nАКБ треба відновити («Новий АКБ»).\nВи зробили копію? Продовжити?'))return;
+  if(!confirm('Останнє попередження: стерти DS2438 ПОВНІСТЮ?'))return;
+  await ensureAuth();
+  setBusy(true); toast('Повне стирання DS2438...');
+  const r=await cmd('WIPE38',25000);
+  toast(r.ok?'✅ DS2438 стерто. Відновіть АКБ («Новий АКБ»).':('Помилка: '+(r.err||'')));
   await refresh(); setBusy(false);
 }
 

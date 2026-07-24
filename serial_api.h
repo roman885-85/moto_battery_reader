@@ -24,6 +24,7 @@
 //   REPAIR               -> ремонт цілісності (суми + дзеркало)
 //   CLEAN                -> очистка (стерти все, крім ідентичності/калібрування)
 //   WIPE33               -> ПОВНЕ стирання DS2433 (крайній випадок, все у 0xFF)
+//   WIPE38               -> ПОВНЕ стирання DS2438 (крайній випадок, все у 0xFF)
 //   SETCAP <0..100>      -> змінити ємність/знос %
 //   SETMAH <мА·год>      -> змінити залишкову ємність (регістр ICA)
 //   SETMODEL <NAME>      -> ручний запис моделі (part number, 3..9 A-Z0-9)
@@ -222,6 +223,7 @@ static void serialExec(const String &line) {
                                                   : "{\"ok\":false,\"err\":\"немає запису моделі у дампі (порожній/невідомий чіп) або збій запису — відновіть еталонний дамп\"}"); } }
     else if (cmd == "CLEAN")    { bool ok = performFactoryClean(); sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"clean failed\"}"); }
     else if (cmd == "WIPE33")   { bool ok = performWipe2433();     sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"wipe failed\"}"); }
+    else if (cmd == "WIPE38")   { bool ok = performWipe2438();     sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"wipe failed\"}"); }
     else if (cmd == "TEMPLATES"){ String j = "{\"ok\":true,\"models\":[";
                                   for (int i = 0; i < BATTERY_TEMPLATE_COUNT; i++) { if (i) j += ","; j += "\""; j += BATTERY_TEMPLATES[i].name; j += "\""; }
                                   j += "]}"; sResp(j); }

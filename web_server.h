@@ -751,6 +751,25 @@ bool performWipe2433() {
     return ok;
 }
 
+// ПОВНЕ стирання DS2438 (64 Б -> 0xFF). Крайній випадок: чіп-монітор у
+// незрозумілому стані. Після цього дзеркало калібрування (DS2438[24:50]) теж
+// стерте, тож АКБ треба відновити («Новий АКБ» або запис еталона).
+bool performWipe2438() {
+    static uint8_t blank[DS2438_MEM_SIZE];
+    memset(blank, 0xFF, DS2438_MEM_SIZE);
+    Serial.println("\n=== FULL WIPE DS2438 ===");
+    ledSet(LED_WRITE); displayShow("СТИРАННЯ 2438..");
+    bool ok = battery.writeDS2438(blank, DS2438_MEM_SIZE);
+    if (ok) {
+        memcpy(batteryDump2438, blank, DS2438_MEM_SIZE); hasDump2438 = true;
+        saveDump("/dump2438.bin", blank, DS2438_MEM_SIZE);
+        displayShow("2438 СТЕРТО");
+    } else displayShow("СТИР. ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    Serial.println("=== Wipe 2438 completed ===\n");
+    return ok;
+}
+
 bool performFactoryClean() {
     if (!hasDump && !hasDump2438) { displayShow("СПОЧАТКУ ЧИТАЙ"); return false; }
     Serial.println("\n=== Factory clean (keep identity) ===");
@@ -870,6 +889,15 @@ void handleWipe2433() {
     bool ok = performWipe2433();
     server.send(ok ? 200 : 500, "application/json",
         ok ? "{\"status\":\"success\",\"message\":\"DS2433 fully erased\"}"
+           : "{\"status\":\"error\",\"message\":\"Wipe write failed\"}");
+}
+
+// Веб-стирання DS2438 (крайній випадок), під паролем.
+void handleWipe2438() {
+    if (!requireAdmin()) return;
+    bool ok = performWipe2438();
+    server.send(ok ? 200 : 500, "application/json",
+        ok ? "{\"status\":\"success\",\"message\":\"DS2438 fully erased\"}"
            : "{\"status\":\"error\",\"message\":\"Wipe write failed\"}");
 }
 
@@ -1271,6 +1299,7 @@ void setupWebServer() {
     server.on("/api/reset", HTTP_POST, handleResetBattery);
     server.on("/api/clean", HTTP_POST, handleClean);            // очистка (крім критичних)
     server.on("/api/wipe2433", HTTP_POST, handleWipe2433);      // ПОВНЕ стирання DS2433
+    server.on("/api/wipe2438", HTTP_POST, handleWipe2438);      // ПОВНЕ стирання DS2438
     server.on("/api/repair", HTTP_POST, handleRepair);          // ремонт цілісності
     server.on("/api/setmodel", HTTP_POST, handleSetModel);       // ручний запис моделі
     server.on("/api/setcapacity", HTTP_POST, handleSetCapacity); // змінити ємність %

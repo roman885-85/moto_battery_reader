@@ -46,6 +46,20 @@ bool BatteryReader::findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr) {
     if (found2433) { memcpy(_rom2433, ds2433_addr, 8); _haveRom2433 = true; }
     if (found2438) { memcpy(_rom2438, ds2438_addr, 8); _haveRom2438 = true; }
 
+    // FALLBACK по кешованому ROM. Пошук (Search ROM) DS2438 буває нестабільним
+    // (слабший драйвер/живлення на шині): при ЗАПИСІ чип іноді не відповідає на
+    // Search, хоча при ЧИТАННІ щойно знаходився — звідси "DS2438 not found for
+    // writing". Якщо ми вже бачили ROM цього чипа — беремо його з кешу й
+    // адресуємо за Match ROM (select), що надійніше за Search.
+    if (!found2433 && _haveRom2433) {
+        memcpy(ds2433_addr, _rom2433, 8); found2433 = true;
+        Serial.println("DS2433: using cached ROM");
+    }
+    if (!found2438 && _haveRom2438) {
+        memcpy(ds2438_addr, _rom2438, 8); found2438 = true;
+        Serial.println("DS2438: using cached ROM");
+    }
+
     // Вимикаємо підтяжку, якщо не знайшли ні жодного пристрою
     if (!found2433 && !found2438) {
         digitalWrite(_pullupPin, LOW);

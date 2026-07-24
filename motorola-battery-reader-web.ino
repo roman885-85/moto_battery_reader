@@ -141,6 +141,7 @@ void loop() {
     else if (act == 3) performWipe2433();
     else if (act == 4) { displayShow("ПЕРЕЗАВАНТАЖ."); Serial.flush(); delay(300); ESP.restart(); }
     else if (act == 5) performRecalPrepare();
+    else if (act == 6) performWipe2438();
     else if (act >= NUM_BASE_ACTIONS && act < NUM_BASE_ACTIONS + BATTERY_TEMPLATE_COUNT)
         performInitBattery(BATTERY_TEMPLATES[act - NUM_BASE_ACTIONS].name, BATTERY_RATED_MAH);
 

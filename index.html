@@ -344,6 +344,7 @@
                 не допомагає. <b>DS2438 не чіпається</b> — з нього потім відновиться калібрування.</div>
             <input type="password" class="pw" id="pwWipe" placeholder="🔑 Пароль адміністратора">
             <button class="btn btn-danger" style="width:100%;background:#c0392b" onclick="wipe2433()">🔥 СТЕРТИ DS2433 ПОВНІСТЮ</button>
+            <button class="btn btn-danger" style="width:100%;background:#922b21;margin-top:6px" onclick="wipe2438()">🔥 СТЕРТИ DS2438 ПОВНІСТЮ</button>
         </div>
 
         <div class="card">
@@ -588,6 +589,19 @@ async function wipe2433(){
     try{
         const r=await postForm('/api/wipe2433',{password:pw});
         toast(r.status==='success'?'✅ DS2433 стерто. Тепер запишіть еталонний дамп.':('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+async function wipe2438(){
+    const pw=$('pwWipe').value; if(!pw){toast('Введіть пароль','err');return}
+    if(!confirm('🔥 ПОВНЕ стирання DS2438!\n\nСтирається дзеркало калібрування (DS2438).\nАКБ треба відновити («Новий АКБ» тієї ж моделі).\n\nВи зробили резервну копію? Продовжити?'))return;
+    if(!confirm('Останнє попередження: стерти DS2438 ПОВНІСТЮ?'))return;
+    prog(true,'Повне стирання DS2438...');
+    try{
+        const r=await postForm('/api/wipe2438',{password:pw});
+        toast(r.status==='success'?'✅ DS2438 стерто. Відновіть АКБ («Новий АКБ»).':('Помилка: '+r.message),r.status==='success'?'ok':'err');
         if(r.status==='success')await refreshAll();
     }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);

@@ -343,7 +343,7 @@ inline bool batteryGenuine(const char **reason) {
 }
 
 // Базові дії + «Новий АКБ» на кожен вшитий шаблон (як у монохромній версії).
-#define NUM_BASE_ACTIONS 6
+#define NUM_BASE_ACTIONS 7
 inline int numActions() { return NUM_BASE_ACTIONS + BATTERY_TEMPLATE_COUNT; }
 
 // ===================== Примітиви малювання (кольорові) =====================
@@ -626,20 +626,22 @@ inline void drawPageRaw2433() { drawRawColor("DS2433 (hex)", batteryDump, hasDum
 
 // Сторінка «Дії»: одна обрана операція крупно + опис + попередження.
 inline void drawPageActions() {
-    static const char *nm[NUM_BASE_ACTIONS] = { "Скидання", "Ремонт", "Очистка", "СТЕРТИ 2433", "Перезавантаж.", "Рекалібр." };
+    static const char *nm[NUM_BASE_ACTIONS] = { "Скидання", "Ремонт", "Очистка", "СТЕРТИ 2433", "Перезавантаж.", "Рекалібр.", "СТЕРТИ 2438" };
     static const char *d1[NUM_BASE_ACTIONS] = { "обнулити лічильники",
                                                 "полагодити суми та",
                                                 "стерти все, окрім",
                                                 "ПОВНЕ стирання чіпа",
                                                 "рестарт пристрою",
-                                                "після заміни банок:" };
+                                                "після заміни банок:",
+                                                "ПОВНЕ стирання чіпа" };
     static const char *d2[NUM_BASE_ACTIONS] = { "заряд/розряд, знос",
                                                 "дзеркало калібрув.",
                                                 "моделі/ID/калібрув.",
                                                 "DS2433 (крайній!)",
                                                 "ESP32 (Wi-Fi/веб)",
-                                                "стерти learned + ICA" };
-    static const bool  dg[NUM_BASE_ACTIONS] = { false, false, false, true, false, false };
+                                                "стерти learned + ICA",
+                                                "DS2438 (крайній!)" };
+    static const bool  dg[NUM_BASE_ACTIONS] = { false, false, false, true, false, false, true };
     int sel = g_actionSel;
     int total = numActions();
 

@@ -81,14 +81,18 @@ class SerialWorker(threading.Thread):
             return {"ok": False, "err": "порт не відкрито"}
         try:
             self.ser.reset_input_buffer()
-            # Великі команди (WRITE33 ~1 КБ) шлемо частинами по 200 Б із
-            # мікропаузами, щоб не переповнити 256-байтний UART-буфер ESP32.
+            # Великі команди (WRITE33 ~1 КБ) шлемо ДРІБНИМИ частинами з паузами,
+            # щоб 256-байтний UART-буфер ESP32 встигав спорожнюватись у loop()
+            # (інакше частина байтів губиться -> "need 512 bytes" / помилка запису).
             data = (c + "\n").encode("utf-8")
-            for i in range(0, len(data), 200):
-                self.ser.write(data[i:i + 200])
+            if len(data) <= 96:
+                self.ser.write(data)
                 self.ser.flush()
-                if len(data) > 200:
-                    time.sleep(0.01)
+            else:
+                for i in range(0, len(data), 96):
+                    self.ser.write(data[i:i + 96])
+                    self.ser.flush()
+                    time.sleep(0.015)      # 96 Б ≈ 8 мс передачі + запас на злив FIFO
             deadline = time.time() + timeout
             buf = b""
             while time.time() < deadline:
@@ -285,6 +289,7 @@ class App:
         ttk.Button(rf, text="📤 Записати DS2433 з .bin (512 Б)", command=lambda: self.write_file(512, "WRITE33")).pack(side="left", padx=3)
         ttk.Button(rf, text="🔬 DS2438 з .bin (64 Б)", command=lambda: self.write_file(64, "WRITE38")).pack(side="left", padx=3)
         ttk.Button(b6, text="🔥 ПОВНЕ стирання DS2433", command=self.wipe33).pack(anchor="w", pady=2)
+        ttk.Button(b6, text="🔥 ПОВНЕ стирання DS2438", command=self.wipe38).pack(anchor="w", pady=2)
 
         b7 = ttk.LabelFrame(p, text="Пристрій", padding=8); b7.pack(fill="x", pady=4)
         ttk.Button(b7, text="🔁 Перезавантажити ESP32", command=self.reboot).pack(side="left", padx=3)
@@ -612,6 +617,16 @@ class App:
             return
         self.maybe_auth(lambda: (self.status("Стирання..."),
                                  self.cmd("WIPE33", 25.0, cb=lambda r: self._after_write(r, "✅ Стерто. Запишіть еталон."))))
+
+    def wipe38(self):
+        if not self.need_conn():
+            return
+        if not messagebox.askyesno("ПОВНЕ стирання", "🔥 Стерти ВЕСЬ DS2438 у 0xFF?\nДзеркало калібрування зникне, АКБ треба відновити («Новий АКБ»).\nВи зробили копію?"):
+            return
+        if not messagebox.askyesno("Підтвердження", "Останнє попередження: стерти DS2438 ПОВНІСТЮ?"):
+            return
+        self.maybe_auth(lambda: (self.status("Стирання 2438..."),
+                                 self.cmd("WIPE38", 25.0, cb=lambda r: self._after_write(r, "✅ DS2438 стерто. Відновіть АКБ."))))
 
     def reboot(self):
         if not self.need_conn():

@@ -682,17 +682,13 @@ inline void drawPageActions() {
 
 // ===================== Рендер і кнопки =====================
 
-// Щоб не миготіти всім екраном: повне очищення (fillScreen) робимо ЛИШЕ при
-// зміні сторінки. Оновлення даних/статусу тієї ж сторінки чистить лише тіло —
-// шапка й статус-смуга перемальовуються самі поверх себе (без спалаху).
-static int g_lastRenderedPage = -1;
+// Без миготіння: НІКОЛИ не робимо fillScreen (він гасить весь екран у чорне і
+// дає спалах при перелистуванні). Завжди чистимо лише ТІЛО між шапкою і
+// статус-смугою; шапка й статус перемальовуються самі поверх себе тим самим
+// кольором, тож візуально не блимають. При зміні сторінки міняється лише вміст
+// тіла (і заголовок) — саме те, що реально змінилось.
 inline void displayRender() {
-    if (g_displayPage != g_lastRenderedPage) {
-        tft.fillScreen(C_BG);
-        g_lastRenderedPage = g_displayPage;
-    } else {
-        tft.fillRect(0, HDR_H, TFT_W, FOOT_Y - HDR_H, C_BG);   // лише тіло
-    }
+    tft.fillRect(0, HDR_H, TFT_W, FOOT_Y - HDR_H, C_BG);   // лише тіло, без спалаху
     switch (g_displayPage) {
         case 0:  drawPageMain();     break;
         case 1:  drawPageModel();    break;

@@ -807,32 +807,55 @@ bool performFactoryClean() {
 //   3) виставити паливомір ICA на 0 (порожньо), щоб зарядка почала повний заряд;
 //   4) перерахувати суми, синхронізувати дзеркало.
 // ⚠️ Фізичну калібровку це НЕ замінює — далі АКБ обов'язково калібрувати на ЗП.
+// Перевірений емпірично рецепт (підтверджено на пересобраному 4409B): щоб пакет
+// із НОВИМИ банками зарядка прийняла на калібрування, треба прибрати ДОНОРСЬКЕ
+// learned-калібрування з ОБОХ чіпів:
+//   • DS2433: стерти learned-записи 0x0A + весь донорський калібр-блок у ХВОСТІ
+//     (0x1B0..0x1FF — таблиця 3C0F0C64.., напруги/імпеданси банок, запис 0x0A,
+//     контрольний хвіст). Модель/ємність/криву (до 0x1B0) НЕ чіпаємо, тож рація
+//     бачить пакет як фірмовий. Формат 2021 (R7) — інша розкладка, хвіст не чіпаємо.
+//   • DS2438: ПОВНЕ стирання монітора (0xFF) — донорський стан лічильників/
+//     навчання блокує калібровку; зарядка переініціалізує монітор під час циклу.
+// Результат: «фірмовий, рівень заряду адекватний, усі функції ЗП працюють, але
+// потребує калібрування» — саме те, що треба перед постановкою на IMPRES-ЗП.
+// ⚠️ Фізичну калібровку це НЕ замінює — далі АКБ обов'язково калібрувати на ЗП.
 bool performRecalPrepare() {
     if (!hasDump && !hasDump2438) { displayShow("СПОЧАТКУ ЧИТАЙ"); return false; }
-    Serial.println("\n=== Prepare for recalibration ===");
+    Serial.println("\n=== Prepare for recalibration (validated recipe) ===");
     ledSet(LED_WRITE); displayShow("ПІД КАЛІБР...");
-    int er = 0;
-    if (hasDump) {
-        er = eraseLearnedCalib();          // прибрати старе learned-калібрування
-        Serial.printf("erased learned-calib records: %d\n", er);
-    }
-    factoryCleanData();                     // CCA/DCA/ETM у DS2438 + 0x17=100% + суми
-    // Паливомір (ICA, DS2438[12]) виставляємо на 0 (порожньо). Так зарядка НЕ
-    // вважає АКБ зарядженою (раніше «повна» ICA -> зелений індикатор, не заряджає)
-    // і починає повний заряд, що й потрібно для калібрування нових банок.
-    if (hasDump2438) batteryDump2438[12] = 0;
-    if (hasDump && hasDump2438 && mirrorSourceValid(batteryDump2438) &&
-        !mirrorOk(batteryDump, batteryDump2438))
-        syncMirrorFrom2438(batteryDump, batteryDump2438);
-    if (hasDump) fixHeaderChecksum(batteryDump);
     bool ok = true;
-    if (hasDump)     ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
-    if (hasDump2438) ok &= battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
-    if (ok) {
-        if (hasDump)     saveDump("/dump.bin", batteryDump, DUMP_SIZE);
-        if (hasDump2438) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
-        displayShow("КАЛІБР: ГОТОВО");
-    } else displayShow("КАЛІБР ЗБІЙ");
+
+    if (hasDump) {
+        int er = eraseLearnedCalib();               // записи 0x0A (Σ≡0x5A)
+        // Формат 2021 (R7)? Тоді хвіст має іншу роль — не чіпаємо.
+        bool is2021 = false;
+        { static const char c21[] = "COPYRIGHT2021"; const int cl = 13;
+          for (int i = 0; i + cl <= (int)DUMP_SIZE && !is2021; i++) {
+              int k = 0; while (k < cl && batteryDump[i + k] == (uint8_t)c21[k]) k++;
+              if (k == cl) is2021 = true; } }
+        int cleared = 0;
+        if (!is2021) {                              // донорський калібр-блок у хвості -> 0xFF
+            for (int i = 0x1B0; i < (int)DUMP_SIZE; i++)
+                if (batteryDump[i] != 0xFF) { batteryDump[i] = 0xFF; cleared++; }
+        }
+        Serial.printf("erased 0x0A: %d, tail bytes cleared: %d (is2021=%d)\n", er, cleared, is2021);
+        fixHeaderChecksum(batteryDump);             // заголовок поза хвостом — узгоджуємо про запас
+        ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
+        if (ok) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+    }
+
+    // DS2438: повне стирання (0xFF). Донорський стан монітора (лічильники,
+    // навчена калібровка сторінок 3-6) суперечить новим банкам; зарядка
+    // переініціалізує монітор під час калібрування. Критичний крок рецепта.
+    if (hasDump2438) {
+        static uint8_t blank38[DS2438_MEM_SIZE];
+        memset(blank38, 0xFF, DS2438_MEM_SIZE);
+        bool o38 = battery.writeDS2438(blank38, DS2438_MEM_SIZE);
+        if (o38) { memcpy(batteryDump2438, blank38, DS2438_MEM_SIZE); saveDump("/dump2438.bin", blank38, DS2438_MEM_SIZE); }
+        ok &= o38;
+    }
+
+    displayShow(ok ? "ГОТ. ДО КАЛІБР" : "КАЛІБР ЗБІЙ");
     ledSet(ok ? LED_OK : LED_ERROR);
     Serial.println("=== Recal-prepare completed ===\n");
     return ok;

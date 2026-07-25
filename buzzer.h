@@ -74,25 +74,45 @@ inline void buzzTone(unsigned int f, unsigned int d) {
 }
 inline void buzzInit() {
 #ifdef BUZZ_USE_LEDC
-    ledcAttachChannel(BUZZER_PIN, 2000, 10, BUZZER_LEDC_CH);  // свій канал -> свій таймер
+    bool ok = ledcAttachChannel(BUZZER_PIN, 2000, 10, BUZZER_LEDC_CH);  // свій канал -> свій таймер
     ledcWriteTone(BUZZER_PIN, 0);
+    Serial.printf("BUZZER: pin=%d LEDC ch=%d attach=%s\n",
+                  (int)BUZZER_PIN, (int)BUZZER_LEDC_CH, ok ? "OK" : "FAIL");
 #else
     pinMode(BUZZER_PIN, OUTPUT);
     noTone(BUZZER_PIN);
+    Serial.printf("BUZZER: pin=%d tone() (Arduino core < 3.0)\n", (int)BUZZER_PIN);
 #endif
     g_buzzOn = false;
+}
+
+// Одноразова самоперевірка звуку на старті: дводовий «чирп» (блокуючий, лише в
+// setup()). Якщо чути — динамік і канал справні; якщо ні — дивись Serial-рядок
+// BUZZER: вище (attach=OK/FAIL) і перевір підключення пасивного п'єзо до піна/GND.
+inline void buzzSelfTest() {
+#ifdef BUZZ_USE_LEDC
+    ledcWriteTone(BUZZER_PIN, 1500); delay(140);
+    ledcWriteTone(BUZZER_PIN, 2600); delay(140);
+    ledcWriteTone(BUZZER_PIN, 0);
+#else
+    tone(BUZZER_PIN, 1500); delay(140);
+    tone(BUZZER_PIN, 2600); delay(140);
+    noTone(BUZZER_PIN);
+#endif
+    Serial.println("BUZZER: self-test chirp done");
 }
 inline void buzzClick() { buzzTone(2300, 35);  }   // перемикання меню (короткий «тік»)
 inline void buzzStart() { buzzTone(1200, 80);  }   // початок операції
 inline void buzzOk()    { buzzTone(2200, 180); }   // успіх (короткий високий)
 inline void buzzErr()   { buzzTone(350, 380);  }   // помилка (довгий низький)
 #else
-inline void buzzTask()  {}
-inline void buzzInit()  {}
-inline void buzzClick() {}
-inline void buzzStart() {}
-inline void buzzOk()    {}
-inline void buzzErr()   {}
+inline void buzzTask()     {}
+inline void buzzInit()     {}
+inline void buzzSelfTest()  {}
+inline void buzzClick()    {}
+inline void buzzStart()    {}
+inline void buzzOk()       {}
+inline void buzzErr()      {}
 #endif
 
 #endif // BUZZER_H

@@ -809,10 +809,6 @@ inline uint16_t lighten565(uint16_t c, uint8_t amt) {
     return (uint16_t)((r << 11) | (g << 5) | b);
 }
 
-// Тік анімації батареї (з loop() ~10 разів/с). ПУЛЬСАЦІЯ заповнення: верхня
-// смуга шкали (СТРОГО над цифрами %, тож текст не чіпається) плавно «дихає» —
-// яскравість коливається між кольором заряду і світлішим відтінком. Малюємо
-// лише цю смугу — дешево по SPI, решту сторінки не чіпаємо.
 // Заповнити прямокутник R кольором col, ОМИНАЮЧИ рамку тексту T (перетин R∩T не
 // малюємо) — до 4 смуг. Так пульсуємо все заповнення, не торкаючись цифр %.
 inline void fillRectExcept(int rx, int ry, int rw, int rh,
@@ -841,7 +837,7 @@ inline void displayAnimTick() {
     int fx = g_battX + 3, fy = g_battY + 3, fh = g_battH - 6;
     int p = g_animPhase & 31;                             // період 32 кадри (~3.5 с)
     int tri = (p < 16) ? p : (32 - p);                   // 0..16..0 (трикутна хвиля)
-    uint16_t c = lighten565(col, (uint8_t)(tri * 7));    // 0..112 у бік білого
+    uint16_t c = lighten565(col, (uint8_t)(tri * 11));   // 0..176 у бік білого (яскраво)
     fillRectExcept(fx, fy, fw, fh, g_pctTx, g_pctTy, g_pctTw, g_pctTh, c);
     g_animPhase++;
 }
@@ -982,6 +978,17 @@ inline void displayHandleButton() {
     static BtnState b3;
 #endif
 
+#ifdef MENU_BTN3_PIN
+    // 3 кнопки: BTN1 — ЧИСТА навігація ВПЕРЕД (жодного «довгого» читання; читання
+    // акумулятора перенесено на BTN3 на головній сторінці). longMs=0 -> «довгих»
+    // подій немає взагалі, тож випадкове утримання не запускає читання.
+    int e1 = pollButton(MENU_BTN_PIN, b1, 0);
+    if (e1 == 1) {
+        g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
+        displayFlip();
+    }
+#else
+    // 2 кнопки: коротко — наступна сторінка, ДОВГО — читання акумулятора.
     int e1 = pollButton(MENU_BTN_PIN, b1, 800);
     if (e1 == 2) {
         g_readRequested = true;
@@ -991,6 +998,7 @@ inline void displayHandleButton() {
         g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
         displayFlip();
     }
+#endif
 
     int e2 = pollButton(MENU_BTN2_PIN, b2, 800);
 #ifdef MENU_BTN3_PIN
@@ -1023,6 +1031,11 @@ inline void displayHandleButton() {
     } else if (g_displayPage == WIZARD_PAGE) {
         if (e3 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
         else if (e3 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
+    } else if (g_displayPage == 0) {
+        // Головна сторінка: BTN3 коротко = ПЕРЕЧИТАТИ акумулятор (саме третя кнопка,
+        // а не довге утримання BTN1); довго = перейти в «Майстер».
+        if (e3 == 1) { g_readRequested = true; displaySetStatus("ЗЧИТУВАННЯ..."); displayRender(); }
+        else if (e3 == 2) { g_displayPage = WIZARD_PAGE; displayFlip(); }
     } else {
         if (e3 == 1) { g_displayPage = WIZARD_PAGE; displayFlip(); }   // швидко в «Майстер»
         else if (e3 == 2) { g_displayPage = 0; displayFlip(); }       // «додому»

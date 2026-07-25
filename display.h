@@ -289,12 +289,23 @@ inline void displayInit() {
     // Панель Open-Smart: RAM ST7567 на 132 колонки, скло показує 4..131.
     u8g2.getU8x8()->x_offset = DISPLAY_ST7567_XOFF;
 #endif
-#if defined(DISPLAY_CONTRAST)
-    u8g2.setContrast(DISPLAY_CONTRAST);
-#endif
+    // Стартуємо ЗАТЕМНЕНО й з чорним екраном, щоб артефакти ініціалізації не
+    // блимали до заставки; яскравість плавно піднімемо у displayIntro().
+    u8g2.setContrast(0);
+    u8g2.clearDisplay();
     u8g2.setFont(BODY_FONT);
     Serial.printf("DISPLAY: %dx%d, I2C clock=%lu Hz\n", (int)DISP_W, (int)DISP_H, (unsigned long)DISPLAY_CLK_HZ);
 }
+
+// Цільова яскравість (контраст) у робочому режимі.
+#if defined(DISPLAY_CONTRAST)
+  #define DISP_BRIGHT DISPLAY_CONTRAST
+#else
+  #define DISP_BRIGHT 255
+#endif
+
+// Плавне керування яскравістю (для моно — контраст контролера).
+inline void displaySetBrightness(uint8_t v) { u8g2.setContrast(v); }
 
 // Стартова заставка: тризуб + "Національна Гвардія України".
 inline void displaySplash() {
@@ -321,6 +332,28 @@ inline void displaySplash() {
     u8g2.drawUTF8(0, 40, "IMPRES tool");
 #endif
     u8g2.sendBuffer();
+}
+
+// Плавна поява/зникнення заставки. Викликати ОДИН раз у setup() замість
+// displaySplash()+delay(): екран лишається чорним до появи, потім заставка
+// плавно проявляється, тримається і плавно згасає (жодних артефактів/блимань).
+inline void displayIntro() {
+    displaySplash();                         // у буфер (контраст 0 -> ще не видно)
+    for (int c = 0; c <= DISP_BRIGHT; c += 8) { u8g2.setContrast(c); delay(18); }
+    u8g2.setContrast(DISP_BRIGHT);
+    delay(1300);                             // тримаємо заставку
+    for (int c = DISP_BRIGHT; c >= 0; c -= 8) { u8g2.setContrast(c < 0 ? 0 : c); delay(12); }
+    u8g2.setContrast(0);
+    u8g2.clearDisplay();                     // чорно перед входом у меню
+}
+
+// Плавний вхід у головне меню (наприкінці setup()): малюємо головну сторінку
+// затемнено й плавно піднімаємо яскравість.
+inline void displayFadeInMain() {
+    g_displayPage = 0;
+    displayRender();                         // контраст 0 -> малюнок ще невидимий
+    for (int c = 0; c <= DISP_BRIGHT; c += 8) { u8g2.setContrast(c); delay(16); }
+    u8g2.setContrast(DISP_BRIGHT);
 }
 
 inline void displaySetStatus(const char *s) {

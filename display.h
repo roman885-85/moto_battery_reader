@@ -210,6 +210,12 @@ static bool g_wizBusy  = false;            // виконується крок (�
 static char g_wizTop[48]  = "";            // топ-проблема (людською)
 static char g_wizNext[48] = "";            // назва наступного кроку
 
+// Анімація батареї на головній сторінці: фаза «блику» + збережений прямокутник
+// іконки (щоб оновлювати ЛИШЕ його область, не перемальовуючи весь екран —
+// критично для повільного SSD1327).
+static uint8_t g_animPhase = 0;
+static int g_battX = 0, g_battY = 0, g_battW = 0, g_battH = 0;
+
 inline void displayRender(); // визначення нижче
 
 // Емблема Національної Гвардії України для стартової заставки (1-біт XBM).
@@ -400,13 +406,24 @@ inline void drawFooter() {
 
 // Іконка батареї зі шкалою заповнення; pct<0 — даних немає.
 inline void drawBatteryIcon(int x, int y, int w, int h, int pct) {
+    g_battX = x; g_battY = y; g_battW = w; g_battH = h;   // для displayAnimTick()
     u8g2.drawFrame(x, y, w, h);
     u8g2.drawBox(x + w, y + h / 3, 3, h - 2 * (h / 3)); // "плюсовий" вивід
     if (pct < 0) return;
     int fillw = (w - 4) * pct / 100;
     if (fillw < 0) fillw = 0;
     if (fillw > w - 4) fillw = w - 4;
-    if (fillw > 0) u8g2.drawBox(x + 2, y + 2, fillw, h - 4);
+    if (fillw > 0) {
+        u8g2.drawBox(x + 2, y + 2, fillw, h - 4);
+        // Анімований «блик»: тонкий темний стовпчик (2 px), що біжить по
+        // заповненню зліва направо — ефект заряджання.
+        int span = fillw + 6;
+        int sx = x + 2 + ((int)g_animPhase * span / 20) - 2;
+        u8g2.setDrawColor(0);
+        if (sx     >= x + 2 && sx     < x + 2 + fillw) u8g2.drawVLine(sx,     y + 2, h - 4);
+        if (sx + 1 >= x + 2 && sx + 1 < x + 2 + fillw) u8g2.drawVLine(sx + 1, y + 2, h - 4);
+        u8g2.setDrawColor(1);
+    }
 }
 
 // Відсоток заряду. Пріоритет — ICA (якщо увімкнений облік струму IAD=1),
@@ -875,6 +892,24 @@ inline void displayRender() {
         default: drawPageMain();     break;
     }
     u8g2.sendBuffer();
+}
+
+// Тік анімації батареї (викликати з loop() ~10 разів/с). Оновлює ЛИШЕ область
+// іконки батареї на головній сторінці — дешево навіть для повільного SSD1327,
+// решту екрана й шину не чіпає.
+inline void displayAnimTick() {
+    if (g_displayPage != 0 || g_battW == 0) return;
+    const char *src; int pct = batteryPercent(&src);
+    if (pct < 0) return;
+    g_animPhase = (g_animPhase + 1) % 20;
+    u8g2.setDrawColor(0);
+    u8g2.drawBox(g_battX, g_battY, g_battW + 4, g_battH);   // очистити область іконки
+    u8g2.setDrawColor(1);
+    drawBatteryIcon(g_battX, g_battY, g_battW, g_battH, pct);
+    int tx = g_battX / 8, ty = g_battY / 8;
+    int tw = (g_battX + g_battW + 4 + 7) / 8 - tx;
+    int th = (g_battY + g_battH + 7) / 8 - ty;
+    u8g2.updateDisplayArea(tx, ty, tw, th);
 }
 
 // Повертає запит Майстра для .ino один раз: 0 нема, 1 аналіз, 2 наступний крок.

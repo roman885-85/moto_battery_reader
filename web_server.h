@@ -167,6 +167,9 @@ bool readAllChips(bool &ok2433, bool &ok2438) {
     displayShow(st);
 
     ledSet((ok2433 || ok2438) ? LED_OK : LED_ERROR);
+    // Прогрес читання оновлював лише футер (без блимання). Тепер ОДИН повний
+    // перемальовок — показати оновлені дані АКБ (%, напруга тощо) на дисплеї.
+    displayRender();
     return ok2433 || ok2438;
 }
 

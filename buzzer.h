@@ -18,14 +18,19 @@
 #include <Arduino.h>
 #include "settings.h"
 
+// ⚠️ ЛИШЕ пасивний П'ЄЗО-буззер (споживає мкА) можна вмикати ПРЯМО на GPIO.
+// ДИНАМІК (котушка 4–8 Ом) напряму НЕ підключати: tone() дасть ~0.4 А, GPIO
+// віддає ~20–40 мА -> просадка живлення -> brownout-reset (дисплей «не працює»,
+// бо ESP32 циклічно перезавантажується). Динамік — лише через транзистор + ~100 Ом.
+//
+// Тони НЕблокуючі (tone() із тривалістю на ESP32 сам зупиняється; жодних delay(),
+// щоб не стопорити loop/веб) і короткі (менший струм).
 #ifdef BUZZER_PIN
 inline void buzzInit()  { pinMode(BUZZER_PIN, OUTPUT); }
-inline void buzzClick() { tone(BUZZER_PIN, 2300, 6); }                 // перемикання меню
-inline void buzzStart() { tone(BUZZER_PIN, 1200, 40); }               // початок операції
-inline void buzzOk()    { tone(BUZZER_PIN, 1600, 70); delay(80);
-                          tone(BUZZER_PIN, 2400, 110); }              // успіх (висхідний)
-inline void buzzErr()   { tone(BUZZER_PIN, 400, 180); delay(120);
-                          tone(BUZZER_PIN, 300, 260); }               // помилка (низький)
+inline void buzzClick() { tone(BUZZER_PIN, 2300, 5);   }   // перемикання меню
+inline void buzzStart() { tone(BUZZER_PIN, 1200, 25);  }   // початок операції
+inline void buzzOk()    { tone(BUZZER_PIN, 2200, 120); }   // успіх (короткий високий)
+inline void buzzErr()   { tone(BUZZER_PIN, 350, 300);  }   // помилка (низький)
 #else
 inline void buzzInit()  {}
 inline void buzzClick() {}

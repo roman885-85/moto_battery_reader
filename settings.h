@@ -114,7 +114,23 @@
 //   • коротко на «Майстрі» -> наступний крок; на будь-якій іншій сторінці ->
 //     ПЕРЕХІД на сторінку «Майстер» (швидкий доступ до відновлення);
 //   • довго (0.8 с)        -> ПОВЕРНУТИСЯ на головну сторінку («додому»).
-// #define MENU_BTN3_PIN 27
+// ⚠️ Оберіть ВІЛЬНИЙ GPIO! Уже зайняті: 9 12 13 14 21 22 25 26 27 (LED/1-Wire/
+// I2C/кнопки), а для SPI-дисплея ще 5 16 17 18 23 (+BLK). Вільні з підтяжкою:
+// напр. 32 або 33. Нижче стоїть 33.
+// #define MENU_BTN3_PIN 33
+
+// Захист від помилки: якщо 3-тю кнопку призначено на вже зайнятий пін —
+// компіляція впаде з чіткою підказкою (а не з дивною поведінкою на пристрої).
+#ifdef MENU_BTN3_PIN
+  #if (MENU_BTN3_PIN == MENU_BTN_PIN)    || (MENU_BTN3_PIN == MENU_BTN2_PIN)  || \
+      (MENU_BTN3_PIN == LED_RED_PIN)     || (MENU_BTN3_PIN == LED_GREEN_PIN)  || \
+      (MENU_BTN3_PIN == DS_PIN)          || (MENU_BTN3_PIN == PULLUP_PIN)     || \
+      (MENU_BTN3_PIN == DISPLAY_SDA_PIN) || (MENU_BTN3_PIN == DISPLAY_SCL_PIN) || \
+      (MENU_BTN3_PIN == DISPLAY_CS_PIN)  || (MENU_BTN3_PIN == DISPLAY_DC_PIN)  || \
+      (MENU_BTN3_PIN == DISPLAY_RST_PIN)
+    #error "MENU_BTN3_PIN конфліктує з уже зайнятим піном! Оберіть вільний GPIO (напр. 32 або 33)."
+  #endif
+#endif
 
 // --- Индикатор заряду ---
 // Пріоритет ICA (DS2438). При вимкненому обліку струму (IAD=0) — по напрузі.

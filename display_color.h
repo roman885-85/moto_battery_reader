@@ -792,29 +792,31 @@ inline void displayRender() {
     }
 }
 
-// Тік анімації батареї (з loop() ~10 разів/с). «Блик», що біжить у ВЕРХНІЙ смузі
-// заповнення (над цифрами %), тож текст не блимає. Малюємо лише тонкі стовпці —
-// дешево по SPI, решту сторінки не чіпаємо.
+// Освітлити колір RGB565 у бік білого на частку amt (0..255).
+inline uint16_t lighten565(uint16_t c, uint8_t amt) {
+    int r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
+    r += ((31 - r) * amt) >> 8; g += ((63 - g) * amt) >> 8; b += ((31 - b) * amt) >> 8;
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+// Тік анімації батареї (з loop() ~10 разів/с). ПУЛЬСАЦІЯ заповнення: верхня
+// смуга шкали (СТРОГО над цифрами %, тож текст не чіпається) плавно «дихає» —
+// яскравість коливається між кольором заряду і світлішим відтінком. Малюємо
+// лише цю смугу — дешево по SPI, решту сторінки не чіпаємо.
 inline void displayAnimTick() {
     if (g_displayPage != 0 || g_battW == 0) return;
     const char *src; int pct = batteryPercent(&src);
-    if (pct < 0) { g_animPrevX = -1; return; }
+    if (pct < 0) return;
     uint16_t col = chargeColor(pct);
     int fw = (g_battW - 6) * pct / 100;
-    if (fw < 6) { g_animPrevX = -1; return; }
-    int fillX = g_battX + 3;
+    if (fw < 4) return;
     int sy = g_battY + 4;
-    int sh = (g_battH - 8) / 4; if (sh > 8) sh = 8;   // тонка смуга біля ВЕРХУ,
-                                                      // строго над цифрами % (щоб
-                                                      // відновлення не стирало текст)
-    const int band = 4;
-    int span = fw + band + 10;
-    int nx = fillX - band + ((int)g_animPhase * span / 22);
-    if (g_animPrevX >= 0)
-        for (int i = 0; i < band; i++) { int xx = g_animPrevX + i; if (xx >= fillX && xx < fillX + fw) tft.drawFastVLine(xx, sy, sh, col); }
-    for (int i = 0; i < band; i++) { int xx = nx + i; if (xx >= fillX && xx < fillX + fw) tft.drawFastVLine(xx, sy, sh, C_TEXT); }
-    g_animPrevX = nx;
-    g_animPhase = (g_animPhase + 1) % 22;
+    int sh = (g_battH - 8) / 4; if (sh > 8) sh = 8;      // над цифрами %
+    int p = g_animPhase & 15;                             // період 16 кадрів (~1.8 с)
+    int tri = (p < 8) ? p : (16 - p);                    // 0..8..0 (трикутна хвиля)
+    uint16_t c = lighten565(col, (uint8_t)(tri * 18));   // 0..144 у бік білого
+    tft.fillRect(g_battX + 3, sy, fw, sh, c);
+    g_animPhase++;
 }
 
 // Плавний вхід у головне меню: малюємо головну сторінку під вимкненою
@@ -956,50 +958,39 @@ inline void displayHandleButton() {
     }
 
     int e2 = pollButton(MENU_BTN2_PIN, b2, 800);
-    // 3-кнопковий режим: виконання/крок робить BTN3 — BTN2 їх не дублює.
+#ifdef MENU_BTN3_PIN
+    // 3 кнопки: BTN2 — ЧИСТА «назад» скрізь (усе дійове — на BTN3).
+    if (e2 == 1) {
+        g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
+        displayFlip();
+    }
+#else
+    // 2 кнопки: BTN2 суміщає навігацію + вибір/аналіз (коротко) + виконання (довго).
     if (g_displayPage == RESET_PAGE) {
-        if (e2 == 1) {
-            g_actionSel = (g_actionSel + 1) % numActions();
-            displayRender();
-        }
-#ifndef MENU_BTN3_PIN
-        else if (e2 == 2) {
-            g_actionRequested = g_actionSel;
-            displaySetStatus("ВИКОНУЮ...");
-            displayRender();
-        }
-#endif
+        if (e2 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRender(); }
+        else if (e2 == 2) { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
     } else if (g_displayPage == WIZARD_PAGE) {
-        if (e2 == 1) {                               // коротке -> аналіз
-            g_wizReq = 1; g_wizBusy = true;
-            displaySetStatus("АНАЛІЗ..."); displayRender();
-        }
-#ifndef MENU_BTN3_PIN
-        else if (e2 == 2) {                          // довге -> наступний крок
-            g_wizReq = 2; g_wizBusy = true;
-            displaySetStatus("ВИКОНУЮ..."); displayRender();
-        }
-#endif
+        if (e2 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
+        else if (e2 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
     } else if (e2 == 1) {
         g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
         displayFlip();
     }
+#endif
 
 #ifdef MENU_BTN3_PIN
-    // Третя кнопка «OK / Дія»: коротко — контекстна дія, довго — «додому».
+    // Третя кнопка «OK / Дія»: «Дії» коротко=вибір/довго=виконати; «Майстер»
+    // коротко=аналіз/довго=крок; інші коротко=у Майстер/довго=додому.
     int e3 = pollButton(MENU_BTN3_PIN, b3, 800);
-    if (e3 == 2) {
-        g_displayPage = 0; displayFlip();
-    } else if (e3 == 1) {
-        if (g_displayPage == RESET_PAGE) {
-            g_actionRequested = g_actionSel;
-            displaySetStatus("ВИКОНУЮ..."); displayRender();
-        } else if (g_displayPage == WIZARD_PAGE) {
-            g_wizReq = 2; g_wizBusy = true;
-            displaySetStatus("ВИКОНУЮ..."); displayRender();
-        } else {
-            g_displayPage = WIZARD_PAGE; displayFlip();
-        }
+    if (g_displayPage == RESET_PAGE) {
+        if (e3 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRender(); }
+        else if (e3 == 2) { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
+    } else if (g_displayPage == WIZARD_PAGE) {
+        if (e3 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
+        else if (e3 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
+    } else {
+        if (e3 == 1) { g_displayPage = WIZARD_PAGE; displayFlip(); }   // швидко в «Майстер»
+        else if (e3 == 2) { g_displayPage = 0; displayFlip(); }       // «додому»
     }
 #endif
 }

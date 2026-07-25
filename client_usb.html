@@ -44,6 +44,20 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 .hxd{flex:1;min-width:0;font-family:monospace;font-size:1em;line-height:1.4;color:#e7ecf3;background:transparent;border:none;padding:0 2px;resize:none;white-space:pre;overflow-y:scroll}
 .hxa{flex:none;width:150px;padding-left:8px;color:#8fb7d9;white-space:pre;overflow:hidden;border-left:1px solid var(--line)}
 .hxae{font-family:monospace;font-size:1em;line-height:1.4;background:transparent;border:none;border-left:1px solid var(--line);resize:none;overflow:hidden;caret-color:#8fb7d9}
+/* ---- Майстер відновлення ---- */
+.wizbar{height:12px;background:#0e1218;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:6px 0}
+.wizbarfill{height:100%;width:0;background:linear-gradient(90deg,var(--grn),#7be6a8);border-radius:8px;transition:width .5s ease}
+.wizprog{font-size:.85em;color:var(--mut);margin-bottom:8px}
+.prob{display:flex;gap:10px;align-items:flex-start;padding:10px;margin:8px 0;border-radius:10px;background:#0e1218;border-left:4px solid var(--line)}
+.prob.sev2{border-left-color:var(--red)}.prob.sev1{border-left-color:var(--org)}.prob.sev0{border-left-color:var(--blu)}
+.prob .pico{font-size:1.2em}.prob b{display:block;margin-bottom:2px}.prob .pfix{font-size:.85em;color:#bfe0ff}
+.step{display:flex;gap:10px;align-items:flex-start;padding:10px;margin:6px 0;border-radius:10px;background:#0e1218;border:1px solid var(--line);transition:all .3s ease}
+.step.cur{border-color:var(--org);box-shadow:0 0 0 2px rgba(243,156,18,.25)}
+.step.done{opacity:.55}.step .sico{font-size:1.15em;min-width:1.4em;text-align:center}
+.step .stit{font-weight:600}.step .sdet{font-size:.82em;color:var(--mut);margin-top:2px}
+.step.run .sico{display:inline-block;animation:wspin 1s linear infinite}
+.wizverd-ok{color:var(--grn)}.wizverd-bad{color:var(--org)}
+@keyframes wspin{to{transform:rotate(360deg)}}
 .mdlen{min-width:44px;text-align:right;color:var(--mut)}
 .charge{display:flex;align-items:center;gap:14px}
 .batt{width:110px;height:44px;border:3px solid var(--txt);border-radius:6px;position:relative}
@@ -69,8 +83,36 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 
   <div class="tabs">
     <div class="tab active" onclick="tab(this,'ov')">📊 Огляд</div>
+    <div class="tab" onclick="tab(this,'wz')">🧙 Майстер</div>
     <div class="tab" onclick="tab(this,'dt')">🔬 Дані</div>
     <div class="tab" onclick="tab(this,'fw')">📤 Прошивка</div>
+  </div>
+
+  <!-- WIZARD -->
+  <div class="page" id="wz">
+    <div class="card">
+      <h2>🧙 Майстер відновлення</h2>
+      <div class="note i">Автоматичне відновлення «однією кнопкою»: аналіз → проблеми → пропозиції → покрокове
+        виконання. Багатоетапні сценарії з зарядною станцією продовжуються після повернення АКБ.</div>
+      <div class="btns" style="margin-top:8px">
+        <button class="btn b-pri" onclick="wizAnalyze()">🔍 Аналізувати</button>
+        <button class="btn b-inf" onclick="wizReset()">↺ Скинути Майстра</button>
+      </div>
+    </div>
+    <div class="card" id="wizStatusCard" style="display:none">
+      <h2 id="wizVerdict">—</h2>
+      <div id="wizProblems"></div>
+    </div>
+    <div class="card" id="wizPlanCard" style="display:none">
+      <h2>🧭 План відновлення</h2>
+      <div class="wizbar"><div class="wizbarfill" id="wizBarFill"></div></div>
+      <div class="wizprog" id="wizProg">—</div>
+      <div id="wizModelRow" class="row" style="display:none"><span class="k">Модель для відновлення</span>
+        <select id="wizModel" style="min-width:150px"></select></div>
+      <div id="wizSteps"></div>
+      <div id="wizStationBanner" class="note w" style="display:none"></div>
+      <button class="btn b-warn" id="wizNextBtn" style="width:100%;margin-top:8px" onclick="wizNext()">▶️ Виконати наступний крок</button>
+    </div>
   </div>
 
   <!-- OVERVIEW -->
@@ -556,11 +598,85 @@ async function loadTemplates(){
   if(!connected)return;
   const r=await cmd('TEMPLATES',5000);
   const models=r.models||[];
-  for(const id of ['initModel','restModel']){
+  for(const id of ['initModel','restModel','wizModel']){
     const sel=$(id); if(!sel)continue; sel.innerHTML='';
     models.forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);});
     if(!models.length){const o=document.createElement('option');o.textContent='(немає шаблонів)';sel.appendChild(o);}
   }
+}
+
+// ============ МАЙСТЕР ВІДНОВЛЕННЯ ============
+function wesc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+let wizState=null;
+async function wizAnalyze(){
+  if(!connected){toast('Підключіться');return;}
+  setBusy(true); toast('Аналіз батареї…');
+  const r=await cmd('WIZARD',15000);
+  setBusy(false);
+  if(!r||!r.ok){toast('Помилка аналізу');return;}
+  wizState=r; wizRender(r); toast('Аналіз готовий');
+}
+function wizRender(r){
+  if(!r||!r.ok)return;
+  $('wizStatusCard').style.display='';
+  const vd=$('wizVerdict');
+  if(!r.have33&&!r.have38){vd.textContent='❌ Чіпи не знайдено на шині';vd.className='wizverd-bad';}
+  else if(r.healthy){vd.textContent='✅ Батарея справна — відновлення не потрібне';vd.className='wizverd-ok';}
+  else {vd.textContent='⚠️ Виявлено проблем: '+((r.problems||[]).length);vd.className='wizverd-bad';}
+  const pc=$('wizProblems');pc.innerHTML='';
+  (r.problems||[]).forEach(p=>{
+    const ico=p.sev>=2?'⛔':(p.sev==1?'⚠️':'ℹ️');
+    const d=document.createElement('div');d.className='prob sev'+p.sev;
+    d.innerHTML='<div class="pico">'+ico+'</div><div><b>'+wesc(p.problem)+'</b><div class="pfix">→ '+wesc(p.fix)+'</div></div>';
+    pc.appendChild(d);
+  });
+  if((r.steps||[]).length && !r.healthy){$('wizPlanCard').style.display='';wizRenderSteps(r);}
+  else $('wizPlanCard').style.display='none';
+}
+function wizRenderSteps(r){
+  const pct=r.total?Math.round(r.progress/r.total*100):0;
+  $('wizBarFill').style.width=pct+'%';
+  $('wizProg').textContent='Крок '+Math.min(r.progress+1,r.total)+' з '+r.total+' • виконано: '+r.progress;
+  $('wizModelRow').style.display=r.needModel?'':'none';
+  const sc=$('wizSteps');sc.innerHTML='';
+  (r.steps||[]).forEach(s=>{
+    const cur=(s.idx===r.progress);
+    const ico=s.done?'✅':(cur?(s.external?'🔌':'▶️'):'•');
+    const d=document.createElement('div');
+    d.className='step'+(s.done?' done':'')+(cur&&!r.awaitCharge?' cur':'');
+    d.id='wstep'+s.idx;
+    d.innerHTML='<div class="sico">'+ico+'</div><div><div class="stit">'+wesc(s.title)+'</div><div class="sdet">'+wesc(s.detail)+'</div></div>';
+    sc.appendChild(d);
+  });
+  const banner=$('wizStationBanner'), btn=$('wizNextBtn');
+  if(r.awaitCharge){
+    banner.style.display='';
+    banner.innerHTML='🔌 АКБ на зарядній станції. Після повного циклу поверніть її сюди.'+
+      (r.chargeDone?'<br><b style="color:var(--grn)">✔ Зміни виявлено — калібрування пройшло, можна продовжити.</b>':'');
+    btn.disabled=false;
+    btn.textContent=r.chargeDone?'✅ Продовжити відновлення':'🔄 Перевірити після ЗП';
+  } else {
+    banner.style.display='none';
+    if(r.progress>=r.total){btn.disabled=true;btn.textContent='✅ Відновлення завершено';}
+    else {const cur=(r.steps||[])[r.progress];btn.disabled=false;btn.textContent='▶️ Виконати: '+(cur?cur.title:'наступний крок');}
+  }
+}
+async function wizNext(){
+  const r=wizState; if(!r)return;
+  if(r.awaitCharge && !r.chargeDone){await wizAnalyze();return;}
+  const idx=r.progress;
+  const model=r.needModel?$('wizModel').value:'';
+  if(r.needModel && !model){toast('Оберіть модель для відновлення');return;}
+  await ensureAuth();
+  const stepEl=$('wstep'+idx); if(stepEl)stepEl.classList.add('run');
+  setBusy(true); toast('Виконую крок…');
+  const res=await cmd('WIZSTEP '+idx+(model?(' '+model):''),25000);
+  setBusy(false);
+  if(res){wizState=res; if(res.msg)toast((res.result?'✅ ':'❌ ')+res.msg); wizRender(res); await refresh();}
+}
+async function wizReset(){
+  if(!connected){toast('Підключіться');return;}
+  await cmd('WIZRESET',5000); toast('Майстра скинуто'); wizAnalyze();
 }
 async function restoreBattery(){
   if(!connected){toast('Підключіться');return;}

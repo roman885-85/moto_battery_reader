@@ -181,6 +181,12 @@ static bool g_wizBusy  = false;
 static char g_wizTop[48]  = "";
 static char g_wizNext[48] = "";
 
+// Анімація батареї (головна сторінка): фаза + попередня позиція «блику» +
+// прямокутник шкали (щоб малювати лише тонкі стовпці, не чіпаючи цифри %).
+static uint8_t g_animPhase = 0;
+static int g_animPrevX = -1;
+static int g_battX = 0, g_battY = 0, g_battW = 0, g_battH = 0;
+
 inline void displayRender();   // визначення нижче
 
 // Емблема НГУ для заставки (1-біт XBM, 64x64). Дублює масив з display.h —
@@ -402,6 +408,8 @@ inline void drawFooterBar() {
 
 // Іконка батареї зі шкалою заповнення; pct<0 — даних немає.
 inline void drawBatteryBar(int x, int y, int w, int h, int pct, uint16_t col) {
+    g_battX = x; g_battY = y; g_battW = w; g_battH = h;   // для displayAnimTick()
+    g_animPrevX = -1;                                     // скинути слід блику
     tft.drawRoundRect(x, y, w, h, 4, C_TEXT);
     tft.drawRoundRect(x + 1, y + 1, w - 2, h - 2, 3, C_TEXT);
     tft.fillRect(x + w, y + h / 3, 4, h - 2 * (h / 3), C_TEXT);   // "плюсовий" вивід
@@ -782,6 +790,31 @@ inline void displayRender() {
         case 7:  drawPageWizard();   break;
         default: drawPageMain();     break;
     }
+}
+
+// Тік анімації батареї (з loop() ~10 разів/с). «Блик», що біжить у ВЕРХНІЙ смузі
+// заповнення (над цифрами %), тож текст не блимає. Малюємо лише тонкі стовпці —
+// дешево по SPI, решту сторінки не чіпаємо.
+inline void displayAnimTick() {
+    if (g_displayPage != 0 || g_battW == 0) return;
+    const char *src; int pct = batteryPercent(&src);
+    if (pct < 0) { g_animPrevX = -1; return; }
+    uint16_t col = chargeColor(pct);
+    int fw = (g_battW - 6) * pct / 100;
+    if (fw < 6) { g_animPrevX = -1; return; }
+    int fillX = g_battX + 3;
+    int sy = g_battY + 4;
+    int sh = (g_battH - 8) / 4; if (sh > 8) sh = 8;   // тонка смуга біля ВЕРХУ,
+                                                      // строго над цифрами % (щоб
+                                                      // відновлення не стирало текст)
+    const int band = 4;
+    int span = fw + band + 10;
+    int nx = fillX - band + ((int)g_animPhase * span / 22);
+    if (g_animPrevX >= 0)
+        for (int i = 0; i < band; i++) { int xx = g_animPrevX + i; if (xx >= fillX && xx < fillX + fw) tft.drawFastVLine(xx, sy, sh, col); }
+    for (int i = 0; i < band; i++) { int xx = nx + i; if (xx >= fillX && xx < fillX + fw) tft.drawFastVLine(xx, sy, sh, C_TEXT); }
+    g_animPrevX = nx;
+    g_animPhase = (g_animPhase + 1) % 22;
 }
 
 // Плавний вхід у головне меню: малюємо головну сторінку під вимкненою

@@ -385,6 +385,10 @@ inline void displayShow(const char *s) {
     displayRender();
 }
 
+// Червоний «світлофільтр» — лише для кольорових панелей. На монохромному екрані
+// кольору немає, тож заглушка (текст «...ЗБІЙ» і так показує помилку).
+inline void displaySetErrorTint(bool) {}
+
 // ---------- допоміжні елементи відмальовування ----------
 
 inline void drawHeader(const char *title) {

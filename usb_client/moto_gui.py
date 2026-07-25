@@ -244,6 +244,50 @@ class App:
         self.wizNextBtn.pack(anchor="w", pady=6)
         self._wizState = None
 
+        # Збережені відновлення (журнали за серійником АКБ).
+        self.wizJrnFrame = ttk.LabelFrame(f, text="🗂 Збережені відновлення", padding=6)
+        self.wizJrnFrame.pack(fill="x", pady=6)
+        ttk.Label(self.wizJrnFrame, text="Незавершені відновлення, що їх пристрій пам'ятає за серійником\n"
+                                        "АКБ (напр. поки акумулятор на зарядній станції). Зайві можна видалити.",
+                  foreground="#9a9c82", justify="left").pack(anchor="w")
+        ttk.Button(self.wizJrnFrame, text="🔄 Оновити список", command=self.wiz_journals_load).pack(anchor="w", pady=2)
+        self.wizJrnList = ttk.Frame(self.wizJrnFrame); self.wizJrnList.pack(fill="x", pady=4)
+
+    # ---- журнали відновлення (список / видалення) ----
+    def wiz_journals_load(self):
+        if not self.need_conn():
+            return
+        self.cmd("WIZLIST", 8.0, cb=self._wiz_journals_apply)
+
+    def _wiz_journals_apply(self, r):
+        for w in self.wizJrnList.winfo_children():
+            w.destroy()
+        js = r.get("journals", []) if isinstance(r, dict) else []
+        if not js:
+            ttk.Label(self.wizJrnList, text="Немає збережених відновлень.",
+                      foreground="#9a9c82").pack(anchor="w")
+            return
+        for j in js:
+            planned = " → ".join(j.get("planned", [])) or "—"
+            rem = max(0, j.get("total", 0) - j.get("done", 0))
+            row = ttk.Frame(self.wizJrnList); row.pack(fill="x", pady=3)
+            head = j.get("serial", "") + (" · " + j.get("model", "") if j.get("model") else "") \
+                + ("   [на ЗП]" if j.get("await") else "")
+            ttk.Label(row, text=head, font=("Segoe UI", 9, "bold")).pack(anchor="w")
+            ttk.Label(row, text="Прогрес: %d/%d · лишилось %d" % (j.get("done", 0), j.get("total", 0), rem),
+                      foreground="#9a9c82").pack(anchor="w")
+            ttk.Label(row, text="Заплановано: " + planned, foreground="#8a9a5a",
+                      wraplength=440, justify="left").pack(anchor="w")
+            ttk.Button(row, text="🗑 Видалити з пам'яті",
+                       command=lambda s=j.get("serial", ""): self.wiz_journal_delete(s)).pack(anchor="w", pady=2)
+
+    def wiz_journal_delete(self, serial):
+        if not serial or not self.need_conn():
+            return
+        if not messagebox.askyesno("Видалити", "Видалити збережене відновлення для %s?" % serial):
+            return
+        self.maybe_auth(lambda: self.cmd("WIZDEL " + serial, 8.0, cb=lambda _: self.wiz_journals_load()))
+
     # ---- логіка Майстра ----
     def wiz_analyze(self):
         if not self.need_conn():
@@ -291,6 +335,8 @@ class App:
             self._wiz_render_steps(r)
         else:
             self.wizPlanFrame.pack_forget()
+        # оновити список збережених журналів
+        self.wiz_journals_load()
 
     def _wiz_render_steps(self, r):
         total = r.get("total", 0); prog = r.get("progress", 0)

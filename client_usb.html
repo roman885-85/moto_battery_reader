@@ -65,6 +65,9 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 .step.run .sico{display:inline-block;animation:wspin 1s linear infinite}
 .wizverd-ok{color:var(--grn)}.wizverd-bad{color:var(--org)}
 @keyframes wspin{to{transform:rotate(360deg)}}
+.jrn{background:#171a10;border:1px solid var(--line);border-left:4px solid var(--khaki);border-radius:10px;padding:10px;margin:8px 0}
+.jrn .jhead{font-size:.95em}.jrn .jsub{font-size:.82em;color:#cdd0a8;margin-top:2px}
+.jbadge{background:var(--org);color:#1a1400;border-radius:10px;padding:1px 7px;font-size:.75em;margin-left:6px}
 .mdlen{min-width:44px;text-align:right;color:var(--mut)}
 .charge{display:flex;align-items:center;gap:14px}
 .batt{width:110px;height:44px;border:3px solid var(--txt);border-radius:6px;position:relative}
@@ -119,6 +122,13 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div id="wizSteps"></div>
       <div id="wizStationBanner" class="note w" style="display:none"></div>
       <button class="btn b-warn" id="wizNextBtn" style="width:100%;margin-top:8px" onclick="wizNext()">▶️ Виконати наступний крок</button>
+    </div>
+    <div class="card">
+      <h2>🗂 Збережені відновлення</h2>
+      <div class="note i">Пристрій запам'ятовує незавершені відновлення за <b>серійником АКБ</b>. Тут — усі
+        збережені серійники із запланованими діями; зайві можна видалити з пам'яті.</div>
+      <button class="btn b-inf" onclick="wizJournalsLoad()">🔄 Оновити список</button>
+      <div id="wizJournals" style="margin-top:8px"></div>
     </div>
   </div>
 
@@ -621,7 +631,7 @@ async function wizAnalyze(){
   const r=await cmd('WIZARD',15000);
   setBusy(false);
   if(!r||!r.ok){toast('Помилка аналізу');return;}
-  wizState=r; wizRender(r); toast('Аналіз готовий');
+  wizState=r; wizRender(r); wizJournalsLoad(); toast('Аналіз готовий');
 }
 function wizRender(r){
   if(!r||!r.ok)return;
@@ -679,11 +689,37 @@ async function wizNext(){
   setBusy(true); toast('Виконую крок…');
   const res=await cmd('WIZSTEP '+idx+(model?(' '+model):''),25000);
   setBusy(false);
-  if(res){wizState=res; if(res.msg)toast((res.result?'✅ ':'❌ ')+res.msg); wizRender(res); await refresh();}
+  if(res){wizState=res; if(res.msg)toast((res.result?'✅ ':'❌ ')+res.msg); wizRender(res); wizJournalsLoad(); await refresh();}
 }
 async function wizReset(){
   if(!connected){toast('Підключіться');return;}
   await cmd('WIZRESET',5000); toast('Майстра скинуто'); wizAnalyze();
+}
+async function wizJournalsLoad(){
+  if(!connected)return;
+  const r=await cmd('WIZLIST',8000);
+  const c=$('wizJournals'); if(!c)return; c.innerHTML='';
+  const js=(r&&r.journals)||[];
+  if(!js.length){c.innerHTML='<div class="wizprog">Немає збережених відновлень.</div>';return;}
+  js.forEach(j=>{
+    const planned=(j.planned||[]).join(' → ')||'—';
+    const rem=Math.max(0,(j.total||0)-(j.done||0));
+    const d=document.createElement('div'); d.className='jrn';
+    d.innerHTML='<div class="jhead"><b>'+wesc(j.serial)+'</b>'+(j.model?(' · '+wesc(j.model)):'')
+      +(j.await?'<span class="jbadge">на ЗП</span>':'')
+      +'</div><div class="jsub">Прогрес: '+(j.done||0)+'/'+(j.total||0)+' · лишилось '+rem+'</div>'
+      +'<div class="jsub">Заплановано: '+wesc(planned)+'</div>';
+    const btn=document.createElement('button'); btn.className='btn b-dng'; btn.style.marginTop='6px';
+    btn.textContent='🗑 Видалити з пам’яті'; btn.onclick=()=>wizJournalDelete(j.serial);
+    d.appendChild(btn); c.appendChild(d);
+  });
+}
+async function wizJournalDelete(serial){
+  if(!connected){toast('Підключіться');return;}
+  if(!confirm('Видалити збережене відновлення для '+serial+'?'))return;
+  await ensureAuth();
+  const r=await cmd('WIZDEL '+serial,8000);
+  if(r&&r.ok){toast('Видалено'); wizJournalsLoad();} else toast('Помилка: '+((r&&r.err)||''));
 }
 async function restoreBattery(){
   if(!connected){toast('Підключіться');return;}

@@ -218,11 +218,30 @@ static void wizComputeActions(const BatteryDiag &d) {
     add(ACT_VERIFY);
 }
 
+// ------------------------------------------------------------------ JSON-хелпер
+static void jsonEsc(String &o, const char *s) {
+    for (const char *p = s; *p; p++) {
+        if (*p == '"' || *p == '\\') { o += '\\'; o += *p; }
+        else o += *p;
+    }
+}
+
 // ------------------------------------------------------------------ ЖУРНАЛ
-static const char *WIZ_JOURNAL_PATH = "/wizard.jrn";
+// Кожен АКБ має ВЛАСНИЙ файл журналу, названий за ROM-серійником DS2438:
+// "/wj_<serial>.jrn". Тож кілька акумуляторів можуть одночасно бути в процесі
+// відновлення (напр. один на зарядній станції, з іншим працюємо). Список і
+// видалення таких журналів — через wizJournalListJson()/wizJournalDelete().
+#define WIZ_JRN_PREFIX "/wj_"
+#define WIZ_JRN_MAX    24            // скільки журналів максимум перелічуємо
+
+static void wizJPath(char *buf, size_t n, const char *serialHex) {
+    snprintf(buf, n, WIZ_JRN_PREFIX "%s.jrn", serialHex);
+}
 
 static void wizJournalSave() {
-    File f = SPIFFS.open(WIZ_JOURNAL_PATH, "w");
+    if (!g_wizJ.serial[0]) return;
+    char path[40]; wizJPath(path, sizeof(path), g_wizJ.serial);
+    File f = SPIFFS.open(path, "w");
     if (!f) return;
     String acts;
     for (int i = 0; i < g_wizJ.nActs; i++) { if (i) acts += ","; acts += String((int)g_wizJ.acts[i]); }
@@ -232,19 +251,11 @@ static void wizJournalSave() {
     f.close();
 }
 
-static void wizJournalClear() {
-    wizJZero();
-    SPIFFS.remove(WIZ_JOURNAL_PATH);
-}
-
-// Завантажити журнал, ЯКЩО він для поточного АКБ (збіг серійника).
-static void wizJournalLoad() {
-    if (!g_wizJInit) wizJZero();
-    g_wizJ.active = false;
-    if (!SPIFFS.exists(WIZ_JOURNAL_PATH)) return;
-    File f = SPIFFS.open(WIZ_JOURNAL_PATH, "r");
-    if (!f) return;
-    WizJournal j; memset(&j, 0, sizeof(j));
+// Розібрати один файл журналу у структуру. true, якщо файл валідний (є кроки).
+static bool wizJournalParse(const char *path, WizJournal &j) {
+    memset(&j, 0, sizeof(j));
+    File f = SPIFFS.open(path, "r");
+    if (!f) return false;
     while (f.available()) {
         String line = f.readStringUntil('\n'); line.trim();
         int eq = line.indexOf('='); if (eq < 0) continue;
@@ -268,10 +279,35 @@ static void wizJournalLoad() {
         }
     }
     f.close();
+    return j.nActs > 0;
+}
 
+// Видалити журнал конкретного серійника (керування з UI).
+static void wizJournalDelete(const char *serialHex) {
+    if (!serialHex || !serialHex[0]) return;
+    char path[40]; wizJPath(path, sizeof(path), serialHex);
+    SPIFFS.remove(path);
+    if (g_wizJ.serial[0] && strcmp(g_wizJ.serial, serialHex) == 0) wizJZero();
+}
+
+// Завершити/прибрати журнал ПОТОЧНОГО АКБ.
+static void wizJournalClear() {
+    char cur[17];
+    if (g_wizJ.serial[0]) { strncpy(cur, g_wizJ.serial, sizeof(cur) - 1); cur[sizeof(cur) - 1] = '\0'; }
+    else wizSerialHex(cur, sizeof(cur));
+    if (cur[0]) { char path[40]; wizJPath(path, sizeof(path), cur); SPIFFS.remove(path); }
+    wizJZero();
+}
+
+// Завантажити журнал ПОТОЧНОГО АКБ (за його серійником). Інші журнали не чіпає.
+static void wizJournalLoad() {
+    if (!g_wizJInit) wizJZero();
+    g_wizJ.active = false;
     char cur[17]; wizSerialHex(cur, sizeof(cur));
-    if (cur[0] && strcmp(cur, j.serial) == 0 && j.nActs > 0) { j.active = true; g_wizJ = j; }
-    else wizJournalClear();      // журнал від іншого АКБ / порожній — прибрати
+    if (!cur[0]) return;                         // немає DS2438 -> немає журналу
+    char path[40]; wizJPath(path, sizeof(path), cur);
+    WizJournal j;
+    if (wizJournalParse(path, j)) { j.active = true; g_wizJ = j; }
 }
 
 // Поточний знімок ключових полів (для порівняння «до/після ЗП»).
@@ -287,13 +323,6 @@ static void wizSnapshot(long &cca, long &dca, long &ica, long &health) {
 }
 
 // ------------------------------------------------------------------ JSON
-static void jsonEsc(String &o, const char *s) {
-    for (const char *p = s; *p; p++) {
-        if (*p == '"' || *p == '\\') { o += '\\'; o += *p; }
-        else o += *p;
-    }
-}
-
 static const char *wizActionName(uint8_t a) {
     switch (a) {
         case ACT_READ: return "read";            case ACT_RESTORE: return "restore";
@@ -302,6 +331,47 @@ static const char *wizActionName(uint8_t a) {
         case ACT_SETCHARGE_AUTO: return "charge";case ACT_CHARGE_STATION: return "station";
         case ACT_VERIFY: return "verify";        default: return "none";
     }
+}
+
+// Список усіх збережених журналів відновлення (за серійниками) з описом
+// ЗАПЛАНОВАНИХ (ще не виконаних) кроків — для екрана керування пам'яттю в UI.
+static String wizJournalListJson() {
+    // 1) зібрати імена файлів журналів (без вкладеного відкриття під час обходу)
+    String names[WIZ_JRN_MAX]; int n = 0;
+    File root = SPIFFS.open("/");
+    if (root) {
+        File e = root.openNextFile();
+        while (e && n < WIZ_JRN_MAX) {
+            String nm = e.name();
+            int sl = nm.lastIndexOf('/');
+            String base = (sl >= 0) ? nm.substring(sl + 1) : nm;
+            if (base.startsWith("wj_") && base.endsWith(".jrn")) names[n++] = String("/") + base;
+            e = root.openNextFile();
+        }
+        root.close();
+    }
+    // 2) розібрати кожен і сформувати JSON
+    String o = "{\"ok\":true,\"journals\":[";
+    bool first = true;
+    for (int i = 0; i < n; i++) {
+        WizJournal j;
+        if (!wizJournalParse(names[i].c_str(), j)) continue;
+        if (!first) o += ","; first = false;
+        o += "{\"serial\":\""; jsonEsc(o, j.serial); o += "\"";
+        o += ",\"model\":\"";  jsonEsc(o, j.model);  o += "\"";
+        o += ",\"done\":" + String(j.done);
+        o += ",\"total\":" + String(j.nActs);
+        o += ",\"await\":" + String(j.awaitCharge ? "true" : "false");
+        o += ",\"planned\":[";
+        for (int s = j.done; s < j.nActs; s++) {
+            const char *t, *dt; bool ext; wizActionMeta(j.acts[s], &t, &dt, &ext);
+            if (s > j.done) o += ",";
+            o += "\""; jsonEsc(o, t); o += "\"";
+        }
+        o += "]}";
+    }
+    o += "]}";
+    return o;
 }
 
 // Повний стан Майстра: аналіз + проблеми + план + прогрес.

@@ -120,6 +120,9 @@
         .step .stit{font-weight:600} .step .sdet{font-size:.82em;color:#a9b6d6;margin-top:2px}
         .step.run .sico{animation:spin 1s linear infinite;display:inline-block}
         .wizverd-ok{color:var(--ok)} .wizverd-bad{color:var(--warn)}
+        .jrn{background:var(--card2);border:1px solid var(--line);border-left:4px solid var(--khaki);border-radius:10px;padding:10px;margin:8px 0;animation:fade .3s ease both}
+        .jrn .jhead{font-size:.95em} .jrn .jsub{font-size:.82em;color:#cdd0a8;margin-top:2px}
+        .jbadge{background:var(--warn);color:#1a1400;border-radius:10px;padding:1px 7px;font-size:.75em;margin-left:6px}
         @keyframes pulseWarn{0%,100%{box-shadow:0 0 0 2px rgba(243,156,18,.25)}50%{box-shadow:0 0 0 5px rgba(243,156,18,.05)}}
         .step.cur{animation:fade .35s ease both, pulseWarn 2s ease-in-out infinite}
         @media(max-width:600px){.btn{width:100%}.btns{flex-direction:column}}
@@ -216,6 +219,15 @@
             <div id="wizStationBanner" class="note w" style="display:none"></div>
             <button class="btn btn-warn" id="wizNextBtn" style="width:100%;margin-top:8px" onclick="wizNext()">▶️ Виконати наступний крок</button>
             <div id="wizMsg" class="wizmsg"></div>
+        </div>
+
+        <div class="card">
+            <h2>🗂 Збережені відновлення</h2>
+            <div class="note i">Пристрій запам'ятовує незавершені відновлення за <b>серійником АКБ</b> (напр. коли
+                акумулятор пішов на зарядну станцію). Тут — усі збережені серійники із запланованими діями; зайві
+                можна видалити з пам'яті.</div>
+            <button class="btn btn-info" onclick="wizJournalsLoad()">🔄 Оновити список</button>
+            <div id="wizJournals" style="margin-top:8px"></div>
         </div>
     </div>
 
@@ -627,7 +639,7 @@ async function wizAnalyze(){
     prog(true,'Аналіз батареї...');
     try{
         const r=await(await fetch('/api/wizard')).json();
-        wizState=r; wizRender(r);
+        wizState=r; wizRender(r); wizJournalsLoad();
     }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);
 }
@@ -689,7 +701,7 @@ async function wizNext(){
         const res=await postForm('/api/wizard/step',{password:pw,idx:idx,model:model});
         wizState=res;
         if(res.msg)toast((res.result?'✅ ':'❌ ')+res.msg,res.result?'ok':'err');
-        wizRender(res);
+        wizRender(res); wizJournalsLoad();
         await refreshAll();
     }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);
@@ -698,6 +710,34 @@ async function wizReset(){
     const pw=$('pwWiz').value; if(!pw){toast('Введіть пароль','err');return;}
     try{await postForm('/api/wizard/reset',{password:pw});toast('Майстра скинуто','ok');}catch(e){}
     wizAnalyze();
+}
+async function wizJournalsLoad(){
+    try{
+        const r=await(await fetch('/api/wizard/journals')).json();
+        const c=$('wizJournals'); c.innerHTML='';
+        const js=r.journals||[];
+        if(!js.length){c.innerHTML='<div class="wizprog">Немає збережених відновлень.</div>';return;}
+        js.forEach(j=>{
+            const planned=(j.planned||[]).join(' → ')||'—';
+            const rem=Math.max(0,(j.total||0)-(j.done||0));
+            const d=document.createElement('div'); d.className='jrn';
+            d.innerHTML='<div class="jhead"><b>'+esc(j.serial)+'</b>'+(j.model?(' · '+esc(j.model)):'')
+                +(j.await?'<span class="jbadge">на ЗП</span>':'')
+                +'</div><div class="jsub">Прогрес: '+(j.done||0)+'/'+(j.total||0)+' · лишилось '+rem+'</div>'
+                +'<div class="jsub">Заплановано: '+esc(planned)+'</div>';
+            const btn=document.createElement('button'); btn.className='btn btn-danger'; btn.style.marginTop='6px';
+            btn.textContent='🗑 Видалити з пам’яті'; btn.onclick=()=>wizJournalDelete(j.serial);
+            d.appendChild(btn); c.appendChild(d);
+        });
+    }catch(e){toast('Помилка: '+e.message,'err');}
+}
+async function wizJournalDelete(serial){
+    const pw=$('pwWiz').value; if(!pw){toast('Введіть пароль для видалення','err');return;}
+    if(!confirm('Видалити збережене відновлення для '+serial+'?'))return;
+    try{
+        const r=await postForm('/api/wizard/journals/delete',{password:pw,serial:serial});
+        if(r.ok){toast('Видалено','ok'); wizJournalsLoad();} else toast('Помилка: '+(r.err||''),'err');
+    }catch(e){toast('Помилка: '+e.message,'err');}
 }
 
 async function setCapacity(){

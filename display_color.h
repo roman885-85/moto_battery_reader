@@ -170,6 +170,17 @@ static bool g_readRequested = false;
 static int  g_actionSel = 0;
 static int  g_actionRequested = -1;
 
+// Екранний Майстер відновлення (ті самі глобали, що й у моно-драйвері):
+// рендер читає, wizDeviceRefresh() (recovery.h) заповнює, .ino оркеструє.
+static int  g_wizReq      = 0;             // 0 нема, 1 аналіз, 2 крок
+static int  g_wizProblems = -1;            // -1 ще не аналізовано
+static bool g_wizHealthy  = false;
+static int  g_wizProg = 0, g_wizTotal = 0;
+static bool g_wizAwait = false;
+static bool g_wizBusy  = false;
+static char g_wizTop[48]  = "";
+static char g_wizNext[48] = "";
+
 inline void displayRender();   // визначення нижче
 
 // Емблема НГУ для заставки (1-біт XBM, 64x64). Дублює масив з display.h —
@@ -707,6 +718,48 @@ inline void drawPageActions() {
     tPut(EDGE, TFT_H - 8, "[<] вибір   [<] тримати = ПУСК");
 }
 
+// Сторінка Майстра відновлення (кольорова). Дані готує wizDeviceRefresh().
+inline void drawPageWizard() {
+    drawHeaderBar("Майстер відновлення");
+    int x = EDGE + 4;
+    if (g_wizBusy) {
+        tSet(FONT_MODEL, C_YELLOW);
+        tPut(x, 92, "Виконую крок...");
+    } else if (g_wizProblems < 0) {
+        tSet(FONT_BODY, C_TEXT);
+        tPut(x, 82, "Аналіз стану АКБ.");
+        tSet(FONT_SMALL, C_MUTED);
+        tPut(x, 110, "[<] коротко = аналіз");
+    } else if (g_wizHealthy) {
+        tSet(FONT_MODEL, C_GREEN);
+        tPut(x, 90, "OK: справна");
+        tSet(FONT_BODY, C_MUTED);
+        tPut(x, 120, "Відновлення не потрібне.");
+    } else {
+        char b[28]; snprintf(b, sizeof(b), "Проблем: %d", g_wizProblems);
+        tSet(FONT_MODEL, C_RED);
+        tPut(x, 80, b);
+        tSet(FONT_BODY, C_TEXT);
+        tPut(x, 106, g_wizTop);
+        if (g_wizAwait) {
+            tSet(FONT_BODY, C_YELLOW);
+            tPut(x, 136, "Чекаю ЗП. Поверніть АКБ");
+            tPut(x, 158, "і тримайте [<].");
+        } else {
+            tSet(FONT_BODY, C_GREEN);
+            char n[48]; snprintf(n, sizeof(n), "Далі: %s", g_wizNext);
+            tPut(x, 136, n);
+            tSet(FONT_SMALL, C_MUTED);
+            char p[24]; snprintf(p, sizeof(p), "Крок %d/%d", g_wizProg + 1, g_wizTotal);
+            tPut(x, 160, p);
+        }
+    }
+    tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
+    tft.drawFastHLine(0, FOOT_Y, TFT_W, C_BLUE);
+    tSet(FONT_SMALL, C_MUTED, C_CARD);
+    tPut(EDGE, TFT_H - 8, "[<] кор=аналіз   трим=крок");
+}
+
 // ===================== Рендер і кнопки =====================
 
 // Без миготіння: НІКОЛИ не робимо fillScreen (він гасить весь екран у чорне і
@@ -724,6 +777,7 @@ inline void displayRender() {
         case 4:  drawPageRaw2438();  break;
         case 5:  drawPageRaw2433();  break;
         case 6:  drawPageActions();  break;
+        case 7:  drawPageWizard();   break;
         default: drawPageMain();     break;
     }
 }
@@ -830,6 +884,22 @@ inline int displayConsumeActionRequest() {
     int a = g_actionRequested; g_actionRequested = -1; return a;
 }
 
+// Запит Майстра для .ino: 0 нема, 1 аналіз, 2 наступний крок.
+inline int displayConsumeWizRequest() { int r = g_wizReq; g_wizReq = 0; return r; }
+
+// Плавний перехід між сторінками: короткий «дип» підсвітки (crossfade). Без
+// BLK-піна — звичайний рендер без анімації.
+inline void displayFlip() {
+#ifdef DISPLAY_BLK_PIN
+    for (int b = 255; b > 90; b -= 33) { analogWrite(DISPLAY_BLK_PIN, b); delay(5); }
+    displayRender();
+    for (int b = 90; b < 255; b += 33) { analogWrite(DISPLAY_BLK_PIN, b); delay(5); }
+    analogWrite(DISPLAY_BLK_PIN, 255);
+#else
+    displayRender();
+#endif
+}
+
 inline void displayHandleButton() {
     static BtnState b1, b2;
 
@@ -840,7 +910,7 @@ inline void displayHandleButton() {
         displayRender();
     } else if (e1 == 1) {
         g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
-        displayRender();
+        displayFlip();
     }
 
     int e2 = pollButton(MENU_BTN2_PIN, b2, 800);
@@ -853,9 +923,17 @@ inline void displayHandleButton() {
             displaySetStatus("ВИКОНУЮ...");
             displayRender();
         }
+    } else if (g_displayPage == WIZARD_PAGE) {
+        if (e2 == 1) {                               // коротке -> аналіз
+            g_wizReq = 1; g_wizBusy = true;
+            displaySetStatus("АНАЛІЗ..."); displayRender();
+        } else if (e2 == 2) {                        // довге -> наступний крок
+            g_wizReq = 2; g_wizBusy = true;
+            displaySetStatus("ВИКОНУЮ..."); displayRender();
+        }
     } else if (e2 == 1) {
         g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
-        displayRender();
+        displayFlip();
     }
 }
 

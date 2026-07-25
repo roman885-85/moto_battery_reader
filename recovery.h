@@ -447,4 +447,44 @@ static String wizExecStep(int idx, const String &model) {
     return wizStatusJson(msg.c_str(), ok);
 }
 
+// ------------------------------------------------------------------ ЕКРАННИЙ МАЙСТЕР
+// Заповнює глобали дисплея (g_wiz*, оголошені в display.h/display_color.h) з
+// поточного аналізу й плану. Викликається з .ino після зчитування чіпів.
+inline void wizDeviceRefresh() {
+    BatteryDiag d; wizAnalyze(d);
+    wizJournalLoad();
+    const uint8_t *acts; int nActs, doneN;
+    if (g_wizJ.active) { acts = g_wizJ.acts; nActs = g_wizJ.nActs; doneN = g_wizJ.done; }
+    else { wizComputeActions(d); acts = g_wizActs; nActs = g_wizActN; doneN = 0; }
+
+    int pc = 0; g_wizTop[0] = '\0';
+    for (int i = 0; i < RECOVERY_RULE_COUNT; i++) {
+        if (!(d.issues & RECOVERY_RULES[i].issue)) continue;
+        if (pc == 0) { strncpy(g_wizTop, RECOVERY_RULES[i].problem, sizeof(g_wizTop) - 1); g_wizTop[sizeof(g_wizTop) - 1] = '\0'; }
+        pc++;
+    }
+    g_wizProblems = pc;
+    g_wizHealthy  = (d.issues == 0 && !g_wizJ.active);
+    g_wizTotal    = nActs;
+    g_wizProg     = doneN;
+    g_wizAwait    = (g_wizJ.active && g_wizJ.awaitCharge);
+    g_wizNext[0]  = '\0';
+    if (doneN < nActs) {
+        const char *t, *dt; bool ext; wizActionMeta(acts[doneN], &t, &dt, &ext);
+        strncpy(g_wizNext, t, sizeof(g_wizNext) - 1); g_wizNext[sizeof(g_wizNext) - 1] = '\0';
+    }
+    g_wizBusy = false;
+}
+
+// Виконує наступний крок плану (для екранного Майстра). Модель для відновлення
+// бере з поточного аналізу (детекована). Оновлює глобали дисплея.
+inline void wizDeviceRunNext() {
+    BatteryDiag d; wizAnalyze(d);
+    wizJournalLoad();
+    int idx = g_wizJ.active ? g_wizJ.done : 0;
+    String model = d.model[0] ? String(d.model) : String("");
+    wizExecStep(idx, model);          // виконує + оновлює журнал (JSON ігноруємо)
+    wizDeviceRefresh();
+}
+
 #endif // RECOVERY_H

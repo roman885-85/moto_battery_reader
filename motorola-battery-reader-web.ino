@@ -150,6 +150,20 @@ void loop() {
              act <  NUM_BASE_ACTIONS + 2 * BATTERY_TEMPLATE_COUNT)
         performRestoreTemplate(BATTERY_TEMPLATES[act - NUM_BASE_ACTIONS - BATTERY_TEMPLATE_COUNT].name);
 
+    // Екранний Майстер відновлення: 1 = аналіз (зчитати + оновити діагноз),
+    // 2 = виконати наступний крок плану. Логіку тримає recovery.h; кнопки —
+    // display.h/display_color.h; тут лише зв'язуємо (двигун доступний після
+    // include web_server.h -> recovery.h).
+    int wizReq = displayConsumeWizRequest();
+    if (wizReq == 1) {
+        bool a2433, a2438; readAllChips(a2433, a2438);
+        wizDeviceRefresh();
+        displayRender();
+    } else if (wizReq == 2) {
+        wizDeviceRunNext();
+        displayRender();
+    }
+
     // Дисплей перемальовується по подіям (натискання кнопки, читання/запис),
     // тому цикл не блокується повільним рендером і кнопки чутливі.
 

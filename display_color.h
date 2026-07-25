@@ -854,6 +854,11 @@ inline void fillRectExcept(int rx, int ry, int rw, int rh,
 // Тік анімації батареї (з loop() ~9 разів/с). ПУЛЬСАЦІЯ ЗАПОВНЕННЯ: усе залите
 // поле шкали плавно «дихає» яскравістю (колір заряду <-> світліший відтінок),
 // оминаючи рамку цифр % (щоб текст не блимав). Період ~3.5 с — м'яко.
+// Синус 0..255 (32 точки) для «плавучого градієнта» заповнення.
+static const uint8_t ANIM_SINE32[32] = {
+  128,152,176,198,218,234,246,254,255,254,246,234,218,198,176,152,
+  128,103, 79, 57, 37, 21,  9,  1,  0,  1,  9, 21, 37, 57, 79,103};
+
 inline void displayAnimTick() {
     if (g_displayPage != 0 || g_battW == 0) return;
     const char *src; int pct = batteryPercent(&src);
@@ -862,15 +867,28 @@ inline void displayAnimTick() {
     int fw = (g_battW - 6) * pct / 100;
     if (fw < 4) return;
     int fx = g_battX + 3, fy = g_battY + 3, fh = g_battH - 6;
-    // Виразна ПУЛЬСАЦІЯ: яскравість заповнення «дихає» 100% <-> ~37% з періодом
-    // ~1.8 с (16 кадрів по ~110 мс). Це помітно набагато краще, ніж легке
-    // висвітлення в бік білого. Цифри % не чіпаємо (fillRectExcept їх оминає).
-    int p = g_animPhase & 15;                            // період 16 кадрів (~1.8 с)
-    int tri = (p < 8) ? p : (16 - p);                    // 0..8..0 (трикутна хвиля)
-    uint8_t lvl = (uint8_t)(255 - tri * 20);             // 255..95 -> 100%..37%
-    uint16_t c = scale565(col, lvl);
-    fillRectExcept(fx, fy, fw, fh, g_pctTx, g_pctTy, g_pctTw, g_pctTh, c);
-    g_animPhase++;
+    int tx0 = g_pctTx, tx1 = g_pctTx + g_pctTw;   // рамка цифр % (оминаємо)
+    int ty0 = g_pctTy, ty1 = g_pctTy + g_pctTh;
+    g_animPhase++;                                 // зсув фази -> градієнт «пливе»
+
+    // Малюємо заповнення вертикальними смугами по 4 px, яскравість кожної —
+    // за синусом від позиції + фази. Виходить світло-темний градієнт, що плавно
+    // біжить уздовж шкали (набагато помітніше за рівномірну пульсацію). Смуги над
+    // цифрами % ділимо на верх/низ, щоб не зачепити текст.
+    const int band = 4;
+    for (int x = fx; x < fx + fw; x += band) {
+        int w = (x + band <= fx + fw) ? band : (fx + fw - x);
+        uint8_t s = ANIM_SINE32[(((x - fx) >> 2) + g_animPhase) & 31];   // хвиля 128 px
+        uint8_t lvl = (uint8_t)(70 + (int)s * 185 / 255);                // 70..255 (27%..100%)
+        uint16_t c = scale565(col, lvl);
+        bool overText = (x + w > tx0) && (x < tx1) && (ty1 > fy) && (ty0 < fy + fh);
+        if (overText) {
+            if (ty0 > fy)      tft.fillRect(x, fy, w, ty0 - fy, c);       // над рамкою
+            if (fy + fh > ty1) tft.fillRect(x, ty1, w, fy + fh - ty1, c); // під рамкою
+        } else {
+            tft.fillRect(x, fy, w, fh, c);
+        }
+    }
 }
 
 // Тимчасова діагностика анімації: друкує в Serial фактичний стан (сторінка,

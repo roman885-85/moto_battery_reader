@@ -26,17 +26,51 @@ static unsigned long g_ledT0 = 0;       // час входу в режим
 static unsigned long g_ledLast = 0;     // тайминг для блимання
 static bool     g_ledPhase = false;
 
+// Підсвітка кнопок як індикатор (див. BTN_LED_PIN у settings.h). Активний рівень
+// за замовчуванням HIGH; BTN_LED_ACTIVE_LOW інвертує (модулі із загальним анодом).
+inline void btnLedWrite(bool on) {
+#ifdef BTN_LED_PIN
+  #ifdef BTN_LED_ACTIVE_LOW
+    digitalWrite(BTN_LED_PIN, on ? LOW : HIGH);
+  #else
+    digitalWrite(BTN_LED_PIN, on ? HIGH : LOW);
+  #endif
+#else
+    (void)on;
+#endif
+}
+
 inline void ledInit() {
     pinMode(LED_GREEN_PIN, OUTPUT);
     pinMode(LED_RED_PIN, OUTPUT);
     digitalWrite(LED_GREEN_PIN, LOW);
     digitalWrite(LED_RED_PIN, LOW);
+#ifdef BTN_LED_PIN
+    pinMode(BTN_LED_PIN, OUTPUT);
+    btnLedWrite(true);          // за замовчуванням світиться (підсвітка = «живлення є»)
+#endif
     buzzInit();
 }
 
 inline void ledWrite(bool g, bool r) {
     digitalWrite(LED_GREEN_PIN, g ? HIGH : LOW);
     digitalWrite(LED_RED_PIN,   r ? HIGH : LOW);
+}
+
+// Стан підсвітки кнопок за поточним режимом: спокій/успіх — рівне світіння;
+// читання/запис/помилка — блимання (в такт g_ledPhase); старт — вимкнено.
+inline void btnLedByMode(LedMode m, bool phase) {
+    bool on;
+    switch (m) {
+        case LED_READ:  on = phase; break;   // блимає в такт читанню
+        case LED_WRITE: on = phase; break;   // швидко блимає — «увага, запис»
+        case LED_ERROR: on = phase; break;   // тривожне блимання
+        case LED_BOOT:  on = false; break;   // старт — темно
+        case LED_OK:    on = true;  break;   // успіх — рівне світіння
+        case LED_IDLE:
+        default:        on = true;  break;   // готовий — рівне світіння (підсвітка)
+    }
+    btnLedWrite(on);
 }
 
 // Задати режим. Стан спокою (IDLE/BOOT) запам'ятовується як база, у яку
@@ -90,6 +124,10 @@ inline void ledTask() {
             if (now - g_ledT0 > 1600) ledSet(g_ledBase);
             break;
     }
+
+    // Підсвітка кнопок повторює логіку стану (рівне світіння в спокої, блимання
+    // під час читання/запису/помилки). Синхронізована з g_ledPhase вище.
+    btnLedByMode(g_ledMode, g_ledPhase);
 }
 
 #endif

@@ -101,7 +101,27 @@ inline void buzzSelfTest() {
 #endif
     Serial.println("BUZZER: self-test chirp done");
 }
-inline void buzzClick() { buzzTone(2300, 35);  }   // перемикання меню (короткий «тік»)
+// Перемикання меню — механічний «КЛАЦ», а НЕ писк. Тон (навіть короткий) звучить
+// як пищання; клацання дає різкий одиночний фронт. Тому на час кліку від'єднуємо
+// пін від LEDC і подаємо кілька дуже коротких прямих імпульсів на п'єзо (широко-
+// смуговий «тік»), після чого повертаємо LEDC для тонів start/ok/err.
+inline void buzzClick() {
+#ifdef BUZZ_USE_LEDC
+    ledcDetach(BUZZER_PIN);
+#else
+    noTone(BUZZER_PIN);
+#endif
+    pinMode(BUZZER_PIN, OUTPUT);
+    for (int i = 0; i < 3; i++) {                  // ~1.8 мс сумарно (блокуюче, дрібниця)
+        digitalWrite(BUZZER_PIN, HIGH); delayMicroseconds(300);
+        digitalWrite(BUZZER_PIN, LOW);  delayMicroseconds(300);
+    }
+#ifdef BUZZ_USE_LEDC
+    ledcAttachChannel(BUZZER_PIN, 2000, 10, BUZZER_LEDC_CH);   // повернути LEDC для тонів
+    ledcWriteTone(BUZZER_PIN, 0);
+#endif
+    g_buzzOn = false; g_buzzOff = 0;
+}
 inline void buzzStart() { buzzTone(1200, 80);  }   // початок операції
 inline void buzzOk()    { buzzTone(2200, 180); }   // успіх (короткий високий)
 inline void buzzErr()   { buzzTone(350, 380);  }   // помилка (довгий низький)

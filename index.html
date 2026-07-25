@@ -6,19 +6,24 @@
     <title>NGU · Motorola IMPRES Battery Tool</title>
     <style>
         :root{
-            --ua-blue:#0057b7; --ua-yellow:#ffd700;
-            --bg:#12172b; --card:#1b2140; --card2:#141a33;
-            --line:#2a335c; --accent:#e94560; --ok:#2ecc71; --warn:#f39c12; --info:#3498db;
-            --text:#e8ecff; --muted:#8b93b8;
+            /* Мілітарна тема НГУ: оливково-хакі поле + акцент «краповий» (maroon) */
+            --ua-blue:#7d2230; --ua-yellow:#c8b04a;      /* accent(краповий) / khaki-gold */
+            --bg:#14160f; --card:#20241a; --card2:#191c13;
+            --line:#3b4230; --accent:#a3312e; --ok:#6f8f3a; --warn:#c8a23a; --info:#7d8a52;
+            --text:#e7e3d2; --muted:#9a9c82;
+            --maroon:#7d2230; --olive:#6f8f3a; --khaki:#c8b04a;
         }
         *{margin:0;padding:0;box-sizing:border-box}
-        body{font-family:'Segoe UI',Arial,sans-serif;background:var(--bg);color:var(--text);
-             min-height:100vh;padding:16px;display:flex;justify-content:center}
+        body{font-family:'Segoe UI',Arial,sans-serif;color:var(--text);
+             min-height:100vh;padding:16px;display:flex;justify-content:center;
+             background:var(--bg);
+             background-image:repeating-linear-gradient(45deg,rgba(111,143,58,.035) 0 2px,transparent 2px 22px),
+                              repeating-linear-gradient(-45deg,rgba(125,34,48,.03) 0 2px,transparent 2px 22px);}
         .wrap{width:100%;max-width:900px}
         /* --- header / logo --- */
         .brand{display:flex;align-items:center;gap:16px;background:var(--card);
                border-radius:16px;padding:16px 20px;border:1px solid var(--line);
-               box-shadow:0 8px 30px rgba(0,0,0,.4)}
+               border-top:3px solid var(--maroon);box-shadow:0 8px 30px rgba(0,0,0,.5)}
         .badge{width:64px;height:72px;flex:0 0 auto;border-radius:10px;
                background:var(--ua-blue);border:2px solid var(--ua-yellow);
                display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,.4)}
@@ -31,6 +36,8 @@
              color:var(--muted);border-radius:12px;cursor:pointer;font-size:.95em;font-weight:600;
              text-align:center;transition:.2s}
         .tab.active{background:var(--ua-blue);color:#fff;border-color:var(--ua-blue)}
+        .tab[data-p="wizard"]{border-color:var(--maroon);color:var(--khaki);font-weight:700}
+        .tab[data-p="wizard"].active{background:var(--maroon);color:#fff}
         .page{display:none}
         .page.active{display:block;animation:fade .25s ease}
         @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
@@ -70,26 +77,26 @@
         .pw{width:100%;padding:12px;margin:10px 0;background:var(--card2);border:1px solid var(--line);
             border-radius:8px;color:var(--text);font-size:1em}
         .note{font-size:.82em;padding:10px;border-radius:8px;margin-top:10px;border-left:3px solid}
-        .note.i{background:#12233a;color:#9cc4ee;border-color:var(--info)}
+        .note.i{background:#23281a;color:#cdd0a8;border-color:var(--info)}
         .note.w{background:#3a2a10;color:#f0c274;border-color:var(--warn)}
         .zone{font-weight:700;font-size:.9em;padding:9px 12px;border-radius:8px;margin:20px 0 8px}
         .zone.zi{background:#16324a;color:#bfe0ff}
         .zone.zd{background:#4a1512;color:#ff9b8f;border:1px solid #e74c3c}
         .hxwrap{margin-top:8px;font-family:monospace;font-size:.8em;line-height:1.4;background:#0e1218;border-radius:8px;overflow:hidden}
-        .hxbar{display:flex;color:#7fd0ff;background:#12233a;padding:4px 0;white-space:pre}
+        .hxbar{display:flex;color:#a9c06a;background:#23281a;padding:4px 0;white-space:pre}
         .hxrow{display:flex;height:170px}
         .hxg{flex:none;width:46px;text-align:right;padding:0 6px;color:#6b8;white-space:pre;overflow:hidden}
         .hxh{flex:1;padding-left:2px;white-space:pre;overflow:hidden}
         .hxd{flex:1;min-width:0;font-family:monospace;font-size:1em;line-height:1.4;color:#e7ecf3;background:transparent;border:none;padding:0 2px;resize:none;white-space:pre;overflow-y:scroll}
-        .hxa{flex:none;width:150px;padding-left:8px;color:#8fb7d9;white-space:pre;overflow:hidden;border-left:1px solid #2a323f}
-        .hxae{font-family:monospace;font-size:1em;line-height:1.4;background:transparent;border:none;border-left:1px solid #2a323f;resize:none;overflow:hidden;caret-color:#8fb7d9}
+        .hxa{flex:none;width:150px;padding-left:8px;color:#b9bd86;white-space:pre;overflow:hidden;border-left:1px solid #2a323f}
+        .hxae{font-family:monospace;font-size:1em;line-height:1.4;background:transparent;border:none;border-left:1px solid #2a323f;resize:none;overflow:hidden;caret-color:#b9bd86}
         .hex{font-family:'Courier New',monospace;font-size:.82em;color:#9fe3c0;word-break:break-all;
              background:var(--card2);padding:10px;border-radius:8px;border:1px solid var(--line)}
         #toast{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:9;padding:12px 20px;
                border-radius:10px;display:none;font-weight:600;box-shadow:0 6px 20px rgba(0,0,0,.5)}
         .t-ok{background:#123a24;color:var(--ok);border:1px solid var(--ok)}
         .t-err{background:#3a1414;color:var(--accent);border:1px solid var(--accent)}
-        .t-info{background:#12233a;color:#9cc4ee;border:1px solid var(--info)}
+        .t-info{background:#23281a;color:#cdd0a8;border:1px solid var(--info)}
         #progress{display:none;text-align:center;padding:16px}
         .spin{width:38px;height:38px;border:4px solid var(--line);border-top:4px solid var(--ua-yellow);
               border-radius:50%;margin:0 auto 8px;animation:spin 1s linear infinite}
@@ -97,14 +104,14 @@
         /* ---- Майстер відновлення ---- */
         .wizbar{height:12px;background:var(--card2);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:6px 0}
         .wizbarfill{height:100%;width:0;background:linear-gradient(90deg,var(--ok),#7be6a8);border-radius:8px;transition:width .5s ease}
-        .wizprog{font-size:.85em;color:#9cc4ee;margin-bottom:8px}
+        .wizprog{font-size:.85em;color:#cdd0a8;margin-bottom:8px}
         .wizmsg{margin-top:10px;font-size:.9em;min-height:1.2em}
         .prob{display:flex;gap:10px;align-items:flex-start;padding:10px;margin:8px 0;border-radius:10px;
               background:var(--card2);border-left:4px solid var(--line);animation:fade .35s ease both}
         .prob .pico{font-size:1.2em;line-height:1}
         .prob.sev2{border-left-color:var(--accent)} .prob.sev1{border-left-color:var(--warn)} .prob.sev0{border-left-color:var(--info)}
         .prob b{display:block;margin-bottom:2px}
-        .prob .pfix{font-size:.85em;color:#9cc4ee}
+        .prob .pfix{font-size:.85em;color:#cdd0a8}
         .step{display:flex;gap:10px;align-items:flex-start;padding:10px;margin:6px 0;border-radius:10px;
               background:var(--card2);border:1px solid var(--line);transition:all .3s ease;animation:fade .35s ease both}
         .step.cur{border-color:var(--warn);box-shadow:0 0 0 2px rgba(243,156,18,.25)}
@@ -150,7 +157,7 @@
         <div class="tab active" data-p="overview" onclick="showTab(this)">📊 Огляд</div>
         <div class="tab" data-p="wizard" onclick="showTab(this)">🧙 Майстер</div>
         <div class="tab" data-p="data" onclick="showTab(this)">🔬 Дані</div>
-        <div class="tab" data-p="fw" onclick="showTab(this)">📤 Прошивка</div>
+        <div class="tab" data-p="fw" onclick="showTab(this)">🔧 Ремонт</div>
     </div>
 
     <div id="progress"><div class="spin"></div><div id="progressText">Виконується...</div></div>

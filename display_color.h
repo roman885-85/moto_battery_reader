@@ -544,7 +544,11 @@ inline void drawPageMain() {
     tPut(CX, y, buf); y += rh;
 
     tSet(FONT_SMALL, C_MUTED);
+#ifdef MENU_BTN3_PIN
+    tPut(CX, y, "[<][>] гортати   [OK] читати");
+#else
     tPut(CX, y, "[>] довго — зчитати АКБ");
+#endif
 
     drawFooterBar();
 }
@@ -735,7 +739,11 @@ inline void drawPageActions() {
     tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
     tft.drawFastHLine(0, FOOT_Y, TFT_W, C_BLUE);
     tSet(FONT_SMALL, C_MUTED, C_CARD);
+#ifdef MENU_BTN3_PIN
+    tPut(EDGE, TFT_H - 8, "[<][>] меню  [OK] вибір, трим=ПУСК");
+#else
     tPut(EDGE, TFT_H - 8, "[<] вибір   [<] тримати = ПУСК");
+#endif
 }
 
 // Сторінка Майстра відновлення (кольорова). Дані готує wizDeviceRefresh().
@@ -749,7 +757,11 @@ inline void drawPageWizard() {
         tSet(FONT_BODY, C_TEXT);
         tPut(x, 82, "Аналіз стану АКБ.");
         tSet(FONT_SMALL, C_MUTED);
+#ifdef MENU_BTN3_PIN
+        tPut(x, 110, "[OK] аналіз");
+#else
         tPut(x, 110, "[<] коротко = аналіз");
+#endif
     } else if (g_wizHealthy) {
         tSet(FONT_MODEL, C_GREEN);
         tPut(x, 90, "OK: справна");
@@ -764,7 +776,11 @@ inline void drawPageWizard() {
         if (g_wizAwait) {
             tSet(FONT_BODY, C_YELLOW);
             tPut(x, 136, "Чекаю ЗП. Поверніть АКБ");
+#ifdef MENU_BTN3_PIN
+            tPut(x, 158, "і тримайте [OK].");
+#else
             tPut(x, 158, "і тримайте [<].");
+#endif
         } else {
             tSet(FONT_BODY, C_GREEN);
             char n[48]; snprintf(n, sizeof(n), "Далі: %s", g_wizNext);
@@ -777,7 +793,11 @@ inline void drawPageWizard() {
     tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
     tft.drawFastHLine(0, FOOT_Y, TFT_W, C_BLUE);
     tSet(FONT_SMALL, C_MUTED, C_CARD);
+#ifdef MENU_BTN3_PIN
+    tPut(EDGE, TFT_H - 8, "[<][>] меню   [OK] аналіз/крок");
+#else
     tPut(EDGE, TFT_H - 8, "[<] кор=аналіз   трим=крок");
+#endif
 }
 
 // ===================== Рендер і кнопки =====================
@@ -840,6 +860,22 @@ inline void displayAnimTick() {
     uint16_t c = lighten565(col, (uint8_t)(tri * 11));   // 0..176 у бік білого (яскраво)
     fillRectExcept(fx, fy, fw, fh, g_pctTx, g_pctTy, g_pctTw, g_pctTh, c);
     g_animPhase++;
+}
+
+// Тимчасова діагностика анімації: друкує в Serial фактичний стан (сторінка,
+// ширина шкали, %, чи ввімкнена анімація). Викликається кілька разів на старті
+// з loop(), щоб зрозуміти, ЧОМУ пульсації не видно.
+inline void displayAnimReport() {
+    const char *src; int pct = batteryPercent(&src);
+    int fw = (g_battW > 6 && pct >= 0) ? (g_battW - 6) * pct / 100 : -1;
+    Serial.printf("ANIM: page=%d battW=%d pct=%d fillw=%d anim=%s\n",
+                  (int)g_displayPage, (int)g_battW, pct, fw,
+#ifdef DISABLE_BATTERY_ANIM
+                  "DISABLED(settings.h)"
+#else
+                  "on"
+#endif
+    );
 }
 
 // Плавний вхід у головне меню: малюємо головну сторінку під вимкненою

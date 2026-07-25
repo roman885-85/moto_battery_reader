@@ -413,17 +413,7 @@ inline void drawBatteryIcon(int x, int y, int w, int h, int pct) {
     int fillw = (w - 4) * pct / 100;
     if (fillw < 0) fillw = 0;
     if (fillw > w - 4) fillw = w - 4;
-    if (fillw > 0) {
-        u8g2.drawBox(x + 2, y + 2, fillw, h - 4);
-        // Анімований «блик»: тонкий темний стовпчик (2 px), що біжить по
-        // заповненню зліва направо — ефект заряджання.
-        int span = fillw + 6;
-        int sx = x + 2 + ((int)g_animPhase * span / 20) - 2;
-        u8g2.setDrawColor(0);
-        if (sx     >= x + 2 && sx     < x + 2 + fillw) u8g2.drawVLine(sx,     y + 2, h - 4);
-        if (sx + 1 >= x + 2 && sx + 1 < x + 2 + fillw) u8g2.drawVLine(sx + 1, y + 2, h - 4);
-        u8g2.setDrawColor(1);
-    }
+    if (fillw > 0) u8g2.drawBox(x + 2, y + 2, fillw, h - 4);   // анімація — у displayAnimTick()
 }
 
 // Відсоток заряду. Пріоритет — ICA (якщо увімкнений облік струму IAD=1),
@@ -894,18 +884,30 @@ inline void displayRender() {
     u8g2.sendBuffer();
 }
 
-// Тік анімації батареї (викликати з loop() ~10 разів/с). Оновлює ЛИШЕ область
-// іконки батареї на головній сторінці — дешево навіть для повільного SSD1327,
-// решту екрана й шину не чіпає.
+// Тік анімації батареї (з loop() ~10 разів/с). ПУЛЬСАЦІЯ заповнення: край рівня
+// заряду плавно «дихає» (±2 px). Оновлює ЛИШЕ область іконки батареї — дешево
+// навіть для повільного SSD1327, решту екрана й шину не чіпає.
 inline void displayAnimTick() {
     if (g_displayPage != 0 || g_battW == 0) return;
     const char *src; int pct = batteryPercent(&src);
     if (pct < 0) return;
-    g_animPhase = (g_animPhase + 1) % 20;
+    g_animPhase++;
+    int p = g_animPhase & 15;                       // період 16 кадрів (~1.8 с)
+    int tri = (p < 8) ? p : (16 - p);               // 0..8..0 (трикутна хвиля)
+    int shrink = (8 - tri) / 3;                     // 0..2 px «дихання» краю
+
     u8g2.setDrawColor(0);
     u8g2.drawBox(g_battX, g_battY, g_battW + 4, g_battH);   // очистити область іконки
     u8g2.setDrawColor(1);
     drawBatteryIcon(g_battX, g_battY, g_battW, g_battH, pct);
+    if (shrink > 0) {                               // прибрати кілька px біля краю заповнення
+        int fillw = (g_battW - 4) * pct / 100;
+        if (fillw > g_battW - 4) fillw = g_battW - 4;
+        int edge = g_battX + 2 + fillw;
+        u8g2.setDrawColor(0);
+        for (int i = 1; i <= shrink; i++) if (edge - i >= g_battX + 2) u8g2.drawVLine(edge - i, g_battY + 2, g_battH - 4);
+        u8g2.setDrawColor(1);
+    }
     int tx = g_battX / 8, ty = g_battY / 8;
     int tw = (g_battX + g_battW + 4 + 7) / 8 - tx;
     int th = (g_battY + g_battH + 7) / 8 - ty;
@@ -1000,52 +1002,42 @@ inline void displayHandleButton() {
     }
 
     int e2 = pollButton(MENU_BTN2_PIN, b2, 800);
-    // У 3-кнопковому режимі виконання/крок робить BTN3 (OK/Дія), тож BTN2 НЕ
-    // дублює їх — лишається лише навігація/вибір (інакше «одна кнопка робить те
-    // саме, що третя»).
-    if (g_displayPage == RESET_PAGE) {               // сторінка «Дії»
-        if (e2 == 1) {                               // коротке -> наступна операція
-            g_actionSel = (g_actionSel + 1) % numActions();
-            displayRender();
-        }
-#ifndef MENU_BTN3_PIN
-        else if (e2 == 2) {                          // довге -> виконати обране
-            g_actionRequested = g_actionSel;
-            displaySetStatus("ВИКОНУЮ...");
-            displayRender();
-        }
-#endif
-    } else if (g_displayPage == WIZARD_PAGE) {       // сторінка Майстра
-        if (e2 == 1) {                               // коротке -> аналіз
-            g_wizReq = 1; g_wizBusy = true;
-            displaySetStatus("АНАЛІЗ..."); displayRender();
-        }
-#ifndef MENU_BTN3_PIN
-        else if (e2 == 2) {                          // довге -> виконати наступний крок
-            g_wizReq = 2; g_wizBusy = true;
-            displaySetStatus("ВИКОНУЮ..."); displayRender();
-        }
-#endif
-    } else if (e2 == 1) {                            // інші сторінки: коротке -> назад
+#ifdef MENU_BTN3_PIN
+    // 3 кнопки: BTN2 — ЧИСТА «назад» на ВСІХ сторінках. Вибір/аналіз/виконання
+    // повністю на BTN3, тож «назад» більше не робить того, що третя кнопка.
+    if (e2 == 1) {
         g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
         displayFlip();
     }
+#else
+    // 2 кнопки: BTN2 суміщає навігацію + вибір/аналіз (коротко) + виконання (довго).
+    if (g_displayPage == RESET_PAGE) {               // сторінка «Дії»
+        if (e2 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRender(); }
+        else if (e2 == 2) { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
+    } else if (g_displayPage == WIZARD_PAGE) {       // сторінка Майстра
+        if (e2 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
+        else if (e2 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
+    } else if (e2 == 1) {
+        g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
+        displayFlip();
+    }
+#endif
 
 #ifdef MENU_BTN3_PIN
-    // Третя кнопка «OK / Дія»: коротко — контекстна дія, довго — «додому».
+    // Третя кнопка «OK / Дія» — усе, що пов'язане з дією на сторінці:
+    //  «Дії»    : коротко = наступна операція, довго = ВИКОНАТИ;
+    //  «Майстер»: коротко = аналіз,           довго = наступний крок;
+    //  інші     : коротко = у «Майстер»,      довго = на головну («додому»).
     int e3 = pollButton(MENU_BTN3_PIN, b3, 800);
-    if (e3 == 2) {                                   // довго -> головна сторінка
-        g_displayPage = 0; displayFlip();
-    } else if (e3 == 1) {
-        if (g_displayPage == RESET_PAGE) {           // «Дії» -> виконати обране
-            g_actionRequested = g_actionSel;
-            displaySetStatus("ВИКОНУЮ..."); displayRender();
-        } else if (g_displayPage == WIZARD_PAGE) {   // «Майстер» -> наступний крок
-            g_wizReq = 2; g_wizBusy = true;
-            displaySetStatus("ВИКОНУЮ..."); displayRender();
-        } else {                                     // будь-де -> швидко в «Майстер»
-            g_displayPage = WIZARD_PAGE; displayFlip();
-        }
+    if (g_displayPage == RESET_PAGE) {
+        if (e3 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRender(); }
+        else if (e3 == 2) { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
+    } else if (g_displayPage == WIZARD_PAGE) {
+        if (e3 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
+        else if (e3 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
+    } else {
+        if (e3 == 1) { g_displayPage = WIZARD_PAGE; displayFlip(); }
+        else if (e3 == 2) { g_displayPage = 0; displayFlip(); }
     }
 #endif
 }

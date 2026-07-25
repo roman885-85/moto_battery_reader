@@ -414,19 +414,26 @@ inline void drawBatteryIcon(int x, int y, int w, int h, int pct) {
 inline int batteryPercent(const char **src) {
     if (!hasDump2438) { *src = "--"; return -1; }
 
-    uint8_t config = batteryDump2438[0];       // стр.0 байт0 = Status/Config
-    if (config & 0x01) {                        // IAD=1 -> ICA підтримується
+    // % за напругою — завжди доступна опора (VDD DS2438, стр.0 байти 3..4, LE).
+    long vmv = (long)(((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3]) * 10;
+    int vpct = (int)((vmv - BATTERY_EMPTY_MV) * 100 / (BATTERY_FULL_MV - BATTERY_EMPTY_MV));
+    if (vpct < 0) vpct = 0; if (vpct > 100) vpct = 100;
+
+    uint8_t config = batteryDump2438[0];        // стр.0 байт0 = Status/Config
+    if (config & 0x01) {                         // IAD=1 -> ICA підтримується
+        int ica = (int)batteryDump2438[12] * 100 / ICA_FULL_SCALE;  // стр.1 байт4 = ICA
+        if (ica > 100) ica = 100;
+        // Паливомір «завис»/не відкалібрований: ICA каже майже порожньо, а напруга
+        // — суттєво більше (напр. після заміни банок/стирання, до калібрування на
+        // ЗП). Тоді показуємо реальний рівень за НАПРУГОЮ, а джерело позначаємо "U!"
+        // (щоб не збивати з пантелику 0% на фактично повному АКБ).
+        if (ica + 25 < vpct) { *src = "U!"; return vpct; }
         *src = "ICA";
-        int pct = (int)batteryDump2438[12] * 100 / ICA_FULL_SCALE; // стр.1 байт4 = ICA
-        return pct > 100 ? 100 : pct;
+        return ica;
     }
 
-    *src = "volt";                              // запасний варіант — по напрузі
-    long vmv = (long)(((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3]) * 10;
-    long pct = (vmv - BATTERY_EMPTY_MV) * 100 / (BATTERY_FULL_MV - BATTERY_EMPTY_MV);
-    if (pct < 0) pct = 0;
-    if (pct > 100) pct = 100;
-    return (int)pct;
+    *src = "volt";                               // ICA не підтримується — по напрузі
+    return vpct;
 }
 
 // Знайти модель (part number, напр. "PMNN4409A"/"PT4409A") в дампі DS2433.

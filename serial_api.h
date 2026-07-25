@@ -262,10 +262,12 @@ static void serialExec(const String &line) {
                                   if (findTemplate(md.c_str()) < 0) sResp("{\"ok\":false,\"err\":\"немає шаблону моделі\"}");
                                   else { bool o33 = false, o38 = false;
                                          bool ok = performRestoreTemplate(md.c_str(), &o33, &o38);
-                                         sResp(String("{\"ok\":") + (ok ? "true" : "false") +
-                                               ",\"ds2433\":" + (o33 ? "true" : "false") +
-                                               ",\"ds2438\":" + (o38 ? "true" : "false") +
-                                               (ok ? (String(",\"model\":\"") + md + "\"}") : ",\"err\":\"збій запису\"}"))); } }
+                                         String r = String("{\"ok\":") + (ok ? "true" : "false")
+                                                  + ",\"ds2433\":" + (o33 ? "true" : "false")
+                                                  + ",\"ds2438\":" + (o38 ? "true" : "false");
+                                         r += ok ? (String(",\"model\":\"") + md + "\"}")
+                                                 : String(",\"err\":\"збій запису\"}");
+                                         sResp(r); } }
     else if (cmd == "WIZARD")   { sResp(wizStart()); }
     else if (cmd == "WIZSTEP")  { int s2 = arg.indexOf(' ');
                                   String si = (s2 < 0) ? arg : arg.substring(0, s2);

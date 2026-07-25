@@ -245,18 +245,20 @@ inline void fixRecordChecksum(uint8_t *buf, int start, int len) {
 // Відсоток заряду. Пріоритет — ICA (якщо IAD=1), інакше по напрузі.
 inline int batteryPercent(const char **src) {
     if (!hasDump2438) { *src = "--"; return -1; }
+    long vmv = (long)(((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3]) * 10;
+    int vpct = (int)((vmv - BATTERY_EMPTY_MV) * 100 / (BATTERY_FULL_MV - BATTERY_EMPTY_MV));
+    if (vpct < 0) vpct = 0; if (vpct > 100) vpct = 100;
     uint8_t config = batteryDump2438[0];
     if (config & 0x01) {
+        int ica = (int)batteryDump2438[12] * 100 / ICA_FULL_SCALE;
+        if (ica > 100) ica = 100;
+        // Паливомір «завис»: ICA ~0%, а напруга каже «повний» -> показуємо за напругою.
+        if (ica + 25 < vpct) { *src = "U!"; return vpct; }
         *src = "ICA";
-        int pct = (int)batteryDump2438[12] * 100 / ICA_FULL_SCALE;
-        return pct > 100 ? 100 : pct;
+        return ica;
     }
     *src = "volt";
-    long vmv = (long)(((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3]) * 10;
-    long pct = (vmv - BATTERY_EMPTY_MV) * 100 / (BATTERY_FULL_MV - BATTERY_EMPTY_MV);
-    if (pct < 0) pct = 0;
-    if (pct > 100) pct = 100;
-    return (int)pct;
+    return vpct;
 }
 
 inline int batteryRemainingMah() {

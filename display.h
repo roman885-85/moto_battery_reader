@@ -886,6 +886,9 @@ inline void displayFlip() {
 inline void displayButtonSetup() {
     pinMode(MENU_BTN_PIN, INPUT_PULLUP);
     pinMode(MENU_BTN2_PIN, INPUT_PULLUP);
+#ifdef MENU_BTN3_PIN
+    pinMode(MENU_BTN3_PIN, INPUT_PULLUP);
+#endif
 }
 
 // Стан однієї кнопки для антидребезгу + розпізнавання довгого натискання.
@@ -939,6 +942,9 @@ inline int displayConsumeActionRequest() {
 //        на інших сторінках — коротке = попередня сторінка.
 inline void displayHandleButton() {
     static BtnState b1, b2;
+#ifdef MENU_BTN3_PIN
+    static BtnState b3;
+#endif
 
     int e1 = pollButton(MENU_BTN_PIN, b1, 800);
     if (e1 == 2) {                                   // довге -> перечитати
@@ -972,6 +978,24 @@ inline void displayHandleButton() {
         g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
         displayFlip();
     }
+
+#ifdef MENU_BTN3_PIN
+    // Третя кнопка «OK / Дія»: коротко — контекстна дія, довго — «додому».
+    int e3 = pollButton(MENU_BTN3_PIN, b3, 800);
+    if (e3 == 2) {                                   // довго -> головна сторінка
+        g_displayPage = 0; displayFlip();
+    } else if (e3 == 1) {
+        if (g_displayPage == RESET_PAGE) {           // «Дії» -> виконати обране
+            g_actionRequested = g_actionSel;
+            displaySetStatus("ВИКОНУЮ..."); displayRender();
+        } else if (g_displayPage == WIZARD_PAGE) {   // «Майстер» -> наступний крок
+            g_wizReq = 2; g_wizBusy = true;
+            displaySetStatus("ВИКОНУЮ..."); displayRender();
+        } else {                                     // будь-де -> швидко в «Майстер»
+            g_displayPage = WIZARD_PAGE; displayFlip();
+        }
+    }
+#endif
 }
 
 #endif  // DISPLAY_ST7789_SPI (кольоровий) / u8g2 (монохромний)

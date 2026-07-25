@@ -189,6 +189,6 @@ void loop() {
     // за потреби вимикається через #define DISABLE_BATTERY_ANIM у settings.h.
 #ifndef DISABLE_BATTERY_ANIM
     static unsigned long lastAnim = 0;
-    if (millis() - lastAnim > 110) { lastAnim = millis(); displayAnimTick(); }
+    if (millis() - lastAnim > ANIM_GRADIENT_MS) { lastAnim = millis(); displayAnimTick(); }
 #endif
 }

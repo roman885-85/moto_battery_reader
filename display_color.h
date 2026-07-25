@@ -895,7 +895,7 @@ inline void displayAnimTick() {
     int fx = g_battX + 3, fy = g_battY + 3, fh = g_battH - 6;
     int tx0 = g_pctTx, tx1 = g_pctTx + g_pctTw;   // рамка цифр % (оминаємо)
     int ty0 = g_pctTy, ty1 = g_pctTy + g_pctTh;
-    g_animPhase++;                                 // зсув фази -> градієнт «пливе»
+    g_animPhase += ANIM_GRADIENT_SPEED;            // зсув фази -> градієнт «пливе»
 
     // Малюємо заповнення вертикальними смугами по 4 px, яскравість кожної —
     // за синусом від позиції + фази. Виходить світло-темний градієнт, що плавно
@@ -904,8 +904,10 @@ inline void displayAnimTick() {
     const int band = 4;
     for (int x = fx; x < fx + fw; x += band) {
         int w = (x + band <= fx + fw) ? band : (fx + fw - x);
-        uint8_t s = ANIM_SINE32[(((x - fx) >> 2) + g_animPhase) & 31];   // хвиля 128 px
-        uint8_t lvl = (uint8_t)(70 + (int)s * 185 / 255);                // 70..255 (27%..100%)
+        // Індекс синуса: позиція, масштабована під довжину хвилі, + фаза (тече).
+        uint8_t s = ANIM_SINE32[(((x - fx) * 32 / ANIM_GRADIENT_WAVELEN) + g_animPhase) & 31];
+        uint8_t lvl = (uint8_t)(ANIM_GRADIENT_MINLVL +
+                                (int)s * (255 - ANIM_GRADIENT_MINLVL) / 255);
         uint16_t c = scale565(col, lvl);
         bool overText = (x + w > tx0) && (x < tx1) && (ty1 > fy) && (ty0 < fy + fh);
         if (overText) {

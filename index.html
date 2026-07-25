@@ -82,6 +82,7 @@
         .hxh{flex:1;padding-left:2px;white-space:pre;overflow:hidden}
         .hxd{flex:1;min-width:0;font-family:monospace;font-size:1em;line-height:1.4;color:#e7ecf3;background:transparent;border:none;padding:0 2px;resize:none;white-space:pre;overflow-y:scroll}
         .hxa{flex:none;width:150px;padding-left:8px;color:#8fb7d9;white-space:pre;overflow:hidden;border-left:1px solid #2a323f}
+        .hxae{font-family:monospace;font-size:1em;line-height:1.4;background:transparent;border:none;border-left:1px solid #2a323f;resize:none;overflow:hidden;caret-color:#8fb7d9}
         .hex{font-family:'Courier New',monospace;font-size:.82em;color:#9fe3c0;word-break:break-all;
              background:var(--card2);padding:10px;border-radius:8px;border:1px solid var(--line)}
         #toast{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:9;padding:12px 20px;
@@ -367,8 +368,8 @@
                 <div class="hxbar"><span class="hxg">Зсув</span><span class="hxh">00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F</span><span class="hxa">Текст</span></div>
                 <div class="hxrow">
                     <div class="hxg" id="hxGut"></div>
-                    <textarea class="hxd" id="hxData" spellcheck="false" oninput="hexAux()"></textarea>
-                    <div class="hxa" id="hxAsc"></div>
+                    <textarea class="hxd" id="hxData" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off"></textarea>
+                    <textarea class="hxa hxae" id="hxAsc" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off"></textarea>
                 </div>
             </div>
             <label style="display:block;margin:6px 0"><input type="checkbox" id="hxFix" checked>
@@ -690,56 +691,106 @@ async function repairFw(){
     prog(false);
 }
 
+// ---- Модель-орієнтований hex-редактор ------------------------------------
+// Єдине джерело правди — масив байтів hxBytes. Обидві панелі (hex і ASCII)
+// лише ВІДОБРАЖАЮТЬ модель; правки перехоплюються на keydown і йдуть у модель,
+// тож роздільники/адреси/вирівнювання НЕ псуються, а к-сть байт завжди точна.
+let hxBytes=new Uint8Array(0);
+const hxColHex=j=> j<8 ? j*3 : 25+(j-8)*3;   // колонка старшого нібла байта j
+function hxByteAtHex(col){for(let j=0;j<16;j++){const c=hxColHex(j);if(col===c)return[j,0];if(col===c+1)return[j,1];}return null;}
+const hxColAsc=j=> j<8 ? j : 10+(j-8);        // колонка байта j у ASCII-панелі
+function hxByteAtAsc(col){for(let j=0;j<16;j++)if(col===hxColAsc(j))return j;return null;}
+const HX_NAV=['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','PageUp','PageDown','Tab'];
+
+function hxRender(){
+    const n=hxBytes.length; let gut='',hx='',asc='';
+    for(let i=0;i<n;i+=16){
+        gut+=i.toString(16).toUpperCase().padStart(4,'0')+'\n';
+        let h='',a='';
+        for(let j=0;j<16&&i+j<n;j++){
+            const v=hxBytes[i+j];
+            h+=(j===0?'':(j===8?'  ':' '))+v.toString(16).toUpperCase().padStart(2,'0');
+            a+=(j===8?'  ':'')+((v>=32&&v<127)?String.fromCharCode(v):'.');
+        }
+        hx+=h+'\n'; asc+=a+'\n';
+    }
+    const sc=$('hxData').scrollTop;                 // збережемо позицію прокрутки
+    $('hxGut').textContent=gut.replace(/\n$/,'');
+    $('hxData').value=hx.replace(/\n$/,'');
+    $('hxAsc').value=asc.replace(/\n$/,'');
+    $('hxData').scrollTop=sc; $('hxAsc').scrollTop=sc; $('hxGut').scrollTop=sc;
+}
+function hxRC(ta){const s=ta.value.substring(0,ta.selectionStart).split('\n');return[s.length-1,s[s.length-1].length];}
+function hxSet(ta,r,c,lineLen){const p=r*(lineLen+1)+c;ta.selectionStart=ta.selectionEnd=p;}
+
+function hxKeyHex(e){
+    if(e.ctrlKey||e.metaKey||e.altKey)return;
+    if(HX_NAV.includes(e.key))return;
+    e.preventDefault();
+    if(e.key.length!==1||!/[0-9a-fA-F]/.test(e.key))return;
+    const [r,col]=hxRC($('hxData')), bn=hxByteAtHex(col);
+    if(!bn)return;
+    const bi=r*16+bn[0]; if(bi>=hxBytes.length)return;
+    const d=parseInt(e.key,16), v=hxBytes[bi];
+    hxBytes[bi]= bn[1]===0 ? ((d<<4)|(v&0x0F)) : ((v&0xF0)|d);
+    hxRender();
+    if(bn[1]===0) hxSet($('hxData'),r,col+1,48);
+    else{const nb=bi+1; nb<hxBytes.length ? hxSet($('hxData'),(nb>>4),hxColHex(nb&15),48) : hxSet($('hxData'),r,col,48);}
+}
+function hxKeyAsc(e){
+    if(e.ctrlKey||e.metaKey||e.altKey)return;
+    if(HX_NAV.includes(e.key))return;
+    e.preventDefault();
+    if(e.key.length!==1)return;
+    const code=e.key.charCodeAt(0); if(code<32||code>=127)return;
+    const [r,col]=hxRC($('hxAsc')), j=hxByteAtAsc(col);
+    if(j===null)return;
+    const bi=r*16+j; if(bi>=hxBytes.length)return;
+    hxBytes[bi]=code; hxRender();
+    const nb=bi+1; if(nb<hxBytes.length) hxSet($('hxAsc'),(nb>>4),hxColAsc(nb&15),18);
+}
+
 async function loadHex(){
     const t=$('hxTarget').value;
     try{
         const r=await fetch(t==='2438'?'/api/info2438':'/api/info');
-        if(r.status===404){$('hxData').value='';toast('Спочатку зчитайте АКБ','err');return}
+        if(r.status===404){hxBytes=new Uint8Array(0);hxRender();toast('Спочатку зчитайте АКБ','err');return}
         const d=await r.json();
-        // hex приходит строкой "AA BB ..." — раскладываем по 16 в ряд
-        const parts=(d.hex||'').trim().split(/\s+/);
-        let out='';
-        for(let i=0;i<parts.length;i+=16) out+=parts.slice(i,i+16).join(' ')+'\n';
-        $('hxData').value=out.trim();
-        hexAux();
+        const parts=(d.hex||'').trim().split(/\s+/).filter(x=>x.length);
+        hxBytes=Uint8Array.from(parts,x=>parseInt(x,16));
+        hxRender();
     }catch(e){toast('Помилка: '+e.message,'err')}
 }
 
-// Лінійка адресів + ASCII-колонка (як у HxD): перераховуємо при кожній зміні
-function hexAux(){
-    const bytes=($('hxData').value.match(/[0-9a-fA-F]{2}/g))||[];
-    let gut='', asc='';
-    for(let i=0;i<bytes.length;i+=16){
-        gut+=i.toString(16).toUpperCase().padStart(4,'0')+'\n';
-        let s='';
-        for(let j=i;j<i+16&&j<bytes.length;j++){
-            const v=parseInt(bytes[j],16);
-            s+=(v>=32&&v<127)?String.fromCharCode(v):'.';
-        }
-        asc+=s+'\n';
-    }
-    $('hxGut').textContent=gut;
-    $('hxAsc').textContent=asc;
-}
-// Синхронне прокручування гутера/тексту/ASCII
+// Синхронне прокручування гутера/тексту/ASCII + прив'язка обробників
 document.addEventListener('DOMContentLoaded',function(){
-    const d=$('hxData');
-    if(d)d.addEventListener('scroll',function(){
-        $('hxGut').scrollTop=d.scrollTop;
-        $('hxAsc').scrollTop=d.scrollTop;
-    });
+    const d=$('hxData'), a=$('hxAsc');
+    if(d){
+        d.addEventListener('scroll',function(){$('hxGut').scrollTop=d.scrollTop; a.scrollTop=d.scrollTop;});
+        d.addEventListener('keydown',hxKeyHex);
+        d.addEventListener('paste',e=>e.preventDefault());
+        d.addEventListener('cut',e=>e.preventDefault());
+        d.addEventListener('drop',e=>e.preventDefault());
+    }
+    if(a){
+        a.addEventListener('scroll',function(){$('hxGut').scrollTop=a.scrollTop; d.scrollTop=a.scrollTop;});
+        a.addEventListener('keydown',hxKeyAsc);
+        a.addEventListener('paste',e=>e.preventDefault());
+        a.addEventListener('cut',e=>e.preventDefault());
+        a.addEventListener('drop',e=>e.preventDefault());
+    }
 });
 
 async function writeHex(){
     const pw=$('pwHex').value; if(!pw){toast('Введіть пароль','err');return}
     const t=$('hxTarget').value;
-    const data=$('hxData').value.replace(/[^0-9a-fA-F]/g,'');
-    const need=(t==='2438'?64:512)*2;
-    if(data.length!==need){toast('Треба '+(need/2)+' байт, зараз '+Math.floor(data.length/2),'err');return}
-    if(!confirm('⚡ Запис '+ (need/2) +' байт у '+t+' НЕЗВОРОТНІЙ. Продовжити?'))return;
+    const need=(t==='2438'?64:512);
+    if(hxBytes.length!==need){toast('Треба '+need+' байт, зараз '+hxBytes.length+'. Натисніть «↻ Завантажити».','err');return}
+    if(!confirm('⚡ Запис '+need+' байт у '+t+' НЕЗВОРОТНІЙ. Продовжити?'))return;
+    const data=Array.from(hxBytes,b=>b.toString(16).padStart(2,'0')).join('');
     prog(true,'Запис байтів...');
     try{
-        const r=await postForm('/api/writehex',{password:pw,target:t,autofix:$('hxFix').checked?'1':'0',data:$('hxData').value});
+        const r=await postForm('/api/writehex',{password:pw,target:t,autofix:$('hxFix').checked?'1':'0',data:data});
         toast(r.status==='success'?'✅ Байти записано':('Помилка: '+r.message),r.status==='success'?'ok':'err');
         if(r.status==='success')await refreshAll();
     }catch(e){toast('Помилка: '+e.message,'err')}

@@ -312,24 +312,31 @@ class App:
         ttk.Button(bar, text="⚡ Записати байти", command=self.hx_write).pack(side="left", padx=3)
 
         # Заголовок колонок (як у HxD): Offset | 16 байт (розбито по 8) | текст
+        # padx/bd/highlightthickness заголовків = такі самі, як у Text-панелях
+        # нижче, інакше адреси «з'їжджають» по горизонталі відносно "Offset(h)".
         hdr = tk.Frame(f); hdr.pack(fill="x", pady=(6, 0))
-        tk.Label(hdr, text="Offset(h) ", width=10, font=mono, anchor="w", fg="#2a7d4f").pack(side="left")
-        tk.Label(hdr, text="00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F ",
-                 font=mono, anchor="w", fg="#3a6d9a").pack(side="left")
-        tk.Label(hdr, text=" Декодований текст", font=mono, anchor="w", fg="#7a5").pack(side="left")
+        tk.Label(hdr, text="Offset(h)", width=10, font=mono, anchor="w", fg="#2a7d4f",
+                 padx=5, bd=0, highlightthickness=0).pack(side="left")
+        tk.Label(hdr, text="00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F",
+                 font=mono, anchor="w", fg="#3a6d9a",
+                 padx=5, bd=0, highlightthickness=0).pack(side="left")
+        tk.Label(hdr, text="Декодований текст", font=mono, anchor="w", fg="#7a5",
+                 padx=5, bd=0, highlightthickness=0).pack(side="left")
 
         body = tk.Frame(f); body.pack(fill="both", expand=True)
         self.hxSb = ttk.Scrollbar(body, orient="vertical", command=self._hx_yview)
         self.hxSb.pack(side="right", fill="y")
         self.hxGut = tk.Text(body, width=10, font=mono, wrap="none", padx=5, spacing1=0,
-                             bg="#eef1f4", fg="#2a6", relief="flat", state="disabled", cursor="arrow",
-                             takefocus=0)
+                             bg="#eef1f4", fg="#2a6", relief="flat", bd=0, highlightthickness=0,
+                             state="disabled", cursor="arrow", takefocus=0)
         self.hxGut.pack(side="left", fill="y")
         self.hxHex = tk.Text(body, width=50, font=mono, wrap="none", padx=5,
-                             relief="flat", bg="#ffffff", insertbackground="#111")
+                             relief="flat", bd=0, highlightthickness=0,
+                             bg="#ffffff", insertbackground="#111")
         self.hxHex.pack(side="left", fill="both", expand=True)
         self.hxAsc = tk.Text(body, width=18, font=mono, wrap="none", padx=5,
-                             bg="#f4f7fa", fg="#357", relief="flat", insertbackground="#111")
+                             bg="#f4f7fa", fg="#357", relief="flat", bd=0, highlightthickness=0,
+                             insertbackground="#111")
         self.hxAsc.pack(side="left", fill="y")
         # Модель редактора: справжні байти. Обидві панелі (hex і текст) лише
         # ВІДОБРАЖАЮТЬ модель; правки йдуть у модель через перехоплення клавіш,

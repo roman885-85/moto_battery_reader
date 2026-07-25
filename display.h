@@ -938,19 +938,6 @@ inline void displayAnimTick() {
     u8g2.updateDisplayArea(tx, ty, tw, th);
 }
 
-// Тимчасова діагностика анімації (див. коментар у display_color.h).
-inline void displayAnimReport() {
-    const char *src; int pct = batteryPercent(&src);
-    Serial.printf("ANIM: page=%d battW=%d pct=%d anim=%s\n",
-                  (int)g_displayPage, (int)g_battW, pct,
-#ifdef DISABLE_BATTERY_ANIM
-                  "DISABLED(settings.h)"
-#else
-                  "on"
-#endif
-    );
-}
-
 // Повертає запит Майстра для .ino один раз: 0 нема, 1 аналіз, 2 наступний крок.
 inline int displayConsumeWizRequest() { int r = g_wizReq; g_wizReq = 0; return r; }
 

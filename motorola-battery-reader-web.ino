@@ -191,10 +191,4 @@ void loop() {
     static unsigned long lastAnim = 0;
     if (millis() - lastAnim > 110) { lastAnim = millis(); displayAnimTick(); }
 #endif
-
-    // Тимчасова діагностика анімації: 6 звітів протягом ~12 с після старту, потім
-    // тиша. Показує в Serial сторінку/ширину шкали/%/стан — щоб зрозуміти, чому
-    // пульсації не видно (напр. pct<0 = немає даних, або anim=DISABLED).
-    static unsigned long lastDbg = 0; static int dbgN = 0;
-    if (dbgN < 6 && millis() - lastDbg > 2000) { lastDbg = millis(); dbgN++; displayAnimReport(); }
 }

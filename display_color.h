@@ -517,28 +517,35 @@ inline void drawPageMain() {
 
     drawHeaderBar("Moto IMPRES");
 
-    // Велика батарея на всю ширину (з відступом від кутів).
-    int bx = CX, by = HDR_H + 12, bw = TFT_W - 2 * CX - 4, bh = 52;
-    drawBatteryBar(bx, by, bw, bh, pct, col);
-    // % великим по центру шкали (вбудований шрифт GFX — завжди доступний).
+    // Розкладка: спершу ВЕЛИКИЙ % ЛІВОРУЧ, далі — батарея праворуч (трохи коротша),
+    // щоб текст і шкала не наповзали одне на одне.
     if (pct >= 0) snprintf(buf, sizeof(buf), "%d%%", pct);
     else          snprintf(buf, sizeof(buf), "--%%");
+    int by = HDR_H + 12, bh = 52;
+    int pctW = 6 * BIG_TSIZE * 4;                 // зона під найширше "100%"
+    int gap  = 10;
+    int bx = CX + pctW + gap;                     // батарея праворуч від тексту
+    int bw = TFT_W - CX - 4 - bx;                 // решта ширини (−4 px під «+» вивід)
+    // % — вертикально по центру батареї, вирівняно ПРАВОРУЧ у своїй зоні (правий
+    // край числа завжди біля батареї, попри різну кількість цифр).
     {
-        int cw = 6 * BIG_TSIZE * (int)strlen(buf);   // ширина рядка GFX-шрифтом
+        int cw = 6 * BIG_TSIZE * (int)strlen(buf);
         int ch = 8 * BIG_TSIZE;
-        int tx = bx + (bw - cw) / 2, ty = by + (bh - ch) / 2;
+        int tx = CX + (pctW - cw);
+        int ty = by + (bh - ch) / 2;
         tft.setTextColor(C_TEXT);
         tft.setTextSize(BIG_TSIZE);
         tft.setCursor(tx, ty);
         tft.print(buf);
         tft.setTextSize(1);
-        // Рамка цифр (+1 px поле) — анімація пульсації заповнення її оминає.
-        g_pctTx = tx - 1; g_pctTy = ty - 1; g_pctTw = cw + 2; g_pctTh = ch + 2;
     }
+    drawBatteryBar(bx, by, bw, bh, pct, col);
+    g_pctTx = g_pctTy = g_pctTw = g_pctTh = 0;    // цифри поза шкалою -> градієнт на всю батарею
+
     // Джерело показника (ICA/volt).
     tSet(FONT_SMALL, C_MUTED);
     snprintf(buf, sizeof(buf), "джерело: %s", src);
-    tPut(bx, by + bh + 14, buf);
+    tPut(CX, by + bh + 14, buf);
 
     // Деталі. Крок підібраний так, щоб 4 рядки влазили навіть на найнижчій
     // портретній панелі (240 -> статус-смуга з ~214), тож на 280/320 і поготів.
@@ -908,22 +915,6 @@ inline void displayAnimTick() {
             tft.fillRect(x, fy, w, fh, c);
         }
     }
-}
-
-// Тимчасова діагностика анімації: друкує в Serial фактичний стан (сторінка,
-// ширина шкали, %, чи ввімкнена анімація). Викликається кілька разів на старті
-// з loop(), щоб зрозуміти, ЧОМУ пульсації не видно.
-inline void displayAnimReport() {
-    const char *src; int pct = batteryPercent(&src);
-    int fw = (g_battW > 6 && pct >= 0) ? (g_battW - 6) * pct / 100 : -1;
-    Serial.printf("ANIM: page=%d battW=%d pct=%d fillw=%d anim=%s\n",
-                  (int)g_displayPage, (int)g_battW, pct, fw,
-#ifdef DISABLE_BATTERY_ANIM
-                  "DISABLED(settings.h)"
-#else
-                  "on"
-#endif
-    );
 }
 
 // Плавний вхід у головне меню: малюємо головну сторінку під вимкненою

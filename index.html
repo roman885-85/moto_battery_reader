@@ -74,7 +74,8 @@
         .file input{display:none}
         .file label{display:inline-block;padding:9px 20px;background:var(--ua-blue);border-radius:8px;cursor:pointer}
         .fname{margin-left:12px;color:var(--muted);font-size:.9em}
-        .pw{width:100%;padding:12px;margin:10px 0;background:var(--card2);border:1px solid var(--line);
+        .pw{display:none} /* пароль адміністратора вимкнено — поля приховані */
+        .pw--off{width:100%;padding:12px;margin:10px 0;background:var(--card2);border:1px solid var(--line);
             border-radius:8px;color:var(--text);font-size:1em}
         .note{font-size:.82em;padding:10px;border-radius:8px;margin-top:10px;border-left:3px solid}
         .note.i{background:#23281a;color:#cdd0a8;border-color:var(--info)}
@@ -595,7 +596,7 @@ const downloadDump2438=()=>downloadBin('/api/download2438','ds2438');
 async function writeGeneric(file,size,pwId,upUrl,wrUrl,name){
     if(!file){toast('Оберіть файл '+name,'err');return}
     if(file.size!==size){toast('Файл має бути '+size+' байт (зараз '+file.size+')','err');return}
-    const pw=$(pwId).value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$(pwId).value; 
     if(!confirm('⚠️ Запис '+name+' НЕЗВОРОТНІЙ.\nФайл: '+file.name+'\nПродовжити?'))return;
     prog(true,'Завантаження файлу...');
     try{
@@ -614,7 +615,7 @@ const writeDump=()=>writeGeneric(f33,512,'pw33','/upload','/api/write','DS2433')
 const writeDump2438=()=>writeGeneric(f38,64,'pw38','/upload2438','/api/write2438','DS2438');
 
 async function resetBattery(){
-    const pw=$('pwRst').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwRst').value; 
     if(!confirm('♻️ Скидання лічильників/зносу та запис у чіп НЕЗВОРОТНІ.\n'+
                 'Потім — калібрування на оригінальному IMPRES-ЗП.\nПродовжити?'))return;
     prog(true,'Скидання та запис...');
@@ -691,7 +692,7 @@ function wizRenderSteps(r){
 async function wizNext(){
     const r=wizState; if(!r)return;
     if(r.awaitCharge && !r.chargeDone){await wizAnalyze();return;}   // опитуємо ЗП
-    const pw=$('pwWiz').value; if(!pw){toast('Введіть пароль','err');return;}
+    const pw=$('pwWiz').value; 
     const idx=r.progress;
     const model=r.needModel?$('wizModel').value:'';
     if(r.needModel && !model){toast('Оберіть модель для відновлення','err');return;}
@@ -707,7 +708,7 @@ async function wizNext(){
     prog(false);
 }
 async function wizReset(){
-    const pw=$('pwWiz').value; if(!pw){toast('Введіть пароль','err');return;}
+    const pw=$('pwWiz').value; 
     try{await postForm('/api/wizard/reset',{password:pw});toast('Майстра скинуто','ok');}catch(e){}
     wizAnalyze();
 }
@@ -732,7 +733,7 @@ async function wizJournalsLoad(){
     }catch(e){toast('Помилка: '+e.message,'err');}
 }
 async function wizJournalDelete(serial){
-    const pw=$('pwWiz').value; if(!pw){toast('Введіть пароль для видалення','err');return;}
+    const pw=$('pwWiz').value; 
     if(!confirm('Видалити збережене відновлення для '+serial+'?'))return;
     try{
         const r=await postForm('/api/wizard/journals/delete',{password:pw,serial:serial});
@@ -741,7 +742,7 @@ async function wizJournalDelete(serial){
 }
 
 async function setCapacity(){
-    const pw=$('pwCap').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwCap').value; 
     const cap=parseInt($('capVal').value); if(isNaN(cap)||cap<0||cap>100){toast('Ємність 0..100','err');return}
     if(!confirm('🔋 Записати ємність '+cap+'% у АКБ? Незворотньо.'))return;
     prog(true,'Запис ємності...');
@@ -754,7 +755,7 @@ async function setCapacity(){
 }
 
 async function setEtm(){
-    const pw=$('pwEtm').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwEtm').value; 
     const ds=$('etmDate').value; if(!ds){toast('Оберіть дату','err');return}
     const target=new Date(ds+'T00:00:00');
     let sec=Math.floor((Date.now()-target.getTime())/1000);
@@ -771,7 +772,7 @@ async function setEtm(){
 }
 
 async function setMah(){
-    const pw=$('pwMah').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwMah').value; 
     const mah=parseInt($('mahVal').value); if(isNaN(mah)||mah<0){toast('Вкажіть мА·год','err');return}
     if(!confirm('🔋 Записати залишкову ємність '+mah+' мА·год у DS2438? Незворотньо.'))return;
     prog(true,'Запис мА·год...');
@@ -784,7 +785,7 @@ async function setMah(){
 }
 
 async function setChargeAuto(){
-    const pw=$('pwMah').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwMah').value; 
     prog(true,'Заряд по напрузі...');
     try{
         const r=await postForm('/api/setcharge',{password:pw,auto:'1'});
@@ -794,7 +795,7 @@ async function setChargeAuto(){
     prog(false);
 }
 async function setChargePct(){
-    const pw=$('pwMah').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwMah').value; 
     const pct=parseInt($('chgVal').value); if(isNaN(pct)||pct<0||pct>100){toast('Вкажіть 0..100','err');return}
     prog(true,'Запис заряду...');
     try{
@@ -806,7 +807,7 @@ async function setChargePct(){
 }
 
 async function wipe2433(){
-    const pw=$('pwWipe').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwWipe').value; 
     if(!confirm('🔥 ПОВНЕ стирання DS2433!\n\nСтираються МОДЕЛЬ, СЕРІЙНИЙ/ID та КАЛІБРУВАННЯ.\nАКБ НЕ ПРАЦЮВАТИМЕ, доки не запишете еталонний дамп тієї ж моделі.\n\nВи зробили резервну копію? Продовжити?'))return;
     if(!confirm('Останнє попередження: стерти DS2433 ПОВНІСТЮ?'))return;
     prog(true,'Повне стирання DS2433...');
@@ -819,7 +820,7 @@ async function wipe2433(){
 }
 
 async function wipe2438(){
-    const pw=$('pwWipe').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwWipe').value; 
     if(!confirm('🔥 ПОВНЕ стирання DS2438!\n\nСтирається дзеркало калібрування (DS2438).\nАКБ треба відновити («Новий АКБ» тієї ж моделі).\n\nВи зробили резервну копію? Продовжити?'))return;
     if(!confirm('Останнє попередження: стерти DS2438 ПОВНІСТЮ?'))return;
     prog(true,'Повне стирання DS2438...');
@@ -832,7 +833,7 @@ async function wipe2438(){
 }
 
 async function cleanBattery(){
-    const pw=$('pwCln').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwCln').value; 
     if(!confirm('🧹 Стерти ВСІ дані використання/історії, лишивши модель/ID/калібрування?\nНезворотньо. Продовжити?'))return;
     prog(true,'Очистка...');
     try{
@@ -850,7 +851,7 @@ function mdCheck(){
     el.style.color=(v.length>=3&&v.length<=9)?'var(--ok)':'var(--warn)';
 }
 async function setModel(){
-    const pw=$('pwMd').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwMd').value; 
     const m=$('mdVal').value.trim().toUpperCase();
     if(!/^[A-Z0-9]{3,9}$/.test(m)){toast('Модель: 3–9 символів A–Z / 0–9','err');return}
     if(!confirm('Записати модель «'+m+'» у DS2433?\nНевірна модель може зробити АКБ невизначеною для рації.'))return;
@@ -864,7 +865,7 @@ async function setModel(){
 }
 
 async function recalPrep(){
-    const pw=$('pwRecal').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwRecal').value; 
     if(!confirm('🔧 Підготувати АКБ до рекалібрування?\nСтерти старе learned-калібрування і обнулити лічильники (модель/крива лишаються). Далі — калібрування на IMPRES-ЗП.'))return;
     prog(true,'Підготовка до калібрування...');
     try{
@@ -876,7 +877,7 @@ async function recalPrep(){
 }
 
 async function repairFw(){
-    const pw=$('pwRep').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwRep').value; 
     if(!confirm('🛠 Відновити цілісність (контрольні суми + дзеркало) і записати у чіп?'))return;
     prog(true,'Ремонт...');
     try{
@@ -978,7 +979,7 @@ document.addEventListener('DOMContentLoaded',function(){
 });
 
 async function writeHex(){
-    const pw=$('pwHex').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwHex').value; 
     const t=$('hxTarget').value;
     const need=(t==='2438'?64:512);
     if(hxBytes.length!==need){toast('Треба '+need+' байт, зараз '+hxBytes.length+'. Натисніть «↻ Завантажити».','err');return}
@@ -1005,7 +1006,7 @@ async function loadTemplates(){
     }catch(e){}
 }
 async function restoreBattery(){
-    const pw=$('pwRest').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwRest').value; 
     const model=$('restModel').value;
     if(!model){toast('Оберіть модель','err');return}
     if(!confirm('🛠️ Відновити еталон '+model+' БАЙТ-У-БАЙТ?\n\nПерезапише ОБИДВІ мікросхеми точною genuine-копією (з навченою калібровкою).\nПрацює й на порожньому/битому чипі. Продовжити?'))return;
@@ -1020,7 +1021,7 @@ async function restoreBattery(){
     prog(false);
 }
 async function initBattery(){
-    const pw=$('pwInit').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwInit').value; 
     const model=$('initModel').value; const mah=parseInt($('initMah').value);
     if(!model){toast('Оберіть модель','err');return}
     if(isNaN(mah)||mah<=0){toast('Вкажіть ємність у мА·год','err');return}
@@ -1035,7 +1036,7 @@ async function initBattery(){
 }
 
 async function rebootDevice(){
-    const pw=$('pwReboot').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwReboot').value; 
     if(!confirm('🔁 Перезавантажити ESP32? На кілька секунд зникне Wi-Fi/сторінка.'))return;
     prog(true,'Перезавантаження...');
     try{

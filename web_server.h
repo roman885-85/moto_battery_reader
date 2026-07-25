@@ -97,17 +97,11 @@ static bool mirrorSourceValid(const uint8_t *d38) {
 // запис виконувався БЕЗ пароля (діра в безпеці). Тепер пароль ОБОВ'ЯЗКОВИЙ:
 // має бути присутній І збігатися. Усі веб-обробники запису викликають
 // requireAdmin() першим рядком.
-static bool adminOk() {
-    return server.hasArg("password") && server.arg("password") == ADMIN_PASSWORD;
-}
-static bool requireAdmin() {
-    if (!adminOk()) {
-        server.send(403, "application/json",
-            "{\"status\":\"error\",\"message\":\"Невірний або відсутній пароль адміністратора\"}");
-        return false;
-    }
-    return true;
-}
+static bool adminOk() { return true; }
+// Пароль адміністратора ВИМКНЕНО: пристрій працює без нього (фізичний доступ до
+// АКБ/пристрою вже є дозволом). requireAdmin() лишено як no-op, щоб не чіпати
+// десятки місць виклику; воно завжди дозволяє.
+static bool requireAdmin() { return true; }
 
 // Логотип: віддаємо /logo.png з SPIFFS, якщо він завантажений (інакше 404 -> в вебі
 // показується вбудований SVG-тризуб). Дозволяє використати точний логотип НГУ.
@@ -722,14 +716,23 @@ void factoryCleanData() {
 // Повертає к-сть стертих записів.
 int eraseLearnedCalib() {
     int erased = 0;
-    // Скануємо ПІСЛЯ кривої розряду (вона в 0x42..0x67) і до записів моделі —
-    // саме тут ЗП тримає learned-калібрування; так не зачепимо криву випадково.
-    for (int i = 0x68; i < 0x180 - 10; i++) {
-        if (batteryDump[i] == 0x0A) {
-            int s = 0; for (int k = 0; k < 10; k++) s += batteryDump[i + k];
-            if ((s & 0xFF) == 0x5A) {                  // валідний запис 0x0A
-                for (int k = 0; k < 10; k++) batteryDump[i + k] = 0xFF;
-                erased++; i += 9;
+    // Стираємо ЛИШЕ валідні записи 0x0A (Σ≡0x5A) у ДВОХ безпечних зонах, НЕ чіпаючи
+    // модель/записи ємності (0x140..0x17F) — інакше після підготовки рація каже
+    // «нема моделі». Головна learned-зона IMPRES-ЗП — ПІСЛЯ записів (0x180..кінець):
+    // саме там (напр. 0x1D2/0x1F0) лежить «навчене» калібрування реальних банок,
+    // що суперечить новим елементам і блокує повторну калібровку (підтверджено
+    // ручним стиранням цієї зони). Зона 0x68..0x140 (переважно 0xFF) — про запас
+    // для інших форматів; модель/записи між ними лишаються недоторканими.
+    for (int pass = 0; pass < 2; pass++) {
+        int lo = (pass == 0) ? 0x68  : 0x180;
+        int hi = (pass == 0) ? 0x140 : (int)DUMP_SIZE;
+        for (int i = lo; i < hi - 10; i++) {
+            if (batteryDump[i] == 0x0A) {
+                int s = 0; for (int k = 0; k < 10; k++) s += batteryDump[i + k];
+                if ((s & 0xFF) == 0x5A) {              // валідний запис 0x0A
+                    for (int k = 0; k < 10; k++) batteryDump[i + k] = 0xFF;
+                    erased++; i += 9;
+                }
             }
         }
     }

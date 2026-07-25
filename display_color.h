@@ -895,6 +895,7 @@ inline int displayConsumeWizRequest() { int r = g_wizReq; g_wizReq = 0; return r
 // Плавний перехід між сторінками: короткий «дип» підсвітки (crossfade). Без
 // BLK-піна — звичайний рендер без анімації.
 inline void displayFlip() {
+    buzzClick();                                 // звуковий клік перемикання
 #ifdef DISPLAY_BLK_PIN
     for (int b = 255; b > 90; b -= 33) { analogWrite(DISPLAY_BLK_PIN, b); delay(5); }
     displayRender();
@@ -922,23 +923,30 @@ inline void displayHandleButton() {
     }
 
     int e2 = pollButton(MENU_BTN2_PIN, b2, 800);
+    // 3-кнопковий режим: виконання/крок робить BTN3 — BTN2 їх не дублює.
     if (g_displayPage == RESET_PAGE) {
         if (e2 == 1) {
             g_actionSel = (g_actionSel + 1) % numActions();
             displayRender();
-        } else if (e2 == 2) {
+        }
+#ifndef MENU_BTN3_PIN
+        else if (e2 == 2) {
             g_actionRequested = g_actionSel;
             displaySetStatus("ВИКОНУЮ...");
             displayRender();
         }
+#endif
     } else if (g_displayPage == WIZARD_PAGE) {
         if (e2 == 1) {                               // коротке -> аналіз
             g_wizReq = 1; g_wizBusy = true;
             displaySetStatus("АНАЛІЗ..."); displayRender();
-        } else if (e2 == 2) {                        // довге -> наступний крок
+        }
+#ifndef MENU_BTN3_PIN
+        else if (e2 == 2) {                          // довге -> наступний крок
             g_wizReq = 2; g_wizBusy = true;
             displaySetStatus("ВИКОНУЮ..."); displayRender();
         }
+#endif
     } else if (e2 == 1) {
         g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
         displayFlip();

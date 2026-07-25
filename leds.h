@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include "settings.h"
+#include "buzzer.h"     // звукове оповіщення (порожнє, якщо BUZZER_PIN не задано)
 
 // ---------------------------------------------------------------------------
 // Індикація світлодіодами (неблокуюча). Зелений = LED_GREEN_PIN,
@@ -30,6 +31,7 @@ inline void ledInit() {
     pinMode(LED_RED_PIN, OUTPUT);
     digitalWrite(LED_GREEN_PIN, LOW);
     digitalWrite(LED_RED_PIN, LOW);
+    buzzInit();
 }
 
 inline void ledWrite(bool g, bool r) {
@@ -47,6 +49,10 @@ inline void ledSet(LedMode m) {
     g_ledMode = m;
     g_ledT0 = g_ledLast = millis();
     g_ledPhase = false;
+    // Звукове оповіщення про операції (за зміною режиму, тож по разу на подію).
+    if      (m == LED_WRITE) buzzStart();
+    else if (m == LED_OK)    buzzOk();
+    else if (m == LED_ERROR) buzzErr();
 }
 
 // Викликати часто з loop(). Реалізує патерни блимань по millis().

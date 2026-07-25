@@ -132,6 +132,22 @@
   #endif
 #endif
 
+// --- Звукове оповіщення (пасивний буззер/динамік) — НЕОБОВ'ЯЗКОВЕ ---
+// Клік при перемиканні меню, звук на початку/успіху/помилці операції.
+// ЦАП ESP32 лише на 25/26 (зайняті кнопками), тож буззер — на ВІЛЬНОМУ піні
+// через tone(). Закоментовано = без звуку. Оберіть вільний GPIO (напр. 32/33):
+// #define BUZZER_PIN 32
+#ifdef BUZZER_PIN
+  #if (BUZZER_PIN == MENU_BTN_PIN)   || (BUZZER_PIN == MENU_BTN2_PIN)  || \
+      (BUZZER_PIN == LED_RED_PIN)    || (BUZZER_PIN == LED_GREEN_PIN)  || \
+      (BUZZER_PIN == DS_PIN)         || (BUZZER_PIN == PULLUP_PIN)     || \
+      (BUZZER_PIN == DISPLAY_SDA_PIN)|| (BUZZER_PIN == DISPLAY_SCL_PIN)|| \
+      (BUZZER_PIN == DISPLAY_CS_PIN) || (BUZZER_PIN == DISPLAY_DC_PIN) || \
+      (BUZZER_PIN == DISPLAY_RST_PIN)|| (defined(MENU_BTN3_PIN) && BUZZER_PIN == MENU_BTN3_PIN)
+    #error "BUZZER_PIN конфліктує з уже зайнятим піном! Оберіть вільний GPIO (напр. 32 або 33)."
+  #endif
+#endif
+
 // --- Индикатор заряду ---
 // Пріоритет ICA (DS2438). При вимкненому обліку струму (IAD=0) — по напрузі.
 #define ICA_FULL_SCALE    255      // значення ICA, відповідне 100%

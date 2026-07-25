@@ -173,6 +173,9 @@ void loop() {
 
     // Анімація батареї на головній сторінці (~9 к/с). Оновлює лише область
     // іконки батареї, тож не гальмує кнопки/веб і шину дисплея.
+    // Вимикається через #define DISABLE_BATTERY_ANIM у settings.h.
+#ifndef DISABLE_BATTERY_ANIM
     static unsigned long lastAnim = 0;
     if (millis() - lastAnim > 110) { lastAnim = millis(); displayAnimTick(); }
+#endif
 }

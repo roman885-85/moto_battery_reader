@@ -172,6 +172,18 @@ void loop() {
     // / успіх / помилка — режим задають обробники через ledSet()).
     ledTask();
 
+    // Червоний «світлофільтр» на екрані на час оповіщення про помилку: увесь
+    // вміст стає червоним відтінком (без блимання), поки активний LED_ERROR,
+    // і повертається до норми, коли індикатор виходить із режиму помилки.
+    {
+        static LedMode prevLed = LED_BOOT;
+        if (g_ledMode != prevLed) {
+            if (g_ledMode == LED_ERROR)      displaySetErrorTint(true);
+            else if (prevLed == LED_ERROR)   displaySetErrorTint(false);
+            prevLed = g_ledMode;
+        }
+    }
+
     // Анімація батареї на головній сторінці (~9 к/с) — пульсація заповнення.
     // Оновлює лише область шкали батареї, не чіпаючи цифри %. УВІМКНЕНА типово;
     // за потреби вимикається через #define DISABLE_BATTERY_ANIM у settings.h.

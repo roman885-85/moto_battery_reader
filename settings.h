@@ -166,6 +166,36 @@
   #endif
 #endif
 
+// --- Підсвітка кнопок як ІНДИКАТОР РОБОТИ — НЕОБОВ'ЯЗКОВЕ ---
+// Багато кнопок мають вбудований світлодіод підсвітки. Заведіть його на вільний
+// GPIO — і він не лише світитиметься, а й показуватиме стан:
+//   • спокій/готовий  -> рівне світіння (зручно намацати кнопки в темряві);
+//   • читання         -> блимає в такт читанню;
+//   • запис           -> швидко блимає (》увага: не відключати《);
+//   • успіх           -> рівне світіння; помилка -> тривожне швидке блимання.
+// Підключення: анод світлодіода(ів) -> струмообмежувальний резистор -> GPIO,
+// катод -> GND (активний рівень HIGH). Якщо модуль із загальним анодом (катод
+// керується) — розкоментуйте BTN_LED_ACTIVE_LOW. ⚠️ Якщо сумарний струм усіх
+// підсвіток > ~20 мА — керуйте через транзистор (GPIO->база, світлодіоди на
+// колекторі), інакше просадка/перегрів піна.
+// #define BTN_LED_PIN 15          // вільний вихідний GPIO (напр. 15 або 2)
+// #define BTN_LED_ACTIVE_LOW      // якщо підсвітка вмикається низьким рівнем
+#ifdef BTN_LED_PIN
+  #if (BTN_LED_PIN == 34) || (BTN_LED_PIN == 35) || (BTN_LED_PIN == 36) || (BTN_LED_PIN == 39)
+    #error "BTN_LED_PIN на GPIO34/35/36/39 неможливий: ці піни ВХІД-ТІЛЬКИ і не виводять сигнал. Оберіть вихідний GPIO."
+  #endif
+  #if (BTN_LED_PIN == MENU_BTN_PIN)   || (BTN_LED_PIN == MENU_BTN2_PIN)  || \
+      (BTN_LED_PIN == LED_RED_PIN)    || (BTN_LED_PIN == LED_GREEN_PIN)  || \
+      (BTN_LED_PIN == DS_PIN)         || (BTN_LED_PIN == PULLUP_PIN)     || \
+      (BTN_LED_PIN == DISPLAY_SDA_PIN)|| (BTN_LED_PIN == DISPLAY_SCL_PIN)|| \
+      (BTN_LED_PIN == DISPLAY_CS_PIN) || (BTN_LED_PIN == DISPLAY_DC_PIN) || \
+      (BTN_LED_PIN == DISPLAY_RST_PIN)|| (defined(MENU_BTN3_PIN) && BTN_LED_PIN == MENU_BTN3_PIN) || \
+      (defined(DISPLAY_BLK_PIN) && BTN_LED_PIN == DISPLAY_BLK_PIN) || \
+      (defined(BUZZER_PIN) && BTN_LED_PIN == BUZZER_PIN)
+    #error "BTN_LED_PIN конфліктує з уже зайнятим піном! Оберіть вільний вихідний GPIO."
+  #endif
+#endif
+
 // --- Индикатор заряду ---
 // Пріоритет ICA (DS2438). При вимкненому обліку струму (IAD=0) — по напрузі.
 #define ICA_FULL_SCALE    255      // значення ICA, відповідне 100%

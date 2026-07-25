@@ -957,7 +957,15 @@ int applyModel(const char *name) {
     int updated = 0;
     // (1) Запис 0x0B.
     int rec = findModelRecord();
-    if (rec >= 0) {
+    if (rec < 0) {
+        // Порожній/стертий/невідомий чіп — запису моделі немає. СТВОРЮЄМО його
+        // на стандартному місці (0x148, де запис 0x0B у genuine 4409A/4809A),
+        // щоб «Запис моделі» працював і коли модель відсутня (саме заради цього
+        // випадку функція й потрібна).
+        rec = 0x148;
+        batteryDump[rec] = 0x0B;
+    }
+    {
         for (int k = 0; k < 9; k++) batteryDump[rec + 1 + k] = (k < n) ? (uint8_t)name[k] : 0x20;
         fixRecordChecksum(batteryDump, rec, 11);   // [0x0B][9][контр], Σ≡0x5A
         g_mdRecOff = rec;
@@ -1008,7 +1016,7 @@ void handleSetModel() {
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Модель має містити 3–9 символів A–Z / 0–9\"}"); return;
     }
     if (applyModel(m.c_str()) < 0) {
-        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"У поточному дампі немає запису моделі (0x0B) чи ASCII-заголовка для перезапису — це порожній/стертий/невідомий чіп. Спочатку відновіть еталонний дамп цієї моделі (Прошивка → «Відновлення / запис DS2433»), потім змінюйте модель.\"}"); return;
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Невірне ім'я моделі (3–9 символів A–Z / 0–9)\"}"); return;
     }
     ledSet(LED_WRITE); displayShow("ЗАПИС МОДЕЛІ");
     bool ok = writeModelPages();
@@ -1066,6 +1074,44 @@ void handleSetMah() {
     String m = String("{\"status\":\"") + (ok ? "success" : "error") +
                "\",\"ica\":" + ica + ",\"mah\":" + (long)(ica * DS2438_MAH_PER_LSB) + "}";
     server.send(ok ? 200 : 500, "application/json", m);
+}
+
+// Рівень заряду з поточної напруги: 7.0 В = 0%, 8.4 В = 100% (лінійно).
+inline int chargePctFromVoltage() {
+    uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
+    long vmv = (long)vraw * 10;                       // vraw*0.01В -> мВ
+    long pct = (vmv - 7000) * 100 / (8400 - 7000);
+    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+    return (int)pct;
+}
+// Записати рівень заряду у % в регістр ICA (DS2438[12]).
+inline bool performSetChargePct(int pct) {
+    if (!hasDump2438) return false;
+    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+    int ica = pct * ICA_FULL_SCALE / 100;
+    if (ica > 255) ica = 255;
+    batteryDump2438[12] = (uint8_t)ica;
+    bool ok = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (ok) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+    return ok;
+}
+// Виставити рівень заряду (ICA): auto=1 — з напруги (7.0В=0%..8.4В=100%),
+// або вручну pct=0..100. Зарядка/рація потім самі уточнять це значення.
+void handleSetCharge() {
+    if (!requireAdmin()) return;
+    if (!hasDump2438) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return; }
+    int pct;
+    if (server.hasArg("auto") && server.arg("auto") == "1") pct = chargePctFromVoltage();
+    else if (server.hasArg("pct")) pct = server.arg("pct").toInt();
+    else { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No pct/auto\"}"); return; }
+    ledSet(LED_WRITE); displayShow("ЗАПИС ЗАРЯДУ");
+    bool ok = performSetChargePct(pct);
+    displayShow(ok ? "ЗАРЯД OK" : "ЗАРЯД ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+    server.send(ok ? 200 : 500, "application/json",
+        String("{\"status\":\"") + (ok ? "success" : "error") + "\",\"pct\":" + pct +
+        ",\"ica\":" + batteryDump2438[12] + "}");
 }
 
 // Змінити ETM (наробіток, DS2438[8..11], сек) — так рація показує «дату першого
@@ -1315,6 +1361,7 @@ void setupWebServer() {
     server.on("/api/setmodel", HTTP_POST, handleSetModel);       // ручний запис моделі
     server.on("/api/setcapacity", HTTP_POST, handleSetCapacity); // змінити ємність %
     server.on("/api/setmah", HTTP_POST, handleSetMah);           // змінити залишок, мА·ч
+    server.on("/api/setcharge", HTTP_POST, handleSetCharge);     // рівень заряду з напруги / вручну
     server.on("/api/setetm", HTTP_POST, handleSetEtm);           // змінити ETM (дата першого викор.)
     server.on("/api/writehex", HTTP_POST, handleWriteHex);       // сира запис з редактора
     server.on("/api/reboot", HTTP_POST, handleReboot);           // перезавантаження ESP32

@@ -242,6 +242,11 @@
                        style="width:110px;text-align:center;font-size:1.1em;border-radius:8px;border:none;padding:6px"></div>
             <input type="password" class="pw" id="pwMah" placeholder="🔑 Пароль адміністратора">
             <button class="btn btn-warn" style="width:100%" onclick="setMah()">💾 ЗАПИСАТИ мА·год</button>
+            <div class="row" style="margin-top:8px"><span class="k">Заряд, % (0..100)</span>
+                <input type="number" id="chgVal" min="0" max="100" placeholder="авто"
+                       style="width:110px;text-align:center;font-size:1.1em;border-radius:8px;border:none;padding:6px"></div>
+            <button class="btn btn-warn" style="width:100%" onclick="setChargeAuto()">⚡ ЗАРЯД ПО НАПРУЗІ (авто: 7В=0%, 8.4В=100%)</button>
+            <button class="btn btn-warn" style="width:100%;margin-top:6px" onclick="setChargePct()">💾 ЗАПИСАТИ ЗАРЯД %</button>
         </div>
 
         <div class="card">
@@ -576,6 +581,28 @@ async function setMah(){
     try{
         const r=await postForm('/api/setmah',{password:pw,mah:mah});
         toast(r.status==='success'?('✅ Записано ≈'+r.mah+' мА·год (ICA='+r.ica+')'):('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+async function setChargeAuto(){
+    const pw=$('pwMah').value; if(!pw){toast('Введіть пароль','err');return}
+    prog(true,'Заряд по напрузі...');
+    try{
+        const r=await postForm('/api/setcharge',{password:pw,auto:'1'});
+        toast(r.status==='success'?('✅ Заряд '+r.pct+'% (ICA='+r.ica+')'):('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+async function setChargePct(){
+    const pw=$('pwMah').value; if(!pw){toast('Введіть пароль','err');return}
+    const pct=parseInt($('chgVal').value); if(isNaN(pct)||pct<0||pct>100){toast('Вкажіть 0..100','err');return}
+    prog(true,'Запис заряду...');
+    try{
+        const r=await postForm('/api/setcharge',{password:pw,pct:pct});
+        toast(r.status==='success'?('✅ Заряд '+r.pct+'% (ICA='+r.ica+')'):('Помилка: '+r.message),r.status==='success'?'ok':'err');
         if(r.status==='success')await refreshAll();
     }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);

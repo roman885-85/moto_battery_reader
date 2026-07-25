@@ -194,6 +194,9 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="note i">Рівень заряду (регістр ICA DS2438).</div>
       <div class="row"><span class="k">мА·год</span><input type="number" id="mahv" min="0" max="6000" value="0" style="width:110px;text-align:center"></div>
       <button class="btn b-warn" onclick="setMah()">💾 ЗАПИСАТИ мА·год</button>
+      <div class="row" style="margin-top:8px"><span class="k">Заряд, % (0..100)</span><input type="number" id="chgv" min="0" max="100" placeholder="авто" style="width:110px;text-align:center"></div>
+      <button class="btn b-warn" onclick="setChargeAuto()">⚡ ЗАРЯД ПО НАПРУЗІ (авто: 7В=0%, 8.4В=100%)</button>
+      <button class="btn b-warn" onclick="setChargePct()">💾 ЗАПИСАТИ ЗАРЯД %</button>
     </div>
     <div class="card">
       <h2>📅 Дата першого використання</h2>
@@ -472,6 +475,24 @@ async function setMah(){
   setBusy(true); toast('Запис мА·год...');
   const r=await cmd('SETMAH '+v,15000);
   toast(r.ok?('✅ Записано (ICA='+r.ica+')'):('Помилка: '+(r.err||'')));
+  await refresh(); setBusy(false);
+}
+
+async function setChargeAuto(){
+  if(!connected){toast('Підключіться');return;}
+  await ensureAuth();
+  setBusy(true); toast('Заряд по напрузі...');
+  const r=await cmd('SETCHG auto',15000);
+  toast(r.ok?('✅ Заряд '+r.pct+'% (ICA='+r.ica+')'):('Помилка: '+(r.err||'')));
+  await refresh(); setBusy(false);
+}
+async function setChargePct(){
+  if(!connected){toast('Підключіться');return;}
+  const v=parseInt($('chgv').value); if(isNaN(v)||v<0||v>100){toast('Вкажіть 0..100');return;}
+  await ensureAuth();
+  setBusy(true); toast('Запис заряду...');
+  const r=await cmd('SETCHG '+v,15000);
+  toast(r.ok?('✅ Заряд '+r.pct+'% (ICA='+r.ica+')'):('Помилка: '+(r.err||'')));
   await refresh(); setBusy(false);
 }
 

@@ -342,9 +342,10 @@ inline bool batteryGenuine(const char **reason) {
     return true;
 }
 
-// Базові дії + «Новий АКБ» на кожен вшитий шаблон (як у монохромній версії).
+// Базові дії + по ДВІ дії на шаблон: «Новий АКБ» (init) і «Відновити» (verbatim),
+// як у монохромній версії.
 #define NUM_BASE_ACTIONS 7
-inline int numActions() { return NUM_BASE_ACTIONS + BATTERY_TEMPLATE_COUNT; }
+inline int numActions() { return NUM_BASE_ACTIONS + 2 * BATTERY_TEMPLATE_COUNT; }
 
 // ===================== Примітиви малювання (кольорові) =====================
 
@@ -650,9 +651,15 @@ inline void drawPageActions() {
     if (sel < NUM_BASE_ACTIONS) {
         name = nm[sel]; l1 = d1[sel]; l2 = d2[sel]; danger = dg[sel];
     } else {
-        int ti = sel - NUM_BASE_ACTIONS;
-        snprintf(nbuf, sizeof(nbuf), "Новий %s", BATTERY_TEMPLATES[ti].name);
-        name = nbuf; l1 = "ініціаліз. порожній"; l2 = "чіп як новий АКБ"; danger = true;
+        int rel = sel - NUM_BASE_ACTIONS;
+        if (rel < BATTERY_TEMPLATE_COUNT) {
+            snprintf(nbuf, sizeof(nbuf), "Новий %s", BATTERY_TEMPLATES[rel].name);
+            name = nbuf; l1 = "ініціаліз. порожній"; l2 = "чіп як новий АКБ"; danger = true;
+        } else {
+            int ti = rel - BATTERY_TEMPLATE_COUNT;
+            snprintf(nbuf, sizeof(nbuf), "Віднов %s", BATTERY_TEMPLATES[ti].name);
+            name = nbuf; l1 = "еталон байт-у-байт"; l2 = "з навч. калібровкою"; danger = true;
+        }
     }
 
     char t[20]; snprintf(t, sizeof(t), "Дія %d/%d", sel + 1, total);

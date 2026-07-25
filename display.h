@@ -711,7 +711,9 @@ inline void drawPageRaw2433() { drawRawPage((DISP_H >= 128) ? "DS2433 дамп 0
 // Базові дії (індекси 0..4) + по одній дії «Новий АКБ» на кожен вшитий шаблон
 // (індекси 5..). Загальну к-сть дій рахує numActions() — вона динамічна.
 #define NUM_BASE_ACTIONS 7    // Скидання, Ремонт, Очистка, Стерти2433, Перезав., Рекалібр., Стерти2438
-inline int numActions() { return NUM_BASE_ACTIONS + BATTERY_TEMPLATE_COUNT; }
+// Після базових дій — по ДВІ дії на кожен шаблон: «Новий АКБ <модель>» (init,
+// індекси NUM_BASE..+COUNT-1) і «Відновити <модель>» (verbatim, +COUNT..+2*COUNT-1).
+inline int numActions() { return NUM_BASE_ACTIONS + 2 * BATTERY_TEMPLATE_COUNT; }
 
 // Сторінка «Дії»: показуємо ОДНУ обрану операцію крупно + опис + попередження.
 // [<] коротко — наступна операція; [<] утримати (0.8с) — ВИКОНАТИ; [>] — вихід.
@@ -739,10 +741,16 @@ inline void drawPageActions() {
     char nbuf[26];
     if (sel < NUM_BASE_ACTIONS) {
         name = nm[sel]; l1 = d1[sel]; l2 = d2[sel]; danger = dg[sel];
-    } else {                                    // «Новий АКБ <модель>»
-        int ti = sel - NUM_BASE_ACTIONS;
-        snprintf(nbuf, sizeof(nbuf), "Новий %s", BATTERY_TEMPLATES[ti].name);
-        name = nbuf; l1 = "ініціаліз. порожній"; l2 = "чіп як новий АКБ"; danger = true;
+    } else {
+        int rel = sel - NUM_BASE_ACTIONS;
+        if (rel < BATTERY_TEMPLATE_COUNT) {         // «Новий АКБ <модель>»
+            snprintf(nbuf, sizeof(nbuf), "Новий %s", BATTERY_TEMPLATES[rel].name);
+            name = nbuf; l1 = "ініціаліз. порожній"; l2 = "чіп як новий АКБ"; danger = true;
+        } else {                                    // «Відновити <модель>» (verbatim)
+            int ti = rel - BATTERY_TEMPLATE_COUNT;
+            snprintf(nbuf, sizeof(nbuf), "Віднов %s", BATTERY_TEMPLATES[ti].name);
+            name = nbuf; l1 = "еталон байт-у-байт"; l2 = "з навч. калібровкою"; danger = true;
+        }
     }
 
     char t[20]; snprintf(t, sizeof(t), "Дія  %d/%d", sel + 1, total);

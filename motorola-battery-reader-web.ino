@@ -132,8 +132,10 @@ void loop() {
     }
 
     // Підтверджена в меню дисплея дія: 0=Скидання 1=Ремонт 2=Очистка 3=Стерти2433
-    // 4=Перезавантаження, 5..=«Новий АКБ <модель>» (ініціалізація порожнього чипа
-    // еталоном обраної моделі з паспортною ємністю BATTERY_RATED_MAH).
+    // 4=Перезавантаження 5=Рекалібр. 6=Стерти2438; далі — по ДВІ дії на шаблон:
+    // [NUM_BASE .. +COUNT-1] = «Новий АКБ <модель>» (init порожнього чипа з
+    // паспортною ємністю BATTERY_RATED_MAH); [+COUNT .. +2*COUNT-1] =
+    // «Відновити <модель>» (verbatim-запис genuine-еталона байт-у-байт).
     int act = displayConsumeActionRequest();
     if      (act == 0) performReset();
     else if (act == 1) performRepair();
@@ -144,6 +146,9 @@ void loop() {
     else if (act == 6) performWipe2438();
     else if (act >= NUM_BASE_ACTIONS && act < NUM_BASE_ACTIONS + BATTERY_TEMPLATE_COUNT)
         performInitBattery(BATTERY_TEMPLATES[act - NUM_BASE_ACTIONS].name, BATTERY_RATED_MAH);
+    else if (act >= NUM_BASE_ACTIONS + BATTERY_TEMPLATE_COUNT &&
+             act <  NUM_BASE_ACTIONS + 2 * BATTERY_TEMPLATE_COUNT)
+        performRestoreTemplate(BATTERY_TEMPLATES[act - NUM_BASE_ACTIONS - BATTERY_TEMPLATE_COUNT].name);
 
     // Дисплей перемальовується по подіям (натискання кнопки, читання/запис),
     // тому цикл не блокується повільним рендером і кнопки чутливі.

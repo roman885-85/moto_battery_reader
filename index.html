@@ -307,6 +307,21 @@
             <button class="btn btn-warn" style="width:100%" onclick="initBattery()">🆕 ЗАПИСАТИ НОВИЙ АКБ</button>
         </div>
 
+        <div class="card" style="border-color:var(--ok)">
+            <h2>🛠️ Відновити еталон (ремонт з нуля)</h2>
+            <div class="note i">Записує вшитий <b>genuine</b>-еталон обраної моделі <b>байт-у-байт</b> —
+                з УСІЄЮ навченою калібровкою (гістограма ємності, крива, CCA/DCA/ETM/ICA). На відміну від
+                «Нового АКБ», нічого не обнуляє: результат — бітово точна копія робочого АКБ, яку приймають
+                і рація, і IMPRES-зарядка. Працює навіть на <b>порожній / повністю битій</b> мікросхемі
+                (перезапис замінює весь вміст, попереднє зчитування не потрібне).</div>
+            <div class="row"><span class="k">Модель</span>
+                <select id="restModel" style="border-radius:8px;border:none;padding:6px;min-width:150px"></select></div>
+            <div class="note w">⚠️ Перезапише <b>ОБИДВІ</b> мікросхеми еталоном. Для 4409B — найнадійніший
+                спосіб отримати робочий, калібрований АКБ.</div>
+            <input type="password" class="pw" id="pwRest" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="restoreBattery()">🛠️ ВІДНОВИТИ ЕТАЛОН</button>
+        </div>
+
         <!-- НЕБЕЗПЕЧНА ЗОНА -->
         <div class="zone zd">⛔ НЕБЕЗПЕЧНА ЗОНА — незворотні операції, стирають/переписують дані. Спочатку зробіть копію!</div>
 
@@ -800,10 +815,28 @@ async function writeHex(){
 async function loadTemplates(){
     try{
         const d=await(await fetch('/api/templates')).json();
-        const sel=$('initModel'); if(!sel)return; sel.innerHTML='';
-        (d.models||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o)});
-        if(!(d.models||[]).length){const o=document.createElement('option');o.textContent='(немає шаблонів)';sel.appendChild(o)}
+        const models=d.models||[];
+        for(const id of ['initModel','restModel']){
+            const sel=$(id); if(!sel)continue; sel.innerHTML='';
+            models.forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o)});
+            if(!models.length){const o=document.createElement('option');o.textContent='(немає шаблонів)';sel.appendChild(o)}
+        }
     }catch(e){}
+}
+async function restoreBattery(){
+    const pw=$('pwRest').value; if(!pw){toast('Введіть пароль','err');return}
+    const model=$('restModel').value;
+    if(!model){toast('Оберіть модель','err');return}
+    if(!confirm('🛠️ Відновити еталон '+model+' БАЙТ-У-БАЙТ?\n\nПерезапише ОБИДВІ мікросхеми точною genuine-копією (з навченою калібровкою).\nПрацює й на порожньому/битому чипі. Продовжити?'))return;
+    prog(true,'Відновлення еталона...');
+    try{
+        const r=await postForm('/api/restore',{password:pw,model:model});
+        if(r.status==='success'){
+            toast('✅ Еталон '+model+' відновлено'+(r.ds2438?' (DS2433+DS2438)':' (лише DS2433, DS2438 не записано)'),'ok');
+            await refreshAll();
+        } else toast('Помилка: '+(r.message||''),'err');
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
 }
 async function initBattery(){
     const pw=$('pwInit').value; if(!pw){toast('Введіть пароль','err');return}

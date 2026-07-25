@@ -273,6 +273,13 @@ class App:
         self.eInitMah = self._row(b4, "Ємність, мА·год:", lambda fr: self._entry(fr, 10, "2500"))
         ttk.Button(b4, text="🆕 Записати новий АКБ (DS2433+DS2438)", command=self.init_battery).pack(anchor="w", pady=2)
 
+        b4r = ttk.LabelFrame(p, text="🛠️ Відновити еталон (ремонт з нуля, verbatim)", padding=8); b4r.pack(fill="x", pady=4)
+        self.cbRest = self._row(b4r, "Модель-еталон:", lambda fr: self._combo(fr, 18))
+        ttk.Label(b4r, text="Пише genuine-еталон байт-у-байт з навченою калібровкою.\n"
+                           "Нічого не обнуляє. Працює й на порожній/битій мікросхемі.",
+                  foreground="#357", justify="left").pack(anchor="w")
+        ttk.Button(b4r, text="🛠️ Відновити еталон (DS2433+DS2438)", command=self.restore_battery).pack(anchor="w", pady=2)
+
         b5 = ttk.LabelFrame(p, text="Заряд / здоров'я", padding=8); b5.pack(fill="x", pady=4)
         self.eMah = self._row(b5, "Заряд, мА·год:", lambda fr: self._entry(fr, 10, "0"))
         ttk.Button(b5, text="💾 Записати мА·год", command=self.set_mah).pack(anchor="w", pady=2)
@@ -672,6 +679,25 @@ class App:
         self.maybe_auth(lambda: (self.status("Запис нового АКБ..."),
                                  self.cmd(f"INITBAT {model} {mah}", 25.0, cb=lambda r: self._after_write(r, f"✅ Новий {model} записано"))))
 
+    def restore_battery(self):
+        if not self.need_conn():
+            return
+        model = self.cbRest.get()
+        if not model:
+            messagebox.showwarning("Модель", "Оберіть модель-еталон"); return
+        if not messagebox.askyesno("Відновити еталон",
+                f"Відновити еталон {model} БАЙТ-У-БАЙТ?\nПерезапише ОБИДВІ мікросхеми точною genuine-копією "
+                f"(з навченою калібровкою). Працює й на порожньому/битому чипі."):
+            return
+        def done(r):
+            if isinstance(r, dict) and r.get("ok"):
+                both = r.get("ds2438")
+                self._after_write(r, f"✅ Еталон {model} відновлено" + (" (DS2433+DS2438)" if both else " (лише DS2433)"))
+            else:
+                self._after_write(r, "")
+        self.maybe_auth(lambda: (self.status("Відновлення еталона..."),
+                                 self.cmd(f"RESTORE {model}", 25.0, cb=done)))
+
     def set_mah(self):
         if not self.need_conn():
             return
@@ -767,9 +793,10 @@ class App:
 
     def _apply_templates(self, r):
         models = r.get("models", []) if r.get("ok") else []
-        self.cbInit["values"] = models
-        if models and not self.cbInit.get():
-            self.cbInit.current(0)
+        for cb in (self.cbInit, self.cbRest):
+            cb["values"] = models
+            if models and not cb.get():
+                cb.current(0)
 
     def save_dump(self, getcmd, size, default):
         if not self.need_conn():

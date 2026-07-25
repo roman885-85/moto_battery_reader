@@ -190,6 +190,15 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="note w">⚠️ Перезапише ОБИДВІ мікросхеми. Лише для порожнього/невідомого чипа. Вкажіть паспортну ємність вашої моделі.</div>
       <button class="btn b-warn" onclick="initBattery()">🆕 ЗАПИСАТИ НОВИЙ АКБ</button>
     </div>
+    <div class="card" style="border-color:#2ecc71">
+      <h2>🛠️ Відновити еталон (ремонт з нуля)</h2>
+      <div class="note i">Пише вшитий <b>genuine</b>-еталон <b>байт-у-байт</b> — з УСІЄЮ навченою калібровкою
+        (гістограма, крива, CCA/DCA/ETM/ICA). Нічого не обнуляє: бітово точна копія робочого АКБ, яку приймають
+        і рація, і IMPRES-зарядка. Працює навіть на <b>порожній/битій</b> мікросхемі.</div>
+      <div class="row"><span class="k">Модель</span><select id="restModel" style="min-width:150px"></select></div>
+      <div class="note w">⚠️ Перезапише ОБИДВІ мікросхеми еталоном. Для 4409B — найнадійніший робочий результат.</div>
+      <button class="btn b-warn" onclick="restoreBattery()">🛠️ ВІДНОВИТИ ЕТАЛОН</button>
+    </div>
     <div class="card">
       <h2>🔋 Заряд у мА·год</h2>
       <div class="note i">Рівень заряду (регістр ICA DS2438).</div>
@@ -542,13 +551,28 @@ async function setModel(){
   await refresh(); setBusy(false);
 }
 
-// Список вшитих моделей для «Новий акумулятор»
+// Список вшитих моделей для «Новий акумулятор» / «Відновити еталон»
 async function loadTemplates(){
   if(!connected)return;
   const r=await cmd('TEMPLATES',5000);
-  const sel=$('initModel'); if(!sel)return; sel.innerHTML='';
-  (r.models||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);});
-  if(!(r.models||[]).length){const o=document.createElement('option');o.textContent='(немає шаблонів)';sel.appendChild(o);}
+  const models=r.models||[];
+  for(const id of ['initModel','restModel']){
+    const sel=$(id); if(!sel)continue; sel.innerHTML='';
+    models.forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);});
+    if(!models.length){const o=document.createElement('option');o.textContent='(немає шаблонів)';sel.appendChild(o);}
+  }
+}
+async function restoreBattery(){
+  if(!connected){toast('Підключіться');return;}
+  const model=$('restModel').value;
+  if(!model){toast('Оберіть модель');return;}
+  if(!confirm('🛠️ Відновити еталон '+model+' БАЙТ-У-БАЙТ?\nПерезапише ОБИДВІ мікросхеми точною genuine-копією (з навченою калібровкою). Працює й на порожньому/битому чипі. Продовжити?'))return;
+  await ensureAuth();
+  setBusy(true); toast('Відновлення еталона...');
+  const r=await cmd('RESTORE '+model,25000);
+  if(r.ok) toast('✅ Еталон '+model+' відновлено'+(r.ds2438?' (DS2433+DS2438)':' (лише DS2433)'));
+  else toast('Помилка: '+(r.err||''));
+  await refresh(); setBusy(false);
 }
 async function initBattery(){
   if(!connected){toast('Підключіться');return;}

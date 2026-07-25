@@ -31,6 +31,7 @@
 //   SETETM <сек>         -> ETM (наробіток) -> «дата першого користування» у рації
 //   TEMPLATES            -> список вшитих моделей для ініціалізації (без пароля)
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
+//   RESTORE <MODEL>      -> відновити еталон verbatim (порожній/битий чіп -> робочий)
 //   RECAL                -> підготовка до рекалібрування (після заміни елементів)
 //   REBOOT               -> перезавантаження ESP32
 //
@@ -252,6 +253,14 @@ static void serialExec(const String &line) {
                                   else { bool ok = performInitBattery(md.c_str(), mah);
                                          sResp(ok ? (String("{\"ok\":true,\"model\":\"") + md + "\"}")
                                                   : "{\"ok\":false,\"err\":\"збій запису\"}"); } }
+    else if (cmd == "RESTORE")  { String md = arg; md.trim(); md.toUpperCase();
+                                  if (findTemplate(md.c_str()) < 0) sResp("{\"ok\":false,\"err\":\"немає шаблону моделі\"}");
+                                  else { bool o33 = false, o38 = false;
+                                         bool ok = performRestoreTemplate(md.c_str(), &o33, &o38);
+                                         sResp(String("{\"ok\":") + (ok ? "true" : "false") +
+                                               ",\"ds2433\":" + (o33 ? "true" : "false") +
+                                               ",\"ds2438\":" + (o38 ? "true" : "false") +
+                                               (ok ? (String(",\"model\":\"") + md + "\"}") : ",\"err\":\"збій запису\"}"))); } }
     else if (cmd == "RECAL")    { bool ok = performRecalPrepare();
                                   sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"read first / write failed\"}"); }
     else if (cmd == "REBOOT")   { displayShow("ПЕРЕЗАВАНТАЖЕННЯ"); sResp("{\"ok\":true}"); Serial.flush(); delay(200); ESP.restart(); }

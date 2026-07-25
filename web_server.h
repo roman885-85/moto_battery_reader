@@ -1270,6 +1270,62 @@ bool performInitBattery(const char *model, long mah) {
     return ok;
 }
 
+// ------------------- Відновлення еталона «як є» (verbatim) -------------------
+// Пише вшитий genuine-еталон DS2433+DS2438 ТОЧНО, байт-у-байт: БЕЗ очистки, БЕЗ
+// стирання learned-калібрування (записи 0x0A), БЕЗ правки ICA й БЕЗ перерахунку
+// сум (шаблон уже валідний: заголовок Σ≡0x41, записи Σ≡0x5A, дзеркало збігається).
+// Результат — бітово точна копія РОБОЧОГО АКБ цієї моделі з УСІЄЮ навченою
+// історією/калібруванням (гістограма 0x17, крива 0x16, CCA/DCA/ETM/ICA), яку
+// приймають і рація, і IMPRES-ЗП — тому це найнадійніший «ремонт з нуля».
+//
+// Працює на ПОРОЖНЬОМУ (усе 0xFF) чи БИТОМУ чіпі: перезапис повністю замінює
+// вміст, а ROM шукається по шині (Search/Match ROM), попереднє читання не треба.
+// Кожен чіп пишемо НЕЗАЛЕЖНО й повертаємо true, якщо записався хоча б DS2433
+// (ідентичність); фактичний стан кожного — в ok33/ok38 і Serial-лог.
+bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 = nullptr) {
+    if (ok33) *ok33 = false;
+    if (ok38) *ok38 = false;
+    int t = findTemplate(model);
+    if (t < 0) { displayShow("НЕМА ШАБЛОНУ"); return false; }
+
+    Serial.printf("\n=== Restore verbatim: %s ===\n", model);
+    memcpy_P(batteryDump,     BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
+    memcpy_P(batteryDump2438, BATTERY_TEMPLATES[t].d38, DS2438_MEM_SIZE);
+
+    ledSet(LED_WRITE); displayShow("ВІДНОВЛ. ЕТАЛОН");
+    bool w33 = battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (w33) { hasDump = true; saveDump("/dump.bin", batteryDump, DUMP_SIZE); }
+    bool w38 = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (w38) { hasDump2438 = true; saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE); }
+
+    if (ok33) *ok33 = w33;
+    if (ok38) *ok38 = w38;
+    bool ok = w33;                       // ідентичність критична; DS2438 може бути відсутнім
+    displayShow(w33 && w38 ? "ЕТАЛОН OK" : (w33 ? "2438 ЗБІЙ" : "ЕТАЛОН ЗБІЙ"));
+    ledSet(ok ? LED_OK : LED_ERROR);
+    Serial.printf("Restore: DS2433=%s DS2438=%s\n", w33 ? "OK" : "FAIL", w38 ? "OK" : "FAIL");
+    Serial.println("=== Restore completed ===\n");
+    return ok;
+}
+
+// Веб-відновлення еталона (під паролем): model.
+void handleRestore() {
+    if (!requireAdmin()) return;
+    String model = server.arg("model"); model.trim(); model.toUpperCase();
+    if (findTemplate(model.c_str()) < 0) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Немає вшитого шаблону для цієї моделі\"}"); return;
+    }
+    bool ok33 = false, ok38 = false;
+    bool ok = performRestoreTemplate(model.c_str(), &ok33, &ok38);
+    String j = String("{\"status\":\"") + (ok ? "success" : "error") + "\",\"ds2433\":" +
+               (ok33 ? "true" : "false") + ",\"ds2438\":" + (ok38 ? "true" : "false") + ",\"message\":\"";
+    if (ok && ok38)      j += String("Відновлено еталон ") + model + " (обидві мікросхеми)";
+    else if (ok)         j += "DS2433 відновлено; DS2438 не записано (відсутній/битий)";
+    else                 j += "Збій запису (див. Serial-лог)";
+    j += "\"}";
+    server.send(ok ? 200 : 500, "application/json", j);
+}
+
 // Список доступних вшитих моделей-шаблонів (для випадаючого списку у вебі/USB).
 void handleTemplates() {
     String j = "{\"status\":\"success\",\"models\":[";
@@ -1367,6 +1423,7 @@ void setupWebServer() {
     server.on("/api/reboot", HTTP_POST, handleReboot);           // перезавантаження ESP32
     server.on("/api/templates", HTTP_GET, handleTemplates);      // список вшитих моделей
     server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
+    server.on("/api/restore", HTTP_POST, handleRestore);         // відновлення еталона verbatim
     server.on("/api/recalprep", HTTP_POST, handleRecalPrepare);  // підготовка до рекалібрування
 
     // Captive-portal: усі інші URL -> редирект на головну (авто-відкриття сторінки).

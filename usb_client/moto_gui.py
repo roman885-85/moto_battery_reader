@@ -183,12 +183,14 @@ class App:
         nb = ttk.Notebook(self.root)
         nb.pack(fill="both", expand=True, padx=6, pady=6)
         self.tabOv = ttk.Frame(nb, padding=8); nb.add(self.tabOv, text="Огляд")
+        self.tabWiz = ttk.Frame(nb, padding=8); nb.add(self.tabWiz, text="🧙 Майстер")
         self.tabData = ttk.Frame(nb, padding=8); nb.add(self.tabData, text="Дані")
         self.tabFw = ttk.Frame(nb, padding=8); nb.add(self.tabFw, text="Прошивка")
         self.tabHex = ttk.Frame(nb, padding=8); nb.add(self.tabHex, text="Редактор")
         self.tabLog = ttk.Frame(nb, padding=8); nb.add(self.tabLog, text="Журнал")
 
         self._build_overview()
+        self._build_wizard()
         self._build_data()
         self._build_fw()
         self._build_hex()
@@ -213,6 +215,146 @@ class App:
         self.ovCyc = self._kv(box, "Циклів:", 5)
         self.ovAuth = self._kv(box, "Справжність:", 6)
         self.ovInteg = self._kv(box, "Цілісність:", 7)
+
+    def _build_wizard(self):
+        f = self.tabWiz
+        top = ttk.Frame(f); top.pack(fill="x")
+        ttk.Label(top, text="🧙 Майстер відновлення", font=("Segoe UI", 11, "bold")).pack(side="left")
+        ttk.Button(top, text="🔍 Аналізувати", command=self.wiz_analyze).pack(side="right", padx=3)
+        ttk.Button(top, text="↺ Скинути", command=self.wiz_reset).pack(side="right", padx=3)
+        ttk.Label(f, text="Аналіз стану → проблеми → пропозиції → покрокове виконання. Багатоетапні\n"
+                         "сценарії з зарядною станцією продовжуються після повернення АКБ.",
+                  foreground="#357", justify="left").pack(anchor="w", pady=(2, 6))
+
+        self.wizVerdict = ttk.Label(f, text="Натисніть «Аналізувати».", font=("Segoe UI", 10, "bold"))
+        self.wizVerdict.pack(anchor="w", pady=2)
+        self.wizProbFrame = ttk.LabelFrame(f, text="Проблеми", padding=6)
+        self.wizPlanFrame = ttk.LabelFrame(f, text="План відновлення", padding=6)
+
+        self.wizProgLbl = ttk.Label(self.wizPlanFrame, text="—")
+        self.wizProgLbl.pack(anchor="w")
+        self.wizProgBar = ttk.Progressbar(self.wizPlanFrame, maximum=100, length=320)
+        self.wizProgBar.pack(anchor="w", pady=4)
+        mr = ttk.Frame(self.wizPlanFrame); mr.pack(anchor="w", pady=2)
+        self.wizModelLbl = ttk.Label(mr, text="Модель для відновлення:")
+        self.cbWiz = ttk.Combobox(mr, width=16, state="readonly")
+        self.wizStepsFrame = ttk.Frame(self.wizPlanFrame); self.wizStepsFrame.pack(fill="x", pady=4)
+        self.wizBanner = ttk.Label(self.wizPlanFrame, text="", foreground="#b8860b", wraplength=460, justify="left")
+        self.wizNextBtn = ttk.Button(self.wizPlanFrame, text="▶️ Виконати наступний крок", command=self.wiz_next)
+        self.wizNextBtn.pack(anchor="w", pady=6)
+        self._wizState = None
+
+    # ---- логіка Майстра ----
+    def wiz_analyze(self):
+        if not self.need_conn():
+            return
+        self.status("Аналіз батареї…")
+        self.cmd("WIZARD", 15.0, cb=self._wiz_apply)
+
+    def _wiz_apply(self, r, msg=None):
+        if not isinstance(r, dict) or not r.get("ok"):
+            self.status("Помилка аналізу", False); return
+        self._wizState = r
+        if msg:
+            self.status(msg, r.get("result", True))
+        else:
+            self.status("Аналіз готовий")
+        # вердикт
+        if not r.get("have33") and not r.get("have38"):
+            self.wizVerdict.config(text="❌ Чіпи не знайдено на шині", foreground="#c0392b")
+        elif r.get("healthy"):
+            self.wizVerdict.config(text="✅ Батарея справна — відновлення не потрібне", foreground="#1e8449")
+        else:
+            self.wizVerdict.config(text="⚠️ Виявлено проблем: %d" % len(r.get("problems", [])), foreground="#b8860b")
+        # проблеми
+        for w in self.wizProbFrame.winfo_children():
+            w.destroy()
+        probs = r.get("problems", [])
+        if probs:
+            self.wizProbFrame.pack(fill="x", pady=6)
+            for p in probs:
+                ico = "⛔" if p.get("sev", 0) >= 2 else ("⚠️" if p.get("sev") == 1 else "ℹ️")
+                col = "#c0392b" if p.get("sev", 0) >= 2 else ("#b8860b" if p.get("sev") == 1 else "#2471a3")
+                row = ttk.Frame(self.wizProbFrame); row.pack(fill="x", pady=2)
+                ttk.Label(row, text=ico, foreground=col).pack(side="left", anchor="n")
+                txt = ttk.Frame(row); txt.pack(side="left", fill="x", expand=True)
+                ttk.Label(txt, text=p.get("problem", ""), font=("Segoe UI", 9, "bold"),
+                          wraplength=440, justify="left").pack(anchor="w")
+                ttk.Label(txt, text="→ " + p.get("fix", ""), foreground="#2471a3",
+                          wraplength=440, justify="left").pack(anchor="w")
+        else:
+            self.wizProbFrame.pack_forget()
+        # план
+        steps = r.get("steps", [])
+        if steps and not r.get("healthy"):
+            self.wizPlanFrame.pack(fill="x", pady=6)
+            self._wiz_render_steps(r)
+        else:
+            self.wizPlanFrame.pack_forget()
+
+    def _wiz_render_steps(self, r):
+        total = r.get("total", 0); prog = r.get("progress", 0)
+        self.wizProgBar["value"] = int(prog / total * 100) if total else 0
+        self.wizProgLbl.config(text="Крок %d з %d • виконано: %d" % (min(prog + 1, total), total, prog))
+        if r.get("needModel"):
+            self.wizModelLbl.pack(side="left"); self.cbWiz.pack(side="left", padx=6)
+        else:
+            self.wizModelLbl.pack_forget(); self.cbWiz.pack_forget()
+        for w in self.wizStepsFrame.winfo_children():
+            w.destroy()
+        for s in r.get("steps", []):
+            cur = (s.get("idx") == prog)
+            ico = "✅" if s.get("done") else ("🔌" if (cur and s.get("external")) else ("▶️" if cur else "•"))
+            col = "#1e8449" if s.get("done") else ("#b8860b" if cur else "#333")
+            row = ttk.Frame(self.wizStepsFrame); row.pack(fill="x", pady=1)
+            ttk.Label(row, text=ico, foreground=col).pack(side="left", anchor="n")
+            box = ttk.Frame(row); box.pack(side="left", fill="x", expand=True)
+            ttk.Label(box, text=s.get("title", ""), font=("Segoe UI", 9, "bold" if cur else "normal"),
+                      foreground=col).pack(anchor="w")
+            ttk.Label(box, text=s.get("detail", ""), foreground="#666",
+                      wraplength=440, justify="left").pack(anchor="w")
+        if r.get("awaitCharge"):
+            done = r.get("chargeDone")
+            self.wizBanner.config(text="🔌 АКБ на зарядній станції. Після повного циклу поверніть її сюди."
+                                  + ("\n✔ Зміни виявлено — калібрування пройшло, можна продовжити." if done else ""))
+            self.wizBanner.pack(anchor="w", pady=4)
+            self.wizNextBtn.config(text="✅ Продовжити" if done else "🔄 Перевірити після ЗП", state="normal")
+        else:
+            self.wizBanner.pack_forget()
+            if prog >= total:
+                self.wizNextBtn.config(text="✅ Відновлення завершено", state="disabled")
+            else:
+                cur = r["steps"][prog] if prog < len(r.get("steps", [])) else None
+                self.wizNextBtn.config(text="▶️ Виконати: " + (cur.get("title") if cur else "наступний крок"),
+                                       state="normal")
+
+    def wiz_next(self):
+        r = self._wizState
+        if not r or not self.need_conn():
+            return
+        if r.get("awaitCharge") and not r.get("chargeDone"):
+            self.wiz_analyze(); return
+        idx = r.get("progress", 0)
+        model = ""
+        if r.get("needModel"):
+            model = self.cbWiz.get()
+            if not model:
+                messagebox.showwarning("Модель", "Оберіть модель для відновлення"); return
+        cmd = "WIZSTEP %d%s" % (idx, (" " + model) if model else "")
+        self.status("Виконую крок…")
+        self.maybe_auth(lambda: self.cmd(cmd, 25.0, cb=lambda res: self._wiz_after(res)))
+
+    def _wiz_after(self, res):
+        msg = res.get("msg") if isinstance(res, dict) else None
+        if msg:
+            msg = ("✅ " if res.get("result") else "❌ ") + msg
+        self._wiz_apply(res, msg)
+        self.refresh()
+
+    def wiz_reset(self):
+        if not self.need_conn():
+            return
+        self.cmd("WIZRESET", 5.0, cb=lambda _: self.wiz_analyze())
 
     def _build_data(self):
         f = self.tabData
@@ -793,7 +935,7 @@ class App:
 
     def _apply_templates(self, r):
         models = r.get("models", []) if r.get("ok") else []
-        for cb in (self.cbInit, self.cbRest):
+        for cb in (self.cbInit, self.cbRest, self.cbWiz):
             cb["values"] = models
             if models and not cb.get():
                 cb.current(0)

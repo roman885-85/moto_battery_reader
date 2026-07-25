@@ -11,6 +11,11 @@
 //          3) ПЛАН: впорядкована послідовність кроків відновлення;
 //          4) ВИКОНАННЯ кроку з детальним результатом.
 //
+//  СТАБІЛЬНИЙ ПЛАН: послідовність дій фіксується в журналі, коли користувач
+//  почав виконання. Далі кроки виконуються саме за цим планом (а не
+//  перебудовуються щоразу з поточних проблем), тож прогрес не «стрибає» після
+//  кожного виправлення.
+//
 //  Багатоетапність із зарядною станцією: коли план містить «зовнішній» крок
 //  (калібрування на IMPRES-ЗП), стан зберігається в журнал у пам'яті ESP32,
 //  ПРИВ'ЯЗАНИЙ до ROM-серійника DS2438. Після повернення АКБ Майстер читає
@@ -57,19 +62,18 @@ struct RecoveryRule {
     uint8_t     severity;   // 0=інфо, 1=увага, 2=критично
     const char *problem;    // що не так (людською)
     const char *fix;        // що пропонуємо
-    uint8_t     action;     // рекомендована дія
 };
 
 static const RecoveryRule RECOVERY_RULES[] = {
-    { ISS_NO_CHIP,      2, "Жоден чіп не відповідає на 1-Wire шині",        "Перевірте контакти АКБ і повторіть зчитування",           ACT_READ },
-    { ISS_BLANK33,      2, "DS2433 порожній (стертий у 0xFF)",              "Відновити еталон обраної моделі байт-у-байт",              ACT_RESTORE },
-    { ISS_NO_MODEL,     2, "Відсутній запис моделі (0x0B)",                 "Відновити еталон обраної моделі (модель+калібрування)",    ACT_RESTORE },
-    { ISS_HDR_BAD,      2, "Пошкоджений заголовок DS2433 (Σ≠0x41)",         "Ремонт цілісності (перерахунок суми заголовка)",           ACT_REPAIR },
-    { ISS_MIRROR_BAD,   1, "Дзеркало калібрування DS2438<->DS2433 розійшлось","Ремонт цілісності (синхронізувати дзеркало)",            ACT_REPAIR },
-    { ISS_CCA_OVERFLOW, 1, "Лічильник заряду CCA переповнений (залочено)",  "Підготовка + калібрування на IMPRES-ЗП",                   ACT_RECAL },
-    { ISS_NEEDS_CALIB,  1, "Потрібне калібрування ємності",                 "Підготовка + калібрування на IMPRES-ЗП",                   ACT_RECAL },
-    { ISS_HEALTH_LOW,   1, "Низьке показане здоров'я/ємність",              "Скидання зносу до 100% або калібрування на ЗП",            ACT_RESET },
-    { ISS_NO_2438,      1, "DS2438 (монітор) відсутній/не читається",       "Перевірте чіп; відновлення DS2433 можливе окремо",         ACT_NONE },
+    { ISS_NO_CHIP,      2, "Жоден чіп не відповідає на 1-Wire шині",          "Перевірте контакти АКБ і повторіть зчитування" },
+    { ISS_BLANK33,      2, "DS2433 порожній (стертий у 0xFF)",                "Відновити еталон обраної моделі байт-у-байт" },
+    { ISS_NO_MODEL,     2, "Відсутній запис моделі (0x0B)",                   "Відновити еталон обраної моделі (модель+калібрування)" },
+    { ISS_HDR_BAD,      2, "Пошкоджений заголовок DS2433 (Σ≠0x41)",           "Ремонт цілісності (перерахунок суми заголовка)" },
+    { ISS_MIRROR_BAD,   1, "Дзеркало калібрування DS2438<->DS2433 розійшлось","Ремонт цілісності (синхронізувати дзеркало)" },
+    { ISS_CCA_OVERFLOW, 1, "Лічильник заряду CCA переповнений (залочено)",    "Підготовка + калібрування на IMPRES-ЗП" },
+    { ISS_NEEDS_CALIB,  1, "Потрібне калібрування ємності",                   "Підготовка + калібрування на IMPRES-ЗП" },
+    { ISS_HEALTH_LOW,   1, "Низьке показане здоров'я/ємність",                "Скидання зносу або калібрування на ЗП" },
+    { ISS_NO_2438,      1, "DS2438 (монітор) відсутній/не читається",         "Перевірте чіп; відновлення DS2433 можливе окремо" },
 };
 static const int RECOVERY_RULE_COUNT = sizeof(RECOVERY_RULES) / sizeof(RECOVERY_RULES[0]);
 
@@ -83,29 +87,51 @@ struct BatteryDiag {
     bool     hdrOk, mirrorOk, genuine;
 };
 
-// ---- Крок плану -----------------------------------------------------------
-struct WizStep {
-    uint8_t action;
-    bool    external;       // виконується на ЗП (потрібна пауза)
-    char    title[36];
-    char    detail[88];
-};
+// ---- Метадані дії (заголовок/опис/зовнішній) ------------------------------
+static void wizActionMeta(uint8_t a, const char **title, const char **detail, bool *external) {
+    *external = false;
+    switch (a) {
+        case ACT_READ:    *title = "Зчитати чіпи";
+                          *detail = "Перевірте контакти АКБ і повторіть зчитування 1-Wire."; break;
+        case ACT_RESTORE: *title = "Відновити еталон";
+                          *detail = "Записати genuine-еталон обраної моделі байт-у-байт (модель+калібрування). Працює й на порожньому чипі."; break;
+        case ACT_REPAIR:  *title = "Ремонт цілісності";
+                          *detail = "Перерахувати контрольні суми (заголовок Σ≡0x41) і синхронізувати дзеркало калібрування."; break;
+        case ACT_RECAL:   *title = "Підготовка до калібрування";
+                          *detail = "Стерти learned-калібрування, обнулити лічильники, паливомір -> 0. Пакет стане «валідний, не відкалібрований»."; break;
+        case ACT_RESET:   *title = "Скидання лічильників";
+                          *detail = "Обнулити знос/лічильники, здоров'я -> 100%."; break;
+        case ACT_CLEAN:   *title = "Очистка історії";
+                          *detail = "Стерти історію/статистику, лишити ідентичність і калібрування."; break;
+        case ACT_SETCHARGE_AUTO: *title = "Заряд із напруги";
+                          *detail = "Виставити паливомір за поточною напругою (7.0В=0%, 8.4В=100%)."; break;
+        case ACT_CHARGE_STATION: *title = "Калібрування на ЗП"; *external = true;
+                          *detail = "Поставте АКБ на IMPRES-зарядну станцію на повний цикл (заряд/розряд/заряд). Майстер продовжить після повернення."; break;
+        case ACT_VERIFY:  *title = "Перевірка результату";
+                          *detail = "Перечитати чіпи й підтвердити цілісність (заголовок, модель, дзеркало, лічильники)."; break;
+        default:          *title = "—"; *detail = ""; break;
+    }
+}
 
+// ---- Поточний план: масив кодів дій ---------------------------------------
 #define WIZ_MAX_STEPS 8
-static WizStep g_wizPlan[WIZ_MAX_STEPS];
-static int     g_wizPlanLen = 0;
+static uint8_t g_wizActs[WIZ_MAX_STEPS];
+static int     g_wizActN = 0;
 
 // Журнал продовження (у пам'яті ESP32, прив'язаний до серійника DS2438).
 struct WizJournal {
     bool     active;
     char     serial[17];    // hex ROM DS2438
     char     model[16];
-    int      total;
+    uint8_t  acts[WIZ_MAX_STEPS];
+    int      nActs;
     int      done;
     bool     awaitCharge;
     long     snapCCA, snapDCA, snapICA, snapHealth;
 };
-static WizJournal g_wizJ = { false, "", "", 0, 0, false, 0, 0, 0, 0 };
+static WizJournal g_wizJ;
+static bool g_wizJInit = false;
+static void wizJZero() { memset(&g_wizJ, 0, sizeof(g_wizJ)); g_wizJInit = true; }
 
 // ------------------------------------------------------------------ утиліти
 static void wizSerialHex(char *out, size_t n) {
@@ -141,7 +167,6 @@ static void wizAnalyze(BatteryDiag &d) {
     if (!hasDump2438)             d.issues |= ISS_NO_2438;
 
     if (hasDump) {
-        // Порожній/стертий DS2433: перші 0x20 байт усе 0xFF.
         bool blank = true;
         for (int i = 0; i < 0x20; i++) if (batteryDump[i] != 0xFF) { blank = false; break; }
         if (blank) d.issues |= ISS_BLANK33;
@@ -149,8 +174,7 @@ static void wizAnalyze(BatteryDiag &d) {
         d.hdrOk = headerChecksumOk(batteryDump);
         if (!d.hdrOk && !blank) d.issues |= ISS_HDR_BAD;
 
-        if (decodeModel(d.model, sizeof(d.model))) { /* модель є */ }
-        else { d.issues |= ISS_NO_MODEL; d.model[0] = '\0'; }
+        if (!decodeModel(d.model, sizeof(d.model))) { d.issues |= ISS_NO_MODEL; d.model[0] = '\0'; }
 
         d.fmt = wizDetectFormat();
 
@@ -168,8 +192,6 @@ static void wizAnalyze(BatteryDiag &d) {
     const char *reason = "";
     d.genuine = batteryGenuine(&reason);
 
-    // Евристика «потрібне калібрування»: структурно валідна (заголовок+модель),
-    // але лічильник переповнений або паливомір порожній / здоров'я низьке.
     bool structOk = d.hdrOk && !(d.issues & (ISS_BLANK33 | ISS_NO_MODEL));
     if (structOk && hasDump2438) {
         uint8_t ica = batteryDump2438[12];
@@ -179,45 +201,21 @@ static void wizAnalyze(BatteryDiag &d) {
 }
 
 // ------------------------------------------------------------------ ПЛАН
-static void wizAddStep(uint8_t action, bool external, const char *title, const char *detail) {
-    if (g_wizPlanLen >= WIZ_MAX_STEPS) return;
-    WizStep &s = g_wizPlan[g_wizPlanLen++];
-    s.action = action; s.external = external;
-    strncpy(s.title, title, sizeof(s.title) - 1);  s.title[sizeof(s.title) - 1] = '\0';
-    strncpy(s.detail, detail, sizeof(s.detail) - 1); s.detail[sizeof(s.detail) - 1] = '\0';
-}
-
-// Будує впорядкований план із набору проблем. Детермінований (той самий вхід ->
-// той самий план), тож журнал продовження завжди узгоджений після паузи.
-static void wizBuildPlan(const BatteryDiag &d) {
-    g_wizPlanLen = 0;
+// Детерміновано будує послідовність КОДІВ дій із набору проблем.
+static void wizComputeActions(const BatteryDiag &d) {
+    g_wizActN = 0;
+    auto add = [](uint8_t a) { if (g_wizActN < WIZ_MAX_STEPS) g_wizActs[g_wizActN++] = a; };
     uint32_t is = d.issues;
 
-    if (is & ISS_NO_CHIP) {
-        wizAddStep(ACT_READ, false, "Зчитати чіпи", "Перевірте контакти АКБ і повторіть зчитування 1-Wire.");
-        return;
-    }
+    if (is & ISS_NO_CHIP) { add(ACT_READ); return; }
 
-    bool restored = false;
-    if (is & (ISS_BLANK33 | ISS_NO_MODEL)) {
-        wizAddStep(ACT_RESTORE, false, "Відновити еталон",
-                   "Записати genuine-еталон обраної моделі байт-у-байт (модель+калібрування). Працює й на порожньому чипі.");
-        restored = true;
-    } else if (is & (ISS_HDR_BAD | ISS_MIRROR_BAD)) {
-        wizAddStep(ACT_REPAIR, false, "Ремонт цілісності",
-                   "Перерахувати контрольні суми (заголовок Σ≡0x41) і синхронізувати дзеркало калібрування.");
-    }
+    if (is & (ISS_BLANK33 | ISS_NO_MODEL))       add(ACT_RESTORE);
+    else if (is & (ISS_HDR_BAD | ISS_MIRROR_BAD)) add(ACT_REPAIR);
 
-    if (is & (ISS_CCA_OVERFLOW | ISS_NEEDS_CALIB)) {
-        wizAddStep(ACT_RECAL, false, "Підготовка до калібрування",
-                   "Стерти learned-калібрування, обнулити лічильники, паливомір -> 0. Пакет стане «валідний, не відкалібрований».");
-        wizAddStep(ACT_CHARGE_STATION, true, "Калібрування на ЗП",
-                   "Поставте АКБ на IMPRES-зарядну станцію на повний цикл (заряд/розряд/заряд). Майстер продовжить після повернення.");
-    }
+    if (is & (ISS_CCA_OVERFLOW | ISS_NEEDS_CALIB)) { add(ACT_RECAL); add(ACT_CHARGE_STATION); }
+    else if (is & ISS_HEALTH_LOW)                   add(ACT_RESET);
 
-    (void)restored;
-    wizAddStep(ACT_VERIFY, false, "Перевірка результату",
-               "Перечитати чіпи й підтвердити цілісність (заголовок, модель, дзеркало, лічильники).");
+    add(ACT_VERIFY);
 }
 
 // ------------------------------------------------------------------ ЖУРНАЛ
@@ -226,44 +224,54 @@ static const char *WIZ_JOURNAL_PATH = "/wizard.jrn";
 static void wizJournalSave() {
     File f = SPIFFS.open(WIZ_JOURNAL_PATH, "w");
     if (!f) return;
-    f.printf("serial=%s\nmodel=%s\ntotal=%d\ndone=%d\nawait=%d\ncca=%ld\ndca=%ld\nica=%ld\nhealth=%ld\n",
-             g_wizJ.serial, g_wizJ.model, g_wizJ.total, g_wizJ.done,
+    String acts;
+    for (int i = 0; i < g_wizJ.nActs; i++) { if (i) acts += ","; acts += String((int)g_wizJ.acts[i]); }
+    f.printf("serial=%s\nmodel=%s\nacts=%s\ndone=%d\nawait=%d\ncca=%ld\ndca=%ld\nica=%ld\nhealth=%ld\n",
+             g_wizJ.serial, g_wizJ.model, acts.c_str(), g_wizJ.done,
              g_wizJ.awaitCharge ? 1 : 0, g_wizJ.snapCCA, g_wizJ.snapDCA, g_wizJ.snapICA, g_wizJ.snapHealth);
     f.close();
 }
 
 static void wizJournalClear() {
-    g_wizJ.active = false; g_wizJ.awaitCharge = false; g_wizJ.done = 0;
-    g_wizJ.serial[0] = '\0'; g_wizJ.model[0] = '\0';
+    wizJZero();
     SPIFFS.remove(WIZ_JOURNAL_PATH);
 }
 
 // Завантажити журнал, ЯКЩО він для поточного АКБ (збіг серійника).
 static void wizJournalLoad() {
+    if (!g_wizJInit) wizJZero();
     g_wizJ.active = false;
     if (!SPIFFS.exists(WIZ_JOURNAL_PATH)) return;
     File f = SPIFFS.open(WIZ_JOURNAL_PATH, "r");
     if (!f) return;
-    WizJournal j = { false, "", "", 0, 0, false, 0, 0, 0, 0 };
+    WizJournal j; memset(&j, 0, sizeof(j));
     while (f.available()) {
         String line = f.readStringUntil('\n'); line.trim();
         int eq = line.indexOf('='); if (eq < 0) continue;
         String k = line.substring(0, eq), v = line.substring(eq + 1);
         if      (k == "serial") strncpy(j.serial, v.c_str(), sizeof(j.serial) - 1);
         else if (k == "model")  strncpy(j.model,  v.c_str(), sizeof(j.model) - 1);
-        else if (k == "total")  j.total = v.toInt();
         else if (k == "done")   j.done = v.toInt();
         else if (k == "await")  j.awaitCharge = v.toInt() != 0;
         else if (k == "cca")    j.snapCCA = v.toInt();
         else if (k == "dca")    j.snapDCA = v.toInt();
         else if (k == "ica")    j.snapICA = v.toInt();
         else if (k == "health") j.snapHealth = v.toInt();
+        else if (k == "acts") {
+            j.nActs = 0; int start = 0;
+            while (start < (int)v.length() && j.nActs < WIZ_MAX_STEPS) {
+                int comma = v.indexOf(',', start);
+                String tok = (comma < 0) ? v.substring(start) : v.substring(start, comma);
+                tok.trim(); if (tok.length()) j.acts[j.nActs++] = (uint8_t)tok.toInt();
+                if (comma < 0) break; start = comma + 1;
+            }
+        }
     }
     f.close();
 
     char cur[17]; wizSerialHex(cur, sizeof(cur));
-    if (cur[0] && strcmp(cur, j.serial) == 0) { j.active = true; g_wizJ = j; }
-    else wizJournalClear();      // журнал від іншого АКБ — прибрати
+    if (cur[0] && strcmp(cur, j.serial) == 0 && j.nActs > 0) { j.active = true; g_wizJ = j; }
+    else wizJournalClear();      // журнал від іншого АКБ / порожній — прибрати
 }
 
 // Поточний знімок ключових полів (для порівняння «до/після ЗП»).
@@ -288,19 +296,24 @@ static void jsonEsc(String &o, const char *s) {
 
 static const char *wizActionName(uint8_t a) {
     switch (a) {
-        case ACT_READ: return "read";           case ACT_RESTORE: return "restore";
-        case ACT_REPAIR: return "repair";       case ACT_RECAL: return "recal";
-        case ACT_RESET: return "reset";         case ACT_CLEAN: return "clean";
+        case ACT_READ: return "read";            case ACT_RESTORE: return "restore";
+        case ACT_REPAIR: return "repair";        case ACT_RECAL: return "recal";
+        case ACT_RESET: return "reset";          case ACT_CLEAN: return "clean";
         case ACT_SETCHARGE_AUTO: return "charge";case ACT_CHARGE_STATION: return "station";
-        case ACT_VERIFY: return "verify";       default: return "none";
+        case ACT_VERIFY: return "verify";        default: return "none";
     }
 }
 
 // Повний стан Майстра: аналіз + проблеми + план + прогрес.
 static String wizStatusJson(const char *resultMsg = nullptr, bool resultOk = true) {
     BatteryDiag d; wizAnalyze(d);
-    wizBuildPlan(d);
     wizJournalLoad();
+
+    // Операційний план: якщо є активний журнал для цього АКБ — беремо стабільну
+    // послідовність з нього; інакше — свіжий план з поточних проблем.
+    const uint8_t *acts; int nActs, doneN;
+    if (g_wizJ.active) { acts = g_wizJ.acts; nActs = g_wizJ.nActs; doneN = g_wizJ.done; }
+    else { wizComputeActions(d); acts = g_wizActs; nActs = g_wizActN; doneN = 0; }
 
     // Чи виявив Майстер, що калібрування на ЗП відбулось (знімок змінився)?
     bool chargeDone = false;
@@ -319,9 +332,8 @@ static String wizStatusJson(const char *resultMsg = nullptr, bool resultOk = tru
     o += ",\"hdrOk\":" + String(d.hdrOk ? "true" : "false");
     o += ",\"mirrorOk\":" + String(d.mirrorOk ? "true" : "false");
     o += ",\"genuine\":" + String(d.genuine ? "true" : "false");
-    o += ",\"healthy\":" + String(d.issues == 0 ? "true" : "false");
+    o += ",\"healthy\":" + String((d.issues == 0 && !g_wizJ.active) ? "true" : "false");
 
-    // Проблеми (з бази правил).
     o += ",\"problems\":[";
     bool first = true;
     for (int i = 0; i < RECOVERY_RULE_COUNT; i++) {
@@ -333,20 +345,19 @@ static String wizStatusJson(const char *resultMsg = nullptr, bool resultOk = tru
     }
     o += "]";
 
-    // План (кроки).
     o += ",\"steps\":[";
-    int doneN = (g_wizJ.active ? g_wizJ.done : 0);
-    for (int i = 0; i < g_wizPlanLen; i++) {
+    for (int i = 0; i < nActs; i++) {
+        const char *ttl, *det; bool ext; wizActionMeta(acts[i], &ttl, &det, &ext);
         if (i) o += ",";
         o += "{\"idx\":" + String(i);
-        o += ",\"action\":\""; o += wizActionName(g_wizPlan[i].action); o += "\"";
-        o += ",\"external\":" + String(g_wizPlan[i].external ? "true" : "false");
+        o += ",\"action\":\""; o += wizActionName(acts[i]); o += "\"";
+        o += ",\"external\":" + String(ext ? "true" : "false");
         o += ",\"done\":" + String(i < doneN ? "true" : "false");
-        o += ",\"title\":\"";  jsonEsc(o, g_wizPlan[i].title);  o += "\"";
-        o += ",\"detail\":\""; jsonEsc(o, g_wizPlan[i].detail); o += "\"}";
+        o += ",\"title\":\"";  jsonEsc(o, ttl); o += "\"";
+        o += ",\"detail\":\""; jsonEsc(o, det); o += "\"}";
     }
     o += "]";
-    o += ",\"total\":" + String(g_wizPlanLen);
+    o += ",\"total\":" + String(nActs);
     o += ",\"progress\":" + String(doneN);
     o += ",\"awaitCharge\":" + String((g_wizJ.active && g_wizJ.awaitCharge) ? "true" : "false");
     o += ",\"chargeDone\":" + String(chargeDone ? "true" : "false");
@@ -363,16 +374,27 @@ static String wizStart() {
     return wizStatusJson();
 }
 
-// Виконати крок плану idx. model — обов'язковий лише для ACT_RESTORE, якщо
-// модель невідома. Повертає оновлений стан + результат кроку.
+// Виконати крок операційного плану idx. model — для ACT_RESTORE, якщо модель
+// невідома. Повертає оновлений стан + результат кроку.
 static String wizExecStep(int idx, const String &model) {
     BatteryDiag d; wizAnalyze(d);
-    wizBuildPlan(d);
-    if (idx < 0 || idx >= g_wizPlanLen)
-        return wizStatusJson("Невірний крок", false);
-
     wizJournalLoad();
-    uint8_t act = g_wizPlan[idx].action;
+
+    // Зафіксувати план у журналі при ПЕРШОМУ виконанні (робить його стабільним).
+    if (!g_wizJ.active) {
+        wizComputeActions(d);
+        if (g_wizActN == 0) return wizStatusJson("Немає кроків для виконання", false);
+        wizJZero();
+        wizSerialHex(g_wizJ.serial, sizeof(g_wizJ.serial));
+        if (d.model[0]) strncpy(g_wizJ.model, d.model, sizeof(g_wizJ.model) - 1);
+        g_wizJ.nActs = g_wizActN;
+        for (int i = 0; i < g_wizActN; i++) g_wizJ.acts[i] = g_wizActs[i];
+        g_wizJ.done = 0; g_wizJ.active = true;
+        wizJournalSave();
+    }
+
+    if (idx < 0 || idx >= g_wizJ.nActs) return wizStatusJson("Невірний крок", false);
+    uint8_t act = g_wizJ.acts[idx];
     bool ok = true;
     String msg;
 
@@ -381,6 +403,7 @@ static String wizExecStep(int idx, const String &model) {
         case ACT_RESTORE: {
             String m = model; m.trim(); m.toUpperCase();
             if (!m.length() && d.model[0]) m = d.model;
+            if (!m.length() && g_wizJ.model[0]) m = g_wizJ.model;
             if (!m.length()) { ok = false; msg = "Оберіть модель для відновлення"; break; }
             if (findTemplate(m.c_str()) < 0) { ok = false; msg = "Немає вшитого шаблону моделі"; break; }
             bool o33 = false, o38 = false;
@@ -397,11 +420,9 @@ static String wizExecStep(int idx, const String &model) {
                                   msg = ok ? (String("Заряд ~") + p + "% з напруги") : "Помилка (немає напруги?)"; } break;
         case ACT_CHARGE_STATION: {
             // Зовнішній крок: зберегти знімок і чекати повернення з ЗП.
-            wizSerialHex(g_wizJ.serial, sizeof(g_wizJ.serial));
-            if (d.model[0]) strncpy(g_wizJ.model, d.model, sizeof(g_wizJ.model) - 1);
             wizSnapshot(g_wizJ.snapCCA, g_wizJ.snapDCA, g_wizJ.snapICA, g_wizJ.snapHealth);
-            g_wizJ.active = true; g_wizJ.awaitCharge = true;
-            g_wizJ.total = g_wizPlanLen; g_wizJ.done = idx + 1;
+            g_wizJ.awaitCharge = true;
+            if (idx + 1 > g_wizJ.done) g_wizJ.done = idx + 1;
             wizJournalSave();
             displayShow("НА ЗАРЯДНУ СТ.");
             return wizStatusJson("Поставте АКБ на IMPRES-ЗП. Майстер продовжить після повернення.", true);
@@ -411,20 +432,17 @@ static String wizExecStep(int idx, const String &model) {
             BatteryDiag d2; wizAnalyze(d2);
             ok = (d2.issues == 0);
             msg = ok ? "Відновлення завершено: помилок не виявлено" : "Лишились проблеми — див. аналіз";
-            if (ok) wizJournalClear();
-        } break;
+            wizJournalClear();      // сеанс завершено (успіх або треба почати заново)
+            return wizStatusJson(msg.c_str(), ok);
+        }
         default: ok = false; msg = "Дія недоступна"; break;
     }
 
-    // Оновити прогрес журналу (окрім зовнішнього кроку, який вийшов вище).
     if (ok) {
-        wizSerialHex(g_wizJ.serial, sizeof(g_wizJ.serial));
-        if (d.model[0] && !g_wizJ.model[0]) strncpy(g_wizJ.model, d.model, sizeof(g_wizJ.model) - 1);
-        g_wizJ.total = g_wizPlanLen;
-        if (idx + 1 > g_wizJ.done) g_wizJ.done = idx + 1;
         g_wizJ.awaitCharge = false;
-        g_wizJ.active = (g_wizJ.done < g_wizPlanLen);
-        if (g_wizJ.active) wizJournalSave(); else wizJournalClear();
+        if (idx + 1 > g_wizJ.done) g_wizJ.done = idx + 1;
+        if (g_wizJ.done >= g_wizJ.nActs) wizJournalClear();
+        else wizJournalSave();
     }
     return wizStatusJson(msg.c_str(), ok);
 }

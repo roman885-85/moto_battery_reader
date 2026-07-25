@@ -171,11 +171,10 @@ void loop() {
     // / успіх / помилка — режим задають обробники через ledSet()).
     ledTask();
 
-    // Анімація батареї на головній сторінці (~9 к/с). Оновлює лише область
-    // іконки батареї. ТИПОВО ВИМКНЕНА — вмикається через
-    // #define ENABLE_BATTERY_ANIM у settings.h (на деяких панелях ST7789
-    // періодична перемальовка в loop() заважала дисплею).
-#ifdef ENABLE_BATTERY_ANIM
+    // Анімація батареї на головній сторінці (~9 к/с) — пульсація заповнення.
+    // Оновлює лише область шкали батареї, не чіпаючи цифри %. УВІМКНЕНА типово;
+    // за потреби вимикається через #define DISABLE_BATTERY_ANIM у settings.h.
+#ifndef DISABLE_BATTERY_ANIM
     static unsigned long lastAnim = 0;
     if (millis() - lastAnim > 110) { lastAnim = millis(); displayAnimTick(); }
 #endif

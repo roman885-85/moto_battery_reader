@@ -608,7 +608,11 @@ inline void drawPageMain() {
     } else snprintf(buf, sizeof(buf), "DS2438: немає даних");
     u8g2.drawUTF8(0, 84, buf);
     snprintf(buf, sizeof(buf), "IP: %s", ESP_IP);        u8g2.drawUTF8(0, 98, buf);
+#ifdef MENU_BTN3_PIN
+    u8g2.drawUTF8(0, 112, "[<][>] меню  [OK] чит.");
+#else
     u8g2.drawUTF8(0, 112, "[>] довго - зчитати");
+#endif
 #elif DISP_W < 100
     // Nokia 84x48: компактно.
     drawBatteryIcon(0, 12, 34, 12, pct);
@@ -829,7 +833,11 @@ inline void drawPageActions() {
 
     // Підказка керування знизу.
     u8g2.drawHLine(0, FOOT_HL, DISP_W);
+#ifdef MENU_BTN3_PIN
+    u8g2.drawUTF8(0, FOOT_Y, "[OK]вибір трим=пуск");
+#else
     u8g2.drawUTF8(0, FOOT_Y, "[<]вибір трим=пуск");
+#endif
 }
 
 // Сторінка Майстра відновлення: аналіз стану -> проблеми -> наступний крок.
@@ -842,7 +850,11 @@ inline void drawPageWizard() {
         u8g2.drawUTF8(0, y, "Виконую...");
     } else if (g_wizProblems < 0) {
         u8g2.drawUTF8(0, y,      "Аналіз стану АКБ.");
+#ifdef MENU_BTN3_PIN
+        u8g2.drawUTF8(0, y + 11, "[OK] аналіз");
+#else
         u8g2.drawUTF8(0, y + 11, "[<] коротко = аналіз");
+#endif
     } else if (g_wizHealthy) {
         u8g2.setFont(u8g2_font_6x12_t_cyrillic);
         u8g2.drawUTF8(0, y + 2,  "OK: справна");
@@ -854,7 +866,11 @@ inline void drawPageWizard() {
         u8g2.drawUTF8(0, y + 10, g_wizTop);
         if (g_wizAwait) {
             u8g2.drawUTF8(0, y + 22, "Чекаю ЗП. Поверніть");
+#ifdef MENU_BTN3_PIN
+            u8g2.drawUTF8(0, y + 32, "АКБ, [OK] трим.");
+#else
             u8g2.drawUTF8(0, y + 32, "АКБ, [<] трим.");
+#endif
         } else {
             char n[44]; snprintf(n, sizeof(n), "Далі: %s", g_wizNext);
             u8g2.drawUTF8(0, y + 22, n);
@@ -863,7 +879,11 @@ inline void drawPageWizard() {
         }
     }
     u8g2.drawHLine(0, FOOT_HL, DISP_W);
+#ifdef MENU_BTN3_PIN
+    u8g2.drawUTF8(0, FOOT_Y, "[OK]аналіз трим=крок");
+#else
     u8g2.drawUTF8(0, FOOT_Y, "[<]кор=аналіз трим=крок");
+#endif
 }
 
 // ---------- рендер і кнопка ----------
@@ -912,6 +932,19 @@ inline void displayAnimTick() {
     int tw = (g_battX + g_battW + 4 + 7) / 8 - tx;
     int th = (g_battY + g_battH + 7) / 8 - ty;
     u8g2.updateDisplayArea(tx, ty, tw, th);
+}
+
+// Тимчасова діагностика анімації (див. коментар у display_color.h).
+inline void displayAnimReport() {
+    const char *src; int pct = batteryPercent(&src);
+    Serial.printf("ANIM: page=%d battW=%d pct=%d anim=%s\n",
+                  (int)g_displayPage, (int)g_battW, pct,
+#ifdef DISABLE_BATTERY_ANIM
+                  "DISABLED(settings.h)"
+#else
+                  "on"
+#endif
+    );
 }
 
 // Повертає запит Майстра для .ino один раз: 0 нема, 1 аналіз, 2 наступний крок.

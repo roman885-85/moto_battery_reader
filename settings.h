@@ -151,8 +151,12 @@
       (BUZZER_PIN == DS_PIN)         || (BUZZER_PIN == PULLUP_PIN)     || \
       (BUZZER_PIN == DISPLAY_SDA_PIN)|| (BUZZER_PIN == DISPLAY_SCL_PIN)|| \
       (BUZZER_PIN == DISPLAY_CS_PIN) || (BUZZER_PIN == DISPLAY_DC_PIN) || \
-      (BUZZER_PIN == DISPLAY_RST_PIN)|| (defined(MENU_BTN3_PIN) && BUZZER_PIN == MENU_BTN3_PIN)
-    #error "BUZZER_PIN конфліктує з уже зайнятим піном! Оберіть вільний GPIO (напр. 32 або 33)."
+      (BUZZER_PIN == DISPLAY_RST_PIN)|| (defined(MENU_BTN3_PIN) && BUZZER_PIN == MENU_BTN3_PIN) || \
+      (defined(DISPLAY_BLK_PIN) && BUZZER_PIN == DISPLAY_BLK_PIN)
+    // ⚠️ Якщо BUZZER_PIN збігається з піном підсвітки (DISPLAY_BLK_PIN) — ШІМ
+    // підсвітки (analogWrite) заглушить тон: attach=OK, «чирп» у логах є, а звуку
+    // немає. Оберіть для буззера ІНШИЙ вільний GPIO.
+    #error "BUZZER_PIN конфліктує з уже зайнятим піном (кнопки/дисплей/підсвітка)! Оберіть вільний GPIO (напр. 33)."
   #endif
 #endif
 

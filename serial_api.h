@@ -32,6 +32,9 @@
 //   TEMPLATES            -> список вшитих моделей для ініціалізації (без пароля)
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
 //   RESTORE <MODEL>      -> відновити еталон verbatim (порожній/битий чіп -> робочий)
+//   WIZARD               -> Майстер: зчитати + аналіз/проблеми/план (JSON)
+//   WIZSTEP <idx> [MODEL]-> Майстер: виконати крок плану (model для відновлення)
+//   WIZRESET             -> Майстер: скинути журнал продовження
 //   RECAL                -> підготовка до рекалібрування (після заміни елементів)
 //   REBOOT               -> перезавантаження ESP32
 //
@@ -261,6 +264,13 @@ static void serialExec(const String &line) {
                                                ",\"ds2433\":" + (o33 ? "true" : "false") +
                                                ",\"ds2438\":" + (o38 ? "true" : "false") +
                                                (ok ? (String(",\"model\":\"") + md + "\"}") : ",\"err\":\"збій запису\"}"))); } }
+    else if (cmd == "WIZARD")   { sResp(wizStart()); }
+    else if (cmd == "WIZSTEP")  { int s2 = arg.indexOf(' ');
+                                  String si = (s2 < 0) ? arg : arg.substring(0, s2);
+                                  String md = (s2 < 0) ? String("") : arg.substring(s2 + 1);
+                                  si.trim(); md.trim();
+                                  sResp(wizExecStep(si.toInt(), md)); }
+    else if (cmd == "WIZRESET") { wizJournalClear(); sResp("{\"ok\":true}"); }
     else if (cmd == "RECAL")    { bool ok = performRecalPrepare();
                                   sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"read first / write failed\"}"); }
     else if (cmd == "REBOOT")   { displayShow("ПЕРЕЗАВАНТАЖЕННЯ"); sResp("{\"ok\":true}"); Serial.flush(); delay(200); ESP.restart(); }

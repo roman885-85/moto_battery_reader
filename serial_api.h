@@ -34,7 +34,9 @@
 //   RESTORE <MODEL>      -> відновити еталон verbatim (порожній/битий чіп -> робочий)
 //   WIZARD               -> Майстер: зчитати + аналіз/проблеми/план (JSON)
 //   WIZSTEP <idx> [MODEL]-> Майстер: виконати крок плану (model для відновлення)
-//   WIZRESET             -> Майстер: скинути журнал продовження
+//   WIZRESET             -> Майстер: скинути журнал продовження поточного АКБ
+//   WIZLIST              -> Майстер: усі збережені журнали (серійник + план)
+//   WIZDEL <serial>      -> Майстер: видалити журнал за серійником
 //   RECAL                -> підготовка до рекалібрування (після заміни елементів)
 //   REBOOT               -> перезавантаження ESP32
 //
@@ -271,6 +273,10 @@ static void serialExec(const String &line) {
                                   si.trim(); md.trim();
                                   sResp(wizExecStep(si.toInt(), md)); }
     else if (cmd == "WIZRESET") { wizJournalClear(); sResp("{\"ok\":true}"); }
+    else if (cmd == "WIZLIST")  { sResp(wizJournalListJson()); }
+    else if (cmd == "WIZDEL")   { String s = arg; s.trim(); s.toUpperCase();
+                                  if (!s.length()) sResp("{\"ok\":false,\"err\":\"no serial\"}");
+                                  else { wizJournalDelete(s.c_str()); sResp("{\"ok\":true}"); } }
     else if (cmd == "RECAL")    { bool ok = performRecalPrepare();
                                   sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"read first / write failed\"}"); }
     else if (cmd == "REBOOT")   { displayShow("ПЕРЕЗАВАНТАЖЕННЯ"); sResp("{\"ok\":true}"); Serial.flush(); delay(200); ESP.restart(); }

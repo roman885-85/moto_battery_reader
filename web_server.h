@@ -1359,10 +1359,23 @@ void handleWizardStep() {
     String model = server.arg("model");
     server.send(200, "application/json", wizExecStep(idx, model));
 }
-// POST /api/wizard/reset — скинути журнал продовження (під паролем).
+// POST /api/wizard/reset — скинути журнал продовження ПОТОЧНОГО АКБ (під паролем).
 void handleWizardReset() {
     if (!requireAdmin()) return;
     wizJournalClear();
+    server.send(200, "application/json", "{\"ok\":true}");
+}
+
+// GET /api/wizard/journals — усі збережені журнали (серійник + заплановані дії).
+void handleWizardJournals() {
+    server.send(200, "application/json", wizJournalListJson());
+}
+// POST /api/wizard/journals/delete — видалити журнал за серійником (під паролем).
+void handleWizardJournalDelete() {
+    if (!requireAdmin()) return;
+    String serial = server.arg("serial"); serial.trim(); serial.toUpperCase();
+    if (!serial.length()) { server.send(400, "application/json", "{\"ok\":false,\"err\":\"no serial\"}"); return; }
+    wizJournalDelete(serial.c_str());
     server.send(200, "application/json", "{\"ok\":true}");
 }
 
@@ -1456,6 +1469,8 @@ void setupWebServer() {
     server.on("/api/wizard", HTTP_GET, handleWizard);            // Майстер: аналіз+план
     server.on("/api/wizard/step", HTTP_POST, handleWizardStep);  // Майстер: виконати крок
     server.on("/api/wizard/reset", HTTP_POST, handleWizardReset);// Майстер: скинути журнал
+    server.on("/api/wizard/journals", HTTP_GET, handleWizardJournals);        // список журналів
+    server.on("/api/wizard/journals/delete", HTTP_POST, handleWizardJournalDelete); // видалити журнал
     server.on("/api/recalprep", HTTP_POST, handleRecalPrepare);  // підготовка до рекалібрування
 
     // Captive-portal: усі інші URL -> редирект на головну (авто-відкриття сторінки).

@@ -439,6 +439,26 @@ inline void displaySplash() {
 #endif
 }
 
+// Плавна поява/зникнення заставки (замість displaySplash()+delay() у setup()).
+// Екран уже намальований під ВИМКНЕНОЮ підсвіткою (init) — тож артефактів немає;
+// далі плавно піднімаємо/опускаємо ШІМ підсвітки.
+inline void displayIntro() {
+    displaySplash();                         // малюнок готовий (підсвітка ще 0)
+#ifdef DISPLAY_BLK_PIN
+    for (int b = 0; b <= 255; b += 10) { analogWrite(DISPLAY_BLK_PIN, b); delay(16); }
+    analogWrite(DISPLAY_BLK_PIN, 255);
+    delay(1300);
+    for (int b = 255; b >= 0; b -= 10) { analogWrite(DISPLAY_BLK_PIN, b < 0 ? 0 : b); delay(12); }
+    analogWrite(DISPLAY_BLK_PIN, 0);
+#else
+    delay(2200);                             // без керування BLK — просто пауза
+#endif
+    tft.fillScreen(C_BG);                    // чорно перед входом у меню (підсвітка 0)
+}
+
+// Плавний вхід у головне меню наприкінці setup().
+inline void displayFadeInMain();             // тіло нижче (після displayRender)
+
 // ===================== Сторінки =====================
 
 inline void drawPageMain() {
@@ -708,6 +728,18 @@ inline void displayRender() {
     }
 }
 
+// Плавний вхід у головне меню: малюємо головну сторінку під вимкненою
+// підсвіткою і плавно піднімаємо ШІМ до повної яскравості.
+inline void displayFadeInMain() {
+    g_displayPage = 0;
+    tft.fillScreen(C_BG);
+    displayRender();
+#ifdef DISPLAY_BLK_PIN
+    for (int b = 0; b <= 255; b += 10) { analogWrite(DISPLAY_BLK_PIN, b); delay(14); }
+    analogWrite(DISPLAY_BLK_PIN, 255);
+#endif
+}
+
 inline void displaySetStatus(const char *s) {
     strncpy(g_displayStatus, s, sizeof(g_displayStatus) - 1);
     g_displayStatus[sizeof(g_displayStatus) - 1] = '\0';
@@ -718,10 +750,21 @@ inline void displayShow(const char *s) {
     displayRender();
 }
 
+// Плавне керування яскравістю через ШІМ підсвітки (BLK). Якщо BLK-пін не
+// заданий — no-op (підсвітка керується апаратно/завжди увімкнена).
+inline void displaySetBrightness(uint8_t v) {
+#ifdef DISPLAY_BLK_PIN
+    analogWrite(DISPLAY_BLK_PIN, v);
+#else
+    (void)v;
+#endif
+}
+
 inline void displayInit() {
 #ifdef DISPLAY_BLK_PIN
     pinMode(DISPLAY_BLK_PIN, OUTPUT);
-    digitalWrite(DISPLAY_BLK_PIN, HIGH);      // підсвітка
+    analogWrite(DISPLAY_BLK_PIN, 0);          // підсвітка ВИМК до заставки —
+                                              // ховаємо артефакти ініціалізації
 #endif
     tft.init(PANEL_W, PANEL_H);               // рідні (портретні) розміри матриці
     tft.setRotation(DISPLAY_ST7789_ROT);

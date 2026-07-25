@@ -991,6 +991,15 @@ inline void displayHandleButton() {
     static BtnState b3;
 #endif
 
+#ifdef MENU_BTN3_PIN
+    // 3 кнопки: BTN1 — ЧИСТА навігація ВПЕРЕД (жодного «довгого» читання; читання
+    // акумулятора на BTN3, головна сторінка). longMs=0 -> «довгих» подій немає.
+    int e1 = pollButton(MENU_BTN_PIN, b1, 0);
+    if (e1 == 1) {                                   // коротке -> наступна сторінка
+        g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
+        displayFlip();
+    }
+#else
     int e1 = pollButton(MENU_BTN_PIN, b1, 800);
     if (e1 == 2) {                                   // довге -> перечитати
         g_readRequested = true;
@@ -1000,6 +1009,7 @@ inline void displayHandleButton() {
         g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
         displayFlip();
     }
+#endif
 
     int e2 = pollButton(MENU_BTN2_PIN, b2, 800);
 #ifdef MENU_BTN3_PIN
@@ -1035,6 +1045,11 @@ inline void displayHandleButton() {
     } else if (g_displayPage == WIZARD_PAGE) {
         if (e3 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
         else if (e3 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
+    } else if (g_displayPage == 0) {
+        // Головна: BTN3 коротко = ПЕРЕЧИТАТИ акумулятор (саме третя кнопка);
+        // довго = перейти в «Майстер».
+        if (e3 == 1) { g_readRequested = true; displaySetStatus("ЗЧИТУВАННЯ..."); displayRender(); }
+        else if (e3 == 2) { g_displayPage = WIZARD_PAGE; displayFlip(); }
     } else {
         if (e3 == 1) { g_displayPage = WIZARD_PAGE; displayFlip(); }
         else if (e3 == 2) { g_displayPage = 0; displayFlip(); }

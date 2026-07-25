@@ -829,6 +829,13 @@ inline uint16_t lighten565(uint16_t c, uint8_t amt) {
     return (uint16_t)((r << 11) | (g << 5) | b);
 }
 
+// Масштаб яскравості кольору RGB565: lvl 0..255 (255 = без змін, менше = темніше).
+inline uint16_t scale565(uint16_t c, uint8_t lvl) {
+    int r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
+    r = r * lvl / 255; g = g * lvl / 255; b = b * lvl / 255;
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
 // Заповнити прямокутник R кольором col, ОМИНАЮЧИ рамку тексту T (перетин R∩T не
 // малюємо) — до 4 смуг. Так пульсуємо все заповнення, не торкаючись цифр %.
 inline void fillRectExcept(int rx, int ry, int rw, int rh,
@@ -855,9 +862,13 @@ inline void displayAnimTick() {
     int fw = (g_battW - 6) * pct / 100;
     if (fw < 4) return;
     int fx = g_battX + 3, fy = g_battY + 3, fh = g_battH - 6;
-    int p = g_animPhase & 31;                             // період 32 кадри (~3.5 с)
-    int tri = (p < 16) ? p : (32 - p);                   // 0..16..0 (трикутна хвиля)
-    uint16_t c = lighten565(col, (uint8_t)(tri * 11));   // 0..176 у бік білого (яскраво)
+    // Виразна ПУЛЬСАЦІЯ: яскравість заповнення «дихає» 100% <-> ~37% з періодом
+    // ~1.8 с (16 кадрів по ~110 мс). Це помітно набагато краще, ніж легке
+    // висвітлення в бік білого. Цифри % не чіпаємо (fillRectExcept їх оминає).
+    int p = g_animPhase & 15;                            // період 16 кадрів (~1.8 с)
+    int tri = (p < 8) ? p : (16 - p);                    // 0..8..0 (трикутна хвиля)
+    uint8_t lvl = (uint8_t)(255 - tri * 20);             // 255..95 -> 100%..37%
+    uint16_t c = scale565(col, lvl);
     fillRectExcept(fx, fy, fw, fh, g_pctTx, g_pctTy, g_pctTw, g_pctTh, c);
     g_animPhase++;
 }

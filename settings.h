@@ -146,6 +146,12 @@
 // перезавантажується, дисплей «не працює»). Динамік — лише через транзистор + ~100 Ом.
 // #define BUZZER_PIN 32
 #ifdef BUZZER_PIN
+  // ⚠️ GPIO34/35/36/39 — ВХІД-ТІЛЬКИ (input-only): без вихідного драйвера, тож
+  // tone()/LEDC на них НЕ виводять сигнал (у логах: "ledc: gpio_num argument is
+  // invalid", звуку немає, навіть якщо attach=OK). Оберіть вихідний GPIO (напр. 32).
+  #if (BUZZER_PIN == 34) || (BUZZER_PIN == 35) || (BUZZER_PIN == 36) || (BUZZER_PIN == 39)
+    #error "BUZZER_PIN на GPIO34/35/36/39 неможливий: ці піни ВХІД-ТІЛЬКИ і не виводять звук. Оберіть вихідний GPIO, напр. 32."
+  #endif
   #if (BUZZER_PIN == MENU_BTN_PIN)   || (BUZZER_PIN == MENU_BTN2_PIN)  || \
       (BUZZER_PIN == LED_RED_PIN)    || (BUZZER_PIN == LED_GREEN_PIN)  || \
       (BUZZER_PIN == DS_PIN)         || (BUZZER_PIN == PULLUP_PIN)     || \

@@ -1337,6 +1337,29 @@ void handleTemplates() {
     server.send(200, "application/json", j);
 }
 
+// ------------------- Майстер відновлення (Recovery Wizard) -------------------
+// Двигун і база правил — у recovery.h. Підключаємо ТУТ, коли всі perform*-функції
+// та аналітичні хелпери вже визначені. Клієнти отримують єдиний JSON-стан.
+#include "recovery.h"
+
+// GET /api/wizard — зчитати чіпи, повернути аналіз + проблеми + план + прогрес.
+void handleWizard() {
+    server.send(200, "application/json", wizStart());
+}
+// POST /api/wizard/step — виконати крок плану (під паролем). Аргументи: idx[, model].
+void handleWizardStep() {
+    if (!requireAdmin()) return;
+    int idx = server.hasArg("idx") ? server.arg("idx").toInt() : -1;
+    String model = server.arg("model");
+    server.send(200, "application/json", wizExecStep(idx, model));
+}
+// POST /api/wizard/reset — скинути журнал продовження (під паролем).
+void handleWizardReset() {
+    if (!requireAdmin()) return;
+    wizJournalClear();
+    server.send(200, "application/json", "{\"ok\":true}");
+}
+
 // Веб-ініціалізація нового АКБ (під паролем): model + mah.
 void handleInitBattery() {
     if (!requireAdmin()) return;
@@ -1424,6 +1447,9 @@ void setupWebServer() {
     server.on("/api/templates", HTTP_GET, handleTemplates);      // список вшитих моделей
     server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
     server.on("/api/restore", HTTP_POST, handleRestore);         // відновлення еталона verbatim
+    server.on("/api/wizard", HTTP_GET, handleWizard);            // Майстер: аналіз+план
+    server.on("/api/wizard/step", HTTP_POST, handleWizardStep);  // Майстер: виконати крок
+    server.on("/api/wizard/reset", HTTP_POST, handleWizardReset);// Майстер: скинути журнал
     server.on("/api/recalprep", HTTP_POST, handleRecalPrepare);  // підготовка до рекалібрування
 
     // Captive-portal: усі інші URL -> редирект на головну (авто-відкриття сторінки).

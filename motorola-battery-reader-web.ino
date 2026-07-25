@@ -68,8 +68,13 @@ void setup() {
     // Короткий зелений сигнал успішного старта AP
     ledSet(LED_OK);
     
-    // Завантажуємо збережені дампи з SPIFFS
+    // SPIFFS монтуємо (потрібен для журналів Майстра відновлення й збереження
+    // дампів під час сесії). Але збережений останній дамп при старті НЕ
+    // завантажуємо: дисплей/веб/USB лишаються ЧИСТИМИ (без даних), поки не
+    // зчитають акумулятор. Щоб повернути показ останнього дампа після
+    // перезавантаження — додайте у settings.h: #define LOAD_SAVED_DUMPS_ON_BOOT
     if (SPIFFS.begin(true)) {
+#ifdef LOAD_SAVED_DUMPS_ON_BOOT
         File file = SPIFFS.open("/dump.bin", "r");
         if (file) {
             size_t size = file.read(batteryDump, DUMP_SIZE);
@@ -89,6 +94,9 @@ void setup() {
             }
             file2438.close();
         }
+#else
+        Serial.println("Clean start: saved battery dump NOT loaded (read a battery to populate)");
+#endif
     } else {
         Serial.println("SPIFFS mount failed!");
     }

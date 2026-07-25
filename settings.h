@@ -29,16 +29,16 @@
 // #define DISPLAY_SSD1306_I2C        // 0.96" OLED 128x64 I2C (GME12864) — за замовчуванням
 // #define DISPLAY_SH1106_I2C      // 1.3"  OLED 128x64 I2C (SH1106)
 // #define DISPLAY_SH1107_128_I2C  // 1.5"  OLED 128x128 I2C (GME128128-02, варіант SH1107)
-#define DISPLAY_SSD1327_128_I2C // 1.5"  OLED 128x128 I2C (GME128128-02, варіант SSD1327)
+// #define DISPLAY_SSD1327_128_I2C // 1.5"  OLED 128x128 I2C (GME128128-02, варіант SSD1327)
 // #define DISPLAY_ST7567_SPI      // Open-Smart 1.8" ST7567, 128x64, SPI
 // #define DISPLAY_PCD8544_SPI     // Nokia 5110 (PCD8544), 84x48, SPI
 // --- КОЛЬОРОВІ TFT на ST7789 (SPI) — кольорове меню + кольорова заставка ---
 // Розкоментуйте DISPLAY_ST7789_SPI + РІВНО ОДИН пресет розміру (або власний).
 // Потрібні бібліотеки: Adafruit GFX, Adafruit ST7735/ST7789, Adafruit BusIO,
 // U8g2_for_Adafruit_GFX (кириличні шрифти на кольоровому екрані).
-// #define DISPLAY_ST7789_SPI
+#define DISPLAY_ST7789_SPI
 //   #define DISPLAY_ST7789_240X240   // 1.3"/1.54" ST7789VW — 240x240
-//   #define DISPLAY_ST7789_240X280   // 1.69"  ST7789V3 — 240x280
+#define DISPLAY_ST7789_240X280   // 1.69"  ST7789V3 — 240x280
 //   #define DISPLAY_ST7789_240X320   // 2.0"/2.4" — 240x320
 //   #define DISPLAY_ST7789_135X240   // 1.14"  — 135x240
 //   #define DISPLAY_ST7789_170X320   // 1.9"   — 170x320
@@ -53,20 +53,20 @@
 //   #define DISPLAY_ST7789_XOFF    0
 //   #define DISPLAY_ST7789_YOFF    0
 // Орієнтація 0..3 (0/2 — портрет, 1/3 — ландшафт). Інверсія — «негатив».
-// #define DISPLAY_ST7789_ROT     0
+#define DISPLAY_ST7789_ROT     1
 // #define DISPLAY_ST7789_INVERT
 // Заокруглені кути (ST7789V3 1.69" 240x280 зазвичай скруглений) — вмикає
 // безпечний відступ, щоб текст у кутах (заголовок/статус/hex) не обрізало.
 // Радіус можна підправити DISPLAY_ST7789_CORNER (типово 22 px).
-// #define DISPLAY_ST7789_ROUND
-// #define DISPLAY_ST7789_CORNER  22
+#define DISPLAY_ST7789_ROUND
+#define DISPLAY_ST7789_CORNER  22
 // Кастомна КОЛЬОРОВА заставка: згенеруйте custom_splash.h у папку скетчу
 // (python tools/make_color_splash.py logo.png -W 240 -H 240) і увімкніть:
 // #define DISPLAY_SPLASH_CUSTOM
 // Підсвітка (BLK/BL) — необов'язково; вкажіть GPIO, куди підключено.
 // Якщо задано — заставка ПЛАВНО з'являється/згасає через ШІМ підсвітки, а екран
 // лишається чорним без артефактів до появи (інакше — миттєвий показ):
-// #define DISPLAY_BLK_PIN        4
+#define DISPLAY_BLK_PIN        4
 // Піни SPI ST7789: SCK=GPIO18, MOSI(SDA)=GPIO23 (апаратний SPI ESP32);
 // CS/DC(RS)/RST — з блоку «Крок 2b» нижче (DISPLAY_CS/DC/RST_PIN).
 
@@ -100,7 +100,7 @@
 #define DISPLAY_RST_PIN   16     // RST (Reset)
 // Зсув картинки вправо для ST7567, пікселів (у панелі Open-Smart RAM на
 // 132 колонки, видно 4..131). Якщо картинка зсунута — підберіть 0..4.
-#define DISPLAY_ST7567_XOFF 4
+//#define DISPLAY_ST7567_XOFF 4
 // Контраст дисплея 0..255 (розкоментуйте, щоб задати вручну;
 // для ST7567 більше = темніше, типово 30..90).
 // #define DISPLAY_CONTRAST 128
@@ -120,14 +120,19 @@
   #define ANIM_GRADIENT_SPEED   1
 #endif
 #ifndef ANIM_GRADIENT_MS
-  #define ANIM_GRADIENT_MS      90
+  #define ANIM_GRADIENT_MS      130
 #endif
 #ifndef ANIM_GRADIENT_WAVELEN
-  #define ANIM_GRADIENT_WAVELEN 96
+  #define ANIM_GRADIENT_WAVELEN 120
 #endif
 #ifndef ANIM_GRADIENT_MINLVL
-  #define ANIM_GRADIENT_MINLVL  70
+  #define ANIM_GRADIENT_MINLVL  150
 #endif
+
+// Дані АКБ при старті: ТИПОВО чистий екран (останній збережений дамп НЕ
+// завантажується — усе порожнє, поки не зчитають акумулятор). Щоб повернути
+// показ останнього дампа після перезавантаження — розкоментуйте:
+// #define LOAD_SAVED_DUMPS_ON_BOOT
 
 // --- Кнопки меню (між GPIO і GND, активний рівень LOW, внутр. підтяжка) ---
 #define MENU_BTN_PIN  25   // "Вперед": наступна сторінка
@@ -141,7 +146,7 @@
 // ⚠️ Оберіть ВІЛЬНИЙ GPIO! Уже зайняті: 9 12 13 14 21 22 25 26 27 (LED/1-Wire/
 // I2C/кнопки), а для SPI-дисплея ще 5 16 17 18 23 (+BLK). Вільні з підтяжкою:
 // напр. 32 або 33. Нижче стоїть 33.
-// #define MENU_BTN3_PIN 33
+#define MENU_BTN3_PIN 33
 
 // Захист від помилки: якщо 3-тю кнопку призначено на вже зайнятий пін —
 // компіляція впаде з чіткою підказкою (а не з дивною поведінкою на пристрої).
@@ -163,7 +168,7 @@
 // ⚠️ ПРЯМО на GPIO — ЛИШЕ пасивний П'ЄЗО-буззер (споживає мкА)! ДИНАМІК (4–8 Ом)
 // напряму НЕ підключати: перевантаження струмом -> brownout-reset (ESP32 циклічно
 // перезавантажується, дисплей «не працює»). Динамік — лише через транзистор + ~100 Ом.
-// #define BUZZER_PIN 32
+#define BUZZER_PIN 2
 #ifdef BUZZER_PIN
   // ⚠️ GPIO34/35/36/39 — ВХІД-ТІЛЬКИ (input-only): без вихідного драйвера, тож
   // tone()/LEDC на них НЕ виводять сигнал (у логах: "ledc: gpio_num argument is
@@ -197,7 +202,7 @@
 // керується) — розкоментуйте BTN_LED_ACTIVE_LOW. ⚠️ Якщо сумарний струм усіх
 // підсвіток > ~20 мА — керуйте через транзистор (GPIO->база, світлодіоди на
 // колекторі), інакше просадка/перегрів піна.
-// #define BTN_LED_PIN 15          // вільний вихідний GPIO (напр. 15 або 2)
+#define BTN_LED_PIN 15          // вільний вихідний GPIO (напр. 15 або 2)
 // #define BTN_LED_ACTIVE_LOW      // якщо підсвітка вмикається низьким рівнем
 #ifdef BTN_LED_PIN
   #if (BTN_LED_PIN == 34) || (BTN_LED_PIN == 35) || (BTN_LED_PIN == 36) || (BTN_LED_PIN == 39)

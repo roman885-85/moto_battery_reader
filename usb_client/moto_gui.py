@@ -185,7 +185,7 @@ class App:
         self.tabOv = ttk.Frame(nb, padding=8); nb.add(self.tabOv, text="Огляд")
         self.tabWiz = ttk.Frame(nb, padding=8); nb.add(self.tabWiz, text="🧙 Майстер")
         self.tabData = ttk.Frame(nb, padding=8); nb.add(self.tabData, text="Дані")
-        self.tabFw = ttk.Frame(nb, padding=8); nb.add(self.tabFw, text="Прошивка")
+        self.tabFw = ttk.Frame(nb, padding=8); nb.add(self.tabFw, text="🔧 Ремонт")
         self.tabHex = ttk.Frame(nb, padding=8); nb.add(self.tabHex, text="Редактор")
         self.tabLog = ttk.Frame(nb, padding=8); nb.add(self.tabLog, text="Журнал")
 
@@ -224,7 +224,7 @@ class App:
         ttk.Button(top, text="↺ Скинути", command=self.wiz_reset).pack(side="right", padx=3)
         ttk.Label(f, text="Аналіз стану → проблеми → пропозиції → покрокове виконання. Багатоетапні\n"
                          "сценарії з зарядною станцією продовжуються після повернення АКБ.",
-                  foreground="#357", justify="left").pack(anchor="w", pady=(2, 6))
+                  foreground="#b9bd86", justify="left").pack(anchor="w", pady=(2, 6))
 
         self.wizVerdict = ttk.Label(f, text="Натисніть «Аналізувати».", font=("Segoe UI", 10, "bold"))
         self.wizVerdict.pack(anchor="w", pady=2)
@@ -280,7 +280,7 @@ class App:
                 txt = ttk.Frame(row); txt.pack(side="left", fill="x", expand=True)
                 ttk.Label(txt, text=p.get("problem", ""), font=("Segoe UI", 9, "bold"),
                           wraplength=440, justify="left").pack(anchor="w")
-                ttk.Label(txt, text="→ " + p.get("fix", ""), foreground="#2471a3",
+                ttk.Label(txt, text="→ " + p.get("fix", ""), foreground="#8a9a5a",
                           wraplength=440, justify="left").pack(anchor="w")
         else:
             self.wizProbFrame.pack_forget()
@@ -311,7 +311,7 @@ class App:
             box = ttk.Frame(row); box.pack(side="left", fill="x", expand=True)
             ttk.Label(box, text=s.get("title", ""), font=("Segoe UI", 9, "bold" if cur else "normal"),
                       foreground=col).pack(anchor="w")
-            ttk.Label(box, text=s.get("detail", ""), foreground="#666",
+            ttk.Label(box, text=s.get("detail", ""), foreground="#9a9c82",
                       wraplength=440, justify="left").pack(anchor="w")
         if r.get("awaitCharge"):
             done = r.get("chargeDone")
@@ -370,9 +370,13 @@ class App:
         self.dCCA = self._kv(box, "Заряджено CCA:", 6)
         self.dDCA = self._kv(box, "Розряджено DCA:", 7)
         ttk.Label(f, text="Дамп DS2433 (512 Б):").pack(anchor="w", pady=(8, 0))
-        self.tx33 = scrolledtext.ScrolledText(f, height=6, font=("Consolas", 8)); self.tx33.pack(fill="both", expand=True)
+        self.tx33 = scrolledtext.ScrolledText(f, height=6, font=("Consolas", 8),
+                                              bg=MIL["field"], fg="#b9bd86", insertbackground=MIL["khaki"],
+                                              relief="flat", bd=0); self.tx33.pack(fill="both", expand=True)
         ttk.Label(f, text="Дамп DS2438 (64 Б):").pack(anchor="w", pady=(6, 0))
-        self.tx38 = scrolledtext.ScrolledText(f, height=3, font=("Consolas", 8)); self.tx38.pack(fill="x")
+        self.tx38 = scrolledtext.ScrolledText(f, height=3, font=("Consolas", 8),
+                                              bg=MIL["field"], fg="#b9bd86", insertbackground=MIL["khaki"],
+                                              relief="flat", bd=0); self.tx38.pack(fill="x")
 
     def _row(self, parent, text, widget_builder):
         fr = ttk.Frame(parent); fr.pack(fill="x", pady=3)
@@ -381,7 +385,7 @@ class App:
 
     def _build_fw(self):
         f = ttk.Frame(self.tabFw)
-        canvas = tk.Canvas(self.tabFw, highlightthickness=0)
+        canvas = tk.Canvas(self.tabFw, highlightthickness=0, bg=MIL["bg"])
         sb = ttk.Scrollbar(self.tabFw, orient="vertical", command=canvas.yview)
         inner = ttk.Frame(canvas)
         inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -419,7 +423,7 @@ class App:
         self.cbRest = self._row(b4r, "Модель-еталон:", lambda fr: self._combo(fr, 18))
         ttk.Label(b4r, text="Пише genuine-еталон байт-у-байт з навченою калібровкою.\n"
                            "Нічого не обнуляє. Працює й на порожній/битій мікросхемі.",
-                  foreground="#357", justify="left").pack(anchor="w")
+                  foreground="#b9bd86", justify="left").pack(anchor="w")
         ttk.Button(b4r, text="🛠️ Відновити еталон (DS2433+DS2438)", command=self.restore_battery).pack(anchor="w", pady=2)
 
         b5 = ttk.LabelFrame(p, text="Заряд / здоров'я", padding=8); b5.pack(fill="x", pady=4)
@@ -463,29 +467,29 @@ class App:
         # Заголовок колонок (як у HxD): Offset | 16 байт (розбито по 8) | текст
         # padx/bd/highlightthickness заголовків = такі самі, як у Text-панелях
         # нижче, інакше адреси «з'їжджають» по горизонталі відносно "Offset(h)".
-        hdr = tk.Frame(f); hdr.pack(fill="x", pady=(6, 0))
-        tk.Label(hdr, text="Offset(h)", width=10, font=mono, anchor="w", fg="#2a7d4f",
+        hdr = tk.Frame(f, bg=MIL["bg"]); hdr.pack(fill="x", pady=(6, 0))
+        tk.Label(hdr, text="Offset(h)", width=10, font=mono, anchor="w", fg=MIL["olive"], bg=MIL["bg"],
                  padx=5, bd=0, highlightthickness=0).pack(side="left")
         tk.Label(hdr, text="00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F",
-                 font=mono, anchor="w", fg="#3a6d9a",
+                 font=mono, anchor="w", fg=MIL["khaki"], bg=MIL["bg"],
                  padx=5, bd=0, highlightthickness=0).pack(side="left")
-        tk.Label(hdr, text="Декодований текст", font=mono, anchor="w", fg="#7a5",
+        tk.Label(hdr, text="Декодований текст", font=mono, anchor="w", fg=MIL["olive"], bg=MIL["bg"],
                  padx=5, bd=0, highlightthickness=0).pack(side="left")
 
-        body = tk.Frame(f); body.pack(fill="both", expand=True)
+        body = tk.Frame(f, bg=MIL["bg"]); body.pack(fill="both", expand=True)
         self.hxSb = ttk.Scrollbar(body, orient="vertical", command=self._hx_yview)
         self.hxSb.pack(side="right", fill="y")
         self.hxGut = tk.Text(body, width=10, font=mono, wrap="none", padx=5, spacing1=0,
-                             bg="#eef1f4", fg="#2a6", relief="flat", bd=0, highlightthickness=0,
+                             bg="#12140d", fg=MIL["olive"], relief="flat", bd=0, highlightthickness=0,
                              state="disabled", cursor="arrow", takefocus=0)
         self.hxGut.pack(side="left", fill="y")
         self.hxHex = tk.Text(body, width=50, font=mono, wrap="none", padx=5,
                              relief="flat", bd=0, highlightthickness=0,
-                             bg="#ffffff", insertbackground="#111")
+                             bg=MIL["field"], fg=MIL["fg"], insertbackground=MIL["khaki"])
         self.hxHex.pack(side="left", fill="both", expand=True)
         self.hxAsc = tk.Text(body, width=18, font=mono, wrap="none", padx=5,
-                             bg="#f4f7fa", fg="#357", relief="flat", bd=0, highlightthickness=0,
-                             insertbackground="#111")
+                             bg="#12140d", fg="#b9bd86", relief="flat", bd=0, highlightthickness=0,
+                             insertbackground=MIL["khaki"])
         self.hxAsc.pack(side="left", fill="y")
         # Модель редактора: справжні байти. Обидві панелі (hex і текст) лише
         # ВІДОБРАЖАЮТЬ модель; правки йдуть у модель через перехоплення клавіш,
@@ -631,7 +635,9 @@ class App:
         return "break"
 
     def _build_log(self):
-        self.txLog = scrolledtext.ScrolledText(self.tabLog, font=("Consolas", 8)); self.txLog.pack(fill="both", expand=True)
+        self.txLog = scrolledtext.ScrolledText(self.tabLog, font=("Consolas", 8),
+                                               bg=MIL["field"], fg="#b9bd86", insertbackground=MIL["khaki"],
+                                               relief="flat", bd=0); self.txLog.pack(fill="both", expand=True)
 
     def _entry(self, parent, width, default=""):
         e = ttk.Entry(parent, width=width); e.pack(side="left")
@@ -1010,12 +1016,47 @@ class App:
                                  self.cmd(command + " " + hexs, 25.0, cb=lambda r: self._after_write(r, "✅ Записано"))))
 
 
+# Мілітарна тема НГУ: оливково-хакі поле + акцент «краповий» (maroon).
+MIL = dict(bg="#20241a", bg_dark="#14160f", fg="#e7e3d2", mut="#9a9c82",
+           line="#3b4230", field="#171a10", btn="#2c3222", btn_act="#3a4230",
+           maroon="#7d2230", olive="#6f8f3a", khaki="#c8b04a")
+
+def apply_military_theme(root):
+    try:
+        st = ttk.Style(); st.theme_use("clam")
+    except Exception:
+        return
+    m = MIL
+    root.configure(bg=m["bg_dark"])
+    root.option_add("*TCombobox*Listbox.background", m["field"])
+    root.option_add("*TCombobox*Listbox.foreground", m["fg"])
+    root.option_add("*TCombobox*Listbox.selectBackground", m["maroon"])
+    st.configure(".", background=m["bg"], foreground=m["fg"], fieldbackground=m["field"],
+                 bordercolor=m["line"], lightcolor=m["bg"], darkcolor=m["bg"],
+                 troughcolor=m["field"], focuscolor=m["maroon"])
+    st.configure("TFrame", background=m["bg"])
+    st.configure("TLabel", background=m["bg"], foreground=m["fg"])
+    st.configure("TLabelframe", background=m["bg"], bordercolor=m["line"])
+    st.configure("TLabelframe.Label", background=m["bg"], foreground=m["khaki"])
+    st.configure("TButton", background=m["btn"], foreground=m["fg"], bordercolor=m["line"], padding=5)
+    st.map("TButton", background=[("active", m["btn_act"]), ("pressed", m["maroon"])],
+           foreground=[("disabled", m["mut"])])
+    st.configure("TCheckbutton", background=m["bg"], foreground=m["fg"])
+    st.map("TCheckbutton", background=[("active", m["bg"])])
+    st.configure("TEntry", fieldbackground=m["field"], foreground=m["fg"], bordercolor=m["line"], insertcolor=m["fg"])
+    st.configure("TCombobox", fieldbackground=m["field"], foreground=m["fg"], background=m["btn"],
+                 bordercolor=m["line"], arrowcolor=m["khaki"])
+    st.map("TCombobox", fieldbackground=[("readonly", m["field"])])
+    st.configure("TProgressbar", background=m["olive"], troughcolor=m["field"], bordercolor=m["line"])
+    st.configure("TNotebook", background=m["bg_dark"], bordercolor=m["line"])
+    st.configure("TNotebook.Tab", background=m["btn"], foreground=m["mut"], padding=(12, 6))
+    st.map("TNotebook.Tab", background=[("selected", m["maroon"])], foreground=[("selected", "#ffffff")])
+    st.configure("TScrollbar", background=m["btn"], troughcolor=m["bg_dark"], bordercolor=m["line"], arrowcolor=m["khaki"])
+
+
 def main():
     root = tk.Tk()
-    try:
-        ttk.Style().theme_use("clam")
-    except Exception:
-        pass
+    apply_military_theme(root)
     App(root)
     root.mainloop()
 

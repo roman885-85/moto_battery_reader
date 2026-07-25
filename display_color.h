@@ -181,11 +181,13 @@ static bool g_wizBusy  = false;
 static char g_wizTop[48]  = "";
 static char g_wizNext[48] = "";
 
-// Анімація батареї (головна сторінка): фаза + попередня позиція «блику» +
-// прямокутник шкали (щоб малювати лише тонкі стовпці, не чіпаючи цифри %).
+// Анімація батареї (головна сторінка): фаза + прямокутник шкали + рамка цифр %.
+// displayAnimTick() «дихає» яскравістю всього заповнення, але НЕ чіпає рамку
+// цифр (g_pct*) — тож великий відсоток не блимає під час пульсації.
 static uint8_t g_animPhase = 0;
-static int g_animPrevX = -1;
+static int g_animPrevX = -1;                 // (сумісність; більше не використ.)
 static int g_battX = 0, g_battY = 0, g_battW = 0, g_battH = 0;
+static int g_pctTx = 0, g_pctTy = 0, g_pctTw = 0, g_pctTh = 0;   // рамка цифр %
 
 inline void displayRender();   // визначення нижче
 
@@ -466,15 +468,17 @@ inline void displaySplash() {
 inline void displayIntro() {
     displaySplash();                         // малюнок готовий (підсвітка ще 0)
 #ifdef DISPLAY_BLK_PIN
-    for (int b = 0; b <= 255; b += 10) { analogWrite(DISPLAY_BLK_PIN, b); delay(16); }
+    // Плавно піднімаємо підсвітку ОДИН раз і ЗАЛИШАЄМО заставку світитись — вона
+    // тримається на екрані впродовж усієї ініціалізації (Wi-Fi/SPIFFS/веб), як
+    // логотип завантаження. НЕ гасимо назад у чорне: інакше вийшло б два спалахи
+    // (заставка «зазвучувалась» двічі — при появі та вдруге при вході в меню).
+    for (int b = 0; b <= 255; b += 8) { analogWrite(DISPLAY_BLK_PIN, b); delay(14); }
     analogWrite(DISPLAY_BLK_PIN, 255);
-    delay(1300);
-    for (int b = 255; b >= 0; b -= 10) { analogWrite(DISPLAY_BLK_PIN, b < 0 ? 0 : b); delay(12); }
-    analogWrite(DISPLAY_BLK_PIN, 0);
+    // Далі керування повертається у setup(); плавний перехід до меню робить
+    // displayFadeInMain() коротким «дипом» яскравості (без повного затемнення).
 #else
-    delay(2200);                             // без керування BLK — просто пауза
+    delay(1600);                             // без керування BLK — просто пауза
 #endif
-    tft.fillScreen(C_BG);                    // чорно перед входом у меню (підсвітка 0)
 }
 
 // Плавний вхід у головне меню наприкінці setup().
@@ -500,11 +504,14 @@ inline void drawPageMain() {
     {
         int cw = 6 * BIG_TSIZE * (int)strlen(buf);   // ширина рядка GFX-шрифтом
         int ch = 8 * BIG_TSIZE;
+        int tx = bx + (bw - cw) / 2, ty = by + (bh - ch) / 2;
         tft.setTextColor(C_TEXT);
         tft.setTextSize(BIG_TSIZE);
-        tft.setCursor(bx + (bw - cw) / 2, by + (bh - ch) / 2);
+        tft.setCursor(tx, ty);
         tft.print(buf);
         tft.setTextSize(1);
+        // Рамка цифр (+1 px поле) — анімація пульсації заповнення її оминає.
+        g_pctTx = tx - 1; g_pctTy = ty - 1; g_pctTw = cw + 2; g_pctTh = ch + 2;
     }
     // Джерело показника (ICA/volt).
     tSet(FONT_SMALL, C_MUTED);
@@ -803,6 +810,24 @@ inline uint16_t lighten565(uint16_t c, uint8_t amt) {
 // смуга шкали (СТРОГО над цифрами %, тож текст не чіпається) плавно «дихає» —
 // яскравість коливається між кольором заряду і світлішим відтінком. Малюємо
 // лише цю смугу — дешево по SPI, решту сторінки не чіпаємо.
+// Заповнити прямокутник R кольором col, ОМИНАЮЧИ рамку тексту T (перетин R∩T не
+// малюємо) — до 4 смуг. Так пульсуємо все заповнення, не торкаючись цифр %.
+inline void fillRectExcept(int rx, int ry, int rw, int rh,
+                           int tx, int ty, int tw, int th, uint16_t col) {
+    int rx1 = rx + rw, ry1 = ry + rh;
+    int cx0 = tx > rx ? tx : rx,   cy0 = ty > ry ? ty : ry;      // перетин R∩T
+    int cx1 = (tx + tw) < rx1 ? (tx + tw) : rx1;
+    int cy1 = (ty + th) < ry1 ? (ty + th) : ry1;
+    if (cx0 >= cx1 || cy0 >= cy1) { tft.fillRect(rx, ry, rw, rh, col); return; }
+    if (cy0 > ry)  tft.fillRect(rx, ry, rw, cy0 - ry, col);              // над T
+    if (ry1 > cy1) tft.fillRect(rx, cy1, rw, ry1 - cy1, col);            // під T
+    if (cx0 > rx)  tft.fillRect(rx, cy0, cx0 - rx, cy1 - cy0, col);      // ліворуч T
+    if (rx1 > cx1) tft.fillRect(cx1, cy0, rx1 - cx1, cy1 - cy0, col);    // праворуч T
+}
+
+// Тік анімації батареї (з loop() ~9 разів/с). ПУЛЬСАЦІЯ ЗАПОВНЕННЯ: усе залите
+// поле шкали плавно «дихає» яскравістю (колір заряду <-> світліший відтінок),
+// оминаючи рамку цифр % (щоб текст не блимав). Період ~3.5 с — м'яко.
 inline void displayAnimTick() {
     if (g_displayPage != 0 || g_battW == 0) return;
     const char *src; int pct = batteryPercent(&src);
@@ -810,12 +835,11 @@ inline void displayAnimTick() {
     uint16_t col = chargeColor(pct);
     int fw = (g_battW - 6) * pct / 100;
     if (fw < 4) return;
-    int sy = g_battY + 4;
-    int sh = (g_battH - 8) / 4; if (sh > 8) sh = 8;      // над цифрами %
-    int p = g_animPhase & 15;                             // період 16 кадрів (~1.8 с)
-    int tri = (p < 8) ? p : (16 - p);                    // 0..8..0 (трикутна хвиля)
-    uint16_t c = lighten565(col, (uint8_t)(tri * 18));   // 0..144 у бік білого
-    tft.fillRect(g_battX + 3, sy, fw, sh, c);
+    int fx = g_battX + 3, fy = g_battY + 3, fh = g_battH - 6;
+    int p = g_animPhase & 31;                             // період 32 кадри (~3.5 с)
+    int tri = (p < 16) ? p : (32 - p);                   // 0..16..0 (трикутна хвиля)
+    uint16_t c = lighten565(col, (uint8_t)(tri * 7));    // 0..112 у бік білого
+    fillRectExcept(fx, fy, fw, fh, g_pctTx, g_pctTy, g_pctTw, g_pctTh, c);
     g_animPhase++;
 }
 
@@ -823,11 +847,19 @@ inline void displayAnimTick() {
 // підсвіткою і плавно піднімаємо ШІМ до повної яскравості.
 inline void displayFadeInMain() {
     g_displayPage = 0;
+#ifdef DISPLAY_BLK_PIN
+    // Заставка ще світиться (255). Робимо ОДИН плавний «дип»: пригашуємо, під
+    // приглушеним світлом перемальовуємо на головне меню (щоб не було видно
+    // самого перемальовування), і плавно повертаємо повну яскравість. Жодного
+    // повного затемнення й другого спалаху — м'який кросфейд заставка -> меню.
+    for (int b = 255; b >= 40; b -= 12) { analogWrite(DISPLAY_BLK_PIN, b); delay(12); }
     tft.fillScreen(C_BG);
     displayRender();
-#ifdef DISPLAY_BLK_PIN
-    for (int b = 0; b <= 255; b += 10) { analogWrite(DISPLAY_BLK_PIN, b); delay(14); }
+    for (int b = 40; b <= 255; b += 10) { analogWrite(DISPLAY_BLK_PIN, b); delay(12); }
     analogWrite(DISPLAY_BLK_PIN, 255);
+#else
+    tft.fillScreen(C_BG);
+    displayRender();
 #endif
 }
 

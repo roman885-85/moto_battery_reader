@@ -20,18 +20,32 @@
 
 // ⚠️ ЛИШЕ пасивний П'ЄЗО-буззер (споживає мкА) можна вмикати ПРЯМО на GPIO.
 // ДИНАМІК (котушка 4–8 Ом) напряму НЕ підключати: tone() дасть ~0.4 А, GPIO
-// віддає ~20–40 мА -> просадка живлення -> brownout-reset (дисплей «не працює»,
-// бо ESP32 циклічно перезавантажується). Динамік — лише через транзистор + ~100 Ом.
+// віддає ~20–40 мА -> просадка живлення -> brownout-reset. Динамік — лише через
+// транзистор + ~100 Ом.
 //
-// Тони НЕблокуючі (tone() із тривалістю на ESP32 сам зупиняється; жодних delay(),
-// щоб не стопорити loop/веб) і короткі (менший струм).
+// НЕблокуючий тон БЕЗ delay() і БЕЗ ненадійного на ESP32 варіанта
+// tone(pin,freq,duration): запускаємо безперервний tone(pin,freq), а вимикаємо
+// noTone(pin) за таймером у buzzTask() (виклик щоцикл із ledTask()). Так тони
+// достатньо довгі, щоб їх було ЧУТНО (5 мс «клік» був фактично беззвучний), і
+// водночас loop/веб не блокуються.
 #ifdef BUZZER_PIN
-inline void buzzInit()  { pinMode(BUZZER_PIN, OUTPUT); }
-inline void buzzClick() { tone(BUZZER_PIN, 2300, 5);   }   // перемикання меню
-inline void buzzStart() { tone(BUZZER_PIN, 1200, 25);  }   // початок операції
-inline void buzzOk()    { tone(BUZZER_PIN, 2200, 120); }   // успіх (короткий високий)
-inline void buzzErr()   { tone(BUZZER_PIN, 350, 300);  }   // помилка (низький)
+static unsigned long g_buzzOff = 0;             // millis(), коли гасити тон (0 = вимк.)
+
+inline void buzzTask() {
+    if (g_buzzOff && (long)(millis() - g_buzzOff) >= 0) { noTone(BUZZER_PIN); g_buzzOff = 0; }
+}
+inline void buzzTone(unsigned int f, unsigned int d) {
+    tone(BUZZER_PIN, f);                         // безперервний тон...
+    g_buzzOff = millis() + d;                    // ...гасимо через d мс у buzzTask()
+    if (g_buzzOff == 0) g_buzzOff = 1;           // millis()==... : 0 зарезервовано під «вимк.»
+}
+inline void buzzInit()  { pinMode(BUZZER_PIN, OUTPUT); noTone(BUZZER_PIN); }
+inline void buzzClick() { buzzTone(2300, 30);  }   // перемикання меню (короткий «тік»)
+inline void buzzStart() { buzzTone(1200, 70);  }   // початок операції
+inline void buzzOk()    { buzzTone(2200, 160); }   // успіх (короткий високий)
+inline void buzzErr()   { buzzTone(350, 350);  }   // помилка (довгий низький)
 #else
+inline void buzzTask()  {}
 inline void buzzInit()  {}
 inline void buzzClick() {}
 inline void buzzStart() {}

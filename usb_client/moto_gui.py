@@ -273,6 +273,13 @@ class App:
         self.eInitMah = self._row(b4, "Ємність, мА·год:", lambda fr: self._entry(fr, 10, "2500"))
         ttk.Button(b4, text="🆕 Записати новий АКБ (DS2433+DS2438)", command=self.init_battery).pack(anchor="w", pady=2)
 
+        b4r = ttk.LabelFrame(p, text="🛠️ Відновити еталон (ремонт з нуля, verbatim)", padding=8); b4r.pack(fill="x", pady=4)
+        self.cbRest = self._row(b4r, "Модель-еталон:", lambda fr: self._combo(fr, 18))
+        ttk.Label(b4r, text="Пише genuine-еталон байт-у-байт з навченою калібровкою.\n"
+                           "Нічого не обнуляє. Працює й на порожній/битій мікросхемі.",
+                  foreground="#357", justify="left").pack(anchor="w")
+        ttk.Button(b4r, text="🛠️ Відновити еталон (DS2433+DS2438)", command=self.restore_battery).pack(anchor="w", pady=2)
+
         b5 = ttk.LabelFrame(p, text="Заряд / здоров'я", padding=8); b5.pack(fill="x", pady=4)
         self.eMah = self._row(b5, "Заряд, мА·год:", lambda fr: self._entry(fr, 10, "0"))
         ttk.Button(b5, text="💾 Записати мА·год", command=self.set_mah).pack(anchor="w", pady=2)
@@ -312,24 +319,31 @@ class App:
         ttk.Button(bar, text="⚡ Записати байти", command=self.hx_write).pack(side="left", padx=3)
 
         # Заголовок колонок (як у HxD): Offset | 16 байт (розбито по 8) | текст
+        # padx/bd/highlightthickness заголовків = такі самі, як у Text-панелях
+        # нижче, інакше адреси «з'їжджають» по горизонталі відносно "Offset(h)".
         hdr = tk.Frame(f); hdr.pack(fill="x", pady=(6, 0))
-        tk.Label(hdr, text="Offset(h) ", width=10, font=mono, anchor="w", fg="#2a7d4f").pack(side="left")
-        tk.Label(hdr, text="00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F ",
-                 font=mono, anchor="w", fg="#3a6d9a").pack(side="left")
-        tk.Label(hdr, text=" Декодований текст", font=mono, anchor="w", fg="#7a5").pack(side="left")
+        tk.Label(hdr, text="Offset(h)", width=10, font=mono, anchor="w", fg="#2a7d4f",
+                 padx=5, bd=0, highlightthickness=0).pack(side="left")
+        tk.Label(hdr, text="00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F",
+                 font=mono, anchor="w", fg="#3a6d9a",
+                 padx=5, bd=0, highlightthickness=0).pack(side="left")
+        tk.Label(hdr, text="Декодований текст", font=mono, anchor="w", fg="#7a5",
+                 padx=5, bd=0, highlightthickness=0).pack(side="left")
 
         body = tk.Frame(f); body.pack(fill="both", expand=True)
         self.hxSb = ttk.Scrollbar(body, orient="vertical", command=self._hx_yview)
         self.hxSb.pack(side="right", fill="y")
         self.hxGut = tk.Text(body, width=10, font=mono, wrap="none", padx=5, spacing1=0,
-                             bg="#eef1f4", fg="#2a6", relief="flat", state="disabled", cursor="arrow",
-                             takefocus=0)
+                             bg="#eef1f4", fg="#2a6", relief="flat", bd=0, highlightthickness=0,
+                             state="disabled", cursor="arrow", takefocus=0)
         self.hxGut.pack(side="left", fill="y")
         self.hxHex = tk.Text(body, width=50, font=mono, wrap="none", padx=5,
-                             relief="flat", bg="#ffffff", insertbackground="#111")
+                             relief="flat", bd=0, highlightthickness=0,
+                             bg="#ffffff", insertbackground="#111")
         self.hxHex.pack(side="left", fill="both", expand=True)
         self.hxAsc = tk.Text(body, width=18, font=mono, wrap="none", padx=5,
-                             bg="#f4f7fa", fg="#357", relief="flat", insertbackground="#111")
+                             bg="#f4f7fa", fg="#357", relief="flat", bd=0, highlightthickness=0,
+                             insertbackground="#111")
         self.hxAsc.pack(side="left", fill="y")
         # Модель редактора: справжні байти. Обидві панелі (hex і текст) лише
         # ВІДОБРАЖАЮТЬ модель; правки йдуть у модель через перехоплення клавіш,
@@ -665,6 +679,25 @@ class App:
         self.maybe_auth(lambda: (self.status("Запис нового АКБ..."),
                                  self.cmd(f"INITBAT {model} {mah}", 25.0, cb=lambda r: self._after_write(r, f"✅ Новий {model} записано"))))
 
+    def restore_battery(self):
+        if not self.need_conn():
+            return
+        model = self.cbRest.get()
+        if not model:
+            messagebox.showwarning("Модель", "Оберіть модель-еталон"); return
+        if not messagebox.askyesno("Відновити еталон",
+                f"Відновити еталон {model} БАЙТ-У-БАЙТ?\nПерезапише ОБИДВІ мікросхеми точною genuine-копією "
+                f"(з навченою калібровкою). Працює й на порожньому/битому чипі."):
+            return
+        def done(r):
+            if isinstance(r, dict) and r.get("ok"):
+                both = r.get("ds2438")
+                self._after_write(r, f"✅ Еталон {model} відновлено" + (" (DS2433+DS2438)" if both else " (лише DS2433)"))
+            else:
+                self._after_write(r, "")
+        self.maybe_auth(lambda: (self.status("Відновлення еталона..."),
+                                 self.cmd(f"RESTORE {model}", 25.0, cb=done)))
+
     def set_mah(self):
         if not self.need_conn():
             return
@@ -760,9 +793,10 @@ class App:
 
     def _apply_templates(self, r):
         models = r.get("models", []) if r.get("ok") else []
-        self.cbInit["values"] = models
-        if models and not self.cbInit.get():
-            self.cbInit.current(0)
+        for cb in (self.cbInit, self.cbRest):
+            cb["values"] = models
+            if models and not cb.get():
+                cb.current(0)
 
     def save_dump(self, getcmd, size, default):
         if not self.need_conn():

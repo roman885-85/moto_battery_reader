@@ -37,6 +37,26 @@ python tools/make_color_splash.py logo.png --bg 001B3A       # колір фон
 Покладіть згенерований `custom_splash.h` у папку скетчу і ввімкніть у
 `settings.h`:  `#define DISPLAY_SPLASH_CUSTOM`. Заставка малюється по центру.
 
+## Розбір і звірка дампів (`decode_dump.py`)
+
+Анотований розбір дампа IMPRES-чіпа й побайтова звірка «еталон vs клон».
+Перевіряє ті самі інваріанти, що й прошивка: заголовок DS2433 Σ≡0x41,
+TLV-записи Σ≡0x5A, дзеркало DS2438[24:50]↔DS2433[1:27], ємність (запис 0x17+21),
+ETM/ICA/CCA/DCA у DS2438.
+
+```bash
+# Розбір дампа (DS2438 — необов'язковий)
+python tools/decode_dump.py dump33.bin dump38.bin
+
+# Витягти вшитий еталон із templates.h у .bin (для звірки клонів)
+python tools/decode_dump.py --template PMNN4409B --out ref
+#   -> ref_33.bin (512) + ref_38.bin (64)
+
+# Побайтова звірка: «●» — розбіжність в ідентичності/калібруванні (важливо),
+#                   «○» — лічильники/живі виміри (норма після скидання)
+python tools/decode_dump.py ref_33.bin ref_38.bin --diff clone33.bin clone38.bin
+```
+
 ## Готовий нейтральний варіант
 
 `tools/make_splash.py` можна нагодувати будь-якою картинкою. Приклад згенерованої

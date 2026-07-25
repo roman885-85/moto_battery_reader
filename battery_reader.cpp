@@ -51,13 +51,25 @@ bool BatteryReader::findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr) {
     // Search, хоча при ЧИТАННІ щойно знаходився — звідси "DS2438 not found for
     // writing". Якщо ми вже бачили ROM цього чипа — беремо його з кешу й
     // адресуємо за Match ROM (select), що надійніше за Search.
-    if (!found2433 && _haveRom2433) {
-        memcpy(ds2433_addr, _rom2433, 8); found2433 = true;
-        Serial.println("DS2433: using cached ROM");
-    }
-    if (!found2438 && _haveRom2438) {
-        memcpy(ds2438_addr, _rom2438, 8); found2438 = true;
-        Serial.println("DS2438: using cached ROM");
+    //
+    // АЛЕ: кеш беремо ЛИШЕ якщо на шині фізично Є пристрій (presence-pulse після
+    // reset). Інакше при ВІД'ЄДНАНОМУ АКБ ми б адресували неіснуючий чіп за старим
+    // ROM, «прочитали» порожню шину (усі 0xFF) і вдавали успішне читання чистого
+    // чіпа. Presence-pulse відрізняє «АКБ на місці (навіть стертий)» від «АКБ немає».
+    if ((!found2433 && _haveRom2433) || (!found2438 && _haveRom2438)) {
+        bool present = (_ow->reset() != 0);   // 1 = хтось відповів на шині
+        if (present) {
+            if (!found2433 && _haveRom2433) {
+                memcpy(ds2433_addr, _rom2433, 8); found2433 = true;
+                Serial.println("DS2433: using cached ROM");
+            }
+            if (!found2438 && _haveRom2438) {
+                memcpy(ds2438_addr, _rom2438, 8); found2438 = true;
+                Serial.println("DS2438: using cached ROM");
+            }
+        } else {
+            Serial.println("1-Wire: no presence pulse -> bus empty, cached ROM NOT used");
+        }
     }
 
     // Вимикаємо підтяжку, якщо не знайшли ні жодного пристрою

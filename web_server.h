@@ -138,19 +138,25 @@ bool readAllChips(bool &ok2433, bool &ok2438) {
     ledSet(LED_READ);
     displayShow("ЗЧИТУВАННЯ...");
 
-    memset(batteryDump, 0, DUMP_SIZE);
-    memset(batteryDump2438, 0, DS2438_MEM_SIZE);
+    // Читаємо в ТИМЧАСОВІ буфери й застосовуємо лише при УСПІХУ: невдале читання
+    // (напр. АКБ від'єднано) не повинно затирати попередній добрий дамп у пам'яті.
+    static uint8_t tmp33[DUMP_SIZE];
+    static uint8_t tmp38[DS2438_MEM_SIZE];
+    memset(tmp33, 0, DUMP_SIZE);
+    memset(tmp38, 0, DS2438_MEM_SIZE);
 
     // DS2433 — основний дамп (512 байт).
-    ok2433 = battery.readBattery(batteryDump, DUMP_SIZE);
+    ok2433 = battery.readBattery(tmp33, DUMP_SIZE);
     if (ok2433) {
+        memcpy(batteryDump, tmp33, DUMP_SIZE);
         hasDump = true;
         saveDump("/dump.bin", batteryDump, DUMP_SIZE);
     }
 
     // DS2438 — монітор батареї (64 байта).
-    ok2438 = battery.readDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    ok2438 = battery.readDS2438(tmp38, DS2438_MEM_SIZE);
     if (ok2438) {
+        memcpy(batteryDump2438, tmp38, DS2438_MEM_SIZE);
         hasDump2438 = true;
         saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
     }

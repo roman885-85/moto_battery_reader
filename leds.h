@@ -57,6 +57,7 @@ inline void ledSet(LedMode m) {
 
 // Викликати часто з loop(). Реалізує патерни блимань по millis().
 inline void ledTask() {
+    buzzTask();                 // неблокуюче гасіння звукового тону за таймером
     unsigned long now = millis();
     switch (g_ledMode) {
         case LED_BOOT:

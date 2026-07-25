@@ -148,6 +148,20 @@ static void serSetMah(const String &arg) {
     sResp(ok ? (String("{\"ok\":true,\"ica\":") + ica + "}") : "{\"ok\":false,\"err\":\"write failed\"}");
 }
 
+// Рівень заряду: arg=="auto" — з напруги (7.0В=0%..8.4В=100%); інакше pct 0..100.
+static void serSetCharge(const String &arg) {
+    if (!hasDump2438) { sResp("{\"ok\":false,\"err\":\"read first\"}"); return; }
+    int pct;
+    if (arg == "auto" || arg == "AUTO") pct = chargePctFromVoltage();
+    else pct = arg.toInt();
+    ledSet(LED_WRITE); displayShow("USB ЗАРЯД");
+    bool ok = performSetChargePct(pct);
+    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+    ledSet(ok ? LED_OK : LED_ERROR); displayShow(ok ? "ЗАРЯД OK" : "ЗАРЯД ЗБІЙ");
+    sResp(ok ? (String("{\"ok\":true,\"pct\":") + pct + ",\"ica\":" + batteryDump2438[12] + "}")
+             : "{\"ok\":false,\"err\":\"write failed\"}");
+}
+
 static void serSetCap(const String &arg) {
     if (!hasDump) { sResp("{\"ok\":false,\"err\":\"read first\"}"); return; }
     int cap = arg.toInt(); if (cap < 0) cap = 0; if (cap > 100) cap = 100;
@@ -204,6 +218,7 @@ static void serialExec(const String &line) {
                                          sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"write failed\"}"); } }
     else if (cmd == "SETCAP")     serSetCap(arg);
     else if (cmd == "SETMAH")     serSetMah(arg);
+    else if (cmd == "SETCHG")     serSetCharge(arg);
     else if (cmd == "SETETM")   { if (!hasDump2438) { sResp("{\"ok\":false,\"err\":\"read first\"}"); }
                                   else { uint32_t sec = (uint32_t)strtoul(arg.c_str(), nullptr, 10);
                                          batteryDump2438[8]=sec&0xFF; batteryDump2438[9]=(sec>>8)&0xFF;

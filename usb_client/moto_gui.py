@@ -278,6 +278,11 @@ class App:
         ttk.Button(b5, text="💾 Записати мА·год", command=self.set_mah).pack(anchor="w", pady=2)
         self.eCap = self._row(b5, "Ємність/здоров'я, %:", lambda fr: self._entry(fr, 10, "100"))
         ttk.Button(b5, text="💾 Записати %", command=self.set_cap).pack(anchor="w", pady=2)
+        # Рівень заряду з напруги (7.0В=0%..8.4В=100%) або вручну %.
+        self.eChg = self._row(b5, "Заряд, %:", lambda fr: self._entry(fr, 10, ""))
+        cf = ttk.Frame(b5); cf.pack(anchor="w", pady=2)
+        ttk.Button(cf, text="⚡ Заряд по напрузі (авто)", command=self.set_charge_auto).pack(side="left", padx=2)
+        ttk.Button(cf, text="💾 Записати заряд %", command=self.set_charge_pct).pack(side="left", padx=2)
 
         b5c = ttk.LabelFrame(p, text="Дата першого використання (рація рахує як «час − ETM»)", padding=8); b5c.pack(fill="x", pady=4)
         self.eEtmDate = self._row(b5c, "Дата (YYYY-MM-DD):", lambda fr: self._entry(fr, 12))
@@ -670,6 +675,26 @@ class App:
         if not messagebox.askyesno("Заряд", f"Записати залишкову ємність {v} мА·год?"):
             return
         self.maybe_auth(lambda: self.cmd(f"SETMAH {v}", 15.0, cb=lambda r: self._after_write(r, "✅ Записано")))
+
+    def set_charge_auto(self):
+        if not self.need_conn():
+            return
+        if not messagebox.askyesno("Заряд", "Виставити рівень заряду з поточної напруги?\n(7.0 В = 0%, 8.4 В = 100%; зарядка потім уточнить)"):
+            return
+        self.maybe_auth(lambda: self.cmd("SETCHG auto", 15.0,
+            cb=lambda r: self._after_write(r, f"✅ Заряд {r.get('pct','?')}% (ICA {r.get('ica','?')})")))
+
+    def set_charge_pct(self):
+        if not self.need_conn():
+            return
+        try:
+            v = int(self.eChg.get())
+        except ValueError:
+            messagebox.showwarning("Заряд %", "Вкажіть 0..100"); return
+        if v < 0 or v > 100:
+            messagebox.showwarning("Заряд %", "0..100"); return
+        self.maybe_auth(lambda: self.cmd(f"SETCHG {v}", 15.0,
+            cb=lambda r: self._after_write(r, f"✅ Заряд {v}%")))
 
     def set_cap(self):
         if not self.need_conn():

@@ -883,6 +883,7 @@ inline int displayConsumeWizRequest() { int r = g_wizReq; g_wizReq = 0; return r
 // Плавний перехід між сторінками меню: короткий «дип» яскравості (crossfade
 // старий->новий вміст). Деградує коректно, якщо контраст не підтримується.
 inline void displayFlip() {
+    buzzClick();                                 // звуковий клік перемикання
     int lo = DISP_BRIGHT / 3;
     for (int c = DISP_BRIGHT; c > lo; c -= 24) u8g2.setContrast(c < 0 ? 0 : c), delay(5);
     displayRender();
@@ -964,23 +965,32 @@ inline void displayHandleButton() {
     }
 
     int e2 = pollButton(MENU_BTN2_PIN, b2, 800);
+    // У 3-кнопковому режимі виконання/крок робить BTN3 (OK/Дія), тож BTN2 НЕ
+    // дублює їх — лишається лише навігація/вибір (інакше «одна кнопка робить те
+    // саме, що третя»).
     if (g_displayPage == RESET_PAGE) {               // сторінка «Дії»
         if (e2 == 1) {                               // коротке -> наступна операція
             g_actionSel = (g_actionSel + 1) % numActions();
             displayRender();
-        } else if (e2 == 2) {                        // довге -> виконати обране
+        }
+#ifndef MENU_BTN3_PIN
+        else if (e2 == 2) {                          // довге -> виконати обране
             g_actionRequested = g_actionSel;
             displaySetStatus("ВИКОНУЮ...");
             displayRender();
         }
+#endif
     } else if (g_displayPage == WIZARD_PAGE) {       // сторінка Майстра
         if (e2 == 1) {                               // коротке -> аналіз
             g_wizReq = 1; g_wizBusy = true;
             displaySetStatus("АНАЛІЗ..."); displayRender();
-        } else if (e2 == 2) {                        // довге -> виконати наступний крок
+        }
+#ifndef MENU_BTN3_PIN
+        else if (e2 == 2) {                          // довге -> виконати наступний крок
             g_wizReq = 2; g_wizBusy = true;
             displaySetStatus("ВИКОНУЮ..."); displayRender();
         }
+#endif
     } else if (e2 == 1) {                            // інші сторінки: коротке -> назад
         g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
         displayFlip();

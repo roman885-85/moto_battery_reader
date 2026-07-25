@@ -196,6 +196,29 @@ class App:
         self._build_hex()
         self._build_log()
 
+    def _scroll_area(self, tab):
+        """Прокручувана область у вкладці (щоб кнопки внизу не ховались за краєм).
+        Прокрутка коліщатком миші активна, поки курсор над цією вкладкою."""
+        canvas = tk.Canvas(tab, highlightthickness=0, bg=MIL["bg"])
+        sb = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        win = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left", fill="both", expand=True); sb.pack(side="right", fill="y")
+
+        def _wheel(e):
+            d = -1 if (getattr(e, "delta", 0) > 0 or getattr(e, "num", 0) == 4) else 1
+            canvas.yview_scroll(d * 3, "units")
+        canvas.bind("<Enter>", lambda e: (canvas.bind_all("<MouseWheel>", _wheel),
+                                          canvas.bind_all("<Button-4>", _wheel),
+                                          canvas.bind_all("<Button-5>", _wheel)))
+        canvas.bind("<Leave>", lambda e: (canvas.unbind_all("<MouseWheel>"),
+                                          canvas.unbind_all("<Button-4>"),
+                                          canvas.unbind_all("<Button-5>")))
+        return inner
+
     def _kv(self, parent, label, r):
         ttk.Label(parent, text=label).grid(row=r, column=0, sticky="w", pady=2)
         v = ttk.Label(parent, text="—", font=("Segoe UI", 10, "bold"))
@@ -217,7 +240,7 @@ class App:
         self.ovInteg = self._kv(box, "Цілісність:", 7)
 
     def _build_wizard(self):
-        f = self.tabWiz
+        f = self._scroll_area(self.tabWiz)
         top = ttk.Frame(f); top.pack(fill="x")
         ttk.Label(top, text="🧙 Майстер відновлення", font=("Segoe UI", 11, "bold")).pack(side="left")
         ttk.Button(top, text="🔍 Аналізувати", command=self.wiz_analyze).pack(side="right", padx=3)
@@ -430,15 +453,7 @@ class App:
         return widget_builder(fr)
 
     def _build_fw(self):
-        f = ttk.Frame(self.tabFw)
-        canvas = tk.Canvas(self.tabFw, highlightthickness=0, bg=MIL["bg"])
-        sb = ttk.Scrollbar(self.tabFw, orient="vertical", command=canvas.yview)
-        inner = ttk.Frame(canvas)
-        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw", width=700)
-        canvas.configure(yscrollcommand=sb.set)
-        canvas.pack(side="left", fill="both", expand=True); sb.pack(side="right", fill="y")
-        p = inner
+        p = self._scroll_area(self.tabFw)
 
         b1 = ttk.LabelFrame(p, text="Резервна копія (спочатку!)", padding=8); b1.pack(fill="x", pady=4)
         ttk.Button(b1, text="🔍 Зчитати АКБ", command=self.do_read).pack(side="left", padx=3)

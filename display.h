@@ -21,8 +21,10 @@ extern bool hasSN2438;
 //   4 - сирий дамп DS2438 (hex)
 //   5 - сирий дамп DS2433 (перші 64/128 байт — за висотою екрана, hex)
 //   6 - дії з АКБ (скидання / ремонт / очистка)
-#define NUM_DISPLAY_PAGES 7
+//   7 - Майстер відновлення (аналіз/проблеми/крок)
+#define NUM_DISPLAY_PAGES 8
 #define RESET_PAGE        6   // сторінка «Дії» (історична назва константи)
+#define WIZARD_PAGE       7   // сторінка Майстра відновлення
 
 // ========================================================================
 // Кольоровий TFT (ST7789VW 240x240 / ST7789V3 240x280) — окрема реалізація
@@ -196,6 +198,17 @@ static bool g_readRequested = false;       // запит повторного ч
 // Сторінка «Дії»: вибір операції (BTN2 коротко) + виконання (BTN2 довго).
 static int  g_actionSel = 0;               // 0=Скидання 1=Ремонт 2=Очистка
 static int  g_actionRequested = -1;        // -1 нема; інакше — обрана дія для .ino
+
+// Екранний Майстер відновлення. Рендер (тут) читає ці глобали; заповнює їх
+// wizDeviceRefresh() з recovery.h, а .ino оркеструє (читання/крок).
+static int  g_wizReq      = 0;             // запит для .ino: 0 нема, 1 аналіз, 2 крок
+static int  g_wizProblems = -1;            // -1 ще не аналізовано; інакше к-сть проблем
+static bool g_wizHealthy  = false;         // усе гаразд, відновлення не треба
+static int  g_wizProg = 0, g_wizTotal = 0; // прогрес плану
+static bool g_wizAwait = false;            // чекаємо повернення з зарядної станції
+static bool g_wizBusy  = false;            // виконується крок (анімація)
+static char g_wizTop[48]  = "";            // топ-проблема (людською)
+static char g_wizNext[48] = "";            // назва наступного кроку
 
 inline void displayRender(); // визначення нижче
 
@@ -805,6 +818,40 @@ inline void drawPageActions() {
     u8g2.drawUTF8(0, FOOT_Y, "[<]вибір трим=пуск");
 }
 
+// Сторінка Майстра відновлення: аналіз стану -> проблеми -> наступний крок.
+// Дані готує wizDeviceRefresh() (recovery.h); тут лише малюємо.
+inline void drawPageWizard() {
+    drawHeader("Майстер");
+    u8g2.setFont(BODY_FONT);
+    int y = HEAD_LINE + 12;
+    if (g_wizBusy) {
+        u8g2.drawUTF8(0, y, "Виконую...");
+    } else if (g_wizProblems < 0) {
+        u8g2.drawUTF8(0, y,      "Аналіз стану АКБ.");
+        u8g2.drawUTF8(0, y + 11, "[<] коротко = аналіз");
+    } else if (g_wizHealthy) {
+        u8g2.setFont(u8g2_font_6x12_t_cyrillic);
+        u8g2.drawUTF8(0, y + 2,  "OK: справна");
+        u8g2.setFont(BODY_FONT);
+        u8g2.drawUTF8(0, y + 16, "Відновлення не треба");
+    } else {
+        char b[28]; snprintf(b, sizeof(b), "Проблем: %d", g_wizProblems);
+        u8g2.drawUTF8(0, y, b);
+        u8g2.drawUTF8(0, y + 10, g_wizTop);
+        if (g_wizAwait) {
+            u8g2.drawUTF8(0, y + 22, "Чекаю ЗП. Поверніть");
+            u8g2.drawUTF8(0, y + 32, "АКБ, [<] трим.");
+        } else {
+            char n[44]; snprintf(n, sizeof(n), "Далі: %s", g_wizNext);
+            u8g2.drawUTF8(0, y + 22, n);
+            char p[20]; snprintf(p, sizeof(p), "Крок %d/%d", g_wizProg + 1, g_wizTotal);
+            u8g2.drawUTF8(0, y + 32, p);
+        }
+    }
+    u8g2.drawHLine(0, FOOT_HL, DISP_W);
+    u8g2.drawUTF8(0, FOOT_Y, "[<]кор=аналіз трим=крок");
+}
+
 // ---------- рендер і кнопка ----------
 
 inline void displayRender() {
@@ -817,9 +864,23 @@ inline void displayRender() {
         case 4:  drawPageRaw2438();  break;
         case 5:  drawPageRaw2433();  break;
         case 6:  drawPageActions();  break;
+        case 7:  drawPageWizard();   break;
         default: drawPageMain();     break;
     }
     u8g2.sendBuffer();
+}
+
+// Повертає запит Майстра для .ino один раз: 0 нема, 1 аналіз, 2 наступний крок.
+inline int displayConsumeWizRequest() { int r = g_wizReq; g_wizReq = 0; return r; }
+
+// Плавний перехід між сторінками меню: короткий «дип» яскравості (crossfade
+// старий->новий вміст). Деградує коректно, якщо контраст не підтримується.
+inline void displayFlip() {
+    int lo = DISP_BRIGHT / 3;
+    for (int c = DISP_BRIGHT; c > lo; c -= 24) u8g2.setContrast(c < 0 ? 0 : c), delay(5);
+    displayRender();
+    for (int c = lo; c < DISP_BRIGHT; c += 24) u8g2.setContrast(c), delay(5);
+    u8g2.setContrast(DISP_BRIGHT);
 }
 
 inline void displayButtonSetup() {
@@ -886,7 +947,7 @@ inline void displayHandleButton() {
         displayRender();
     } else if (e1 == 1) {                            // коротке -> наступна сторінка
         g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
-        displayRender();
+        displayFlip();
     }
 
     int e2 = pollButton(MENU_BTN2_PIN, b2, 800);
@@ -899,9 +960,17 @@ inline void displayHandleButton() {
             displaySetStatus("ВИКОНУЮ...");
             displayRender();
         }
+    } else if (g_displayPage == WIZARD_PAGE) {       // сторінка Майстра
+        if (e2 == 1) {                               // коротке -> аналіз
+            g_wizReq = 1; g_wizBusy = true;
+            displaySetStatus("АНАЛІЗ..."); displayRender();
+        } else if (e2 == 2) {                        // довге -> виконати наступний крок
+            g_wizReq = 2; g_wizBusy = true;
+            displaySetStatus("ВИКОНУЮ..."); displayRender();
+        }
     } else if (e2 == 1) {                            // інші сторінки: коротке -> назад
         g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
-        displayRender();
+        displayFlip();
     }
 }
 

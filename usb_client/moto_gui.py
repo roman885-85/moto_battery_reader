@@ -780,7 +780,9 @@ class App:
             return
         self.info = d
         ch = d.get("charge")
-        self.ovCharge.config(text=(f"{ch}%  ({d.get('chargeSrc','')})" if isinstance(ch, int) and ch >= 0 else "—"))
+        _src = d.get("chargeSrc", "")
+        _srclbl = {"ICA": "ICA", "volt": "напруга", "U!": "за напругою (паливомір не калібр.)"}.get(_src, _src)
+        self.ovCharge.config(text=(f"{ch}%  ({_srclbl})" if isinstance(ch, int) and ch >= 0 else "—"))
         v = d.get("voltage"); t = d.get("temperature")
         self.ovVolt.config(text=(f"{v:.2f} В" if isinstance(v, (int, float)) else "—"))
         self.ovTemp.config(text=(f"{t:.1f} °C" if isinstance(t, (int, float)) else "—"))

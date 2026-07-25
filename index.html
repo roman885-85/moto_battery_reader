@@ -537,7 +537,7 @@ async function refreshAll(){
             const rmah=(d.icaMah!==undefined)?d.icaMah:null;   // залишкова ємність, мА·год
             $('chargePct').textContent=pct!==null?pct+'%':'--%';
             $('chargeSub').textContent=(rmah!==null?('залишок '+rmah+' мА·год'):'')+
-                (pct!==null?(' · '+(d.chargeSrc==='ICA'?'ICA':'напруга')):'');
+                (pct!==null?(' · '+(d.chargeSrc==='ICA'?'ICA':(d.chargeSrc==='U!'?'за напругою (паливомір не калібр.)':'напруга'))):'');
             if(rmah!==null){$('mahVal').value=rmah;$('mahNow').textContent=rmah+' мА·год';}
             const fill=$('battFill');
             fill.style.width=(pct!==null?pct:0)+'%';

@@ -833,8 +833,12 @@ inline void drawPageWizard() {
 // статус-смугою; шапка й статус перемальовуються самі поверх себе тим самим
 // кольором, тож візуально не блимають. При зміні сторінки міняється лише вміст
 // тіла (і заголовок) — саме те, що реально змінилось.
-inline void displayRender() {
-    tft.fillRect(0, HDR_H, TFT_W, FOOT_Y - HDR_H, C_BG);   // лише тіло, без спалаху
+// clearBody=true — очистити тіло в чорне перед малюванням (для зміни сторінки).
+// clearBody=false — перемалювати ТУ Ж сторінку поверх наявної (елементи опуклі й
+// перекривають старі; фон і так чорний). Без чорного «спалаху» — для зміни лише
+// відтінку (червоний фільтр помилки), щоб екран НЕ блимав.
+inline void displayRenderBody(bool clearBody) {
+    if (clearBody) tft.fillRect(0, HDR_H, TFT_W, FOOT_Y - HDR_H, C_BG);
     switch (g_displayPage) {
         case 0:  drawPageMain();     break;
         case 1:  drawPageModel();    break;
@@ -847,6 +851,7 @@ inline void displayRender() {
         default: drawPageMain();     break;
     }
 }
+inline void displayRender() { displayRenderBody(true); }
 
 // Освітлити колір RGB565 у бік білого на частку amt (0..255).
 inline uint16_t lighten565(uint16_t c, uint8_t amt) {
@@ -887,6 +892,8 @@ static const uint8_t ANIM_SINE32[32] = {
 
 inline void displayAnimTick() {
     if (g_displayPage != 0 || g_battW == 0) return;
+    if (g_errTint) return;              // під час оповіщення про помилку — статичний
+                                        // червоний екран (без руху градієнта)
     const char *src; int pct = batteryPercent(&src);
     if (pct < 0) return;
     uint16_t col = chargeColor(pct);
@@ -961,10 +968,11 @@ inline void displayShow(const char *s) {
 inline void displaySetErrorTint(bool on) {
     if (g_errTint == on) return;
     g_errTint = on;
-    // Без fillScreen: перемальовуємо ТУ Ж сторінку — елементи перезаписуються
-    // на місці (чорний фон лишається чорним), тож переходу в/з червоного немає
-    // чорного спалаху, лише плавна зміна відтінку. Жодного блимання.
-    displayRender();
+    // Перемальовуємо ТУ Ж сторінку БЕЗ очищення тіла в чорне (displayRenderBody
+    // з clearBody=false): елементи перезаписуються на місці, змінюється лише
+    // відтінок. Жодного чорного спалаху й блимання — просто екран стає (чи
+    // перестає бути) червоним.
+    displayRenderBody(false);
 }
 
 // Плавне керування яскравістю через ШІМ підсвітки (BLK). Якщо BLK-пін не
@@ -1087,8 +1095,7 @@ inline void displayHandleButton() {
     int e1 = pollButton(MENU_BTN_PIN, b1, 800);
     if (e1 == 2) {
         g_readRequested = true;
-        displaySetStatus("ЗЧИТУВАННЯ...");
-        displayRender();
+        displayShow("ЗЧИТУВАННЯ...");     // лише футер — без перемальовки тіла (без блимання)
     } else if (e1 == 1) {
         g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
         displayFlip();
@@ -1106,7 +1113,7 @@ inline void displayHandleButton() {
     // 2 кнопки: BTN2 суміщає навігацію + вибір/аналіз (коротко) + виконання (довго).
     if (g_displayPage == RESET_PAGE) {
         if (e2 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRender(); }
-        else if (e2 == 2) { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
+        else if (e2 == 2) { g_actionRequested = g_actionSel; displayShow("ВИКОНУЮ..."); }
     } else if (g_displayPage == WIZARD_PAGE) {
         if (e2 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
         else if (e2 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
@@ -1122,14 +1129,14 @@ inline void displayHandleButton() {
     int e3 = pollButton(MENU_BTN3_PIN, b3, 800);
     if (g_displayPage == RESET_PAGE) {
         if (e3 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRender(); }
-        else if (e3 == 2) { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
+        else if (e3 == 2) { g_actionRequested = g_actionSel; displayShow("ВИКОНУЮ..."); }
     } else if (g_displayPage == WIZARD_PAGE) {
         if (e3 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
         else if (e3 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
     } else if (g_displayPage == 0) {
         // Головна сторінка: BTN3 коротко = ПЕРЕЧИТАТИ акумулятор (саме третя кнопка,
         // а не довге утримання BTN1); довго = перейти в «Майстер».
-        if (e3 == 1) { g_readRequested = true; displaySetStatus("ЗЧИТУВАННЯ..."); displayRender(); }
+        if (e3 == 1) { g_readRequested = true; displayShow("ЗЧИТУВАННЯ..."); }
         else if (e3 == 2) { g_displayPage = WIZARD_PAGE; displayFlip(); }
     } else {
         if (e3 == 1) { g_displayPage = WIZARD_PAGE; displayFlip(); }   // швидко в «Майстер»

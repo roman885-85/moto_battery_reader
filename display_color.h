@@ -746,16 +746,20 @@ inline void drawPageActions() {
     char t[20]; snprintf(t, sizeof(t), "Дія %d/%d", sel + 1, total);
     drawHeaderBar(t);
 
-    // Картка операції (у межах безпечної зони кутів).
+    // Картка операції (у межах безпечної зони кутів). Оновлюємо НА МІСЦІ: рамку
+    // перемальовуємо, а кожен рядок тексту чистимо ТОНКО й друкуємо. Тож при
+    // перемиканні операції (кнопка «вибір») екран НЕ блимає всім тілом — лише
+    // оновлюються рядки картки (див. displayRenderBody(false) у обробнику кнопок).
     int cardx = EDGE > 10 ? EDGE - 4 : 10;
     int txtx  = cardx + 10;
+    int cxi   = cardx + 2;
+    int cw    = TFT_W - 2 * cardx - 4;
     uint16_t accent = danger ? C_RED : C_GREEN;
     tft.drawRoundRect(cardx, 44, TFT_W - 2 * cardx, 96, 6, accent);
-    tSet(FONT_MODEL, accent);
-    tPut(txtx, 78, name);
-    tSet(FONT_BODY, C_TEXT);
-    tPut(txtx, 106, l1);
-    tPut(txtx, 128, l2);
+    tft.fillRect(cxi, 60, cw, 26, C_BG);  tSet(FONT_MODEL, accent); tPut(txtx, 78, name);
+    tft.fillRect(cxi, 90, cw, 20, C_BG);  tSet(FONT_BODY, C_TEXT);  tPut(txtx, 106, l1);
+    tft.fillRect(cxi, 112, cw, 20, C_BG);                           tPut(txtx, 128, l2);
+    tft.fillRect(cxi, 148, cw, 22, C_BG);                 // рядок попередження — чистимо завжди
     if (danger) {
         tSet(FONT_BODY, C_RED);
         tPut(txtx, 164, "!! НЕЗВОРОТНЬО !!");
@@ -1115,7 +1119,7 @@ inline void displayHandleButton() {
 #else
     // 2 кнопки: BTN2 суміщає навігацію + вибір/аналіз (коротко) + виконання (довго).
     if (g_displayPage == RESET_PAGE) {
-        if (e2 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRender(); }
+        if (e2 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRenderBody(false); }  // оновити картку без блимання
         else if (e2 == 2) { g_actionRequested = g_actionSel; displayShow("ВИКОНУЮ..."); }
     } else if (g_displayPage == WIZARD_PAGE) {
         if (e2 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
@@ -1131,7 +1135,7 @@ inline void displayHandleButton() {
     // коротко=аналіз/довго=крок; інші коротко=у Майстер/довго=додому.
     int e3 = pollButton(MENU_BTN3_PIN, b3, 800);
     if (g_displayPage == RESET_PAGE) {
-        if (e3 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRender(); }
+        if (e3 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRenderBody(false); }  // оновити картку без блимання
         else if (e3 == 2) { g_actionRequested = g_actionSel; displayShow("ВИКОНУЮ..."); }
     } else if (g_displayPage == WIZARD_PAGE) {
         if (e3 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }

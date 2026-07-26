@@ -894,6 +894,9 @@ inline void displayAnimTick() {
     if (g_displayPage != 0 || g_battW == 0) return;
     if (g_errTint) return;              // під час оповіщення про помилку — статичний
                                         // червоний екран (без руху градієнта)
+    if (g_ledMode == LED_READ || g_ledMode == LED_WRITE)
+        return;                         // під час операції (читання/запис) — екран
+                                        // статичний, без руху/блимання градієнта
     const char *src; int pct = batteryPercent(&src);
     if (pct < 0) return;
     uint16_t col = chargeColor(pct);

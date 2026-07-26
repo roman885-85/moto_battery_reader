@@ -57,14 +57,16 @@ inline void ledWrite(bool g, bool r) {
     digitalWrite(LED_RED_PIN,   r ? HIGH : LOW);
 }
 
-// Стан підсвітки кнопок за поточним режимом: спокій/успіх — рівне світіння;
-// читання/запис/помилка — блимання (в такт g_ledPhase); старт — вимкнено.
+// Стан підсвітки кнопок за поточним режимом. Під час ОПЕРАЦІЙ (читання/запис)
+// підсвітка світиться РІВНО (без блимання) — «зайнято, працюю»; блимання
+// лишається ЛИШЕ для помилки (тривожний алерт). Так під час виконання команди
+// підсвітка не миготить.
 inline void btnLedByMode(LedMode m, bool phase) {
     bool on;
     switch (m) {
-        case LED_READ:  on = phase; break;   // блимає в такт читанню
-        case LED_WRITE: on = phase; break;   // швидко блимає — «увага, запис»
-        case LED_ERROR: on = phase; break;   // тривожне блимання
+        case LED_READ:  on = true;  break;   // читання — рівне світіння (без блимання)
+        case LED_WRITE: on = true;  break;   // запис   — рівне світіння (без блимання)
+        case LED_ERROR: on = phase; break;   // помилка — тривожне блимання (алерт)
         case LED_BOOT:  on = false; break;   // старт — темно
         case LED_OK:    on = true;  break;   // успіх — рівне світіння
         case LED_IDLE:

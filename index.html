@@ -102,6 +102,70 @@
         .spin{width:38px;height:38px;border:4px solid var(--line);border-top:4px solid var(--ua-yellow);
               border-radius:50%;margin:0 auto 8px;animation:spin 1s linear infinite}
         @keyframes spin{to{transform:rotate(360deg)}}
+        /* ---- Монітор розряду ----------------------------------------------
+           Розряд триває годинами, і дивитись на нього доводиться довго, тож це
+           не таблиця значень, а панель процесу: пульсуючий індикатор стану,
+           смуга прогресу з «течією» (видно, що процес живий, навіть коли числа
+           між опитуваннями не змінились), графік напруги за весь сеанс і плитки
+           показань, які підсвічуються на зміні. Дані тягнуться самі — раз на
+           2 с під час розряду, раз на 20 с у спокої (щоб побачити розряд,
+           запущений з кнопки на самому пристрої). */
+        .dm{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:12px}
+        .dm.run{border-color:var(--warn);box-shadow:0 0 0 2px rgba(200,162,58,.16)}
+        .dm.done{border-color:var(--ok)} .dm.abort{border-color:var(--accent)}
+        .dmhead{display:flex;align-items:center;gap:10px;font-weight:700;font-size:.92em}
+        .dmled{width:12px;height:12px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+        .dm.run .dmled{background:var(--warn);animation:dmpulse 1.4s ease-in-out infinite}
+        .dm.done .dmled{background:var(--ok)} .dm.abort .dmled{background:var(--accent)}
+        @keyframes dmpulse{0%,100%{box-shadow:0 0 0 0 rgba(200,162,58,.55)}
+                           70%{box-shadow:0 0 0 9px rgba(200,162,58,0)}}
+        .dmclock{margin-left:auto;font-family:'Courier New',monospace;color:var(--muted);font-variant-numeric:tabular-nums}
+        .dmbig{display:flex;align-items:baseline;gap:12px;margin:12px 0 6px;flex-wrap:wrap}
+        .dmv{font-size:2.4em;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+        .dmv small{font-size:.4em;color:var(--muted);margin-left:4px;font-weight:600}
+        .dmto{color:var(--muted);font-size:.85em}
+        .dmbar{position:relative;height:17px;background:#0e1108;border:1px solid var(--line);
+               border-radius:9px;overflow:hidden}
+        .dmfill{height:100%;width:0;border-radius:8px;transition:width .7s ease;
+                background:linear-gradient(90deg,var(--ok),var(--khaki))}
+        /* «Течія» — рухомі діагональні смужки поверх заливки. Єдина ознака, що
+           процес живий: між опитуваннями числа стоять на місці. */
+        .dm.run .dmfill{background-image:repeating-linear-gradient(115deg,
+                          rgba(255,255,255,.18) 0 9px,transparent 9px 20px),
+                        linear-gradient(90deg,var(--ok),var(--khaki));
+                        background-size:40px 100%,100% 100%;animation:dmflow 1s linear infinite}
+        @keyframes dmflow{to{background-position:40px 0,0 0}}
+        /* Відсоток — праворуч і світлим: по центру він губився, поки заливка ще
+           не дійшла до середини смуги. */
+        .dmbartxt{position:absolute;inset:0;display:flex;align-items:center;justify-content:flex-end;
+                  padding-right:9px;font-size:.72em;font-weight:700;color:var(--text);
+                  text-shadow:0 0 4px #0e1108,0 0 4px #0e1108}
+        .dmspark{width:100%;height:60px;margin:12px 0 0;display:block;
+                 background:#0e1108;border:1px solid var(--line);border-radius:9px}
+        .dmlab{display:flex;justify-content:space-between;font-size:.76em;color:var(--muted);margin:11px 0 4px}
+        .dmtrack{position:relative;height:13px;background:#0e1108;border:1px solid var(--line);
+                 border-radius:7px;overflow:hidden}
+        .dmcur{position:absolute;top:0;bottom:0;left:0;width:0;border-radius:6px;
+               background:var(--warn);transition:width .7s ease}
+        .dmcur.out{background:var(--accent)}
+        /* Коридор уставки малюється ПОВЕРХ заливки — інакше заливка струму його
+           перекривала б і видно було б лише «хвіст» коридору праворуч. */
+        .dmband{position:absolute;top:0;bottom:0;background:rgba(231,227,210,.12);
+                border-left:2px solid rgba(231,227,210,.55);border-right:2px solid rgba(231,227,210,.55)}
+        .dmmark{position:absolute;top:0;bottom:0;width:2px;background:var(--text);transition:left .7s ease}
+        .dmg{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:8px;margin-top:12px}
+        /* Підпис може займати два рядки — тримаємо значення на одній лінії в усіх
+           плитках, інакше числа стрибають по висоті й читати їх незручно. */
+        .dmc{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:7px 9px;
+             display:flex;flex-direction:column;justify-content:space-between}
+        .dmc.hero{border-color:var(--ok)}
+        .dmck{font-size:.72em;color:var(--muted);letter-spacing:.2px;min-height:2.3em;line-height:1.15}
+        .dmcv{font-weight:700;font-family:'Courier New',monospace;font-size:1.1em;
+              font-variant-numeric:tabular-nums;word-break:break-word}
+        .dmcv.flash{animation:dmflash .9s ease}
+        @keyframes dmflash{0%{color:var(--khaki)}100%{color:inherit}}
+        .dmwarn{margin-top:10px;font-size:.82em;padding:8px 10px;border-radius:8px;
+                background:#3a1414;color:#ff9b8f;border-left:3px solid var(--accent);display:none}
         /* ---- Майстер відновлення ---- */
         .wizbar{height:12px;background:var(--card2);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:6px 0}
         .wizbarfill{height:100%;width:0;background:linear-gradient(90deg,var(--ok),#7be6a8);border-radius:8px;transition:width .5s ease}
@@ -323,16 +387,48 @@
             <div class="note w">⚠️ Розряд — єдина операція, що може <b>фізично</b> зашкодити банкам. Аварійна
                 зупинка спрацьовує за напругою нижче 6.00 В, перегрівом (45 °C), стелею часу й втратою зв'язку
                 з монітором. Резистор нагрівається — на 5 Ом це ~14 Вт.</div>
-            <div class="row"><span class="k">Стан</span><span class="v" id="disState">—</span></div>
-            <div class="row"><span class="k">Напруга</span><span class="v" id="disMv">—</span></div>
-            <div class="row"><span class="k">Струм (DS2438)</span><span class="v" id="disMa">—</span></div>
-            <div class="row"><span class="k">Обмеження струму</span><span class="v" id="disLim">—</span></div>
-            <div class="row"><span class="k">Віддано (інтеграл)</span><span class="v" id="disMah">—</span></div>
-            <div class="row"><span class="k">Віддано (лічильник DCA)</span><span class="v" id="disDca">—</span></div>
-            <div class="row"><span class="k">Паливомір ICA</span><span class="v" id="disIca">—</span></div>
-            <div class="row"><span class="k">Температура</span><span class="v" id="disT">—</span></div>
-            <div class="row"><span class="k">Час</span><span class="v" id="disEl">—</span></div>
-            <div class="row"><span class="k">Цільова напруга, мВ</span>
+            <!-- Монітор процесу: оновлюється сам, дивитись можна годинами. -->
+            <div class="dm" id="disMon">
+                <div class="dmhead">
+                    <span class="dmled"></span><span id="disState">—</span>
+                    <span class="dmclock" id="disEl">0:00:00</span>
+                </div>
+                <div class="dmbig">
+                    <span class="dmv" id="disMvBig">—<small>В</small></span>
+                    <span class="dmto" id="disMvSub">—</span>
+                </div>
+                <div class="dmbar"><div class="dmfill" id="disFill"></div>
+                    <span class="dmbartxt" id="disPct"></span></div>
+                <!-- Графік напруги за весь сеанс: видно і темп розряду, і
+                     «полицю» наприкінці, коли банки віддають останнє. -->
+                <svg class="dmspark" id="disSpark" viewBox="0 0 300 60" preserveAspectRatio="none">
+                    <polyline id="disSparkArea" fill="rgba(111,143,58,.22)" stroke="none" points=""/>
+                    <line id="disSparkTarget" x1="0" x2="300" y1="-9" y2="-9" stroke="#a3312e"
+                          stroke-width="1" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>
+                    <polyline id="disSparkLine" fill="none" stroke="#c8b04a" stroke-width="2"
+                              vector-effect="non-scaling-stroke" stroke-linejoin="round" points=""/>
+                </svg>
+                <!-- Струм у коридорі уставки: зелена зона — 80–110 % від
+                     уставки, риска — сама уставка, заливка — середній струм. -->
+                <div class="dmlab"><span>струм / уставка</span><span id="disLim">—</span></div>
+                <div class="dmtrack"><div class="dmband" id="disBand"></div>
+                    <div class="dmcur" id="disCur"></div><div class="dmmark" id="disMark"></div></div>
+                <div class="dmlab"><span>шпаруватість ключа (ШІМ)</span><span id="disDutyTxt">—</span></div>
+                <div class="dmtrack"><div class="dmcur" id="disDuty" style="background:var(--info)"></div></div>
+                <div class="dmg">
+                    <!-- Одиниці — у підпису, значення — саме число: інакше
+                         «1103 мА·год» переноситься на два рядки й плитки скачуть. -->
+                    <div class="dmc hero"><div class="dmck">віддано, мА·год</div><div class="dmcv" id="disMah">—</div></div>
+                    <div class="dmc"><div class="dmck">DCA, мА·год</div><div class="dmcv" id="disDca">—</div></div>
+                    <div class="dmc"><div class="dmck">струм, мА</div><div class="dmcv" id="disMa">—</div></div>
+                    <div class="dmc"><div class="dmck">потужність, Вт</div><div class="dmcv" id="disW">—</div></div>
+                    <div class="dmc"><div class="dmck">температура, °C</div><div class="dmcv" id="disT">—</div></div>
+                    <div class="dmc"><div class="dmck" id="disIcaK">паливомір ICA</div><div class="dmcv" id="disIca">—</div></div>
+                    <div class="dmc"><div class="dmck">лишилось ≈</div><div class="dmcv" id="disEta">—</div></div>
+                </div>
+                <div class="dmwarn" id="disWarn"></div>
+            </div>
+            <div class="row" style="margin-top:10px"><span class="k">Цільова напруга, мВ</span>
                 <input type="number" id="disTarget" value="7200" min="6200" max="8300"
                        style="border-radius:8px;border:none;padding:6px;width:110px"></div>
             <input type="password" class="pw" id="pwDis" placeholder="🔑 Пароль адміністратора">
@@ -949,37 +1045,135 @@ async function setModel(){
 }
 
 // ---- керований розряд: старт/стоп + живий моніторинг ----------------------
-// Поки розряд іде, опитуємо стан раз на 5 с — з тим самим періодом, що й сам
-// пристрій знімає показання (DISCHARGE_POLL_MS), частіше сенсу немає.
-let disTimer=null;
+// Монітор розряду. Опитуємо САМІ, без кнопок: раз на 2 с під час розряду
+// (пристрій знімає показання раз на 5 с, але між ними ще йде годинник і
+// анімація, тож частіший запит робить картинку живою) і раз на 20 с у спокої —
+// щоб побачити розряд, запущений кнопкою на самому пристрої, а не звідси.
+let disTimer=null, disPeriod=0, disHist=[], disStep=10, disLast=null, disLastAt=0, disWasRun=false;
 function disFmtT(s){const h=Math.floor(s/3600),m=Math.floor(s/60)%60,x=s%60;
     return h+':'+String(m).padStart(2,'0')+':'+String(x).padStart(2,'0');}
-async function disPoll(){
-    try{
-        const r=await fetch('/api/discharge'); const d=await r.json();
-        if(!d.available){$('disState').textContent='не налаштовано (LOAD_PIN)';return;}
-        const st={idle:['очікування','#9ca3af'],run:['іде розряд','#eab308'],
-                  done:['✅ готово — на IMPRES-ЗП','#22c55e'],abort:['⛔ '+(d.reason||'аварія'),'#ef4444']}[d.state];
-        if(st){$('disState').textContent=st[0];$('disState').style.color=st[1];}
-        $('disMv').textContent=(d.mv/1000).toFixed(2)+' В (ціль '+(d.targetMv/1000).toFixed(2)+' В)';
-        // Струм СЕРЕДНІЙ: ключ працює ШІМом, тож пік (струм при 100 %) і те, що
-        // насправді тече, — різні числа. Показуємо обидва плюс уставку.
-        $('disMa').textContent=d.ma+' мА · '+d.watts+' Вт';
-        $('disLim').textContent = d.pwm
-            ? ('уставка '+d.setMa+' мА ('+d.bandLoMa+'–'+d.bandHiMa+') · ШІМ '+d.duty+' % · пік '+d.peakMa+' мА')
-            : ('⚠ ШІМ недоступний — струм не обмежується (пік '+d.peakMa+' мА на '+d.loadOhm+' Ом)');
-        $('disLim').style.color = d.pwm ? (d.inBand?'var(--ok)':'#eab308') : '#ef4444';
-        $('disMah').textContent=d.mah+' мА·год';
-        // DCA — апаратний інтегратор самого DS2438: рахує неперервно, тож
-        // служить перехресною перевіркою нашого інтеграла по опитуваннях.
-        $('disDca').textContent=d.dcaMah+' мА·год (raw +'+d.dcaDelta+')';
-        $('disIca').textContent=d.ica+' (на старті '+d.icaStart+')';
-        $('disT').textContent=d.tempC+' °C';
-        $('disEl').textContent=disFmtT(d.elapsedS);
-        if(d.state==='run'&&!disTimer) disTimer=setInterval(disPoll,5000);   // пристрій знімає показання раз на 5 с
-        if(d.state!=='run'&&disTimer){clearInterval(disTimer);disTimer=null;await refreshAll();}
-    }catch(e){}
+
+// Перезапустити таймер лише якщо період справді змінився — інакше кожне
+// опитування зсувало б наступне й ритм «плив».
+function disSchedule(ms){
+    if(disPeriod===ms&&disTimer)return;
+    if(disTimer)clearInterval(disTimer);
+    disPeriod=ms; disTimer=setInterval(disPoll,ms);
 }
+// Значення в плитці + спалах, якщо змінилось: за годину спостереження око саме
+// чіпляється за те, що ворухнулось.
+function disSet(id,txt){
+    const el=$(id); if(!el||el.textContent===txt)return;
+    el.textContent=txt; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+}
+// Графік напруги за ВЕСЬ сеанс. Точки не викидаються з початку (інакше через
+// пів години було б видно лише останні хвилини) — коли їх забагато, ряд
+// проріджується вдвічі, а крок між новими точками подвоюється. Так уся крива
+// лишається на екрані незалежно від тривалості розряду.
+function disPush(t,mv){
+    const last=disHist[disHist.length-1];
+    if(last&&t-last.t<disStep)return;
+    disHist.push({t:t,mv:mv});
+    if(disHist.length>300){ disHist=disHist.filter((_,i)=>i%2===0); disStep*=2; }
+}
+function disSpark(targetMv){
+    const tl=$('disSparkTarget');
+    if(disHist.length<2){$('disSparkLine').setAttribute('points','');
+                         $('disSparkArea').setAttribute('points','');
+                         tl.setAttribute('y1',-9); tl.setAttribute('y2',-9); return;}
+    const vs=disHist.map(p=>p.mv);
+    let lo=Math.min(...vs)-20, hi=Math.max(...vs)+20;
+    if(targetMv&&targetMv<lo) lo=targetMv-20;              // ціль завжди в кадрі
+    const t0=disHist[0].t, t1=Math.max(disHist[disHist.length-1].t,t0+1);
+    const X=p=>3+((p.t-t0)/(t1-t0))*294;                   // 3 px полів, щоб лінія
+    const Y=v=>58-((v-lo)/(hi-lo||1))*54;                  // не лягала на рамку
+    const pts=disHist.map(p=>X(p).toFixed(1)+','+Y(p.mv).toFixed(1)).join(' ');
+    $('disSparkLine').setAttribute('points',pts);
+    $('disSparkArea').setAttribute('points','3,60 '+pts+' 297,60');
+    const ty=Y(targetMv);                                   // пунктир цілі
+    tl.setAttribute('y1',ty); tl.setAttribute('y2',ty);
+}
+async function disPoll(){
+    let d;
+    try{ const r=await fetch('/api/discharge'); d=await r.json(); }
+    catch(e){ return; }                      // мережа моргнула — спробуємо наступного разу
+    const mon=$('disMon');
+    if(!d.available){ mon.className='dm'; $('disState').textContent='не налаштовано (LOAD_PIN у settings.h)';
+                      disSchedule(20000); return; }
+    const run=d.state==='run';
+    mon.className='dm '+d.state;
+    const st={idle:'очікування',run:'ІДЕ РОЗРЯД',
+              done:'✅ ГОТОВО — на IMPRES-ЗП',abort:'⛔ '+(d.reason||'аварія')}[d.state]||d.state;
+    $('disState').textContent=st;
+
+    // Історія напруги для графіка. Скидаємо, коли почався НОВИЙ сеанс (час
+    // пішов назад) — інакше графік склеював би два різні розряди в один.
+    if(run){
+        if(disHist.length&&d.elapsedS<disHist[disHist.length-1].t){disHist=[];disStep=10;}
+        disPush(d.elapsedS,d.mv);
+    }
+    disSpark(d.targetMv);
+
+    $('disMvBig').innerHTML=(d.mv/1000).toFixed(2)+'<small>В</small>';
+    $('disMvSub').textContent='старт '+(d.startMv/1000).toFixed(2)+' В → ціль '+(d.targetMv/1000).toFixed(2)+' В';
+    const span=d.startMv-d.targetMv, done=d.startMv-d.mv;
+    const pct=span>0?Math.max(0,Math.min(100,Math.round(done*100/span))):0;
+    $('disFill').style.width=pct+'%'; $('disPct').textContent=pct+' %';
+
+    // Смуга струму. Масштаб — до 125 % уставки, щоб коридор займав більшу
+    // частину доріжки, а вихід за нього був помітний, а не губився в кінці.
+    const ma=Math.abs(d.ma), scale=Math.max(d.setMa*1.25,ma*1.05,1);
+    $('disCur').style.width=Math.min(100,ma*100/scale)+'%';
+    $('disCur').className='dmcur'+(run&&!d.inBand?' out':'');
+    $('disBand').style.left=(d.bandLoMa*100/scale)+'%';
+    $('disBand').style.width=Math.max(0,(d.bandHiMa-d.bandLoMa)*100/scale)+'%';
+    $('disMark').style.left=Math.min(100,d.setMa*100/scale)+'%';
+    $('disLim').textContent=d.pwm?('уставка '+d.setMa+' мА · пік '+d.peakMa+' мА')
+                                 :'⚠ ШІМ недоступний';
+    $('disLim').style.color=d.pwm?(d.inBand?'var(--ok)':'var(--warn)'):'var(--accent)';
+    $('disDuty').style.width=(d.pwm?d.duty:100)+'%';
+    $('disDutyTxt').textContent=d.pwm?(d.duty+' %'):'ключ відкрито постійно';
+
+    disSet('disMah',String(d.mah));
+    // DCA — апаратний інтегратор самого DS2438: рахує неперервно, тож служить
+    // перехресною перевіркою нашого інтеграла по опитуваннях.
+    disSet('disDca',String(d.dcaMah));
+    disSet('disMa',String(d.ma));
+    disSet('disW',String(d.watts));
+    disSet('disT',String(d.tempC));
+    disSet('disIca',String(d.ica));
+    $('disIcaK').textContent='паливомір ICA · старт '+d.icaStart;
+
+    // Залишок часу — з фактичного темпу за весь сеанс. Оцінка груба (наприкінці
+    // крива положистіша, та й струм ми навмисне зменшуємо), тож і подається як
+    // «≈», але дає зрозуміти, чекати десять хвилин чи дві години.
+    let eta='—';
+    if(run&&d.elapsedS>60&&d.startMv>d.mv){
+        const rate=(d.startMv-d.mv)/d.elapsedS;                 // мВ/с
+        const left=Math.max(0,(d.mv-d.targetMv)/rate);
+        eta=left>0?disFmtT(Math.round(left)):'ось-ось';
+    }
+    disSet('disEta',eta);
+
+    const warn=$('disWarn');
+    if(!d.pwm&&(run||d.state==='done')){
+        warn.style.display='block';
+        warn.textContent='ШІМ недоступний: каналу LEDC не знайшлося, ключ відкритий постійно і струм не '
+                        +'обмежується ('+d.peakMa+' мА на '+d.loadOhm+' Ом). Перевірте LOAD_LEDC_CH у settings.h.';
+    } else warn.style.display='none';
+
+    disLast=d; disLastAt=Date.now();
+    $('disEl').textContent=disFmtT(d.elapsedS);
+    disSchedule(run?2000:20000);
+    if(!run&&disWasRun){disWasRun=false;await refreshAll();}   // сеанс завершився — оновити решту сторінки
+    if(run)disWasRun=true;
+}
+// Годинник між опитуваннями: сервер віддає час раз на 2 с, а секунди мають
+// бігти рівно — інакше здається, що інтерфейс завис.
+setInterval(()=>{
+    if(!disLast||disLast.state!=='run')return;
+    $('disEl').textContent=disFmtT(disLast.elapsedS+Math.floor((Date.now()-disLastAt)/1000));
+},1000);
 async function disStart(){
     const pw=$('pwDis').value, t=parseInt($('disTarget').value)||7200;
     if(!confirm('🪫 Почати розряд до '+(t/1000).toFixed(2)+' В?\n\nСтрум обмежується ШІМом: 1000 мА на повному заряді, далі лінійно до 300 мА на 7.20 В.\nНавантаження буде увімкнено; резистор нагріється. Не залишайте пристрій без нагляду.\nЗупинити можна кнопкою «ЗУПИНИТИ» або довгим натисканням на пристрої.'))return;

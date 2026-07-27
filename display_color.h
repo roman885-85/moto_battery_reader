@@ -26,6 +26,7 @@
 #include "battery_reader.h"
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — дії «Новий АКБ»
 #include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
+#include "discharge.h"    // стан керованого розряду для сторінки моніторингу
 
 // Стан, яке відображаємо (визначене в .ino / web_server.h).
 extern bool hasDump;
@@ -761,6 +762,60 @@ inline void drawPageActions() {
 #endif
 }
 
+// Сторінка МОНІТОРИНГУ РОЗРЯДУ. Показується автоматично, поки навантаження
+// увімкнене, і має пріоритет над гортанням меню: розряд — довга операція, під
+// час якої на екрані має бути видно все службове, що змінюється.
+inline void drawPageDischarge() {
+    drawHeaderBar("РОЗРЯД");
+    const DischargeState &d = g_dis;
+
+    // Напруга — найбільшим, це головне число процесу.
+    char b[40];
+    tft.fillRect(0, HDR_H + 4, TFT_W, 40, C_BG);
+    snprintf(b, sizeof(b), "%u.%02u В", d.lastMv / 1000, (d.lastMv % 1000) / 10);
+    tSet(FONT_BIG, chargeColor(impresPercentFromMv(d.lastMv)));
+    tPut(EDGE, HDR_H + 36, b);
+
+    // Прогрес: від старту до цілі.
+    int span = (int)d.startMv - (int)d.targetMv;
+    int done = (int)d.startMv - (int)d.lastMv;
+    int pct  = (span > 0) ? (done * 100 / span) : 0;
+    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+    int bx = EDGE, bw = TFT_W - 2 * EDGE, by = HDR_H + 46, bh = 10;
+    tft.drawRect(bx, by, bw, bh, C_MUTED);
+    tft.fillRect(bx + 1, by + 1, bw - 2, bh - 2, C_BG);
+    tft.fillRect(bx + 1, by + 1, (bw - 2) * pct / 100, bh - 2, C_GREEN);
+
+    tSet(FONT_BODY, C_TEXT);
+    int y = by + bh + 16;
+    snprintf(b, sizeof(b), "ціль %u.%02u В  (%d%%)", d.targetMv / 1000, (d.targetMv % 1000) / 10, pct);
+    tft.fillRect(0, y - 12, TFT_W, 16, C_BG); tPut(EDGE, y, b); y += 18;
+
+    snprintf(b, sizeof(b), "струм  %d мА", d.lastMa);
+    tft.fillRect(0, y - 12, TFT_W, 16, C_BG); tPut(EDGE, y, b); y += 18;
+
+    snprintf(b, sizeof(b), "віддано %lu мА·год", (unsigned long)dischargeMah());
+    tft.fillRect(0, y - 12, TFT_W, 16, C_BG); tPut(EDGE, y, b); y += 18;
+
+    snprintf(b, sizeof(b), "темп.  %d.%d °C", d.lastTempC10 / 10, abs(d.lastTempC10 % 10));
+    tft.fillRect(0, y - 12, TFT_W, 16, C_BG);
+    tSet(FONT_BODY, d.lastTempC10 >= DISCHARGE_MAX_TEMP_C * 10 - 50 ? C_RED : C_TEXT);
+    tPut(EDGE, y, b); y += 18;
+
+    unsigned long el = d.elapsedS;
+    snprintf(b, sizeof(b), "час   %lu:%02lu:%02lu", el / 3600, (el / 60) % 60, el % 60);
+    tft.fillRect(0, y - 12, TFT_W, 16, C_BG); tSet(FONT_BODY, C_TEXT); tPut(EDGE, y, b);
+
+    // Підвал: стан або причина зупинки.
+    tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
+    tft.drawFastHLine(0, FOOT_Y, TFT_W, C_BLUE);
+    const char *foot = (d.state == DIS_RUN)   ? "[OK] тримати = ЗУПИНИТИ"
+                     : (d.state == DIS_DONE)  ? "ГОТОВО -> на IMPRES-ЗП"
+                     : dischargeReasonText(d.reason);
+    tSet(FONT_SMALL, d.state == DIS_ABORT ? C_RED : C_MUTED, C_CARD);
+    tPut(EDGE, TFT_H - 8, foot);
+}
+
 // Сторінка Майстра відновлення (кольорова). Дані готує wizDeviceRefresh().
 inline void drawPageWizard() {
     drawHeaderBar("Майстер відновлення");
@@ -828,6 +883,10 @@ inline void drawPageWizard() {
 // відтінку (червоний фільтр помилки), щоб екран НЕ блимав.
 inline void displayRenderBody(bool clearBody) {
     if (clearBody) tft.fillRect(0, HDR_H, TFT_W, FOOT_Y - HDR_H, C_BG);
+    // Поки навантаження увімкнене — примусово показуємо моніторинг розряду,
+    // хоч би яку сторінку було обрано: це довга операція із запобіжниками, її
+    // стан має бути на екрані завжди, а не за кілька натискань кнопки.
+    if (dischargeRunning()) { drawPageDischarge(); return; }
     switch (g_displayPage) {
         case 0:  drawPageMain();     break;
         case 1:  drawPageModel();    break;
@@ -1105,7 +1164,9 @@ inline void displayHandleButton() {
     // 2 кнопки: BTN2 суміщає навігацію + вибір/аналіз (коротко) + виконання (довго).
     if (g_displayPage == RESET_PAGE) {
         if (e2 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRenderBody(false); }  // оновити картку без блимання
-        else if (e2 == 2) { g_actionRequested = g_actionSel; displayShow("ВИКОНУЮ..."); }
+        else if (e2 == 2) { if (dischargeRunning()) {      // під час розряду довге натискання = АВАРІЙНА ЗУПИНКА
+                              dischargeStop(DISR_USER); displayShow("РОЗРЯД СТОП");
+                          } else { g_actionRequested = g_actionSel; displayShow("ВИКОНУЮ..."); } }
     } else if (g_displayPage == WIZARD_PAGE) {
         if (e2 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
         else if (e2 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
@@ -1121,7 +1182,9 @@ inline void displayHandleButton() {
     int e3 = pollButton(MENU_BTN3_PIN, b3, 800);
     if (g_displayPage == RESET_PAGE) {
         if (e3 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRenderBody(false); }  // оновити картку без блимання
-        else if (e3 == 2) { g_actionRequested = g_actionSel; displayShow("ВИКОНУЮ..."); }
+        else if (e3 == 2) { if (dischargeRunning()) {      // під час розряду довге натискання = АВАРІЙНА ЗУПИНКА
+                              dischargeStop(DISR_USER); displayShow("РОЗРЯД СТОП");
+                          } else { g_actionRequested = g_actionSel; displayShow("ВИКОНУЮ..."); } }
     } else if (g_displayPage == WIZARD_PAGE) {
         if (e3 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
         else if (e3 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }

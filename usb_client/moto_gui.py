@@ -478,6 +478,18 @@ class App:
         ttk.Button(b2b, text="🛠 Ремонт цілісності (контрольні суми + дзеркало)",
                    command=lambda: self.simple_op("REPAIR", "Відновити цілісність і записати?")).pack(anchor="w", pady=3)
 
+        b2d = ttk.LabelFrame(p, text="Розряд перед калібруванням (навантаження MOSFET)", padding=8); b2d.pack(fill="x", pady=4)
+        ttk.Label(b2d, text="Станція не бере АКБ на калібрування, поки бачить його зарядженим. Розряд до 7.2 В\n"
+                            "змушує її піти в повний цикл; заразом рахується реальна ємність нових банок.\n"
+                            "Аварійна зупинка: < 6.00 В, перегрів 45 °C, стеля часу, втрата зв'язку з монітором.\n"
+                            "Резистор гріється (~14 Вт на 5 Ом) — не лишайте без нагляду.",
+                  foreground="#b9bd86", justify="left").pack(anchor="w")
+        df = ttk.Frame(b2d); df.pack(anchor="w", pady=3)
+        ttk.Button(df, text="🪫 Почати розряд (7.2 В)", command=self.discharge_start).pack(side="left", padx=2)
+        ttk.Button(df, text="⏹ Зупинити", command=self.discharge_stop).pack(side="left", padx=2)
+        ttk.Button(df, text="🔄 Стан", command=self.discharge_status).pack(side="left", padx=2)
+        self.lblDis = ttk.Label(b2d, text="—", foreground="#e0e0e0"); self.lblDis.pack(anchor="w")
+
         b2c = ttk.LabelFrame(p, text="Крок 3 — калібрування на IMPRES-ЗП (обов'язково)", padding=8); b2c.pack(fill="x", pady=4)
         ttk.Label(b2c, text="Після ремонту навчена калібровка порожня — рація приймає пакет як фірмовий і просить\n"
                             "калібрування. Поставте АКБ на оригінальну IMPRES-ЗП на повний цикл (заряд → розряд →\n"
@@ -912,6 +924,43 @@ class App:
             return
         self.maybe_auth(lambda: (self.status("Запис нового АКБ..."),
                                  self.cmd(f"INITBAT {model} {mah}", 25.0, cb=lambda r: self._after_write(r, f"✅ Новий {model} записано"))))
+
+    # ---- керований розряд ---------------------------------------------
+    def _dis_show(self, r):
+        d = (r or {}).get("discharge") if isinstance(r, dict) else None
+        if not d:
+            self.lblDis.config(text="—"); return
+        if not d.get("available"):
+            self.lblDis.config(text="не налаштовано (LOAD_PIN у settings.h)"); return
+        names = {"idle": "очікування", "run": "іде розряд",
+                 "done": "готово — на IMPRES-ЗП", "abort": "АВАРІЯ: " + (d.get("reason") or "")}
+        self.lblDis.config(text="%s · %.2f В · %d мА · %d мА·год · %s °C · %d с" % (
+            names.get(d.get("state"), d.get("state", "?")), d.get("mv", 0) / 1000.0,
+            d.get("ma", 0), d.get("mah", 0), d.get("tempC", "?"), d.get("elapsedS", 0)))
+
+    def discharge_status(self):
+        if not self.need_conn():
+            return
+        self.cmd("DISCHARGE ?", 8.0, cb=self._dis_show)
+
+    def discharge_start(self):
+        if not self.need_conn():
+            return
+        if not messagebox.askyesno("Розряд",
+                "Почати розряд до 7.2 В?\n\nНавантаження буде увімкнено, резистор нагріється.\n"
+                "Не лишайте пристрій без нагляду."):
+            return
+        def done(r):
+            if isinstance(r, dict) and r.get("ok"):
+                self.status("Розряд почато"); self._dis_show(r)
+            else:
+                self.status("Помилка: " + str((r or {}).get("err", "")))
+        self.maybe_auth(lambda: self.cmd("DISCHARGE 7200", 15.0, cb=done))
+
+    def discharge_stop(self):
+        if not self.need_conn():
+            return
+        self.cmd("DISCHARGE STOP", 10.0, cb=lambda r: (self.status("Розряд зупинено"), self._dis_show(r)))
 
     def restore_battery(self, verbatim=False):
         # verbatim=False — переносимо лише модельну частину еталона; навчений

@@ -101,6 +101,9 @@ void setup() {
         Serial.println("SPIFFS mount failed!");
     }
     
+    // Розрядне навантаження — у безпечний стан ДО всього іншого.
+    dischargeInit();
+
     // Запускаємо веб-сервер
     setupWebServer();
     
@@ -130,6 +133,11 @@ void loop() {
     // Командний протокол по USB-Serial (Windows-клієнт). Працює паралельно з Wi-Fi.
     serialTask();
 
+    // Керований розряд: опитування монітора й запобіжники (реальна робота раз
+    // на DISCHARGE_POLL_MS). Викликаємо ДО обробки кнопок, щоб аварійні
+    // відсічки спрацьовували з мінімальною затримкою.
+    dischargeTask();
+
     // Опитування кнопки перегортання меню
     displayHandleButton();
 
@@ -156,6 +164,9 @@ void loop() {
                                             if (p >= 0) performSetChargePct(p); }
         else if (act == OP_RESET)         performReset();
         else if (act == OP_CLEAN)         performFactoryClean();
+        else if (act == OP_DISCHARGE)     { const char *e = dischargeStart(0);
+                                            if (e) { Serial.println(e); displayShow("РОЗРЯД: ЗБІЙ");
+                                                     ledSet(LED_ERROR); } }
         // «Модель <X>» — модельна частина еталона, БЕЗ навченого хвоста донора.
         else if (tm >= 0)                 performRestoreTemplate(BATTERY_TEMPLATES[tm].name);
         // «Новий <X>» — порожній чіп -> робочий АКБ; заряд 50 % ємності моделі.

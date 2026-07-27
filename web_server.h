@@ -9,6 +9,7 @@
 #include "settings.h"
 #include "impres_format.h"     // структура прошивки IMPRES (єдине джерело правди)
 #include "operations.h"        // єдиний каталог операцій для всіх поверхонь
+#include "discharge.h"         // керований розряд навантаженням (MOSFET)
 #include "leds.h"
 #include "display.h"
 #include "templates.h"
@@ -904,6 +905,138 @@ bool performRecalPrepare(bool deep) {
 }
 inline bool performRecalPrepare() { return performRecalPrepare(false); }
 
+// ===========================================================================
+//  КЕРОВАНИЙ РОЗРЯД — опитування й запобіжники (тут, бо потрібен battery/дампи)
+// ===========================================================================
+
+// Зняти показання монітора під навантаженням. true — читання вдалось.
+static bool dischargeSample(uint16_t *mv, int16_t *ma, int16_t *tC10) {
+    static uint8_t buf[DS2438_MEM_SIZE];
+    if (!battery.readDS2438(buf, DS2438_MEM_SIZE)) return false;
+    memcpy(batteryDump2438, buf, DS2438_MEM_SIZE);
+    hasDump2438 = true;
+    *mv = impresVoltageMv(buf);
+    // Струм зі знаком; при розряді від'ємний. Формула та сама, що в /api/info2438.
+    int16_t raw = (int16_t)((buf[6] << 8) | buf[5]);
+    *ma  = (int16_t)((float)raw / (4096.0f * DS2438_RSENSE_OHM) * 1000.0f);
+    *tC10 = (int16_t)((((int16_t)((buf[2] << 8) | buf[1])) >> 3) * 0.3125f);  // 0.03125*10
+    return true;
+}
+
+// Старт розряду. targetMv — до якої напруги (0 = DISCHARGE_TARGET_MV).
+// Повертає nullptr при успіху, інакше — текст причини відмови.
+const char *dischargeStart(uint16_t targetMv) {
+    if (!dischargeAvailable()) return "Розряд не налаштовано: задайте LOAD_PIN у settings.h";
+    if (dischargeRunning())    return "Розряд уже виконується";
+    if (!targetMv) targetMv = DISCHARGE_TARGET_MV;
+
+    // Ціль не нижче аварійної межі — інакше розряд гарантовано впреться в аварію.
+    if (targetMv < DISCHARGE_HARD_MIN_MV + 200) return "Цільова напруга нижча за аварійну межу";
+
+    uint16_t mv; int16_t ma, t;
+    if (!dischargeSample(&mv, &ma, &t)) {
+        loadOff();
+        return "DS2438 не читається — розряд наосліп заборонено";
+    }
+    if (mv <= targetMv)                     return "Пакет уже розряджений до цілі";
+    if (mv <= DISCHARGE_HARD_MIN_MV)        return "Напруга нижче аварійної межі";
+    if (t >= DISCHARGE_MAX_TEMP_C * 10)     return "Пакет гарячий — дайте охолонути";
+
+    memset(&g_dis, 0, sizeof(g_dis));
+    g_dis.state    = DIS_RUN;
+    g_dis.reason   = DISR_NONE;
+    g_dis.targetMv = targetMv;
+    g_dis.startMv  = g_dis.lastMv = mv;
+    g_dis.lastMa   = ma;
+    g_dis.lastTempC10 = t;
+    g_dis.startMs  = g_dis.lastPollMs = millis();
+    g_dis.startDca = g_dis.lastDca = impresDca(batteryDump2438);
+
+    loadOn();
+    ledSet(LED_DISCHARGE);
+    Serial.printf("\n=== Discharge started: %u -> %u mV, expected %d mA ===\n",
+                  mv, targetMv, dischargeExpectedMa(mv));
+    return nullptr;
+}
+
+// Викликати часто з loop(). Реальна робота — раз на DISCHARGE_POLL_MS.
+inline void dischargeTask() {
+    if (g_dis.state != DIS_RUN) return;
+    unsigned long now = millis();
+
+    // Стеля тривалості: якщо розряд «не йде» (обрив навантаження, залиплий
+    // MOSFET, поганий контакт) — зупиняємось, а не крутимось нескінченно.
+    if ((now - g_dis.startMs) / 60000UL >= (unsigned long)DISCHARGE_MAX_MIN) {
+        dischargeStop(DISR_TIMEOUT);
+        Serial.println("=== Discharge ABORT: timeout ===");
+        return;
+    }
+    if (now - g_dis.lastPollMs < DISCHARGE_POLL_MS) return;
+
+    unsigned long dtMs = now - g_dis.lastPollMs;
+    g_dis.lastPollMs = now;
+    g_dis.elapsedS   = (now - g_dis.startMs) / 1000UL;
+
+    uint16_t mv; int16_t ma, t;
+    if (!dischargeSample(&mv, &ma, &t)) {
+        // Кілька невдач поспіль — зупинка. Продовжувати розряд, не бачачи
+        // напруги, не можна: так пакет саджається в нуль.
+        if (++g_dis.readFails >= DISCHARGE_MAX_READ_FAILS) {
+            dischargeStop(DISR_NOREAD);
+            Serial.println("=== Discharge ABORT: DS2438 unreadable ===");
+        }
+        return;
+    }
+    g_dis.readFails = 0;
+    g_dis.polls++;
+
+    // Інтеграл РЕАЛЬНОГО струму: мА*год ×1000 = |мА| * мс / 3600.
+    // Свій шунт не потрібен — струм іде через вимірювальний резистор DS2438
+    // всередині пакета.
+    uint32_t absMa = (uint32_t)(ma < 0 ? -ma : ma);
+    g_dis.mahX1000 += (absMa * dtMs) / 3600UL;
+
+    g_dis.lastMv = mv; g_dis.lastMa = ma; g_dis.lastTempC10 = t;
+    g_dis.lastDca = impresDca(batteryDump2438);
+
+    Serial.printf("discharge: %u mV, %d mA, %.1f C, %lu mAh, %lus\n",
+                  mv, ma, t / 10.0f, (unsigned long)dischargeMah(), (unsigned long)g_dis.elapsedS);
+
+    if (mv <= DISCHARGE_HARD_MIN_MV) {
+        dischargeStop(DISR_HARD_MIN);
+        Serial.println("=== Discharge ABORT: below hard minimum ===");
+    } else if (t >= DISCHARGE_MAX_TEMP_C * 10) {
+        dischargeStop(DISR_TEMP);
+        Serial.println("=== Discharge ABORT: overheat ===");
+    } else if (mv <= g_dis.targetMv) {
+        dischargeStop(DISR_TARGET);
+        Serial.printf("=== Discharge DONE: %lu mAh in %lus ===\n",
+                      (unsigned long)dischargeMah(), (unsigned long)g_dis.elapsedS);
+    }
+}
+
+// Стан розряду у JSON — для веб-моніторингу й USB-клієнта.
+static String dischargeJson() {
+    String j = "{\"available\":" + String(dischargeAvailable() ? "true" : "false");
+    j += ",\"state\":\"" + String(g_dis.state == DIS_RUN ? "run"
+                               : g_dis.state == DIS_DONE ? "done"
+                               : g_dis.state == DIS_ABORT ? "abort" : "idle") + "\"";
+    j += ",\"reason\":\""; j += dischargeReasonText(g_dis.reason); j += "\"";
+    j += ",\"targetMv\":" + String(g_dis.targetMv);
+    j += ",\"startMv\":"  + String(g_dis.startMv);
+    j += ",\"mv\":"       + String(g_dis.lastMv);
+    j += ",\"ma\":"       + String(g_dis.lastMa);
+    j += ",\"tempC\":"    + String(g_dis.lastTempC10 / 10.0f, 1);
+    j += ",\"mah\":"      + String((unsigned long)dischargeMah());
+    j += ",\"dcaDelta\":" + String((int)(g_dis.lastDca - g_dis.startDca));
+    j += ",\"elapsedS\":" + String((unsigned long)g_dis.elapsedS);
+    j += ",\"polls\":"    + String(g_dis.polls);
+    j += ",\"expectedMa\":" + String(dischargeExpectedMa(g_dis.lastMv));
+    j += ",\"loadOhm\":"  + String(LOAD_OHM, 1);
+    j += "}";
+    return j;
+}
+
 // ------------------- Ремонт / правка / зміна ємності -------------------
 
 // Перерахунок "відновних" полів поточних дампів: контрольна сума заголовка
@@ -1446,6 +1579,30 @@ void handleRestore() {
 // Каталог операцій (operations.h) у JSON — щоб веб і десктопний клієнт малювали
 // ТОЙ САМИЙ список у тому самому порядку, що й екранне меню, і не тримали
 // власних (розбіжних) копій назв/описів.
+// Розряд: старт/зупинка/стан. Небезпечна операція, тому старт вимагає явного
+// підтвердження з клієнта, а будь-яка відмова повертається текстом причини.
+void handleDischargeStart() {
+    if (!requireAdmin()) return;
+    uint16_t target = server.hasArg("target") ? (uint16_t)server.arg("target").toInt() : 0;
+    const char *err = dischargeStart(target);
+    if (err) {
+        String j = "{\"status\":\"error\",\"message\":\""; j += err; j += "\"}";
+        server.send(400, "application/json", j);
+        return;
+    }
+    server.send(200, "application/json",
+        String("{\"status\":\"success\",\"message\":\"Розряд почато\",\"discharge\":") + dischargeJson() + "}");
+}
+void handleDischargeStop() {
+    if (!requireAdmin()) return;
+    dischargeStop(DISR_USER);
+    server.send(200, "application/json",
+        String("{\"status\":\"success\",\"message\":\"Розряд зупинено\",\"discharge\":") + dischargeJson() + "}");
+}
+void handleDischargeStatus() {
+    server.send(200, "application/json", dischargeJson());
+}
+
 void handleOps() {
     String j = "{\"status\":\"success\",\"ops\":[";
     bool first = true;
@@ -1607,6 +1764,9 @@ void setupWebServer() {
     server.on("/api/reboot", HTTP_POST, handleReboot);           // перезавантаження ESP32
     server.on("/api/templates", HTTP_GET, handleTemplates);      // список вшитих моделей
     server.on("/api/ops", HTTP_GET, handleOps);                  // каталог операцій (operations.h)
+    server.on("/api/discharge", HTTP_GET, handleDischargeStatus);        // стан розряду
+    server.on("/api/discharge/start", HTTP_POST, handleDischargeStart);  // почати розряд
+    server.on("/api/discharge/stop", HTTP_POST, handleDischargeStop);    // зупинити розряд
     server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
     server.on("/api/restore", HTTP_POST, handleRestore);         // відновлення еталона verbatim
     server.on("/api/wizard", HTTP_GET, handleWizard);            // Майстер: аналіз+план

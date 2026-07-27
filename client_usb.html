@@ -231,7 +231,20 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 
 <div class="zone zi">🔌 Крок 3 — калібрування на IMPRES-ЗП (обов’язково)</div>
 
-<div class="card" style="border-color:var(--ok)">
+<div class="card" style="border-color:var(--org)">
+      <h2>🪫 Розряд перед калібруванням</h2>
+      <div class="note i">Станція не бере АКБ на калібрування, поки бачить його зарядженим. Керований розряд до
+        <b>7.20 В</b> змушує її піти в повний цикл; заразом рахується реальна ємність нових банок (струм іде через
+        вимірювальний резистор DS2438 усередині пакета).</div>
+      <div class="note w">⚠️ Аварійна зупинка: напруга &lt; 6.00 В, перегрів 45 °C, стеля часу, втрата зв'язку з
+        монітором. Резистор гріється (~14 Вт на 5 Ом) — не лишайте без нагляду.</div>
+      <div class="row"><span class="k">Стан</span><span class="v" id="disSt">—</span></div>
+      <button class="btn b-warn" onclick="disStart()">🪫 ПОЧАТИ РОЗРЯД (до 7.2 В)</button>
+      <button class="btn" onclick="disStop()">⏹ ЗУПИНИТИ</button>
+      <button class="btn" onclick="disStatus()">🔄 Стан розряду</button>
+    </div>
+
+    <div class="card" style="border-color:var(--ok)">
       <h2>🔌 Калібрування на зарядній станції</h2>
       <div class="note i">Після ремонту навчена калібровка <b>порожня</b> — рація приймає пакет як фірмовий і
         просить калібрування. Поставте АКБ на оригінальну IMPRES-ЗП на повний цикл (заряд → розряд → заряд):
@@ -761,6 +774,28 @@ async function wizJournalDelete(serial){
   const r=await cmd('WIZDEL '+serial,8000);
   if(r&&r.ok){toast('Видалено'); wizJournalsLoad();} else toast('Помилка: '+((r&&r.err)||''));
 }
+// ---- керований розряд ------------------------------------------------------
+function disShow(d){
+  if(!d){$('disSt').textContent='—';return;}
+  if(!d.available){$('disSt').textContent='не налаштовано (LOAD_PIN)';return;}
+  const n={idle:'очікування',run:'іде розряд',done:'✅ готово — на IMPRES-ЗП',abort:'⛔ '+(d.reason||'аварія')}[d.state]||d.state;
+  $('disSt').textContent=n+' · '+(d.mv/1000).toFixed(2)+' В · '+d.ma+' мА · '+d.mah+' мА·год · '+d.tempC+' °C';
+}
+async function disStatus(){ if(!connected){toast('Підключіться');return;}
+  const r=await cmd('DISCHARGE ?',8000); disShow(r&&r.discharge); }
+async function disStart(){
+  if(!connected){toast('Підключіться');return;}
+  if(!confirm('🪫 Почати розряд до 7.2 В?\n\nНавантаження буде увімкнено, резистор нагріється.\nНе лишайте пристрій без нагляду.'))return;
+  await ensureAuth();
+  const r=await cmd('DISCHARGE 7200',15000);
+  if(r&&r.ok){toast('✅ Розряд почато');disShow(r.discharge);} else toast('Помилка: '+((r&&r.err)||''),'err');
+}
+async function disStop(){
+  if(!connected){toast('Підключіться');return;}
+  const r=await cmd('DISCHARGE STOP',10000);
+  if(r&&r.ok){toast('⏹ Розряд зупинено');disShow(r.discharge);} else toast('Помилка','err');
+}
+
 async function restoreBattery(verbatim){
   if(!connected){toast('Підключіться');return;}
   const model=$('restModel').value;

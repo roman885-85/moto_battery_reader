@@ -17,7 +17,8 @@ enum LedMode {
     LED_READ,      // читання чипа: зелений блимає ~3 Гц
     LED_WRITE,     // запис чипа: червоний+зелений почергово (увага!)
     LED_OK,        // успіх: зелений горить ~1.2 с, потім повернення в idle
-    LED_ERROR      // помилка: 4 швидких червоних блимання, потім повернення в idle
+    LED_ERROR,     // помилка: 4 швидких червоних блимання, потім повернення в idle
+    LED_DISCHARGE  // розряд навантаженням: ПЛАВНЕ дихання помаранчевим (зел.+черв.)
 };
 
 static LedMode  g_ledMode = LED_BOOT;   // поточний режим
@@ -57,6 +58,49 @@ inline void ledWrite(bool g, bool r) {
     digitalWrite(LED_RED_PIN,   r ? HIGH : LOW);
 }
 
+// --- ПЛАВНЕ помаранчеве «дихання» для режиму розряду --------------------
+// Помаранчевий = зелений + червоний разом. Щоб яскравість наростала й спадала
+// плавно, обидва світлодіоди керуються ШІМ-ом (LEDC). Канали окремі від буззера
+// (той на BUZZER_LEDC_CH) і від підсвітки кнопок.
+//
+// Плавність важлива не лише естетично: рівне/різке блимання в цьому проєкті вже
+// означає «читання» і «помилку», тож розряд мусить виглядати інакше — інакше
+// довгий процес легко переплутати зі збоєм.
+#define LED_BREATH_BITS 10                     // 0..1023
+#define LED_BREATH_FREQ 2000
+#define LED_BREATH_MS   3000UL                 // повний цикл «яскраво->темно», мс
+static bool g_ledPwmOn = false;                // чи захоплені піни під ШІМ
+
+inline void ledPwmAttach() {
+    if (g_ledPwmOn) return;
+    ledcAttach(LED_GREEN_PIN, LED_BREATH_FREQ, LED_BREATH_BITS);
+    ledcAttach(LED_RED_PIN,   LED_BREATH_FREQ, LED_BREATH_BITS);
+    g_ledPwmOn = true;
+}
+inline void ledPwmDetach() {
+    if (!g_ledPwmOn) return;
+    ledcDetach(LED_GREEN_PIN);
+    ledcDetach(LED_RED_PIN);
+    pinMode(LED_GREEN_PIN, OUTPUT);
+    pinMode(LED_RED_PIN, OUTPUT);
+    digitalWrite(LED_GREEN_PIN, LOW);
+    digitalWrite(LED_RED_PIN, LOW);
+    g_ledPwmOn = false;
+}
+// Трикутна хвиля 0..max..0 за LED_BREATH_MS. Червоний трохи притлумлений:
+// на більшості двоколірних складок червоний кристал яскравіший за зелений, і
+// без корекції «помаранчевий» виходить червоним.
+inline void ledBreathe(unsigned long now) {
+    ledPwmAttach();
+    unsigned long ph = now % LED_BREATH_MS;
+    unsigned long half = LED_BREATH_MS / 2;
+    uint32_t maxv = (1UL << LED_BREATH_BITS) - 1;
+    uint32_t lvl = (ph < half) ? (uint32_t)(ph * maxv / half)
+                               : (uint32_t)((LED_BREATH_MS - ph) * maxv / half);
+    ledcWrite(LED_GREEN_PIN, lvl);
+    ledcWrite(LED_RED_PIN,   lvl * 2 / 3);
+}
+
 // Стан підсвітки кнопок за поточним режимом. Під час ОПЕРАЦІЙ (читання/запис)
 // підсвітка світиться РІВНО (без блимання) — «зайнято, працюю»; блимання
 // лишається ЛИШЕ для помилки (тривожний алерт). Так під час виконання команди
@@ -69,6 +113,7 @@ inline void btnLedByMode(LedMode m, bool phase) {
         case LED_ERROR: on = phase; break;   // помилка — тривожне блимання (алерт)
         case LED_BOOT:  on = false; break;   // старт — темно
         case LED_OK:    on = true;  break;   // успіх — рівне світіння
+        case LED_DISCHARGE: on = phase; break; // розряд — повільне дихання разом із LED
         case LED_IDLE:
         default:        on = true;  break;   // готовий — рівне світіння (підсвітка)
     }
@@ -81,6 +126,7 @@ inline void btnLedByMode(LedMode m, bool phase) {
 // індикатор застрягав би в миготінні читання/запису і не повертався в спокій).
 inline void ledSet(LedMode m) {
     if (m == g_ledMode) return;
+    if (g_ledPwmOn && m != LED_DISCHARGE) ledPwmDetach();   // повернути піни у звичайний режим
     if (m == LED_IDLE || m == LED_BOOT) g_ledBase = m;
     g_ledMode = m;
     g_ledT0 = g_ledLast = millis();
@@ -98,6 +144,13 @@ inline void ledTask() {
     switch (g_ledMode) {
         case LED_BOOT:
             ledWrite(false, false);
+            break;
+
+        case LED_DISCHARGE:
+            // Плавне помаранчеве дихання — процес довгий (десятки хвилин),
+            // тож індикація має читатись як «іде робота», а не як помилка.
+            ledBreathe(now);
+            if (now - g_ledLast > LED_BREATH_MS / 2) { g_ledPhase = !g_ledPhase; g_ledLast = now; }
             break;
 
         case LED_IDLE:

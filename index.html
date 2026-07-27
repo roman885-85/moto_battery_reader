@@ -326,6 +326,7 @@
             <div class="row"><span class="k">Стан</span><span class="v" id="disState">—</span></div>
             <div class="row"><span class="k">Напруга</span><span class="v" id="disMv">—</span></div>
             <div class="row"><span class="k">Струм (DS2438)</span><span class="v" id="disMa">—</span></div>
+            <div class="row"><span class="k">Обмеження струму</span><span class="v" id="disLim">—</span></div>
             <div class="row"><span class="k">Віддано (інтеграл)</span><span class="v" id="disMah">—</span></div>
             <div class="row"><span class="k">Віддано (лічильник DCA)</span><span class="v" id="disDca">—</span></div>
             <div class="row"><span class="k">Паливомір ICA</span><span class="v" id="disIca">—</span></div>
@@ -948,8 +949,8 @@ async function setModel(){
 }
 
 // ---- керований розряд: старт/стоп + живий моніторинг ----------------------
-// Поки розряд іде, опитуємо стан раз на 5 с. Пристрій знімає показання раз на
-// 10 с (DISCHARGE_POLL_MS), частіше сенсу немає.
+// Поки розряд іде, опитуємо стан раз на 5 с — з тим самим періодом, що й сам
+// пристрій знімає показання (DISCHARGE_POLL_MS), частіше сенсу немає.
 let disTimer=null;
 function disFmtT(s){const h=Math.floor(s/3600),m=Math.floor(s/60)%60,x=s%60;
     return h+':'+String(m).padStart(2,'0')+':'+String(x).padStart(2,'0');}
@@ -961,7 +962,13 @@ async function disPoll(){
                   done:['✅ готово — на IMPRES-ЗП','#22c55e'],abort:['⛔ '+(d.reason||'аварія'),'#ef4444']}[d.state];
         if(st){$('disState').textContent=st[0];$('disState').style.color=st[1];}
         $('disMv').textContent=(d.mv/1000).toFixed(2)+' В (ціль '+(d.targetMv/1000).toFixed(2)+' В)';
-        $('disMa').textContent=d.ma+' мА · '+d.watts+' Вт (очік. '+d.expectedMa+' мА на '+d.loadOhm+' Ом)';
+        // Струм СЕРЕДНІЙ: ключ працює ШІМом, тож пік (струм при 100 %) і те, що
+        // насправді тече, — різні числа. Показуємо обидва плюс уставку.
+        $('disMa').textContent=d.ma+' мА · '+d.watts+' Вт';
+        $('disLim').textContent = d.pwm
+            ? ('уставка '+d.setMa+' мА ('+d.bandLoMa+'–'+d.bandHiMa+') · ШІМ '+d.duty+' % · пік '+d.peakMa+' мА')
+            : ('⚠ ШІМ недоступний — струм не обмежується (пік '+d.peakMa+' мА на '+d.loadOhm+' Ом)');
+        $('disLim').style.color = d.pwm ? (d.inBand?'var(--ok)':'#eab308') : '#ef4444';
         $('disMah').textContent=d.mah+' мА·год';
         // DCA — апаратний інтегратор самого DS2438: рахує неперервно, тож
         // служить перехресною перевіркою нашого інтеграла по опитуваннях.
@@ -975,7 +982,7 @@ async function disPoll(){
 }
 async function disStart(){
     const pw=$('pwDis').value, t=parseInt($('disTarget').value)||7200;
-    if(!confirm('🪫 Почати розряд до '+(t/1000).toFixed(2)+' В?\n\nНавантаження буде увімкнено; резистор нагріється. Не залишайте пристрій без нагляду.\nЗупинити можна кнопкою «ЗУПИНИТИ» або довгим натисканням на пристрої.'))return;
+    if(!confirm('🪫 Почати розряд до '+(t/1000).toFixed(2)+' В?\n\nСтрум обмежується ШІМом: 1000 мА на повному заряді, далі лінійно до 300 мА на 7.20 В.\nНавантаження буде увімкнено; резистор нагріється. Не залишайте пристрій без нагляду.\nЗупинити можна кнопкою «ЗУПИНИТИ» або довгим натисканням на пристрої.'))return;
     prog(true,'Запуск розряду...');
     try{
         const r=await postForm('/api/discharge/start',{password:pw,target:t});

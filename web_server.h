@@ -958,11 +958,23 @@ const char *dischargeStart(uint16_t targetMv) {
     // пакет між читаннями неактивний: струм тече тільки в моменти опитування, і
     // розряд фактично не йде (саме це й спостерігалось).
     battery.holdEnable(true);
-    loadOn();
+
+    // Початкова шпаруватість — З РОЗРАХУНКУ, не 100 %. Інакше перші 5 секунд
+    // (до першого виміру піка) пакет тягнув би повні 1.4..1.7 А, тобто рівно те,
+    // від чого ми йдемо. Оцінка піка за законом Ома завищена, тож розрахована
+    // шпаруватість свідомо занижена — стартуємо м'якше, ніж треба, а перший
+    // вимір це виправить.
+    g_dis.setMa   = dischargeSetpointMa(mv);
+    g_dis.peakMa  = (uint16_t)dischargeExpectedMa(mv);
+    g_dis.dutyPct = dischargeDutyFor(g_dis.peakMa, g_dis.setMa);
+    loadDuty(g_dis.dutyPct);
+
     ledSet(LED_DISCHARGE);
     dischargeMarkDirty(2);                 // увійшли в режим -> повна перемальовка
-    Serial.printf("\n=== Discharge started: %u -> %u mV, expected %d mA ===\n",
-                  mv, targetMv, dischargeExpectedMa(mv));
+    Serial.printf("\n=== Discharge started: %u -> %u mV, setpoint %u mA, "
+                  "duty %u%% (peak est. %u mA%s) ===\n",
+                  mv, targetMv, g_dis.setMa, g_dis.dutyPct, g_dis.peakMa,
+                  dischargePwmOk() ? "" : ", PWM UNAVAILABLE");
     return nullptr;
 }
 
@@ -984,8 +996,37 @@ inline void dischargeTask() {
     g_dis.lastPollMs = now;
     g_dis.elapsedS   = (now - g_dis.startMs) / 1000UL;
 
-    uint16_t mv; int16_t ma, t;
-    if (!dischargeSample(&mv, &ma, &t)) {
+    // Інтеграл ємності за інтервал, що ЩОЙНО минув. Рахуємо ДО оновлення стану:
+    // весь цей час діяли попередні пік і шпаруватість, тобто тік середній струм
+    // pick*duty, а не той, який ми зараз виміряємо.
+    g_dis.mahX1000 += ((uint32_t)dischargeAvgMa(g_dis) * dtMs) / 3600UL;
+
+    // --- крок 1: НАПРУГА і температура при ЗНЯТОМУ навантаженні --------------
+    //  Міряти напругу під струмом не можна: просадка на внутрішньому опорі тим
+    //  більша, чим розрядженіший пакет, і саме вона передчасно «продавлювала» б
+    //  напругу до цілі — розряд обривався б, не добравши ємності. Тому на час
+    //  виміру ключ закривається. 80 мс, звісно, не дають повної релаксації, але
+    //  прибирають миттєву омічну просадку — головну складову — і, головне,
+    //  роблять вимір однаковим від початку до кінця розряду.
+    uint16_t mv = 0; int16_t ma = 0, t = 0;
+    loadOff();
+    delay(DISCHARGE_PEAK_SETTLE_MS);
+    bool okV = dischargeSample(&mv, &ma, &t);
+
+    // --- крок 2: ПІК струму при повністю відкритому ключі --------------------
+    //  DS2438 віддає струм останнього перетворення (~27 мс) і нічого не знає про
+    //  ШІМ: під шпаруватістю невідомо, у яку фазу те перетворення попало. Тому
+    //  міряємо в однозначній точці — на 100 % — і отримуємо ПІК, з якого вже
+    //  однозначно рахується все інше.
+    uint16_t mvLoaded = 0; int16_t peakRaw = 0, tLoaded = 0;
+    loadFull();
+    delay(DISCHARGE_PEAK_SETTLE_MS);
+    bool okI = dischargeSample(&mvLoaded, &peakRaw, &tLoaded);
+    // Ключ НЕГАЙНО назад у робочу шпаруватість — повністю відкритим його не
+    // лишаємо ні на мить довше, ніж триває вимір.
+    loadDuty(g_dis.dutyPct);
+
+    if (!okV || !okI) {
         // Кілька невдач поспіль — зупинка. Продовжувати розряд, не бачачи
         // напруги, не можна: так пакет саджається в нуль.
         if (++g_dis.readFails >= DISCHARGE_MAX_READ_FAILS) {
@@ -997,20 +1038,43 @@ inline void dischargeTask() {
     g_dis.readFails = 0;
     g_dis.polls++;
 
-    // Інтеграл РЕАЛЬНОГО струму: мА*год ×1000 = |мА| * мс / 3600.
-    // Свій шунт не потрібен — струм іде через вимірювальний резистор DS2438
-    // всередині пакета.
-    uint32_t absMa = (uint32_t)(ma < 0 ? -ma : ma);
-    g_dis.mahX1000 += (absMa * dtMs) / 3600UL;
+    // --- крок 3: перерахунок уставки і шпаруватості --------------------------
+    uint16_t peak = (uint16_t)(peakRaw < 0 ? -peakRaw : peakRaw);
+    int      est  = dischargeExpectedMa(mv);
+    // Захист від «датчик мовчить» (облік струму в DS2438 вимкнено, IAD=0 —
+    // тоді регістр струму завжди 0). Повірити нулю означало б виставити 100 %
+    // шпаруватості й розряджати повним струмом саме тоді, коли ми його не
+    // бачимо. Тому неправдоподібно малий пік замінюємо оцінкою за законом Ома:
+    // вона завищена, отже шпаруватість вийде занижена — помиляємось у безпечний бік.
+    if (peak < (uint16_t)(est / 4)) peak = (uint16_t)est;
 
-    g_dis.lastMv = mv; g_dis.lastMa = ma; g_dis.lastTempC10 = t;
+    g_dis.peakMa  = peak;
+    g_dis.setMa   = dischargeSetpointMa(mv);
+    g_dis.dutyPct = dischargeDutyFor(peak, g_dis.setMa);
+    loadDuty(g_dis.dutyPct);
+
+    g_dis.lastMv = mv;
+    // lastMa — СЕРЕДНІЙ струм навантаження (пік * шпаруватість), зі знаком «-»
+    // як у розряду. Саме він тече між вимірами, саме він потрібен для потужності
+    // й для ємності; сам пік показуємо окремо.
+    g_dis.lastMa = (int16_t)(-(int32_t)dischargeAvgMa(g_dis));
+    g_dis.lastTempC10 = t;
     // Лічильники ВБУДОВАНОГО датчика струму: DCA інтегрує розряд апаратно,
     // ICA — поточний паливомір. Обидва читаються з того ж кадру DS2438.
     g_dis.lastDca = impresDca(batteryDump2438);
     g_dis.lastIca = batteryDump2438[12];
 
-    Serial.printf("discharge: %u mV, %d mA, %.1f W, %.1f C, %lu mAh (DCA %lu), ICA %u, %lus\n",
-                  mv, ma, dischargeWattsX10(mv, ma) / 10.0f, t / 10.0f,
+    // sag — просадка напруги під ПОВНИМ струмом (різниця між кроками 1 і 2).
+    // Це фактично внутрішній опір пакета: sag/peak. Різке зростання за час
+    // розряду — ознака поганої пайки або слабкої банки, тож у журнал воно варте
+    // більше, ніж здається. (Струм і температура кроку 1 нам не потрібні:
+    // під знятим навантаженням струм ~0, а температуру беремо з того ж кроку.)
+    (void)ma; (void)tLoaded;
+    int sag = (int)mv - (int)mvLoaded;
+    Serial.printf("discharge: %u mV (sag %d mV), avg %d mA (peak %u, set %u, duty %u%%), "
+                  "%.1f W, %.1f C, %lu mAh (DCA %lu), ICA %u, %lus\n",
+                  mv, sag, g_dis.lastMa, g_dis.peakMa, g_dis.setMa, g_dis.dutyPct,
+                  dischargeWattsX10(mv, g_dis.lastMa) / 10.0f, t / 10.0f,
                   (unsigned long)dischargeMah(), (unsigned long)dischargeDcaMah(),
                   g_dis.lastIca, (unsigned long)g_dis.elapsedS);
     dischargeMarkDirty(1);                 // нові показання -> оновити екран
@@ -1051,6 +1115,14 @@ static String dischargeJson() {
     j += ",\"polls\":"    + String(g_dis.polls);
     j += ",\"expectedMa\":" + String(dischargeExpectedMa(g_dis.lastMv));
     j += ",\"loadOhm\":"  + String(LOAD_OHM, 1);
+    // Обмеження струму ШІМом: уставка за напругою, виміряний пік, шпаруватість.
+    j += ",\"setMa\":"    + String(g_dis.setMa);
+    j += ",\"peakMa\":"   + String(g_dis.peakMa);
+    j += ",\"duty\":"     + String(g_dis.dutyPct);
+    j += ",\"inBand\":"   + String(dischargeInBand(g_dis) ? "true" : "false");
+    j += ",\"bandLoMa\":" + String((uint32_t)g_dis.setMa * DISCHARGE_BAND_LO_PCT / 100u);
+    j += ",\"bandHiMa\":" + String((uint32_t)g_dis.setMa * DISCHARGE_BAND_HI_PCT / 100u);
+    j += ",\"pwm\":"      + String(dischargePwmOk() ? "true" : "false");
     j += "}";
     return j;
 }

@@ -5,6 +5,7 @@
 #include "impres_format.h"
 #include "battery_reader.h"
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — для дій «Новий АКБ» у меню
+#include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
 
 // Стан, яке відображаємо (заповнюється з .ino і обробників веб-сервера).
 extern bool hasDump;
@@ -767,62 +768,32 @@ inline void drawPageRaw2433() { drawRawPage((DISP_H >= 128) ? "DS2433 дамп 0
 
 // Базові дії (індекси 0..4) + по одній дії «Новий АКБ» на кожен вшитий шаблон
 // (індекси 5..). Загальну к-сть дій рахує numActions() — вона динамічна.
-#define NUM_BASE_ACTIONS 7    // Скидання, Ремонт, Очистка, Стерти2433, Перезав., Рекалібр., Стерти2438
-// Після базових дій — по ДВІ дії на кожен шаблон: «Новий АКБ <модель>» (init,
-// індекси NUM_BASE..+COUNT-1) і «Відновити <модель>» (verbatim, +COUNT..+2*COUNT-1).
-inline int numActions() { return NUM_BASE_ACTIONS + 2 * BATTERY_TEMPLATE_COUNT; }
+// Склад і порядок операцій задає operations.h (спільний для всіх поверхонь).
+inline int numActions() { return opCount(); }
 
 // Сторінка «Дії»: показуємо ОДНУ обрану операцію крупно + опис + попередження.
 // [<] коротко — наступна операція; [<] утримати (0.8с) — ВИКОНАТИ; [>] — вихід.
 inline void drawPageActions() {
-    static const char *nm[NUM_BASE_ACTIONS] = { "Скидання", "Ремонт", "Очистка", "СТЕРТИ 2433", "Перезавантаж.", "Рекалібр.", "СТЕРТИ 2438" };
-    static const char *d1[NUM_BASE_ACTIONS] = { "обнулити лічильники",
-                                                "полагодити суми та",
-                                                "стерти все, окрім",
-                                                "ПОВНЕ стирання чіпа",
-                                                "рестарт пристрою",
-                                                "після заміни банок:",
-                                                "ПОВНЕ стирання чіпа" };
-    static const char *d2[NUM_BASE_ACTIONS] = { "заряд/розряд, знос",
-                                                "дзеркало калібрув.",
-                                                "моделі/ID/калібрув.",
-                                                "DS2433 (крайній!)",
-                                                "ESP32 (Wi-Fi/веб)",
-                                                "стерти learned, на ЗП",
-                                                "DS2438 (крайній!)" };
-    static const bool  dg[NUM_BASE_ACTIONS] = { false, false, false, true, false, false, true };
-    int sel = g_actionSel;
-    int total = numActions();
-
-    const char *name, *l1, *l2; bool danger;
-    char nbuf[26];
-    if (sel < NUM_BASE_ACTIONS) {
-        name = nm[sel]; l1 = d1[sel]; l2 = d2[sel]; danger = dg[sel];
-    } else {
-        int rel = sel - NUM_BASE_ACTIONS;
-        if (rel < BATTERY_TEMPLATE_COUNT) {         // «Новий АКБ <модель>»
-            snprintf(nbuf, sizeof(nbuf), "Новий %s", BATTERY_TEMPLATES[rel].name);
-            name = nbuf; l1 = "ініціаліз. порожній"; l2 = "чіп як новий АКБ"; danger = true;
-        } else {                                    // «Відновити <модель>» (verbatim)
-            int ti = rel - BATTERY_TEMPLATE_COUNT;
-            snprintf(nbuf, sizeof(nbuf), "Віднов %s", BATTERY_TEMPLATES[ti].name);
-            name = nbuf; l1 = "еталон байт-у-байт"; l2 = "з навч. калібровкою"; danger = true;
-        }
-    }
+    // Назви/описи/небезпека — з operations.h (той самий каталог, що в кольоровому
+    // екрані, вебі й USB-клієнті). Локального списку дій більше немає.
+    int sel = g_actionSel, total = numActions();
+    const char *name, *l1, *l2; uint8_t danger; char nbuf[26];
+    opInfo(sel, &name, &l1, &l2, &danger, nbuf, sizeof(nbuf));
 
     char t[20]; snprintf(t, sizeof(t), "Дія  %d/%d", sel + 1, total);
     drawHeader(t);
 
     // Назва обраної операції — крупним шрифтом.
     u8g2.setFont(u8g2_font_6x12_t_cyrillic);
-    char nml[30]; snprintf(nml, sizeof(nml), "%s%s", danger ? "! " : "> ", name);
+    char nml[34]; snprintf(nml, sizeof(nml), "%s%s", (danger == OPD_WIPE) ? "! " : "> ", name);
     u8g2.drawUTF8(0, HEAD_LINE + 13, nml);
 
     // Опис.
     u8g2.setFont(BODY_FONT);
     u8g2.drawUTF8(0, HEAD_LINE + 25, l1);
     u8g2.drawUTF8(0, HEAD_LINE + 34, l2);
-    if (danger) u8g2.drawUTF8(0, HEAD_LINE + 42, "!! НЕЗВОРОТНЬО !!");
+    if (danger == OPD_WIPE)          u8g2.drawUTF8(0, HEAD_LINE + 42, "!! НЕЗВОРОТНЬО !!");
+    else if (sel == OP_CELLSWAP)     u8g2.drawUTF8(0, HEAD_LINE + 42, "далі -> на IMPRES-ЗП");
 
     // Підказка керування знизу.
     u8g2.drawHLine(0, FOOT_HL, DISP_W);

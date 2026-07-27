@@ -8,6 +8,7 @@
 #include "battery_reader.h"
 #include "settings.h"
 #include "impres_format.h"     // структура прошивки IMPRES (єдине джерело правди)
+#include "operations.h"        // єдиний каталог операцій для всіх поверхонь
 #include "leds.h"
 #include "display.h"
 #include "templates.h"
@@ -1406,6 +1407,38 @@ void handleRestore() {
 }
 
 // Список доступних вшитих моделей-шаблонів (для випадаючого списку у вебі/USB).
+// Каталог операцій (operations.h) у JSON — щоб веб і десктопний клієнт малювали
+// ТОЙ САМИЙ список у тому самому порядку, що й екранне меню, і не тримали
+// власних (розбіжних) копій назв/описів.
+void handleOps() {
+    String j = "{\"status\":\"success\",\"ops\":[";
+    bool first = true;
+    auto add = [&](const char *key, const char *title, const char *detail,
+                   int danger, const char *model) {
+        if (!first) j += ",";
+        first = false;
+        j += "{\"key\":\""; j += key; j += "\",\"title\":\""; j += title;
+        j += "\",\"detail\":\""; j += detail;
+        j += "\",\"danger\":" + String(danger);
+        j += ",\"model\":\""; j += (model ? model : ""); j += "\"}";
+    };
+    for (int i = 0; i < OP_BASE_COUNT; i++)
+        add(OP_DOC[i].key, OP_DOC[i].title, OP_DOC[i].detail, OP_TEXT[i].danger, nullptr);
+    for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++)
+        add("model", "Записати модельну частину еталона",
+            "Ідентичність, розрядна крива, COPYRIGHT, заводська таблиця й запис моделі. Навчений калібрувальний хвіст НЕ переноситься — інакше пакет отримав би чужу калібровку.",
+            OPD_WRITE, BATTERY_TEMPLATES[t].name);
+    for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++)
+        add("new", "Новий АКБ з порожнього чипа",
+            "Записує модельну частину еталона й приводить монітор у стан нового пакета. Навчена калібровка лишається порожньою — її запише зарядна станція під час калібрування.",
+            OPD_WIPE, BATTERY_TEMPLATES[t].name);
+    for (int e = 0; e < OP_EXPERT_COUNT; e++)
+        add(OP_DOC_EXPERT[e].key, OP_DOC_EXPERT[e].title, OP_DOC_EXPERT[e].detail,
+            OP_TEXT_EXPERT[e].danger, nullptr);
+    j += "]}";
+    server.send(200, "application/json", j);
+}
+
 void handleTemplates() {
     String j = "{\"status\":\"success\",\"models\":[";
     for (int i = 0; i < BATTERY_TEMPLATE_COUNT; i++) {
@@ -1537,6 +1570,7 @@ void setupWebServer() {
     server.on("/api/writehex", HTTP_POST, handleWriteHex);       // сира запис з редактора
     server.on("/api/reboot", HTTP_POST, handleReboot);           // перезавантаження ESP32
     server.on("/api/templates", HTTP_GET, handleTemplates);      // список вшитих моделей
+    server.on("/api/ops", HTTP_GET, handleOps);                  // каталог операцій (operations.h)
     server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
     server.on("/api/restore", HTTP_POST, handleRestore);         // відновлення еталона verbatim
     server.on("/api/wizard", HTTP_GET, handleWizard);            // Майстер: аналіз+план

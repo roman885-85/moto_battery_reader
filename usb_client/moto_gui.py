@@ -453,51 +453,44 @@ class App:
         return widget_builder(fr)
 
     def _build_fw(self):
+        # Порядок блоків повторює operations.h і веб-інтерфейс: спершу копія,
+        # потім РЕМОНТ (головна операція — перша), далі обов'язковий крок на ЗП,
+        # обслуговування, ідентичність і лише наприкінці — незворотні дії.
         p = self._scroll_area(self.tabFw)
 
-        b1 = ttk.LabelFrame(p, text="Резервна копія (спочатку!)", padding=8); b1.pack(fill="x", pady=4)
+        b1 = ttk.LabelFrame(p, text="Крок 1 — резервна копія (робіть ЗАВЖДИ перед записом)", padding=8); b1.pack(fill="x", pady=4)
         ttk.Button(b1, text="🔍 Зчитати АКБ", command=self.do_read).pack(side="left", padx=3)
         ttk.Button(b1, text="⬇ Копія DS2433", command=lambda: self.save_dump("GET33", 512, "ds2433.bin")).pack(side="left", padx=3)
         ttk.Button(b1, text="⬇ Копія DS2438", command=lambda: self.save_dump("GET38", 64, "ds2438.bin")).pack(side="left", padx=3)
 
-        b2 = ttk.LabelFrame(p, text="Обслуговування (безпечно для ідентичності)", padding=8); b2.pack(fill="x", pady=4)
-        ttk.Button(b2, text="♻️ Скидання лічильників", command=lambda: self.simple_op("RESET", "Скинути лічильники і записати у чіп?")).pack(side="left", padx=3)
-        ttk.Button(b2, text="🛠 Ремонт цілісності", command=lambda: self.simple_op("REPAIR", "Відновити цілісність і записати?")).pack(side="left", padx=3)
-
-        b2b = ttk.LabelFrame(p, text="Ремонт після заміни елементів (→ калібрування на ЗП)", padding=8); b2b.pack(fill="x", pady=4)
+        b2b = ttk.LabelFrame(p, text="Крок 2 — РЕМОНТ. Після заміни елементів починайте звідси", padding=8); b2b.pack(fill="x", pady=4)
         ttk.Label(b2b, text="Для АКБ, яку рація бачить «невідома» / не бере на калібрування після заміни банок.\n"
                             "У DS2433 стирається навчений калібрувальний хвіст 0x18A–0x1FF (виміряні параметри\n"
                             "старих/донорських банок). Ідентичність, крива, заводська таблиця й ЗАПИС МОДЕЛІ\n"
                             "лишаються. У DS2438 обнуляються лише лічильники; конфіг, калібрування АЦП і дзеркало\n"
-                            "зберігаються, паливомір — за напругою. Далі обов'язково калібрування на IMPRES-ЗП.",
+                            "зберігаються, паливомір — за напругою.",
                   foreground="#b9bd86", justify="left").pack(anchor="w")
         ttk.Button(b2b, text="🔧 Ремонт після заміни елементів",
                    command=lambda: self.simple_op("RECAL", "Ремонт після заміни елементів?\nСтирає навчений хвіст DS2433 (0x18A–0x1FF) і обнуляє лічильники DS2438.\nМодель, крива й ідентичність лишаються. Далі — калібрування на IMPRES-ЗП.", 25.0)).pack(anchor="w", pady=3)
         ttk.Button(b2b, text="🧹 Глибока чистка",
                    command=lambda: self.simple_op("RECAL DEEP", "Глибока чистка?\nДодатково стирає навчені записи ємності (0x153–0x189) і журнал використання.\nВмикайте, лише якщо після звичайного ремонту ЗП тримається за стару ємність.", 25.0)).pack(anchor="w", pady=3)
+        ttk.Button(b2b, text="🛠 Ремонт цілісності (контрольні суми + дзеркало)",
+                   command=lambda: self.simple_op("REPAIR", "Відновити цілісність і записати?")).pack(anchor="w", pady=3)
 
-        b3 = ttk.LabelFrame(p, text="Модель (ручний запис)", padding=8); b3.pack(fill="x", pady=4)
-        self.eModel = self._row(b3, "Модель (3–9, A–Z0–9):", lambda fr: self._entry(fr, 12))
-        ttk.Button(b3, text="💾 Записати модель", command=self.set_model).pack(anchor="w", pady=2)
-
-        b4 = ttk.LabelFrame(p, text="🆕 Новий акумулятор (порожній чип)", padding=8); b4.pack(fill="x", pady=4)
-        self.cbInit = self._row(b4, "Модель-еталон:", lambda fr: self._combo(fr, 18))
-        self.eInitMah = self._row(b4, "Ємність, мА·год:", lambda fr: self._entry(fr, 10, "2500"))
-        ttk.Button(b4, text="🆕 Записати новий АКБ (DS2433+DS2438)", command=self.init_battery).pack(anchor="w", pady=2)
-
-        b4r = ttk.LabelFrame(p, text="🛠️ Відновити еталон (ремонт з нуля, verbatim)", padding=8); b4r.pack(fill="x", pady=4)
-        self.cbRest = self._row(b4r, "Модель-еталон:", lambda fr: self._combo(fr, 18))
-        ttk.Label(b4r, text="Пише genuine-еталон байт-у-байт з навченою калібровкою.\n"
-                           "Нічого не обнуляє. Працює й на порожній/битій мікросхемі.",
+        b2c = ttk.LabelFrame(p, text="Крок 3 — калібрування на IMPRES-ЗП (обов'язково)", padding=8); b2c.pack(fill="x", pady=4)
+        ttk.Label(b2c, text="Після ремонту навчена калібровка порожня — рація приймає пакет як фірмовий і просить\n"
+                            "калібрування. Поставте АКБ на оригінальну IMPRES-ЗП на повний цикл (заряд → розряд →\n"
+                            "заряд): саме станція виміряє нові банки й запише калібровку в 0x18A–0x1FF.\n"
+                            "Прошивкою цей крок не замінюється.",
                   foreground="#b9bd86", justify="left").pack(anchor="w")
-        ttk.Button(b4r, text="🛠️ Відновити еталон (DS2433+DS2438)", command=self.restore_battery).pack(anchor="w", pady=2)
 
-        b5 = ttk.LabelFrame(p, text="Заряд / здоров'я", padding=8); b5.pack(fill="x", pady=4)
+        b2 = ttk.LabelFrame(p, text="Обслуговування (безпечно для ідентичності)", padding=8); b2.pack(fill="x", pady=4)
+        ttk.Button(b2, text="♻️ Скидання лічильників", command=lambda: self.simple_op("RESET", "Обнулити лічильники DS2438 (ETM/CCA/DCA)?\nНавчену калібровку й ідентичність не чіпає.")).pack(side="left", padx=3)
+        ttk.Button(b2, text="🧹 Очистити дані (лишити ID/калібр.)", command=lambda: self.simple_op("CLEAN", "Стерти дані використання, лишивши ID/калібрування?")).pack(side="left", padx=3)
+
+        b5 = ttk.LabelFrame(p, text="Заряд", padding=8); b5.pack(fill="x", pady=4)
         self.eMah = self._row(b5, "Заряд, мА·год:", lambda fr: self._entry(fr, 10, "0"))
         ttk.Button(b5, text="💾 Записати мА·год", command=self.set_mah).pack(anchor="w", pady=2)
-        self.eCap = self._row(b5, "Ємність/здоров'я, %:", lambda fr: self._entry(fr, 10, "100"))
-        ttk.Button(b5, text="💾 Записати %", command=self.set_cap).pack(anchor="w", pady=2)
-        # Рівень заряду з напруги (7.0В=0%..8.4В=100%) або вручну %.
         self.eChg = self._row(b5, "Заряд, %:", lambda fr: self._entry(fr, 10, ""))
         cf = ttk.Frame(b5); cf.pack(anchor="w", pady=2)
         ttk.Button(cf, text="⚡ Заряд по напрузі (авто)", command=self.set_charge_auto).pack(side="left", padx=2)
@@ -507,8 +500,32 @@ class App:
         self.eEtmDate = self._row(b5c, "Дата (YYYY-MM-DD):", lambda fr: self._entry(fr, 12))
         ttk.Button(b5c, text="📅 Записати дату (ETM)", command=self.set_etm).pack(anchor="w", pady=2)
 
+        b3 = ttk.LabelFrame(p, text="Ідентичність — модель", padding=8); b3.pack(fill="x", pady=4)
+        self.eModel = self._row(b3, "Модель (3–9, A–Z0–9):", lambda fr: self._entry(fr, 12))
+        ttk.Button(b3, text="💾 Записати модель", command=self.set_model).pack(anchor="w", pady=2)
+
+        b4r = ttk.LabelFrame(p, text="🛠️ Відновити модельну частину еталона", padding=8); b4r.pack(fill="x", pady=4)
+        self.cbRest = self._row(b4r, "Модель-еталон:", lambda fr: self._combo(fr, 18))
+        ttk.Label(b4r, text="Пише ідентичність 0x000–0x065, криву, COPYRIGHT, заводську таблицю й запис моделі.\n"
+                           "Навчений хвіст 0x18A–0x1FF лишається порожнім — його запише зарядна станція.\n"
+                           "Працює й на порожній/битій мікросхемі.",
+                  foreground="#b9bd86", justify="left").pack(anchor="w")
+        ttk.Button(b4r, text="🛠️ Відновити модельну частину (DS2433+DS2438)", command=self.restore_battery).pack(anchor="w", pady=2)
+        ttk.Button(b4r, text="🧪 Байт-у-байт (ручний режим, для аналізу)", command=self.restore_battery_verbatim).pack(anchor="w", pady=2)
+
+        b4 = ttk.LabelFrame(p, text="🆕 Новий акумулятор (порожній чип)", padding=8); b4.pack(fill="x", pady=4)
+        self.cbInit = self._row(b4, "Модель-еталон:", lambda fr: self._combo(fr, 18))
+        self.eInitMah = self._row(b4, "Заряд, мА·год:", lambda fr: self._entry(fr, 10, "1000"))
+        ttk.Button(b4, text="🆕 Записати новий АКБ (DS2433+DS2438)", command=self.init_battery).pack(anchor="w", pady=2)
+
+        b8 = ttk.LabelFrame(p, text="🧪 Ручний режим / експерт", padding=8); b8.pack(fill="x", pady=4)
+        ttk.Label(b8, text="Строк служби в прошивці НЕ зберігається — рація рахує його сама. Поле нижче править\n"
+                           "байт у ЗАВОДСЬКІЙ таблиці моделі (0x129) і показань станції не змінить.",
+                  foreground="#b9bd86", justify="left").pack(anchor="w")
+        self.eCap = self._row(b8, "Байт заводської таблиці, %:", lambda fr: self._entry(fr, 10, "100"))
+        ttk.Button(b8, text="💾 Записати %", command=self.set_cap).pack(anchor="w", pady=2)
+
         b6 = ttk.LabelFrame(p, text="⛔ Небезпечна зона (незворотно!)", padding=8); b6.pack(fill="x", pady=4)
-        ttk.Button(b6, text="🧹 Очистити дані (лишити ID/калібр.)", command=lambda: self.simple_op("CLEAN", "Стерти всі дані використання, лишивши ID/калібрування?")).pack(anchor="w", pady=2)
         rf = ttk.Frame(b6); rf.pack(fill="x", pady=2)
         ttk.Button(rf, text="📤 Записати DS2433 з .bin (512 Б)", command=lambda: self.write_file(512, "WRITE33")).pack(side="left", padx=3)
         ttk.Button(rf, text="🔬 DS2438 з .bin (64 Б)", command=lambda: self.write_file(64, "WRITE38")).pack(side="left", padx=3)
@@ -895,24 +912,38 @@ class App:
         self.maybe_auth(lambda: (self.status("Запис нового АКБ..."),
                                  self.cmd(f"INITBAT {model} {mah}", 25.0, cb=lambda r: self._after_write(r, f"✅ Новий {model} записано"))))
 
-    def restore_battery(self):
+    def restore_battery(self, verbatim=False):
+        # verbatim=False — переносимо лише модельну частину еталона; навчений
+        # хвіст 0x18A–0x1FF лишається порожнім. Побайтовий запис віддає новому
+        # пакету ЧУЖУ навчену калібровку, після чого рація каже «невідомий
+        # акумулятор» — тому це окремий, явно позначений ручний режим.
         if not self.need_conn():
             return
         model = self.cbRest.get()
         if not model:
             messagebox.showwarning("Модель", "Оберіть модель-еталон"); return
-        if not messagebox.askyesno("Відновити еталон",
-                f"Відновити еталон {model} БАЙТ-У-БАЙТ?\nПерезапише ОБИДВІ мікросхеми точною genuine-копією "
-                f"(з навченою калібровкою). Працює й на порожньому/битому чипі."):
+        if verbatim:
+            q = (f"РУЧНИЙ РЕЖИМ: записати еталон {model} БАЙТ-У-БАЙТ?\n"
+                 f"Разом із навченою калібровкою донора — рація після цього зазвичай каже "
+                 f"«невідомий акумулятор». Для аналізу, не для ремонту.")
+        else:
+            q = (f"Відновити модельну частину еталона {model}?\n"
+                 f"Перезапише ОБИДВІ мікросхеми; навчений хвіст 0x18A–0x1FF лишиться порожнім "
+                 f"(його запише зарядна станція). Працює й на порожньому/битому чипі.")
+        if not messagebox.askyesno("Відновити еталон", q):
             return
         def done(r):
             if isinstance(r, dict) and r.get("ok"):
                 both = r.get("ds2438")
-                self._after_write(r, f"✅ Еталон {model} відновлено" + (" (DS2433+DS2438)" if both else " (лише DS2433)"))
+                self._after_write(r, f"✅ Еталон {model} записано" + (" (DS2433+DS2438)" if both else " (лише DS2433)"))
             else:
                 self._after_write(r, "")
+        arg = f"RESTORE {model}" + (" VERBATIM" if verbatim else "")
         self.maybe_auth(lambda: (self.status("Відновлення еталона..."),
-                                 self.cmd(f"RESTORE {model}", 25.0, cb=done)))
+                                 self.cmd(arg, 25.0, cb=done)))
+
+    def restore_battery_verbatim(self):
+        self.restore_battery(verbatim=True)
 
     def set_mah(self):
         if not self.need_conn():

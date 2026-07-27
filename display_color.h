@@ -25,6 +25,7 @@
 #include "impres_format.h"
 #include "battery_reader.h"
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — дії «Новий АКБ»
+#include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
 
 // Стан, яке відображаємо (визначене в .ino / web_server.h).
 extern bool hasDump;
@@ -391,10 +392,8 @@ inline bool batteryGenuine(const char **reason) {
     return true;
 }
 
-// Базові дії + по ДВІ дії на шаблон: «Новий АКБ» (init) і «Відновити» (verbatim),
-// як у монохромній версії.
-#define NUM_BASE_ACTIONS 7
-inline int numActions() { return NUM_BASE_ACTIONS + 2 * BATTERY_TEMPLATE_COUNT; }
+// Склад і порядок операцій задає operations.h (спільний для всіх поверхонь).
+inline int numActions() { return opCount(); }
 
 // ===================== Примітиви малювання (кольорові) =====================
 
@@ -719,61 +718,36 @@ inline void drawPageRaw2433() { drawRawColor("DS2433 (hex)", batteryDump, hasDum
 
 // Сторінка «Дії»: одна обрана операція крупно + опис + попередження.
 inline void drawPageActions() {
-    static const char *nm[NUM_BASE_ACTIONS] = { "Скидання", "Ремонт", "Очистка", "СТЕРТИ 2433", "Перезавантаж.", "Рекалібр.", "СТЕРТИ 2438" };
-    static const char *d1[NUM_BASE_ACTIONS] = { "обнулити лічильники",
-                                                "полагодити суми та",
-                                                "стерти все, окрім",
-                                                "ПОВНЕ стирання чіпа",
-                                                "рестарт пристрою",
-                                                "після заміни банок:",
-                                                "ПОВНЕ стирання чіпа" };
-    static const char *d2[NUM_BASE_ACTIONS] = { "заряд/розряд, знос",
-                                                "дзеркало калібрув.",
-                                                "моделі/ID/калібрув.",
-                                                "DS2433 (крайній!)",
-                                                "ESP32 (Wi-Fi/веб)",
-                                                "стерти learned + ICA",
-                                                "DS2438 (крайній!)" };
-    static const bool  dg[NUM_BASE_ACTIONS] = { false, false, false, true, false, false, true };
-    int sel = g_actionSel;
-    int total = numActions();
+    // Назви/описи/небезпека беруться з operations.h — того самого каталогу, що
+    // й у монохромному екрані, вебі й USB-клієнті. Локальних списків більше немає.
+    int sel = g_actionSel, total = numActions();
+    const char *name, *l1, *l2; uint8_t danger; char nbuf[26];
+    opInfo(sel, &name, &l1, &l2, &danger, nbuf, sizeof(nbuf));
 
-    const char *name, *l1, *l2; bool danger;
-    char nbuf[26];
-    if (sel < NUM_BASE_ACTIONS) {
-        name = nm[sel]; l1 = d1[sel]; l2 = d2[sel]; danger = dg[sel];
-    } else {
-        int rel = sel - NUM_BASE_ACTIONS;
-        if (rel < BATTERY_TEMPLATE_COUNT) {
-            snprintf(nbuf, sizeof(nbuf), "Новий %s", BATTERY_TEMPLATES[rel].name);
-            name = nbuf; l1 = "ініціаліз. порожній"; l2 = "чіп як новий АКБ"; danger = true;
-        } else {
-            int ti = rel - BATTERY_TEMPLATE_COUNT;
-            snprintf(nbuf, sizeof(nbuf), "Віднов %s", BATTERY_TEMPLATES[ti].name);
-            name = nbuf; l1 = "еталон байт-у-байт"; l2 = "з навч. калібровкою"; danger = true;
-        }
-    }
-
-    char t[20]; snprintf(t, sizeof(t), "Дія %d/%d", sel + 1, total);
+    char t[24]; snprintf(t, sizeof(t), "Дія %d/%d", sel + 1, total);
     drawHeaderBar(t);
 
     // Картка операції (у межах безпечної зони кутів). Оновлюємо НА МІСЦІ: рамку
     // перемальовуємо, а кожен рядок тексту чистимо ТОНКО й друкуємо. Тож при
-    // перемиканні операції (кнопка «вибір») екран НЕ блимає всім тілом — лише
-    // оновлюються рядки картки (див. displayRenderBody(false) у обробнику кнопок).
+    // перемиканні операції екран НЕ блимає всім тілом.
     int cardx = EDGE > 10 ? EDGE - 4 : 10;
     int txtx  = cardx + 10;
     int cxi   = cardx + 2;
     int cw    = TFT_W - 2 * cardx - 4;
-    uint16_t accent = danger ? C_RED : C_GREEN;
+    uint16_t accent = (danger == OPD_WIPE) ? C_RED
+                    : (danger == OPD_WRITE) ? C_YELLOW : C_GREEN;
     tft.drawRoundRect(cardx, 44, TFT_W - 2 * cardx, 96, 6, accent);
     tft.fillRect(cxi, 60, cw, 26, C_BG);  tSet(FONT_MODEL, accent); tPut(txtx, 78, name);
     tft.fillRect(cxi, 90, cw, 20, C_BG);  tSet(FONT_BODY, C_TEXT);  tPut(txtx, 106, l1);
     tft.fillRect(cxi, 112, cw, 20, C_BG);                           tPut(txtx, 128, l2);
     tft.fillRect(cxi, 148, cw, 22, C_BG);                 // рядок попередження — чистимо завжди
-    if (danger) {
+    if (danger == OPD_WIPE) {
         tSet(FONT_BODY, C_RED);
         tPut(txtx, 164, "!! НЕЗВОРОТНЬО !!");
+    } else if (sel == OP_CELLSWAP) {
+        // Головна операція ремонту — одразу нагадуємо про обов'язковий крок.
+        tSet(FONT_BODY, C_GREEN);
+        tPut(txtx, 164, "далі -> на IMPRES-ЗП");
     }
 
     // Підказка керування.

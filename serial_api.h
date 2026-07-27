@@ -30,6 +30,7 @@
 //   SETMODEL <NAME>      -> ручний запис моделі (part number, 3..9 A-Z0-9)
 //   SETETM <сек>         -> ETM (наробіток) -> «дата першого користування» у рації
 //   TEMPLATES            -> список вшитих моделей для ініціалізації (без пароля)
+//   OPS                  -> каталог операцій (спільний для екрана/веба/клієнта)
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
 //   RESTORE <MODEL> [VERBATIM] -> відновити модельну частину еталона (без чужого
 //                          навченого хвоста); VERBATIM — байт-у-байт, ручний режим
@@ -104,13 +105,13 @@ static String serBuildInfo() {
                        ((uint32_t)batteryDump2438[9] << 8) | batteryDump2438[8];
         j += ",\"ica\":" + String(ica) + ",\"cca\":" + String(cca) + ",\"dca\":" + String(dca);
         j += ",\"etmSec\":" + String(etm);
-        j += ",\"icaMah\":" + String(impresIcaToMah(ica, ratedMah));
-        j += ",\"ccaMah\":" + String((int)(cca * DS2438_MAH_PER_LSB));
-        j += ",\"dcaMah\":" + String((int)(dca * DS2438_MAH_PER_LSB));
         // Паспортна ємність — за МОДЕЛЛЮ (таблиця IMPRES_RATED), а не єдина
         // константа BATTERY_RATED_MAH: через неї цикли й мА·год розходилися
         // з показаннями станції на всіх моделях, крім однієї.
         int ratedMah = impresRatedMah(modelBuf);
+        j += ",\"icaMah\":" + String(impresIcaToMah(ica, ratedMah));
+        j += ",\"ccaMah\":" + String((int)(cca * DS2438_MAH_PER_LSB));
+        j += ",\"dcaMah\":" + String((int)(dca * DS2438_MAH_PER_LSB));
         j += ",\"ccaCycles\":" + String((int)(cca * DS2438_MAH_PER_LSB / ratedMah));
         j += ",\"dcaCycles\":" + String((int)(dca * DS2438_MAH_PER_LSB / ratedMah));
         j += ",\"ratedMah\":" + String(ratedMah);
@@ -195,6 +196,35 @@ static void serSetCap(const String &arg) {
     ledSet(ok ? LED_OK : LED_ERROR); displayShow(ok ? "USB ЄМН OK" : "USB ЄМН ЗБІЙ");
     sResp(ok ? "{\"ok\":true,\"note\":\"factory table byte; radio computes health itself\"}"
              : "{\"ok\":false,\"err\":\"write failed\"}");
+}
+
+// Каталог операцій (operations.h) — щоб десктопний клієнт малював той самий
+// список у тому самому порядку, що екран і веб, без власних копій текстів.
+static String serBuildOps() {
+    String j = "{\"ok\":true,\"ops\":[";
+    bool first = true;
+    auto add = [&](const char *key, const char *title, const char *detail,
+                   int danger, const char *model) {
+        if (!first) j += ",";
+        first = false;
+        j += "{\"key\":\""; j += key; j += "\",\"title\":\""; j += title;
+        j += "\",\"detail\":\""; j += detail;
+        j += "\",\"danger\":" + String(danger);
+        j += ",\"model\":\""; j += (model ? model : ""); j += "\"}";
+    };
+    for (int i = 0; i < OP_BASE_COUNT; i++)
+        add(OP_DOC[i].key, OP_DOC[i].title, OP_DOC[i].detail, OP_TEXT[i].danger, nullptr);
+    for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++)
+        add("model", "Записати модельну частину еталона",
+            "Без навченого хвоста донора.", OPD_WRITE, BATTERY_TEMPLATES[t].name);
+    for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++)
+        add("new", "Новий АКБ з порожнього чипа",
+            "Модельна частина + монітор у стані нового пакета.", OPD_WIPE, BATTERY_TEMPLATES[t].name);
+    for (int e = 0; e < OP_EXPERT_COUNT; e++)
+        add(OP_DOC_EXPERT[e].key, OP_DOC_EXPERT[e].title, OP_DOC_EXPERT[e].detail,
+            OP_TEXT_EXPERT[e].danger, nullptr);
+    j += "]}";
+    return j;
 }
 
 static void serialExec(const String &line) {
@@ -286,6 +316,7 @@ static void serialExec(const String &line) {
                                          r += ok ? (String(",\"model\":\"") + md + "\"}")
                                                  : String(",\"err\":\"збій запису\"}");
                                          sResp(r); } }
+    else if (cmd == "OPS")      { sResp(serBuildOps()); }
     else if (cmd == "WIZARD")   { sResp(wizStart()); }
     else if (cmd == "WIZSTEP")  { int s2 = arg.indexOf(' ');
                                   String si = (s2 < 0) ? arg : arg.substring(0, s2);

@@ -10,7 +10,7 @@ Moto IMPRES USB — нативний графічний клієнт (Tkinter, �
 Запуск із коду:  python moto_gui.py
 Збірка .exe:     build.bat
 """
-import sys, os, time, json, math, queue, threading
+import sys, os, re, time, json, math, queue, threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from tkinter import font as tkfont
@@ -168,6 +168,55 @@ class SerialWorker(threading.Thread):
             return {"ok": False, "err": "таймаут"}
         except Exception as e:
             return {"ok": False, "err": str(e)}
+
+
+# ===========================================================================
+#  БУФЕР ОБМІНУ Й КОНТЕКСТНЕ МЕНЮ
+# ===========================================================================
+#  Дві окремі причини, чому копіювання не працювало.
+#
+#  1. РОЗКЛАДКА. Tk віддає у keysym СИМВОЛ, а не клавішу. На українській або
+#     російській розкладці Ctrl+C — це не 'c', а 'Cyrillic_es', і стандартна
+#     прив'язка <<Copy>> просто не спрацьовує. Тому ловимо обидва набори імен.
+#
+#  2. ПЕРЕХОПЛЕННЯ КЛАВІШ У РЕДАКТОРІ. Панелі hex/ASCII мають власний обробник
+#     <Key>, який блокує все, що не є шістнадцятковою цифрою. Ctrl+C приходить
+#     туди як символ \x03 — теж «не цифра», отже блокувався ще до вбудованого
+#     копіювання. Тепер Ctrl-поєднання розбираються ПЕРШИМИ.
+#
+#  Контекстного меню в Tk немає взагалі — його треба будувати руками, що й
+#  зроблено нижче для всіх полів вводу й обох панелей редактора.
+CTRL_MASK = 0x0004
+_CTRL_KEYS = {"c": ("c", "cyrillic_es"),      # С
+              "v": ("v", "cyrillic_em"),      # М
+              "x": ("x", "cyrillic_che"),     # Ч
+              "a": ("a", "cyrillic_ef")}      # Ф
+
+def ctrl_combo(e):
+    """'c'/'v'/'x'/'a', якщо натиснуто відповідне Ctrl-поєднання; інакше None."""
+    if not (e.state & CTRL_MASK):
+        return None
+    ks = (e.keysym or "").lower()
+    for k, names in _CTRL_KEYS.items():
+        if ks in names:
+            return k
+    return None
+
+def popup_menu(menu, e):
+    try:
+        menu.tk_popup(e.x_root, e.y_root)
+    finally:
+        menu.grab_release()
+
+def select_all(w):
+    try:
+        if isinstance(w, tk.Text):
+            w.tag_add("sel", "1.0", "end-1c")
+            w.mark_set("insert", "1.0")
+        else:
+            w.select_range(0, "end")
+    except tk.TclError:
+        pass
 
 
 class DischargeMonitor(tk.Canvas):
@@ -464,11 +513,214 @@ class App:
         self._disBusy = False
 
         self._build()
+        self.attach_menus_all()
         self._bind_zoom()
         self.refresh_ports()
         self.root.after(40, self._poll)
         self.root.after(1000, self._dis_tick)     # стан розряду тягнеться сам
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ---- контекстне меню для звичайних полів ---------------------------
+    def attach_menus_all(self, parent=None):
+        """Обійти всі поля вводу й повісити меню правої кнопки.
+
+        Обхід деревом, а не список вручну: полів десятки (журнал, дампи,
+        ємність, модель, дата, пароль...), і будь-яке нове поле інакше знову
+        лишилось би без копіювання — саме так і виходило досі.
+        """
+        parent = parent or self.root
+        for c in parent.winfo_children():
+            if c in (self.hxHex, self.hxAsc):
+                pass                                   # у редактора власне меню
+            elif isinstance(c, ttk.Combobox):
+                pass                                   # там правою кнопкою нічого не роблять
+            elif isinstance(c, tk.Text):               # сюди ж ScrolledText
+                self.attach_menu(c, editable=str(c.cget("state")) == "normal")
+            elif isinstance(c, (tk.Entry, ttk.Entry)):
+                self.attach_menu(c, editable=str(c.cget("state")) not in ("readonly", "disabled"))
+            self.attach_menus_all(c)
+
+    def attach_menu(self, w, editable=True):
+        """Меню правої кнопки + Ctrl-поєднання, що не залежать від розкладки.
+
+        Копіювання/вставка йдуть через ВІРТУАЛЬНІ події Tk (<<Copy>> тощо) —
+        так однаково працює і для Entry, і для Text, і для ttk-віджетів.
+        """
+        m = tk.Menu(w, tearoff=0)
+        if editable:
+            m.add_command(label="Вирізати", command=lambda: w.event_generate("<<Cut>>"))
+        m.add_command(label="Копіювати", command=lambda: w.event_generate("<<Copy>>"))
+        if editable:
+            m.add_command(label="Вставити", command=lambda: w.event_generate("<<Paste>>"))
+        m.add_separator()
+        m.add_command(label="Виділити все", command=lambda: select_all(w))
+
+        def on_rmb(e):
+            w.focus_set()
+            # Курсор пересуваємо ЛИШЕ якщо виділення немає — інакше клац правою
+            # по виділеному тексту знищував би саме те, що збираються копіювати.
+            try:
+                w.index("sel.first")
+            except tk.TclError:
+                try:
+                    w.mark_set("insert", "@%d,%d" % (e.x, e.y))     # Text
+                except (tk.TclError, AttributeError):
+                    try:
+                        w.icursor("@%d" % e.x)                      # Entry
+                    except (tk.TclError, AttributeError):
+                        pass
+            popup_menu(m, e)
+            return "break"
+
+        w.bind("<Button-3>", on_rmb)
+        w.bind("<Key>", lambda e: self.ctx_key(w, e, editable), add="+")
+        return m
+
+    def ctx_key(self, w, e, editable=True):
+        """Ctrl+C/V/X/A незалежно від розкладки. Окремим методом, а не
+        замиканням, — щоб логіку можна було перевірити без справжніх подій."""
+        k = ctrl_combo(e)
+        if not k:
+            return None
+        if k == "a":
+            select_all(w); return "break"
+        if k in ("v", "x") and not editable:
+            return "break"
+        w.event_generate({"c": "<<Copy>>", "v": "<<Paste>>", "x": "<<Cut>>"}[k])
+        return "break"
+
+    # ---- буфер обміну в hex-редакторі ----------------------------------
+    #  Тут не можна просто копіювати текст віджета: панелі — це ВІДОБРАЖЕННЯ
+    #  моделі edBytes, з роздільниками й вирівнюванням. Копіюємо байти під
+    #  виділенням, а вставляємо — розібравши шістнадцяткові цифри з буфера
+    #  просто в модель. Інакше вставка зсунула б колонки й зіпсувала дамп.
+    def _hx_panel(self):
+        """Панель, до якої зараз ставиться дія буфера обміну.
+
+        Не через focus_get(): він каже правду лише коли вікно застосунку
+        активне, а команду з контекстного меню якраз і викликають кліком, після
+        якого фокус може бути де завгодно. Тому запам'ятовуємо панель самі —
+        на кліку й на отриманні фокуса.
+        """
+        return self._hxLast if self._hxLast is not None else self.hxHex
+
+    def _hx_byte_of(self, w, idx):
+        """Індекс байта під позицією idx. На роздільнику — найближчий ліворуч."""
+        try:
+            r, c = map(int, w.index(idx).split("."))
+        except Exception:
+            return None
+        if w is self.hxAsc:
+            j = c if c < 8 else (c - 2 if c >= 10 else 7)
+        else:
+            bn = self._hx_byte_at(c)
+            if bn is not None:
+                j = bn[0]
+            else:
+                j = 0
+                for k in range(15, -1, -1):
+                    if self._hx_col(k) <= c:
+                        j = k; break
+        if j > 15:
+            j = 15
+        i = (r - 1) * 16 + j
+        if i < 0:
+            i = 0
+        return i if i < len(self.edBytes) else (len(self.edBytes) - 1 if self.edBytes else None)
+
+    def _hx_sel(self, w):
+        """(перший, останній) байт виділення включно, або None."""
+        try:
+            a = self._hx_byte_of(w, "sel.first")
+            b = self._hx_byte_of(w, "sel.last-1c")
+        except tk.TclError:
+            return None
+        if a is None or b is None:
+            return None
+        return (a, b) if a <= b else (b, a)
+
+    def hx_copy(self, whole=False):
+        if not self.edBytes:
+            return "break"
+        w = self._hx_panel()
+        sel = None if whole else self._hx_sel(w)
+        a, b = sel if sel else (0, len(self.edBytes) - 1)
+        data = self.edBytes[a:b + 1]
+        if w is self.hxAsc and not whole:
+            txt = "".join(chr(x) if 32 <= x < 127 else "." for x in data)
+        else:
+            # По 16 байт у рядку — так само, як на екрані, і так само читається
+            # будь-яким іншим hex-редактором.
+            rows = ["".join("%02X " % x for x in data[i:i + 16]).strip()
+                    for i in range(0, len(data), 16)]
+            txt = "\n".join(rows)
+        self.root.clipboard_clear()
+        self.root.clipboard_append(txt)
+        self.status("Скопійовано байт: %d" % len(data))
+        return "break"
+
+    def hx_paste(self):
+        try:
+            raw = self.root.clipboard_get()
+        except tk.TclError:
+            self.status("Буфер обміну порожній"); return "break"
+        if not self.edBytes:
+            messagebox.showwarning("Вставка", "Спочатку натисніть «↻ Завантажити»."); return "break"
+        # Приймаємо будь-яку розумну форму: «01 A5 FF», «0x01,0xA5», «01A5FF»,
+        # з переносами рядків і табуляціями.
+        digits = re.sub(r"0[xX]|[^0-9a-fA-F]", "", raw)
+        if not digits:
+            messagebox.showwarning("Вставка", "У буфері немає шістнадцяткових даних."); return "break"
+        if len(digits) % 2:
+            messagebox.showwarning("Вставка",
+                                   "Непарна кількість шістнадцяткових цифр (%d) — байти не складаються."
+                                   % len(digits))
+            return "break"
+        data = bytes(int(digits[i:i + 2], 16) for i in range(0, len(digits), 2))
+
+        w = self._hx_panel()
+        sel = self._hx_sel(w)
+        start = sel[0] if sel else (self._hx_byte_of(w, "insert") or 0)
+        room = len(self.edBytes) - start
+        if len(data) > room:
+            # Довжину дампа міняти НЕ можна: чіп має рівно 512 (або 64) байт, і
+            # запис іде строго з моделі. Тому питаємо, а не мовчки обрізаємо.
+            if not messagebox.askyesno("Вставка",
+                    "У буфері %d байт, а від позиції 0x%X лишилось %d.\n"
+                    "Вставити перші %d байт?" % (len(data), start, room, room)):
+                return "break"
+            data = data[:room]
+        self.edBytes[start:start + len(data)] = data
+        self._hx_render()
+        self._hx_setcur(w, start // 16 + 1,
+                        self._hx_asc_col(start % 16) if w is self.hxAsc else self._hx_col(start % 16))
+        self.status("Вставлено байт: %d з 0x%X" % (len(data), start))
+        return "break"
+
+    def hx_select_all(self):
+        select_all(self._hx_panel())
+        return "break"
+
+    def _hx_menu(self, w):
+        m = tk.Menu(w, tearoff=0)
+        m.add_command(label="Копіювати виділене", command=self.hx_copy)
+        m.add_command(label="Копіювати весь дамп", command=lambda: self.hx_copy(whole=True))
+        m.add_command(label="Вставити", command=self.hx_paste)
+        m.add_separator()
+        m.add_command(label="Виділити все", command=self.hx_select_all)
+
+        def on_rmb(e):
+            self._hxLast = w
+            w.focus_set()
+            # Курсор пересуваємо ЛИШЕ без виділення — інакше клац правою по
+            # виділеному знищував би те, що збираються копіювати.
+            try:
+                w.index("sel.first")
+            except tk.TclError:
+                w.mark_set("insert", "@%d,%d" % (e.x, e.y))
+            popup_menu(m, e)
+            return "break"
+        w.bind("<Button-3>", on_rmb)
 
     # ---- масштабування вмісту ------------------------------------------
     def _bind_zoom(self):
@@ -1031,8 +1283,14 @@ class App:
             w.bind("<Button-4>", self._hx_wheel)
             w.bind("<Button-5>", self._hx_wheel)
         # Редагування лише ніблів (hex) і символів (ASCII); решта клавіш — блок.
+        # Ctrl+C/V/A ці ж обробники пропускають до буфера обміну (див. _hx_key).
         self.hxHex.bind("<Key>", self._hx_key)
         self.hxAsc.bind("<Key>", self._hx_asc_key)
+        self._hxLast = self.hxHex
+        for w in (self.hxHex, self.hxAsc):
+            self._hx_menu(w)
+            w.bind("<FocusIn>", lambda e, x=w: setattr(self, "_hxLast", x), add="+")
+            w.bind("<Button-1>", lambda e, x=w: setattr(self, "_hxLast", x), add="+")
 
     # ---- синхронізація прокручування hex-панелей -----------------------
     def _hx_yview(self, *args):
@@ -1100,8 +1358,17 @@ class App:
 
     # ---- редагування hex-панелі: лише нібли -----------------------------------
     def _hx_key(self, e):
+        # Ctrl-поєднання — ПЕРШИМИ. Інакше Ctrl+C приходить сюди як символ \x03,
+        # не проходить перевірку «шістнадцяткова цифра» і блокується разом із
+        # усім іншим — саме через це копіювання в редакторі не працювало.
+        k = ctrl_combo(e)
+        if k == "c": return self.hx_copy()
+        if k == "v": return self.hx_paste()
+        if k == "a": return self.hx_select_all()
+        if k == "x": return "break"                       # «вирізати» тут не має сенсу
         if e.keysym in ("Left", "Right", "Up", "Down", "Home", "End",
-                        "Prior", "Next", "Tab", "Shift_L", "Shift_R"):
+                        "Prior", "Next", "Tab", "Shift_L", "Shift_R",
+                        "Control_L", "Control_R"):
             return None                                   # навігація — вільно
         ch = e.char
         if not ch or ch not in "0123456789abcdefABCDEF":
@@ -1135,8 +1402,14 @@ class App:
 
     # ---- редагування текстової панелі: друкований символ -> байт --------------
     def _hx_asc_key(self, e):
+        k = ctrl_combo(e)                                 # див. _hx_key
+        if k == "c": return self.hx_copy()
+        if k == "v": return self.hx_paste()
+        if k == "a": return self.hx_select_all()
+        if k == "x": return "break"
         if e.keysym in ("Left", "Right", "Up", "Down", "Home", "End",
-                        "Prior", "Next", "Tab", "Shift_L", "Shift_R"):
+                        "Prior", "Next", "Tab", "Shift_L", "Shift_R",
+                        "Control_L", "Control_R"):
             return None
         ch = e.char
         if not ch or not (32 <= ord(ch) < 127):

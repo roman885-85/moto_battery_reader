@@ -786,25 +786,40 @@ inline void drawPageDischarge() {
     tft.fillRect(bx + 1, by + 1, bw - 2, bh - 2, C_BG);
     tft.fillRect(bx + 1, by + 1, (bw - 2) * pct / 100, bh - 2, C_GREEN);
 
+    // Рядки показань. Кожен сам чистить свою смужку на всю ширину, тож при
+    // оновленні раз на 5 с екран не блимає і старий текст не «просвічує».
     tSet(FONT_BODY, C_TEXT);
     int y = by + bh + 16;
+    auto row = [&](const char *txt, uint16_t col) {
+        tft.fillRect(0, y - 12, TFT_W, 16, C_BG);
+        tSet(FONT_BODY, col);
+        tPut(EDGE, y, txt);
+        y += 18;
+    };
+
     snprintf(b, sizeof(b), "ціль %u.%02u В  (%d%%)", d.targetMv / 1000, (d.targetMv % 1000) / 10, pct);
-    tft.fillRect(0, y - 12, TFT_W, 16, C_BG); tPut(EDGE, y, b); y += 18;
+    row(b, C_TEXT);
 
-    snprintf(b, sizeof(b), "струм  %d мА", d.lastMa);
-    tft.fillRect(0, y - 12, TFT_W, 16, C_BG); tPut(EDGE, y, b); y += 18;
+    // Струм і потужність — з ВБУДОВАНОГО датчика струму DS2438 (його резистор
+    // стоїть усередині пакета послідовно з банками).
+    int wx10 = dischargeWattsX10(d.lastMv, d.lastMa);
+    snprintf(b, sizeof(b), "струм %d мА · %d.%d Вт", d.lastMa, wx10 / 10, wx10 % 10);
+    row(b, C_TEXT);
 
+    // Віддано: наш інтеграл по опитуваннях і апаратний лічильник DCA самого
+    // DS2438. DCA рахує неперервно, тож велика розбіжність = опитування щось
+    // пропускає.
     snprintf(b, sizeof(b), "віддано %lu мА·год", (unsigned long)dischargeMah());
-    tft.fillRect(0, y - 12, TFT_W, 16, C_BG); tPut(EDGE, y, b); y += 18;
+    row(b, C_GREEN);
+    snprintf(b, sizeof(b), "DCA %lu мА·год · ICA %u", (unsigned long)dischargeDcaMah(), d.lastIca);
+    row(b, C_MUTED);
 
-    snprintf(b, sizeof(b), "темп.  %d.%d °C", d.lastTempC10 / 10, abs(d.lastTempC10 % 10));
-    tft.fillRect(0, y - 12, TFT_W, 16, C_BG);
-    tSet(FONT_BODY, d.lastTempC10 >= DISCHARGE_MAX_TEMP_C * 10 - 50 ? C_RED : C_TEXT);
-    tPut(EDGE, y, b); y += 18;
+    snprintf(b, sizeof(b), "темп. %d.%d °C", d.lastTempC10 / 10, abs(d.lastTempC10 % 10));
+    row(b, d.lastTempC10 >= DISCHARGE_MAX_TEMP_C * 10 - 50 ? C_RED : C_TEXT);
 
     unsigned long el = d.elapsedS;
-    snprintf(b, sizeof(b), "час   %lu:%02lu:%02lu", el / 3600, (el / 60) % 60, el % 60);
-    tft.fillRect(0, y - 12, TFT_W, 16, C_BG); tSet(FONT_BODY, C_TEXT); tPut(EDGE, y, b);
+    snprintf(b, sizeof(b), "час  %lu:%02lu:%02lu", el / 3600, (el / 60) % 60, el % 60);
+    row(b, C_TEXT);
 
     // Підвал: стан або причина зупинки.
     tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);

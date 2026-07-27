@@ -951,6 +951,7 @@ const char *dischargeStart(uint16_t targetMv) {
     g_dis.lastTempC10 = t;
     g_dis.startMs  = g_dis.lastPollMs = millis();
     g_dis.startDca = g_dis.lastDca = impresDca(batteryDump2438);
+    g_dis.startIca = g_dis.lastIca = batteryDump2438[12];   // паливомір на старті
 
     loadOn();
     ledSet(LED_DISCHARGE);
@@ -998,10 +999,15 @@ inline void dischargeTask() {
     g_dis.mahX1000 += (absMa * dtMs) / 3600UL;
 
     g_dis.lastMv = mv; g_dis.lastMa = ma; g_dis.lastTempC10 = t;
+    // Лічильники ВБУДОВАНОГО датчика струму: DCA інтегрує розряд апаратно,
+    // ICA — поточний паливомір. Обидва читаються з того ж кадру DS2438.
     g_dis.lastDca = impresDca(batteryDump2438);
+    g_dis.lastIca = batteryDump2438[12];
 
-    Serial.printf("discharge: %u mV, %d mA, %.1f C, %lu mAh, %lus\n",
-                  mv, ma, t / 10.0f, (unsigned long)dischargeMah(), (unsigned long)g_dis.elapsedS);
+    Serial.printf("discharge: %u mV, %d mA, %.1f W, %.1f C, %lu mAh (DCA %lu), ICA %u, %lus\n",
+                  mv, ma, dischargeWattsX10(mv, ma) / 10.0f, t / 10.0f,
+                  (unsigned long)dischargeMah(), (unsigned long)dischargeDcaMah(),
+                  g_dis.lastIca, (unsigned long)g_dis.elapsedS);
     dischargeMarkDirty(1);                 // нові показання -> оновити екран
 
     if (mv <= DISCHARGE_HARD_MIN_MV) {
@@ -1030,7 +1036,12 @@ static String dischargeJson() {
     j += ",\"ma\":"       + String(g_dis.lastMa);
     j += ",\"tempC\":"    + String(g_dis.lastTempC10 / 10.0f, 1);
     j += ",\"mah\":"      + String((unsigned long)dischargeMah());
-    j += ",\"dcaDelta\":" + String((int)(g_dis.lastDca - g_dis.startDca));
+    // Дані вбудованого датчика струму DS2438
+    j += ",\"watts\":"    + String(dischargeWattsX10(g_dis.lastMv, g_dis.lastMa) / 10.0f, 1);
+    j += ",\"dcaMah\":"   + String((unsigned long)dischargeDcaMah());
+    j += ",\"dcaDelta\":" + String((int)(uint16_t)(g_dis.lastDca - g_dis.startDca));
+    j += ",\"ica\":"      + String(g_dis.lastIca);
+    j += ",\"icaStart\":" + String(g_dis.startIca);
     j += ",\"elapsedS\":" + String((unsigned long)g_dis.elapsedS);
     j += ",\"polls\":"    + String(g_dis.polls);
     j += ",\"expectedMa\":" + String(dischargeExpectedMa(g_dis.lastMv));

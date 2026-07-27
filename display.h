@@ -785,17 +785,24 @@ inline void drawPageDischarge() {
                  : 0);
     drawHeader(b);
 
+    // Напруга + струм із вбудованого датчика DS2438 — найбільшим шрифтом.
     u8g2.setFont(u8g2_font_6x12_t_cyrillic);
     snprintf(b, sizeof(b), "%u.%02u В  %d мА", d.lastMv / 1000, (d.lastMv % 1000) / 10, d.lastMa);
     u8g2.drawUTF8(0, HEAD_LINE + 13, b);
 
     u8g2.setFont(BODY_FONT);
-    snprintf(b, sizeof(b), "ціль %u.%02u В", d.targetMv / 1000, (d.targetMv % 1000) / 10);
+    int wx10 = dischargeWattsX10(d.lastMv, d.lastMa);
+    snprintf(b, sizeof(b), "ціль %u.%02u В  %d.%d Вт",
+             d.targetMv / 1000, (d.targetMv % 1000) / 10, wx10 / 10, wx10 % 10);
     u8g2.drawUTF8(0, HEAD_LINE + 24, b);
-    snprintf(b, sizeof(b), "віддано %lu мА·год", (unsigned long)dischargeMah());
+
+    // Наш інтеграл і апаратний лічильник DCA самого DS2438 — поруч, для звірки.
+    snprintf(b, sizeof(b), "%lu мА·год (DCA %lu)",
+             (unsigned long)dischargeMah(), (unsigned long)dischargeDcaMah());
     u8g2.drawUTF8(0, HEAD_LINE + 33, b);
-    snprintf(b, sizeof(b), "%d.%d C   %lu:%02lu:%02lu",
-             d.lastTempC10 / 10, abs(d.lastTempC10 % 10),
+
+    snprintf(b, sizeof(b), "ICA %u  %d.%dC  %lu:%02lu:%02lu",
+             d.lastIca, d.lastTempC10 / 10, abs(d.lastTempC10 % 10),
              (unsigned long)(d.elapsedS / 3600), (unsigned long)((d.elapsedS / 60) % 60),
              (unsigned long)(d.elapsedS % 60));
     u8g2.drawUTF8(0, HEAD_LINE + 42, b);

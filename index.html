@@ -325,8 +325,10 @@
                 з монітором. Резистор нагрівається — на 5 Ом це ~14 Вт.</div>
             <div class="row"><span class="k">Стан</span><span class="v" id="disState">—</span></div>
             <div class="row"><span class="k">Напруга</span><span class="v" id="disMv">—</span></div>
-            <div class="row"><span class="k">Струм</span><span class="v" id="disMa">—</span></div>
-            <div class="row"><span class="k">Віддано</span><span class="v" id="disMah">—</span></div>
+            <div class="row"><span class="k">Струм (DS2438)</span><span class="v" id="disMa">—</span></div>
+            <div class="row"><span class="k">Віддано (інтеграл)</span><span class="v" id="disMah">—</span></div>
+            <div class="row"><span class="k">Віддано (лічильник DCA)</span><span class="v" id="disDca">—</span></div>
+            <div class="row"><span class="k">Паливомір ICA</span><span class="v" id="disIca">—</span></div>
             <div class="row"><span class="k">Температура</span><span class="v" id="disT">—</span></div>
             <div class="row"><span class="k">Час</span><span class="v" id="disEl">—</span></div>
             <div class="row"><span class="k">Цільова напруга, мВ</span>
@@ -959,11 +961,15 @@ async function disPoll(){
                   done:['✅ готово — на IMPRES-ЗП','#22c55e'],abort:['⛔ '+(d.reason||'аварія'),'#ef4444']}[d.state];
         if(st){$('disState').textContent=st[0];$('disState').style.color=st[1];}
         $('disMv').textContent=(d.mv/1000).toFixed(2)+' В (ціль '+(d.targetMv/1000).toFixed(2)+' В)';
-        $('disMa').textContent=d.ma+' мА (очік. '+d.expectedMa+' мА на '+d.loadOhm+' Ом)';
+        $('disMa').textContent=d.ma+' мА · '+d.watts+' Вт (очік. '+d.expectedMa+' мА на '+d.loadOhm+' Ом)';
         $('disMah').textContent=d.mah+' мА·год';
+        // DCA — апаратний інтегратор самого DS2438: рахує неперервно, тож
+        // служить перехресною перевіркою нашого інтеграла по опитуваннях.
+        $('disDca').textContent=d.dcaMah+' мА·год (raw +'+d.dcaDelta+')';
+        $('disIca').textContent=d.ica+' (на старті '+d.icaStart+')';
         $('disT').textContent=d.tempC+' °C';
         $('disEl').textContent=disFmtT(d.elapsedS);
-        if(d.state==='run'&&!disTimer) disTimer=setInterval(disPoll,5000);
+        if(d.state==='run'&&!disTimer) disTimer=setInterval(disPoll,5000);   // пристрій знімає показання раз на 5 с
         if(d.state!=='run'&&disTimer){clearInterval(disTimer);disTimer=null;await refreshAll();}
     }catch(e){}
 }

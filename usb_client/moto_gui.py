@@ -934,9 +934,12 @@ class App:
             self.lblDis.config(text="не налаштовано (LOAD_PIN у settings.h)"); return
         names = {"idle": "очікування", "run": "іде розряд",
                  "done": "готово — на IMPRES-ЗП", "abort": "АВАРІЯ: " + (d.get("reason") or "")}
-        self.lblDis.config(text="%s · %.2f В · %d мА · %d мА·год · %s °C · %d с" % (
+        # Показуємо і наш інтеграл, і апаратний лічильник DCA самого DS2438:
+        # DCA рахує неперервно, тож розбіжність вкаже, що опитування щось пропускає.
+        self.lblDis.config(text="%s · %.2f В · %d мА · %s Вт · %d мА·год (DCA %d) · ICA %d · %s °C · %d с" % (
             names.get(d.get("state"), d.get("state", "?")), d.get("mv", 0) / 1000.0,
-            d.get("ma", 0), d.get("mah", 0), d.get("tempC", "?"), d.get("elapsedS", 0)))
+            d.get("ma", 0), d.get("watts", "?"), d.get("mah", 0), d.get("dcaMah", 0),
+            d.get("ica", 0), d.get("tempC", "?"), d.get("elapsedS", 0)))
 
     def discharge_status(self):
         if not self.need_conn():

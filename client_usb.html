@@ -779,7 +779,8 @@ function disShow(d){
   if(!d){$('disSt').textContent='—';return;}
   if(!d.available){$('disSt').textContent='не налаштовано (LOAD_PIN)';return;}
   const n={idle:'очікування',run:'іде розряд',done:'✅ готово — на IMPRES-ЗП',abort:'⛔ '+(d.reason||'аварія')}[d.state]||d.state;
-  $('disSt').textContent=n+' · '+(d.mv/1000).toFixed(2)+' В · '+d.ma+' мА · '+d.mah+' мА·год · '+d.tempC+' °C';
+  $('disSt').textContent=n+' · '+(d.mv/1000).toFixed(2)+' В · '+d.ma+' мА · '+d.watts+' Вт · '
+      +d.mah+' мА·год (DCA '+d.dcaMah+') · ICA '+d.ica+' · '+d.tempC+' °C';
 }
 async function disStatus(){ if(!connected){toast('Підключіться');return;}
   const r=await cmd('DISCHARGE ?',8000); disShow(r&&r.discharge); }

@@ -886,7 +886,7 @@ inline void displayRenderBody(bool clearBody) {
     // Поки навантаження увімкнене — примусово показуємо моніторинг розряду,
     // хоч би яку сторінку було обрано: це довга операція із запобіжниками, її
     // стан має бути на екрані завжди, а не за кілька натискань кнопки.
-    if (dischargeRunning()) { drawPageDischarge(); return; }
+    if (dischargeScreenActive()) { drawPageDischarge(); return; }
     switch (g_displayPage) {
         case 0:  drawPageMain();     break;
         case 1:  drawPageModel();    break;
@@ -900,6 +900,14 @@ inline void displayRenderBody(bool clearBody) {
     }
 }
 inline void displayRender() { displayRenderBody(true); }
+
+// Оновлення екрана під час РОЗРЯДУ. full=false — перемальовуємо лише рядки
+// показань (кожен сам чистить свою смужку), тож картинка не блимає раз на 10 с.
+// full=true — повна перемальовка: потрібна на вході в режим і на виході з нього,
+// інакше поверх моніторингу лишаються написи попередньої сторінки.
+inline void displayDischargeRefresh(bool full) {
+    if (full) displayRender(); else displayRenderBody(false);
+}
 
 // Освітлити колір RGB565 у бік білого на частку amt (0..255).
 inline uint16_t lighten565(uint16_t c, uint8_t amt) {
@@ -1132,6 +1140,33 @@ inline void displayHandleButton() {
     static BtnState b3;
 #endif
 
+    // ── РЕЖИМ РОЗРЯДУ ──────────────────────────────────────────────────────
+    // Поки навантаження увімкнене, кнопки НЕ гортають меню: на екрані
+    // моніторинг, а зміна сторінки «у фоні» лише збиває з пантелику (сторінка
+    // мовчки їхала, і після зупинки з'являлась не та, що очікували).
+    //   коротке натискання — негайно оновити показання;
+    //   довге (0.8 с) на будь-якій кнопці — АВАРІЙНА ЗУПИНКА.
+    if (dischargeScreenActive()) {
+        int d1 = pollButton(MENU_BTN_PIN,  b1, 800);
+        int d2 = pollButton(MENU_BTN2_PIN, b2, 800);
+        int d3 = 0;
+#ifdef MENU_BTN3_PIN
+        d3 = pollButton(MENU_BTN3_PIN, b3, 800);
+#endif
+        if (!dischargeRunning()) {
+            // Показано ПІДСУМОК завершеного розряду: будь-яке натискання прибирає
+            // його й повертає звичайне меню.
+            if (d1 || d2 || d3) { dischargeDismiss(); displayRender(); }
+            return;
+        }
+        if (d1 == 2 || d2 == 2 || d3 == 2) {          // довге = АВАРІЙНА ЗУПИНКА
+            dischargeStop(DISR_USER); displaySetStatus("РОЗРЯД СТОП"); displayRender();
+        } else if (d1 == 1 || d2 == 1 || d3 == 1) {   // коротке = оновити показання
+            displayDischargeRefresh(false);
+        }
+        return;
+    }
+
 #ifdef MENU_BTN3_PIN
     // 3 кнопки: BTN1 — ЧИСТА навігація ВПЕРЕД (жодного «довгого» читання; читання
     // акумулятора перенесено на BTN3 на головній сторінці). longMs=0 -> «довгих»
@@ -1164,9 +1199,7 @@ inline void displayHandleButton() {
     // 2 кнопки: BTN2 суміщає навігацію + вибір/аналіз (коротко) + виконання (довго).
     if (g_displayPage == RESET_PAGE) {
         if (e2 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRenderBody(false); }  // оновити картку без блимання
-        else if (e2 == 2) { if (dischargeRunning()) {      // під час розряду довге натискання = АВАРІЙНА ЗУПИНКА
-                              dischargeStop(DISR_USER); displayShow("РОЗРЯД СТОП");
-                          } else { g_actionRequested = g_actionSel; displayShow("ВИКОНУЮ..."); } }
+        else if (e2 == 2) { g_actionRequested = g_actionSel; displayShow("ВИКОНУЮ..."); }
     } else if (g_displayPage == WIZARD_PAGE) {
         if (e2 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
         else if (e2 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
@@ -1182,9 +1215,7 @@ inline void displayHandleButton() {
     int e3 = pollButton(MENU_BTN3_PIN, b3, 800);
     if (g_displayPage == RESET_PAGE) {
         if (e3 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRenderBody(false); }  // оновити картку без блимання
-        else if (e3 == 2) { if (dischargeRunning()) {      // під час розряду довге натискання = АВАРІЙНА ЗУПИНКА
-                              dischargeStop(DISR_USER); displayShow("РОЗРЯД СТОП");
-                          } else { g_actionRequested = g_actionSel; displayShow("ВИКОНУЮ..."); } }
+        else if (e3 == 2) { g_actionRequested = g_actionSel; displayShow("ВИКОНУЮ..."); }
     } else if (g_displayPage == WIZARD_PAGE) {
         if (e3 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
         else if (e3 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }

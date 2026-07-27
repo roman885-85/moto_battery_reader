@@ -70,6 +70,17 @@ struct DischargeState {
 
 static DischargeState g_dis = {DIS_IDLE, DISR_NONE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
+// Прапорець «екран застарів»: 0 — нічого, 1 — легке оновлення (ті самі поля,
+// без очищення тіла, щоб не блимало), 2 — ПОВНА перемальовка (вхід у режим і
+// вихід із нього, коли на екрані ще лишається попередня сторінка).
+//
+// Потрібен, бо дисплей у цьому проєкті перемальовується ПО ПОДІЯХ, а розряд —
+// процес фоновий: без явного сигналу картинка залишалася б статичною до
+// наступного натискання кнопки.
+static uint8_t g_disDirty = 0;
+inline void dischargeMarkDirty(uint8_t level) { if (level > g_disDirty) g_disDirty = level; }
+inline uint8_t dischargeConsumeDirty() { uint8_t d = g_disDirty; g_disDirty = 0; return d; }
+
 // --------------------------------------------------------------- керування
 inline void loadOff() {
 #ifdef LOAD_PIN
@@ -102,9 +113,22 @@ inline bool dischargeAvailable() {
 }
 inline bool dischargeRunning() { return g_dis.state == DIS_RUN; }
 
+// Чи тримати на екрані сторінку розряду. Це НЕ те саме, що «іде розряд»:
+// після зупинки показуємо ПІДСУМОК (скільки віддано, чому спинились), поки
+// користувач не натисне кнопку — інакше результат довгої операції зникав би
+// миттєво й дізнатись ємність було б нізвідки.
+inline bool dischargeScreenActive() { return g_dis.state != DIS_IDLE; }
+
+// Прибрати підсумок з екрана (будь-яке натискання після завершення).
+// Під час самого розряду не діє.
+inline void dischargeDismiss() {
+    if (g_dis.state != DIS_RUN) { g_dis.state = DIS_IDLE; dischargeMarkDirty(2); }
+}
+
 // Зупинити (навантаження — першою дією).
 inline void dischargeStop(uint8_t reason) {
     loadOff();
+    dischargeMarkDirty(2);                 // режим змінився -> перемалювати повністю
     if (g_dis.state == DIS_RUN) {
         g_dis.state  = (reason == DISR_TARGET) ? DIS_DONE : DIS_ABORT;
         g_dis.reason = reason;

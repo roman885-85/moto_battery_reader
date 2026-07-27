@@ -885,11 +885,17 @@ inline void drawPageWizard() {
 
 // ---------- рендер і кнопка ----------
 
+// Оновлення екрана під час РОЗРЯДУ. У монохромі кадр завжди збирається в буфер
+// цілком, тож окремого «легкого» режиму не треба — параметр лише для сумісності
+// з кольоровою реалізацією.
+inline void displayRender();
+inline void displayDischargeRefresh(bool /*full*/) { displayRender(); }
+
 inline void displayRender() {
     u8g2.clearBuffer();
     // Поки навантаження увімкнене — примусово моніторинг розряду, хоч би яку
     // сторінку було обрано: довга операція із запобіжниками має бути видима.
-    if (dischargeRunning()) {
+    if (dischargeScreenActive()) {
         drawPageDischarge();
         u8g2.sendBuffer();
         return;
@@ -1015,6 +1021,31 @@ inline void displayHandleButton() {
     static BtnState b3;
 #endif
 
+    // ── РЕЖИМ РОЗРЯДУ ──────────────────────────────────────────────────────
+    // Поки навантаження увімкнене, кнопки НЕ гортають меню: на екрані
+    // моніторинг, а зміна сторінки «у фоні» лише збиває з пантелику.
+    //   коротке натискання — оновити показання; довге — АВАРІЙНА ЗУПИНКА.
+    if (dischargeScreenActive()) {
+        int d1 = pollButton(MENU_BTN_PIN,  b1, 800);
+        int d2 = pollButton(MENU_BTN2_PIN, b2, 800);
+        int d3 = 0;
+#ifdef MENU_BTN3_PIN
+        d3 = pollButton(MENU_BTN3_PIN, b3, 800);
+#endif
+        if (!dischargeRunning()) {
+            // Показано ПІДСУМОК завершеного розряду: будь-яке натискання прибирає
+            // його й повертає звичайне меню.
+            if (d1 || d2 || d3) { dischargeDismiss(); displayRender(); }
+            return;
+        }
+        if (d1 == 2 || d2 == 2 || d3 == 2) {          // довге = АВАРІЙНА ЗУПИНКА
+            dischargeStop(DISR_USER); displaySetStatus("РОЗРЯД СТОП"); displayRender();
+        } else if (d1 == 1 || d2 == 1 || d3 == 1) {   // коротке = оновити показання
+            displayDischargeRefresh(false);
+        }
+        return;
+    }
+
 #ifdef MENU_BTN3_PIN
     // 3 кнопки: BTN1 — ЧИСТА навігація ВПЕРЕД (жодного «довгого» читання; читання
     // акумулятора на BTN3, головна сторінка). longMs=0 -> «довгих» подій немає.
@@ -1047,9 +1078,7 @@ inline void displayHandleButton() {
     // 2 кнопки: BTN2 суміщає навігацію + вибір/аналіз (коротко) + виконання (довго).
     if (g_displayPage == RESET_PAGE) {               // сторінка «Дії»
         if (e2 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRender(); }
-        else if (e2 == 2) { if (dischargeRunning()) {      // під час розряду довге натискання = АВАРІЙНА ЗУПИНКА
-                              dischargeStop(DISR_USER); displaySetStatus("РОЗРЯД СТОП"); displayRender();
-                          } else { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); } }
+        else if (e2 == 2) { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
     } else if (g_displayPage == WIZARD_PAGE) {       // сторінка Майстра
         if (e2 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
         else if (e2 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
@@ -1067,9 +1096,7 @@ inline void displayHandleButton() {
     int e3 = pollButton(MENU_BTN3_PIN, b3, 800);
     if (g_displayPage == RESET_PAGE) {
         if (e3 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRender(); }
-        else if (e3 == 2) { if (dischargeRunning()) {      // під час розряду довге натискання = АВАРІЙНА ЗУПИНКА
-                              dischargeStop(DISR_USER); displaySetStatus("РОЗРЯД СТОП"); displayRender();
-                          } else { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); } }
+        else if (e3 == 2) { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
     } else if (g_displayPage == WIZARD_PAGE) {
         if (e3 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
         else if (e3 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }

@@ -140,24 +140,32 @@ void loop() {
         readAllChips(ok2433, ok2438);      // наприкінці сам робить 1 повний перемальовок
     }
 
-    // Підтверджена в меню дисплея дія: 0=Скидання 1=Ремонт 2=Очистка 3=Стерти2433
-    // 4=Перезавантаження 5=Рекалібр. 6=Стерти2438; далі — по ДВІ дії на шаблон:
-    // [NUM_BASE .. +COUNT-1] = «Новий АКБ <модель>» (init порожнього чипа з
-    // паспортною ємністю BATTERY_RATED_MAH); [+COUNT .. +2*COUNT-1] =
-    // «Відновити <модель>» (verbatim-запис genuine-еталона байт-у-байт).
+    // Підтверджена в меню дисплея дія. Порядок і склад операцій задає
+    // operations.h — той самий каталог, що малюють екран, веб і USB-клієнт.
+    // Раніше номери дій були «зашиті» тут числами 0..6 і розходилися з тим,
+    // що показував екран; тепер розбір іде через opTemplateOf*/opExpert().
     int act = displayConsumeActionRequest();
-    if      (act == 0) performReset();
-    else if (act == 1) performRepair();
-    else if (act == 2) performFactoryClean();
-    else if (act == 3) performWipe2433();
-    else if (act == 4) { displayShow("ПЕРЕЗАВАНТАЖ."); Serial.flush(); delay(300); ESP.restart(); }
-    else if (act == 5) performRecalPrepare();
-    else if (act == 6) performWipe2438();
-    else if (act >= NUM_BASE_ACTIONS && act < NUM_BASE_ACTIONS + BATTERY_TEMPLATE_COUNT)
-        performInitBattery(BATTERY_TEMPLATES[act - NUM_BASE_ACTIONS].name, BATTERY_RATED_MAH);
-    else if (act >= NUM_BASE_ACTIONS + BATTERY_TEMPLATE_COUNT &&
-             act <  NUM_BASE_ACTIONS + 2 * BATTERY_TEMPLATE_COUNT)
-        performRestoreTemplate(BATTERY_TEMPLATES[act - NUM_BASE_ACTIONS - BATTERY_TEMPLATE_COUNT].name);
+    if (act >= 0) {
+        int tm = opTemplateOfModel(act);
+        int tn = opTemplateOfNew(act);
+        int ex = opExpert(act);
+        if      (act == OP_CELLSWAP)      performRecalPrepare(false);
+        else if (act == OP_CELLSWAP_DEEP) performRecalPrepare(true);
+        else if (act == OP_REPAIR)        performRepair();
+        else if (act == OP_SETCHARGE)     { int p = chargePctFromVoltage();
+                                            if (p >= 0) performSetChargePct(p); }
+        else if (act == OP_RESET)         performReset();
+        else if (act == OP_CLEAN)         performFactoryClean();
+        // «Модель <X>» — модельна частина еталона, БЕЗ навченого хвоста донора.
+        else if (tm >= 0)                 performRestoreTemplate(BATTERY_TEMPLATES[tm].name);
+        // «Новий <X>» — порожній чіп -> робочий АКБ; заряд 50 % ємності моделі.
+        else if (tn >= 0)                 { const char *nm = BATTERY_TEMPLATES[tn].name;
+                                            performInitBattery(nm, impresRatedMah(nm) / 2); }
+        else if (ex == OP_WIPE33_REL)     performWipe2433();
+        else if (ex == OP_WIPE38_REL)     performWipe2438();
+        else if (ex == OP_REBOOT_REL)     { displayShow("ПЕРЕЗАВАНТАЖ."); Serial.flush();
+                                            delay(300); ESP.restart(); }
+    }
 
     // Екранний Майстер відновлення: 1 = аналіз (зчитати + оновити діагноз),
     // 2 = виконати наступний крок плану. Логіку тримає recovery.h; кнопки —

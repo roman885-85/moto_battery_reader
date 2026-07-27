@@ -22,8 +22,10 @@
 #include <Adafruit_ST7789.h>
 #include <U8g2_for_Adafruit_GFX.h>
 #include "settings.h"
+#include "impres_format.h"
 #include "battery_reader.h"
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — дії «Новий АКБ»
+#include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
 
 // Стан, яке відображаємо (визначене в .ino / web_server.h).
 extern bool hasDump;
@@ -288,32 +290,22 @@ inline int batteryPercent(const char **src) {
     return vpct;
 }
 
+// Залишок, мА·год: паливомір ICA перерахований через ПАСПОРТНУ ємність моделі
+// (див. impres_format.h). Раніше множили на DS2438_MAH_PER_LSB, і повна шкала
+// виходила ~4978 мА·год — більше за сам пакет.
 inline int batteryRemainingMah() {
     if (!hasDump2438) return -1;
-    return (int)(batteryDump2438[12] * DS2438_MAH_PER_LSB);
+    char m[16] = "";
+    if (hasDump) impresModelName(batteryDump, m, sizeof(m));
+    return impresIcaToMah(batteryDump2438[12], impresRatedMah(m));
 }
 
-// Знайти модель (part number) в дампі DS2433. Пріоритет — запис 0x0B+літера.
+// Знайти модель (part number) в дампі DS2433.
+// Основний шлях — валідний запис моделі (довжина 0x0B, 9 символів, Σ≡0x5A);
+// запасний — найдовший ASCII-рядок, якщо запис зруйновано.
 inline bool decodeModel(char *out, size_t n) {
     if (!hasDump) return false;
-    for (int i = 0x30; i < (int)DUMP_SIZE - 12; i++) {
-        if (batteryDump[i] == 0x0B && batteryDump[i + 1] >= 'A' && batteryDump[i + 1] <= 'Z') {
-            int j = i + 1, len = 0;
-            char tmp[16];
-            while (j < (int)DUMP_SIZE && len < 12) {
-                uint8_t d = batteryDump[j];
-                if ((d >= '0' && d <= '9') || (d >= 'A' && d <= 'Z')) { tmp[len++] = (char)d; j++; }
-                else break;
-            }
-            bool digit = false;
-            for (int k = 0; k < len; k++) if (tmp[k] >= '0' && tmp[k] <= '9') digit = true;
-            if (len >= 6 && len <= 11 && digit) {
-                if ((size_t)len >= n) len = n - 1;
-                memcpy(out, tmp, len); out[len] = '\0';
-                return true;
-            }
-        }
-    }
+    if (impresModelName(batteryDump, out, n)) return true;
     int best = -1, bestLen = 0, i = 0;
     while (i < (int)DUMP_SIZE) {
         uint8_t c = batteryDump[i];
@@ -338,16 +330,33 @@ inline bool decodeModel(char *out, size_t n) {
     return true;
 }
 
-// Ємність/знос з записи історії ємності DS2433 (тег 0x17).
+// Здоров'я / строк служби, %.
+//
+// ⚠️ РАНІШЕ тут повертали байт зі зсуву +21 у першому записі довжини 0x17 і
+// видавали його за «ємність/знос». Це неправильно з двох причин:
+//   • запис шукали як «тег 0x17 + 0x00», хоча перший байт запису — ДОВЖИНА;
+//   • сам запис @0x129 — ЗАВОДСЬКА таблиця моделі: у dumps/ вона побайтово
+//     однакова в усіх 19 екземплярів PMNN4409A і всіх 8 екземплярів PMNN4409B,
+//     а байт +21 у них завжди 0x64. Тобто програма ЗАВЖДИ показувала «100% /
+//     знос 0%» — незалежно від реального АКБ. Саме про цю розбіжність із
+//     показаннями станції й писав власник.
+//
+// Перебір усіх зсувів і кодувань по 7 АКБ із відомими показаннями рації
+// (97/100/100/34/100/100/99 %) збігу не дав: строк служби в прошивці НЕ
+// зберігається — його рахує рація з навчених даних. Тому чесно повертаємо
+// «невідомо», а не вигадане число.
 inline bool decodeCapacity(int *capPct, int *wearPct) {
-    if (!hasDump) return false;
-    for (int i = 0x100; i < (int)DUMP_SIZE - 23; i++) {
-        if (batteryDump[i] == 0x17 && batteryDump[i + 1] == 0x00) {
-            int cap = batteryDump[i + 21];
-            if (cap <= 100) { *capPct = cap; *wearPct = 100 - cap; return true; }
-        }
-    }
+    (void)capPct; (void)wearPct;
     return false;
+}
+
+// Заводська таблиця здоров'я моделі (запис @0x129) — для сторінки аналізу.
+// Це НЕ стан конкретного АКБ, а константа моделі; показуємо як довідку.
+inline bool decodeFactoryHealthTable(const uint8_t **data, int *len) {
+    if (!hasDump || !impresRecordOk(batteryDump, IMPRES_FACTORY_REC)) return false;
+    *data = batteryDump + IMPRES_FACTORY_REC + 1;
+    *len  = batteryDump[IMPRES_FACTORY_REC] - 2;
+    return true;
 }
 
 // Евристика справжності/цілісності ПРОШИВКИ (модельно-залежна).
@@ -355,9 +364,10 @@ inline bool batteryGenuine(const char **reason) {
     if (!hasDump) { *reason = "нема дампу"; return false; }
     int hs = 0; for (int i = 0; i <= 0x1F; i++) hs += batteryDump[i];
     if ((hs & 0xFF) != 0x41) { *reason = "хибний заголовок"; return false; }
-    bool hasModel = false;
-    for (int i = 0x30; i < (int)DUMP_SIZE - 11 && !hasModel; i++)
-        if (batteryDump[i] == 0x0B && batteryDump[i + 1] >= 'A' && batteryDump[i + 1] <= 'Z') hasModel = true;
+    // Валідний запис моделі (довжина 0x0B, 9 символів, Σ≡0x5A). Раніше тут
+    // вистачало «байт 0x0B, за яким літера», через що сміттєвий чіп міг
+    // вважатися таким, що має модель.
+    bool hasModel = impresFindModel(batteryDump) >= 0;
     if (!hasModel) { *reason = "нема моделі"; return false; }
     if (hasDump2438) {
         uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
@@ -382,10 +392,8 @@ inline bool batteryGenuine(const char **reason) {
     return true;
 }
 
-// Базові дії + по ДВІ дії на шаблон: «Новий АКБ» (init) і «Відновити» (verbatim),
-// як у монохромній версії.
-#define NUM_BASE_ACTIONS 7
-inline int numActions() { return NUM_BASE_ACTIONS + 2 * BATTERY_TEMPLATE_COUNT; }
+// Склад і порядок операцій задає operations.h (спільний для всіх поверхонь).
+inline int numActions() { return opCount(); }
 
 // ===================== Примітиви малювання (кольорові) =====================
 
@@ -623,7 +631,7 @@ inline void drawPageTech() {
     int16_t  traw = ((int16_t)((batteryDump2438[2] << 8) | batteryDump2438[1])) >> 3;
     int16_t  iraw = (int16_t)(((uint16_t)batteryDump2438[6] << 8) | batteryDump2438[5]);
     float    i_mA = (float)iraw / (4096.0f * DS2438_RSENSE_OHM) * 1000.0f;
-    int      remMah = (int)(batteryDump2438[12] * DS2438_MAH_PER_LSB);
+    int      remMah = batteryRemainingMah();   // за паспортною ємністю моделі
 
     int y = 66;
     tSet(FONT_BODY, C_TEXT);
@@ -658,8 +666,10 @@ inline void drawPageHealth() {
     if (hasDump2438) {
         uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
         uint16_t dca = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
-        int chgCyc = (int)(cca * DS2438_MAH_PER_LSB / BATTERY_RATED_MAH);
-        int disCyc = (int)(dca * DS2438_MAH_PER_LSB / BATTERY_RATED_MAH);
+        char cyModel[16] = ""; if (hasDump) impresModelName(batteryDump, cyModel, sizeof(cyModel));
+        int  rated = impresRatedMah(cyModel);   // паспортна ємність ЗА МОДЕЛЛЮ
+        int chgCyc = (int)(cca * DS2438_MAH_PER_LSB / rated);
+        int disCyc = (int)(dca * DS2438_MAH_PER_LSB / rated);
         snprintf(buf, sizeof(buf), "Циклів: зар.%d роз.%d", chgCyc, disCyc);
         tPut(CX, y, buf); y += 30;
     }
@@ -708,61 +718,36 @@ inline void drawPageRaw2433() { drawRawColor("DS2433 (hex)", batteryDump, hasDum
 
 // Сторінка «Дії»: одна обрана операція крупно + опис + попередження.
 inline void drawPageActions() {
-    static const char *nm[NUM_BASE_ACTIONS] = { "Скидання", "Ремонт", "Очистка", "СТЕРТИ 2433", "Перезавантаж.", "Рекалібр.", "СТЕРТИ 2438" };
-    static const char *d1[NUM_BASE_ACTIONS] = { "обнулити лічильники",
-                                                "полагодити суми та",
-                                                "стерти все, окрім",
-                                                "ПОВНЕ стирання чіпа",
-                                                "рестарт пристрою",
-                                                "після заміни банок:",
-                                                "ПОВНЕ стирання чіпа" };
-    static const char *d2[NUM_BASE_ACTIONS] = { "заряд/розряд, знос",
-                                                "дзеркало калібрув.",
-                                                "моделі/ID/калібрув.",
-                                                "DS2433 (крайній!)",
-                                                "ESP32 (Wi-Fi/веб)",
-                                                "стерти learned + ICA",
-                                                "DS2438 (крайній!)" };
-    static const bool  dg[NUM_BASE_ACTIONS] = { false, false, false, true, false, false, true };
-    int sel = g_actionSel;
-    int total = numActions();
+    // Назви/описи/небезпека беруться з operations.h — того самого каталогу, що
+    // й у монохромному екрані, вебі й USB-клієнті. Локальних списків більше немає.
+    int sel = g_actionSel, total = numActions();
+    const char *name, *l1, *l2; uint8_t danger; char nbuf[26];
+    opInfo(sel, &name, &l1, &l2, &danger, nbuf, sizeof(nbuf));
 
-    const char *name, *l1, *l2; bool danger;
-    char nbuf[26];
-    if (sel < NUM_BASE_ACTIONS) {
-        name = nm[sel]; l1 = d1[sel]; l2 = d2[sel]; danger = dg[sel];
-    } else {
-        int rel = sel - NUM_BASE_ACTIONS;
-        if (rel < BATTERY_TEMPLATE_COUNT) {
-            snprintf(nbuf, sizeof(nbuf), "Новий %s", BATTERY_TEMPLATES[rel].name);
-            name = nbuf; l1 = "ініціаліз. порожній"; l2 = "чіп як новий АКБ"; danger = true;
-        } else {
-            int ti = rel - BATTERY_TEMPLATE_COUNT;
-            snprintf(nbuf, sizeof(nbuf), "Віднов %s", BATTERY_TEMPLATES[ti].name);
-            name = nbuf; l1 = "еталон байт-у-байт"; l2 = "з навч. калібровкою"; danger = true;
-        }
-    }
-
-    char t[20]; snprintf(t, sizeof(t), "Дія %d/%d", sel + 1, total);
+    char t[24]; snprintf(t, sizeof(t), "Дія %d/%d", sel + 1, total);
     drawHeaderBar(t);
 
     // Картка операції (у межах безпечної зони кутів). Оновлюємо НА МІСЦІ: рамку
     // перемальовуємо, а кожен рядок тексту чистимо ТОНКО й друкуємо. Тож при
-    // перемиканні операції (кнопка «вибір») екран НЕ блимає всім тілом — лише
-    // оновлюються рядки картки (див. displayRenderBody(false) у обробнику кнопок).
+    // перемиканні операції екран НЕ блимає всім тілом.
     int cardx = EDGE > 10 ? EDGE - 4 : 10;
     int txtx  = cardx + 10;
     int cxi   = cardx + 2;
     int cw    = TFT_W - 2 * cardx - 4;
-    uint16_t accent = danger ? C_RED : C_GREEN;
+    uint16_t accent = (danger == OPD_WIPE) ? C_RED
+                    : (danger == OPD_WRITE) ? C_YELLOW : C_GREEN;
     tft.drawRoundRect(cardx, 44, TFT_W - 2 * cardx, 96, 6, accent);
     tft.fillRect(cxi, 60, cw, 26, C_BG);  tSet(FONT_MODEL, accent); tPut(txtx, 78, name);
     tft.fillRect(cxi, 90, cw, 20, C_BG);  tSet(FONT_BODY, C_TEXT);  tPut(txtx, 106, l1);
     tft.fillRect(cxi, 112, cw, 20, C_BG);                           tPut(txtx, 128, l2);
     tft.fillRect(cxi, 148, cw, 22, C_BG);                 // рядок попередження — чистимо завжди
-    if (danger) {
+    if (danger == OPD_WIPE) {
         tSet(FONT_BODY, C_RED);
         tPut(txtx, 164, "!! НЕЗВОРОТНЬО !!");
+    } else if (sel == OP_CELLSWAP) {
+        // Головна операція ремонту — одразу нагадуємо про обов'язковий крок.
+        tSet(FONT_BODY, C_GREEN);
+        tPut(txtx, 164, "далі -> на IMPRES-ЗП");
     }
 
     // Підказка керування.

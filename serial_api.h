@@ -30,14 +30,17 @@
 //   SETMODEL <NAME>      -> ручний запис моделі (part number, 3..9 A-Z0-9)
 //   SETETM <сек>         -> ETM (наробіток) -> «дата першого користування» у рації
 //   TEMPLATES            -> список вшитих моделей для ініціалізації (без пароля)
+//   OPS                  -> каталог операцій (спільний для екрана/веба/клієнта)
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
-//   RESTORE <MODEL>      -> відновити еталон verbatim (порожній/битий чіп -> робочий)
+//   RESTORE <MODEL> [VERBATIM] -> відновити модельну частину еталона (без чужого
+//                          навченого хвоста); VERBATIM — байт-у-байт, ручний режим
 //   WIZARD               -> Майстер: зчитати + аналіз/проблеми/план (JSON)
 //   WIZSTEP <idx> [MODEL]-> Майстер: виконати крок плану (model для відновлення)
 //   WIZRESET             -> Майстер: скинути журнал продовження поточного АКБ
 //   WIZLIST              -> Майстер: усі збережені журнали (серійник + план)
 //   WIZDEL <serial>      -> Майстер: видалити журнал за серійником
-//   RECAL                -> підготовка до рекалібрування (після заміни елементів)
+//   RECAL [DEEP]         -> ремонт після заміни елементів (стерти навчений хвіст);
+//                          DEEP — додатково записи ємності й журнал використання
 //   REBOOT               -> перезавантаження ESP32
 //
 // Пароль по USB — ОПЦІЙНИЙ: фізичний доступ до кабелю = дозвіл на запис, тож
@@ -66,12 +69,13 @@ static String serHex(const uint8_t *d, int n) {
 // Повний INFO: об'єднує /api/info і /api/info2438.
 static String serBuildInfo() {
     String j = "{\"ok\":true";
+    char modelBuf[24] = "";
+    decodeModel(modelBuf, sizeof(modelBuf));   // потрібна й для блоку DS2438 (ємність за моделлю)
     j += ",\"has33\":" + String(hasDump ? "true" : "false");
     j += ",\"has38\":" + String(hasDump2438 ? "true" : "false");
 
     if (hasDump) {
-        char model[24];
-        String m = decodeModel(model, sizeof(model)) ? String(model) : String("");
+        String m = String(modelBuf);
         int cap = -1, wear = -1; decodeCapacity(&cap, &wear);
         const char *reason; bool genuine = batteryGenuine(&reason);
         j += ",\"model\":\"" + m + "\"";
@@ -101,12 +105,16 @@ static String serBuildInfo() {
                        ((uint32_t)batteryDump2438[9] << 8) | batteryDump2438[8];
         j += ",\"ica\":" + String(ica) + ",\"cca\":" + String(cca) + ",\"dca\":" + String(dca);
         j += ",\"etmSec\":" + String(etm);
-        j += ",\"icaMah\":" + String((int)(ica * DS2438_MAH_PER_LSB));
+        // Паспортна ємність — за МОДЕЛЛЮ (таблиця IMPRES_RATED), а не єдина
+        // константа BATTERY_RATED_MAH: через неї цикли й мА·год розходилися
+        // з показаннями станції на всіх моделях, крім однієї.
+        int ratedMah = impresRatedMah(modelBuf);
+        j += ",\"icaMah\":" + String(impresIcaToMah(ica, ratedMah));
         j += ",\"ccaMah\":" + String((int)(cca * DS2438_MAH_PER_LSB));
         j += ",\"dcaMah\":" + String((int)(dca * DS2438_MAH_PER_LSB));
-        j += ",\"ccaCycles\":" + String((int)(cca * DS2438_MAH_PER_LSB / BATTERY_RATED_MAH));
-        j += ",\"dcaCycles\":" + String((int)(dca * DS2438_MAH_PER_LSB / BATTERY_RATED_MAH));
-        j += ",\"ratedMah\":" + String((int)BATTERY_RATED_MAH);
+        j += ",\"ccaCycles\":" + String((int)(cca * DS2438_MAH_PER_LSB / ratedMah));
+        j += ",\"dcaCycles\":" + String((int)(dca * DS2438_MAH_PER_LSB / ratedMah));
+        j += ",\"ratedMah\":" + String(ratedMah);
         j += ",\"charge\":" + String(charge) + ",\"chargeSrc\":\"" + String(csrc) + "\"";
         j += ",\"serial\":\"" + serial + "\"";
         j += ",\"hex38\":\"" + serHex(batteryDump2438, DS2438_MEM_SIZE) + "\"";
@@ -144,7 +152,9 @@ static void serWrite38(const String &arg) {
 static void serSetMah(const String &arg) {
     if (!hasDump2438) { sResp("{\"ok\":false,\"err\":\"read first\"}"); return; }
     long mah = arg.toInt();
-    long ica = (long)(mah / DS2438_MAH_PER_LSB + 0.5f);
+    char smModel[16] = "";
+    if (hasDump) impresModelName(batteryDump, smModel, sizeof(smModel));
+    long ica = impresIcaFromMah(mah, impresRatedMah(smModel));
     if (ica < 0) ica = 0; if (ica > 255) ica = 255;
     batteryDump2438[12] = (uint8_t)ica;
     ledSet(LED_WRITE); displayShow("USB ЄМН mAh");
@@ -171,17 +181,50 @@ static void serSetCharge(const String &arg) {
 static void serSetCap(const String &arg) {
     if (!hasDump) { sResp("{\"ok\":false,\"err\":\"read first\"}"); return; }
     int cap = arg.toInt(); if (cap < 0) cap = 0; if (cap > 100) cap = 100;
-    int rec = -1;
-    for (int i = 0x100; i < 0x1F0 - 23; i++)
-        if (batteryDump[i] == 0x17 && batteryDump[i + 1] == 0x00) { rec = i; break; }
-    if (rec < 0) { sResp("{\"ok\":false,\"err\":\"no 0x17 record\"}"); return; }
+    // РУЧНИЙ РЕЖИМ: правка байта у ЗАВОДСЬКІЙ таблиці моделі @0x129.
+    // Це НЕ здоров'я АКБ — рація рахує строк служби сама (див. impres_format.h),
+    // тому показання станції від цієї правки не зміняться.
+    const int rec = IMPRES_FACTORY_REC;
+    if (!impresRecordOk(batteryDump, rec) || batteryDump[rec] != 0x17) {
+        sResp("{\"ok\":false,\"err\":\"factory table @0x129 missing/corrupt\"}"); return;
+    }
     batteryDump[rec + 21] = (uint8_t)cap;
-    fixRecordChecksum(batteryDump, rec, 23);
+    impresFixRecord(batteryDump, rec, 0x17);
     ledSet(LED_WRITE); displayShow("USB ЄМН...");
     bool ok = battery.writeBattery(batteryDump, DUMP_SIZE);
     if (ok) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
     ledSet(ok ? LED_OK : LED_ERROR); displayShow(ok ? "USB ЄМН OK" : "USB ЄМН ЗБІЙ");
-    sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"write failed\"}");
+    sResp(ok ? "{\"ok\":true,\"note\":\"factory table byte; radio computes health itself\"}"
+             : "{\"ok\":false,\"err\":\"write failed\"}");
+}
+
+// Каталог операцій (operations.h) — щоб десктопний клієнт малював той самий
+// список у тому самому порядку, що екран і веб, без власних копій текстів.
+static String serBuildOps() {
+    String j = "{\"ok\":true,\"ops\":[";
+    bool first = true;
+    auto add = [&](const char *key, const char *title, const char *detail,
+                   int danger, const char *model) {
+        if (!first) j += ",";
+        first = false;
+        j += "{\"key\":\""; j += key; j += "\",\"title\":\""; j += title;
+        j += "\",\"detail\":\""; j += detail;
+        j += "\",\"danger\":" + String(danger);
+        j += ",\"model\":\""; j += (model ? model : ""); j += "\"}";
+    };
+    for (int i = 0; i < OP_BASE_COUNT; i++)
+        add(OP_DOC[i].key, OP_DOC[i].title, OP_DOC[i].detail, OP_TEXT[i].danger, nullptr);
+    for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++)
+        add("model", "Записати модельну частину еталона",
+            "Без навченого хвоста донора.", OPD_WRITE, BATTERY_TEMPLATES[t].name);
+    for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++)
+        add("new", "Новий АКБ з порожнього чипа",
+            "Модельна частина + монітор у стані нового пакета.", OPD_WIPE, BATTERY_TEMPLATES[t].name);
+    for (int e = 0; e < OP_EXPERT_COUNT; e++)
+        add(OP_DOC_EXPERT[e].key, OP_DOC_EXPERT[e].title, OP_DOC_EXPERT[e].detail,
+            OP_TEXT_EXPERT[e].danger, nullptr);
+    j += "]}";
+    return j;
 }
 
 static void serialExec(const String &line) {
@@ -258,16 +301,22 @@ static void serialExec(const String &line) {
                                   else { bool ok = performInitBattery(md.c_str(), mah);
                                          sResp(ok ? (String("{\"ok\":true,\"model\":\"") + md + "\"}")
                                                   : "{\"ok\":false,\"err\":\"збій запису\"}"); } }
+    // RESTORE <модель> [VERBATIM] — за замовчуванням навчений хвіст донора НЕ
+    // пишеться (лишається стертим). VERBATIM — ручний режим для аналізу.
     else if (cmd == "RESTORE")  { String md = arg; md.trim(); md.toUpperCase();
+                                  bool verbatim = false;
+                                  int sp = md.indexOf(' ');
+                                  if (sp > 0) { verbatim = md.substring(sp + 1) == "VERBATIM"; md = md.substring(0, sp); md.trim(); }
                                   if (findTemplate(md.c_str()) < 0) sResp("{\"ok\":false,\"err\":\"немає шаблону моделі\"}");
                                   else { bool o33 = false, o38 = false;
-                                         bool ok = performRestoreTemplate(md.c_str(), &o33, &o38);
+                                         bool ok = performRestoreTemplate(md.c_str(), &o33, &o38, verbatim);
                                          String r = String("{\"ok\":") + (ok ? "true" : "false")
                                                   + ",\"ds2433\":" + (o33 ? "true" : "false")
                                                   + ",\"ds2438\":" + (o38 ? "true" : "false");
                                          r += ok ? (String(",\"model\":\"") + md + "\"}")
                                                  : String(",\"err\":\"збій запису\"}");
                                          sResp(r); } }
+    else if (cmd == "OPS")      { sResp(serBuildOps()); }
     else if (cmd == "WIZARD")   { sResp(wizStart()); }
     else if (cmd == "WIZSTEP")  { int s2 = arg.indexOf(' ');
                                   String si = (s2 < 0) ? arg : arg.substring(0, s2);
@@ -279,7 +328,9 @@ static void serialExec(const String &line) {
     else if (cmd == "WIZDEL")   { String s = arg; s.trim(); s.toUpperCase();
                                   if (!s.length()) sResp("{\"ok\":false,\"err\":\"no serial\"}");
                                   else { wizJournalDelete(s.c_str()); sResp("{\"ok\":true}"); } }
-    else if (cmd == "RECAL")    { bool ok = performRecalPrepare();
+    // RECAL [DEEP] — DEEP додатково стирає навчені записи ємності й журнал.
+    else if (cmd == "RECAL")    { String a = arg; a.trim(); a.toUpperCase();
+                                  bool ok = performRecalPrepare(a == "DEEP");
                                   sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"read first / write failed\"}"); }
     else if (cmd == "REBOOT")   { displayShow("ПЕРЕЗАВАНТАЖЕННЯ"); sResp("{\"ok\":true}"); Serial.flush(); delay(200); ESP.restart(); }
     else                          sResp(String("{\"ok\":false,\"err\":\"unknown cmd '") + cmd + "'\"}");

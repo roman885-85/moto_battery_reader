@@ -195,8 +195,9 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="bar" id="authSt" style="margin-top:6px">🔒 не перевірено</div>
     </div>
 
-    <div class="zone zi">📦 Крок 1 — резервна копія (робіть ЗАВЖДИ перед записом)</div>
-    <div class="card">
+<div class="zone zi">📦 Крок 1 — резервна копія (робіть ЗАВЖДИ перед записом)</div>
+
+<div class="card">
       <h2>💾 Зчитати та зберегти</h2>
       <div class="btns">
         <button class="btn b-pri" onclick="doRead()">🔍 Зчитати АКБ</button>
@@ -206,27 +207,72 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="note i">ℹ️ Спочатку «Зчитати АКБ», потім збережіть обидві копії — вони повернуть АКБ у попередній стан.</div>
     </div>
 
-    <div class="zone zi">🔧 Обслуговування — безпечно для ідентичності</div>
-    <div class="card">
-      <h2>♻️ Скидання для рекалібрування</h2>
-      <div class="note i">Обнуляє лічильники/знос, калібрування зберігається. Потім — калібрування на IMPRES-ЗП.</div>
-      <button class="btn b-warn" onclick="op('RESET','♻️ Скинути лічильники і записати у чіп?',15000)">♻️ СКИНУТИ</button>
+<div class="zone zi">🩹 Крок 2 — РЕМОНТ. Після заміни елементів починайте звідси</div>
+
+<div class="card" style="border-color:var(--org)">
+      <h2>🔧 Ремонт після заміни елементів</h2>
+      <div class="note i">Для АКБ, яку рація бачить <b>«невідома»</b> / не бере на калібрування після заміни банок.
+        У DS2433 стирається <b>навчений калібрувальний хвіст 0x18A–0x1FF</b> — виміряні параметри старих (або
+        донорських) банок, які суперечать новому пакету. Ідентичність, крива, copyright, заводська таблиця й
+        <b>запис моделі</b> лишаються. У DS2438 обнуляються лише <b>лічильники</b> (ETM/CCA/DCA), а конфіг, апаратне
+        калібрування АЦП струму й дзеркало зберігаються; паливомір виставляється за напругою. Пакет стає фірмовим,
+        але не відкаліброваним → рація приймає, ЗП запускає повний цикл.</div>
+      <div class="note w">⚠️ Фізичну калібровку не замінює — далі обов'язково на IMPRES-зарядку.</div>
+      <button class="btn b-warn" onclick="op('RECAL','🔧 Ремонт після заміни елементів?\nСтирає навчений хвіст DS2433 (0x18A–0x1FF) і обнуляє лічильники DS2438.\nМодель, крива й ідентичність лишаються.',20000)">🔧 РЕМОНТ ПІСЛЯ ЗАМІНИ ЕЛЕМЕНТІВ</button>
+      <button class="btn" onclick="op('RECAL DEEP','🔧 Глибока чистка?\nДодатково стирає навчені записи ємності (0x153–0x189) і журнал використання.\nВмикайте, лише якщо після звичайного ремонту ЗП тримається за стару ємність.',20000)">🧹 Глибока чистка</button>
     </div>
-    <div class="card">
+
+<div class="card">
       <h2>🛠 Ремонт цілісності</h2>
       <div class="note i">Суми (0x41/0x5A) + дзеркало калібрування з уцілілого DS2438. Якщо рація «не бачить» АКБ.</div>
       <button class="btn b-warn" onclick="op('REPAIR','🛠 Відновити цілісність і записати?',15000)">🛠 ВІДНОВИТИ</button>
     </div>
-    <div class="card" style="border-color:var(--org)">
-      <h2>🔧 Ремонт після заміни елементів</h2>
-      <div class="note i">Для АКБ, яку рація бачить <b>«невідома»</b> / не бере на калібрування після заміни банок.
-        Перевірений рецепт: у DS2433 стирає донорський калібр-блок у хвості <b>0x1B0–0x1FF</b> (+ записи 0x0A), лишаючи
-        модель/ємність/криву; <b>DS2438 стирається повністю</b>. Пакет стає фірмовим, але не відкаліброваним → рація
-        приймає, ЗП запускає калібрування.</div>
-      <div class="note w">⚠️ <b>DS2438 буде стерто.</b> Фізичну калібровку не замінює — далі на IMPRES-зарядку.</div>
-      <button class="btn b-warn" onclick="op('RECAL','🔧 Підготувати до калібрування?\nСтирає донорський хвіст DS2433 (0x1B0–0x1FF) і ПОВНІСТЮ стирає DS2438.',20000)">🔧 ПІДГОТУВАТИ ДО КАЛІБРУВАННЯ</button>
+
+<div class="zone zi">🔌 Крок 3 — калібрування на IMPRES-ЗП (обов’язково)</div>
+
+<div class="card" style="border-color:var(--ok)">
+      <h2>🔌 Калібрування на зарядній станції</h2>
+      <div class="note i">Після ремонту навчена калібровка <b>порожня</b> — рація приймає пакет як фірмовий і
+        просить калібрування. Поставте АКБ на оригінальну IMPRES-ЗП на повний цикл (заряд → розряд → заряд):
+        саме станція виміряє нові банки й запише калібровку в <code>0x18A–0x1FF</code>. Прошивкою цей крок
+        не замінюється.</div>
     </div>
-    <div class="card">
+
+<div class="zone zi">🧰 Обслуговування — безпечно для ідентичності</div>
+
+<div class="card">
+      <h2>♻️ Скидання для рекалібрування</h2>
+      <div class="note i">Обнуляє лічильники/знос, калібрування зберігається. Потім — калібрування на IMPRES-ЗП.</div>
+      <button class="btn b-warn" onclick="op('RESET','♻️ Скинути лічильники і записати у чіп?',15000)">♻️ СКИНУТИ</button>
+    </div>
+
+<div class="card">
+      <h2>🔋 Заряд у мА·год</h2>
+      <div class="note i">Рівень заряду (регістр ICA DS2438).</div>
+      <div class="row"><span class="k">мА·год</span><input type="number" id="mahv" min="0" max="6000" value="0" style="width:110px;text-align:center"></div>
+      <button class="btn b-warn" onclick="setMah()">💾 ЗАПИСАТИ мА·год</button>
+      <div class="row" style="margin-top:8px"><span class="k">Заряд, % (0..100)</span><input type="number" id="chgv" min="0" max="100" placeholder="авто" style="width:110px;text-align:center"></div>
+      <button class="btn b-warn" onclick="setChargeAuto()">⚡ ЗАРЯД ПО НАПРУЗІ (авто: 7В=0%, 8.4В=100%)</button>
+      <button class="btn b-warn" onclick="setChargePct()">💾 ЗАПИСАТИ ЗАРЯД %</button>
+    </div>
+
+<div class="card">
+      <h2>📅 Дата першого використання</h2>
+      <div class="note i">Рація рахує «перше користування» = її час − ETM (наробіток DS2438). Дата не зберігається
+        у батареї, на оригінальність не впливає. Зміна: ETM = (сьогодні − обрана дата).</div>
+      <div class="row"><span class="k">Бажана дата</span><input type="date" id="etmDate"></div>
+      <button class="btn b-warn" onclick="setEtm()">📅 ЗАПИСАТИ ДАТУ (ETM)</button>
+    </div>
+
+<div class="card">
+      <h2>🧹 Очистити (крім критичних)</h2>
+      <div class="note w">⚠️ Стирає все використання/історію/статистику. Зберігає модель/серійний/ID/калібрування.</div>
+      <button class="btn b-dng" onclick="op('CLEAN','🧹 Стерти всі дані використання, лишивши ID/калібрування?',15000)">🧹 ОЧИСТИТИ</button>
+    </div>
+
+<div class="zone zi">🪪 Ідентичність — модель і відновлення порожнього чипа</div>
+
+<div class="card">
       <h2>🪪 Модель (ручний запис)</h2>
       <div class="note i">Модель (part number) пишеться у DS2433: поле 0x0B + заголовок, із перерахунком сум.
         Поточна: <b id="mdNow">—</b>. Змінює модель лише там, де вже <b>є</b> запис — на порожньому чипі
@@ -239,7 +285,21 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="note w">ℹ️ <b>Серійний номер</b> — апаратний лазерний ROM DS2438: унікальний, незмінний,
         <b>фізично не перезаписується</b>. Для власного інвентарного ID — редактор байтів нижче.</div>
     </div>
-    <div class="card" style="border-color:var(--grn)">
+
+<div class="card" style="border-color:#2ecc71">
+      <h2>🛠️ Відновити еталон (ремонт з нуля)</h2>
+      <div class="note i">Записує <b>модельну частину</b> еталона (ідентичність 0x000–0x065, крива,
+        COPYRIGHT, заводська таблиця, запис моделі). Навчений хвіст <code>0x18A–0x1FF</code> лишається
+        порожнім — його запише зарядна станція під нові банки. Працює на порожній/битій мікросхемі.</div>
+      <div class="note w">⚠️ Раніше писало байт-у-байт разом із калібровкою донора — після цього рація
+        казала «невідомий акумулятор». Побайтовий режим — кнопкою нижче, для аналізу.</div>
+      <div class="row"><span class="k">Модель</span><select id="restModel" style="min-width:150px"></select></div>
+      <div class="note w">⚠️ Перезапише ОБИДВІ мікросхеми еталоном. Для 4409B — найнадійніший робочий результат.</div>
+      <button class="btn b-warn" onclick="restoreBattery(false)">🛠️ ВІДНОВИТИ ЕТАЛОН</button>
+      <button class="btn" onclick="restoreBattery(true)">🧪 Байт-у-байт (ручний режим, для аналізу)</button>
+    </div>
+
+<div class="card" style="border-color:var(--grn)">
       <h2>🆕 Новий акумулятор (порожній чип)</h2>
       <div class="note i">Для <b>порожнього/стертого/невідомого</b> чипа: пише повний еталон обраної моделі
         (DS2433 + DS2438 — ідентичність, калібрування), обнуляє історію, ставить здоров'я 100%,
@@ -250,63 +310,16 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="note w">⚠️ Перезапише ОБИДВІ мікросхеми. Лише для порожнього/невідомого чипа. Вкажіть паспортну ємність вашої моделі.</div>
       <button class="btn b-warn" onclick="initBattery()">🆕 ЗАПИСАТИ НОВИЙ АКБ</button>
     </div>
-    <div class="card" style="border-color:#2ecc71">
-      <h2>🛠️ Відновити еталон (ремонт з нуля)</h2>
-      <div class="note i">Пише вшитий <b>genuine</b>-еталон <b>байт-у-байт</b> — з УСІЄЮ навченою калібровкою
-        (гістограма, крива, CCA/DCA/ETM/ICA). Нічого не обнуляє: бітово точна копія робочого АКБ, яку приймають
-        і рація, і IMPRES-зарядка. Працює навіть на <b>порожній/битій</b> мікросхемі.</div>
-      <div class="row"><span class="k">Модель</span><select id="restModel" style="min-width:150px"></select></div>
-      <div class="note w">⚠️ Перезапише ОБИДВІ мікросхеми еталоном. Для 4409B — найнадійніший робочий результат.</div>
-      <button class="btn b-warn" onclick="restoreBattery()">🛠️ ВІДНОВИТИ ЕТАЛОН</button>
-    </div>
-    <div class="card">
-      <h2>🔋 Заряд у мА·год</h2>
-      <div class="note i">Рівень заряду (регістр ICA DS2438).</div>
-      <div class="row"><span class="k">мА·год</span><input type="number" id="mahv" min="0" max="6000" value="0" style="width:110px;text-align:center"></div>
-      <button class="btn b-warn" onclick="setMah()">💾 ЗАПИСАТИ мА·год</button>
-      <div class="row" style="margin-top:8px"><span class="k">Заряд, % (0..100)</span><input type="number" id="chgv" min="0" max="100" placeholder="авто" style="width:110px;text-align:center"></div>
-      <button class="btn b-warn" onclick="setChargeAuto()">⚡ ЗАРЯД ПО НАПРУЗІ (авто: 7В=0%, 8.4В=100%)</button>
-      <button class="btn b-warn" onclick="setChargePct()">💾 ЗАПИСАТИ ЗАРЯД %</button>
-    </div>
-    <div class="card">
-      <h2>📅 Дата першого використання</h2>
-      <div class="note i">Рація рахує «перше користування» = її час − ETM (наробіток DS2438). Дата не зберігається
-        у батареї, на оригінальність не впливає. Зміна: ETM = (сьогодні − обрана дата).</div>
-      <div class="row"><span class="k">Бажана дата</span><input type="date" id="etmDate"></div>
-      <button class="btn b-warn" onclick="setEtm()">📅 ЗАПИСАТИ ДАТУ (ETM)</button>
-    </div>
-    <div class="card">
+
+<div class="zone zd">🧪 Ручний режим / експерт — для аналізу та нештатних ситуацій</div>
+
+<div class="card">
       <h2>🩺 Знос/здоров'я (0–100 %)</h2>
       <div class="row"><span class="k">Ємність, %</span><input type="number" id="capv" min="0" max="100" value="100" style="width:90px;text-align:center"></div>
       <button class="btn b-warn" onclick="setCap()">💾 ЗАПИСАТИ %</button>
     </div>
 
-    <div class="zone zd">⛔ НЕБЕЗПЕЧНА ЗОНА — незворотні операції. Спочатку копія!</div>
-    <div class="card">
-      <h2>🧹 Очистити (крім критичних)</h2>
-      <div class="note w">⚠️ Стирає все використання/історію/статистику. Зберігає модель/серійний/ID/калібрування.</div>
-      <button class="btn b-dng" onclick="op('CLEAN','🧹 Стерти всі дані використання, лишивши ID/калібрування?',15000)">🧹 ОЧИСТИТИ</button>
-    </div>
-    <div class="card">
-      <h2>📤 Відновлення / запис DS2433 (512 Б)</h2>
-      <div class="note w">⚠️ Запис завідомо справного дампа тієї ж моделі — оживляє стерту АКБ. Чужа модель зіпсує.</div>
-      <input type="file" id="f33" accept=".bin">
-      <button class="btn b-dng" onclick="writeFile('f33',512,'WRITE33')">⚡ ЗАПИСАТИ DS2433</button>
-    </div>
-    <div class="card">
-      <h2>🔬 Запис DS2438 (64 Б)</h2>
-      <div class="note w">⚠️ Зазвичай не потрібно окремо.</div>
-      <input type="file" id="f38" accept=".bin">
-      <button class="btn b-dng" onclick="writeFile('f38',64,'WRITE38')">⚡ ЗАПИСАТИ DS2438</button>
-    </div>
-    <div class="card" style="border-color:#e74c3c">
-      <h2>🔥 ПОВНЕ стирання DS2433 (крайній випадок)</h2>
-      <div class="note w">🛑 Стирає ВЕСЬ DS2433 у 0xFF: модель, серійний/ID, калібрування. АКБ НЕ ПРАЦЮВАТИМЕ,
-        доки не запишете еталонний дамп. DS2438 не чіпається.</div>
-      <button class="btn b-dng" style="background:#c0392b" onclick="wipe33()">🔥 СТЕРТИ DS2433 ПОВНІСТЮ</button>
-      <button class="btn b-dng" style="background:#922b21" onclick="wipe38()">🔥 СТЕРТИ DS2438 ПОВНІСТЮ</button>
-    </div>
-    <div class="card">
+<div class="card">
       <h2>✏️ Редактор байтів</h2>
       <div class="note w">⚠️ Пряма правка. Автовиправлення чинить суму заголовка DS2433 і дзеркало.</div>
       <div class="row"><span class="k">Мікросхема</span>
@@ -323,7 +336,32 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <label style="display:block;margin:6px 0"><input type="checkbox" id="hxFix" checked> Автовиправлення (DS2433)</label>
       <button class="btn b-dng" onclick="hxWrite()">⚡ ЗАПИСАТИ БАЙТИ</button>
     </div>
-    <div class="card"><h2>📜 Журнал обміну</h2><div id="log"></div></div>
+
+<div class="card">
+      <h2>📤 Відновлення / запис DS2433 (512 Б)</h2>
+      <div class="note w">⚠️ Запис завідомо справного дампа тієї ж моделі — оживляє стерту АКБ. Чужа модель зіпсує.</div>
+      <input type="file" id="f33" accept=".bin">
+      <button class="btn b-dng" onclick="writeFile('f33',512,'WRITE33')">⚡ ЗАПИСАТИ DS2433</button>
+    </div>
+
+<div class="card">
+      <h2>🔬 Запис DS2438 (64 Б)</h2>
+      <div class="note w">⚠️ Зазвичай не потрібно окремо.</div>
+      <input type="file" id="f38" accept=".bin">
+      <button class="btn b-dng" onclick="writeFile('f38',64,'WRITE38')">⚡ ЗАПИСАТИ DS2438</button>
+    </div>
+
+<div class="zone zd">⛔ НЕБЕЗПЕЧНА ЗОНА — незворотні операції. Спочатку копія!</div>
+
+<div class="card" style="border-color:#e74c3c">
+      <h2>🔥 ПОВНЕ стирання DS2433 (крайній випадок)</h2>
+      <div class="note w">🛑 Стирає ВЕСЬ DS2433 у 0xFF: модель, серійний/ID, калібрування. АКБ НЕ ПРАЦЮВАТИМЕ,
+        доки не запишете еталонний дамп. DS2438 не чіпається.</div>
+      <button class="btn b-dng" style="background:#c0392b" onclick="wipe33()">🔥 СТЕРТИ DS2433 ПОВНІСТЮ</button>
+      <button class="btn b-dng" style="background:#922b21" onclick="wipe38()">🔥 СТЕРТИ DS2438 ПОВНІСТЮ</button>
+    </div>
+
+<div class="card"><h2>📜 Журнал обміну</h2><div id="log"></div></div>
   </div>
 </div>
 
@@ -722,15 +760,18 @@ async function wizJournalDelete(serial){
   const r=await cmd('WIZDEL '+serial,8000);
   if(r&&r.ok){toast('Видалено'); wizJournalsLoad();} else toast('Помилка: '+((r&&r.err)||''));
 }
-async function restoreBattery(){
+async function restoreBattery(verbatim){
   if(!connected){toast('Підключіться');return;}
   const model=$('restModel').value;
   if(!model){toast('Оберіть модель');return;}
-  if(!confirm('🛠️ Відновити еталон '+model+' БАЙТ-У-БАЙТ?\nПерезапише ОБИДВІ мікросхеми точною genuine-копією (з навченою калібровкою). Працює й на порожньому/битому чипі. Продовжити?'))return;
+  const q = verbatim
+    ? '🧪 РУЧНИЙ РЕЖИМ: записати еталон '+model+' БАЙТ-У-БАЙТ?\nРазом із навченою калібровкою донора — рація після цього зазвичай каже «невідомий акумулятор».\nДля аналізу, не для ремонту. Продовжити?'
+    : '🛠️ Відновити модельну частину еталона '+model+'?\nПерезапише ОБИДВІ мікросхеми; навчений хвіст 0x18A–0x1FF лишиться порожнім (його запише зарядна станція). Продовжити?';
+  if(!confirm(q))return;
   await ensureAuth();
   setBusy(true); toast('Відновлення еталона...');
-  const r=await cmd('RESTORE '+model,25000);
-  if(r.ok) toast('✅ Еталон '+model+' відновлено'+(r.ds2438?' (DS2433+DS2438)':' (лише DS2433)'));
+  const r=await cmd('RESTORE '+model+(verbatim?' VERBATIM':''),25000);
+  if(r.ok) toast('✅ Еталон '+model+' записано'+(r.ds2438?' (DS2433+DS2438)':' (лише DS2433)'));
   else toast('Помилка: '+(r.err||''));
   await refresh(); setBusy(false);
 }

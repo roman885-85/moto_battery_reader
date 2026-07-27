@@ -10,7 +10,7 @@ Moto IMPRES USB — нативний графічний клієнт (Tkinter, �
 Запуск із коду:  python moto_gui.py
 Збірка .exe:     build.bat
 """
-import sys, os, time, json, queue, threading
+import sys, os, time, json, math, queue, threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
@@ -112,6 +112,234 @@ class SerialWorker(threading.Thread):
             return {"ok": False, "err": str(e)}
 
 
+class DischargeMonitor(tk.Canvas):
+    """Панель процесу розряду — той самий вигляд, що у веб-версії пристрою.
+
+    Розряд триває годинами, тож дивитись доводиться довго: рядок тексту для
+    цього не годиться. Тут пульсуючий індикатор стану, смуга прогресу з
+    «течією» (єдина ознака, що процес живий: між опитуваннями пристрою числа
+    стоять на місці), графік напруги за ВЕСЬ сеанс, коридор уставки струму,
+    шпаруватість ключа й плитки показань.
+
+    Малює себе сама раз на 80 мс (анімація й рівний хід годинника), дані
+    отримує ззовні через update_state() — опитування живе в App.
+    """
+    W, H = 720, 358
+    PAD = 14
+
+    def __init__(self, master):
+        super().__init__(master, width=self.W, height=self.H, bg=MIL["field"],
+                         highlightthickness=1, highlightbackground=MIL["line"])
+        self.d = None            # останній стан із пристрою
+        self.at = 0.0            # коли він прийшов — щоб годинник ішов рівно
+        self.hist = []           # [(t, mv)] — крива напруги за весь сеанс
+        self.step = 10           # поточний крок між точками кривої, с
+        self.phase = 0.0
+        self._alive = True
+        self._tick()
+
+    def destroy(self):
+        self._alive = False
+        super().destroy()
+
+    def reset_history(self):
+        self.hist = []; self.step = 10
+
+    def update_state(self, d):
+        if d and d.get("state") == "run":
+            t, mv = d.get("elapsedS", 0), d.get("mv", 0)
+            # Час пішов назад — почався НОВИЙ сеанс, стару криву не склеюємо.
+            if self.hist and t < self.hist[-1][0]:
+                self.reset_history()
+            # Точки не викидаються з початку: коли їх забагато, ряд
+            # проріджується вдвічі, а крок подвоюється — так уся крива
+            # лишається на екрані незалежно від тривалості розряду.
+            if not self.hist or t - self.hist[-1][0] >= self.step:
+                self.hist.append((t, mv))
+                if len(self.hist) > 300:
+                    self.hist = self.hist[::2]; self.step *= 2
+        self.d = d
+        self.at = time.time()
+
+    # ---- допоміжне малювання -------------------------------------------
+    def _bar(self, x, y, w, h, frac, color, striped=False):
+        self.create_rectangle(x, y, x + w, y + h, fill="#0e1108", outline=MIL["line"])
+        fw = max(0, min(1.0, frac)) * (w - 2)
+        if fw <= 0:
+            return
+        self.create_rectangle(x + 1, y + 1, x + 1 + fw, y + h - 1, fill=color, outline="")
+        if not striped:
+            return
+        # «Течія»: похилі смужки, що біжать заливкою. Обрізаємо їх по краю
+        # заливки вручну — у Tk немає відсікання області.
+        off = (self.phase * 26) % 16
+        sx = x + 1 - h
+        while sx < x + 1 + fw:
+            x0, x1 = sx + off, sx + off + h
+            if x1 > x + 1 and x0 < x + 1 + fw:
+                self.create_line(max(x0, x + 1), y + h - 1, min(x1, x + 1 + fw), y + 1,
+                                 fill="#e7e3d2", width=3, stipple="gray25")
+            sx += 16
+
+    def _tile(self, x, y, w, h, label, value, accent=False):
+        self.create_rectangle(x, y, x + w, y + h, fill=MIL["bg"],
+                              outline=MIL["olive"] if accent else MIL["line"])
+        self.create_text(x + 8, y + 6, text=label, anchor="nw", fill=MIL["mut"],
+                         font=("Segoe UI", 8))
+        self.create_text(x + 8, y + h - 8, text=value, anchor="sw", fill=MIL["fg"],
+                         font=("Consolas", 13, "bold"))
+
+    def _fmt_t(self, s):
+        s = int(max(0, s))
+        return "%d:%02d:%02d" % (s // 3600, (s // 60) % 60, s % 60)
+
+    # ---- повна перемальовка --------------------------------------------
+    def redraw(self):
+        self.delete("all")
+        P, W, H = self.PAD, self.W, self.H
+        d = self.d
+        state = (d or {}).get("state", "idle")
+        run = state == "run"
+
+        # Тло малюємо явно, а не покладаємось на bg полотна: так панель
+        # виглядає однаково незалежно від теми і коректно лягає в postscript().
+        self.create_rectangle(0, 0, W, H, fill=MIL["field"], outline="")
+        # рамка стану
+        edge = {"run": MIL["khaki"], "done": MIL["olive"], "abort": MIL["maroon"]}.get(state, MIL["line"])
+        self.create_rectangle(1, 1, W - 2, H - 2, outline=edge, width=2)
+
+        if not d:
+            self.create_text(W // 2, H // 2, text="стан розряду не запитано",
+                             fill=MIL["mut"], font=("Segoe UI", 10))
+            return
+        if not d.get("available"):
+            self.create_text(W // 2, H // 2, text="розряд не налаштовано (LOAD_PIN у settings.h)",
+                             fill=MIL["mut"], font=("Segoe UI", 10))
+            return
+
+        # --- шапка: пульсуючий вогник + стан + годинник ---
+        r = 6
+        if run:      # пульсація — видно, що процес іде, навіть коли числа стоять
+            r = 5 + 2.2 * (0.5 + 0.5 * math.sin(self.phase * 2.2))
+        dot = {"run": MIL["khaki"], "done": MIL["olive"], "abort": MIL["maroon"]}.get(state, MIL["mut"])
+        self.create_oval(P + 8 - r, 20 - r, P + 8 + r, 20 + r, fill=dot, outline="")
+        names = {"idle": "очікування", "run": "ІДЕ РОЗРЯД",
+                 "done": "ГОТОВО — на IMPRES-ЗП", "abort": "АВАРІЯ: " + (d.get("reason") or "")}
+        self.create_text(P + 22, 20, text=names.get(state, state), anchor="w",
+                         fill=MIL["fg"], font=("Segoe UI", 11, "bold"))
+        el = d.get("elapsedS", 0) + (time.time() - self.at if run else 0)
+        self.create_text(W - P, 20, text=self._fmt_t(el), anchor="e",
+                         fill=MIL["mut"], font=("Consolas", 11))
+
+        # --- велика напруга ---
+        mv, tgt, st0 = d.get("mv", 0), d.get("targetMv", 0), d.get("startMv", 0)
+        big = self.create_text(P, 58, text="%.2f" % (mv / 1000.0), anchor="w",
+                               fill=MIL["fg"], font=("Segoe UI", 26, "bold"))
+        # Підпис «В» і рядок цілі ставимо ПО ФАКТИЧНІЙ ширині числа: шрифт
+        # 26 pt на різних системах міряється по-різному, і фіксовані відступи
+        # то залишали діру, то налазили на цифри.
+        x = self.bbox(big)[2] + 6
+        self.create_text(x, 62, text="В", anchor="w", fill=MIL["mut"], font=("Segoe UI", 11))
+        self.create_text(x + 22, 62, text="старт %.2f В  →  ціль %.2f В" % (st0 / 1000.0, tgt / 1000.0),
+                         anchor="w", fill=MIL["mut"], font=("Segoe UI", 9))
+
+        # --- прогрес до цілі ---
+        span, done = st0 - tgt, st0 - mv
+        pct = max(0, min(100, int(round(done * 100.0 / span)))) if span > 0 else 0
+        self._bar(P, 80, W - 2 * P, 17, pct / 100.0, MIL["olive"], striped=run)
+        self.create_text(W - P - 8, 88, text="%d %%" % pct, anchor="e",
+                         fill=MIL["fg"], font=("Segoe UI", 8, "bold"))
+
+        # --- графік напруги за весь сеанс ---
+        gx, gy, gw, gh = P, 106, W - 2 * P, 66
+        self.create_rectangle(gx, gy, gx + gw, gy + gh, fill="#0e1108", outline=MIL["line"])
+        if len(self.hist) >= 2:
+            vs = [p[1] for p in self.hist]
+            lo, hi = min(vs) - 20, max(vs) + 20
+            if tgt and tgt < lo:
+                lo = tgt - 20            # ціль завжди в кадрі
+            t0 = self.hist[0][0]; t1 = max(self.hist[-1][0], t0 + 1)
+            X = lambda t: gx + 3 + (t - t0) / float(t1 - t0) * (gw - 6)
+            Y = lambda v: gy + gh - 4 - (v - lo) / float(hi - lo or 1) * (gh - 8)
+            pts = [(X(t), Y(v)) for t, v in self.hist]
+            poly = [gx + 3, gy + gh - 1] + [c for p in pts for c in p] + [gx + gw - 3, gy + gh - 1]
+            self.create_polygon(poly, fill="#232a17", outline="")
+            ty = Y(tgt)
+            self.create_line(gx + 2, ty, gx + gw - 2, ty, fill=MIL["maroon"], dash=(4, 4))
+            self.create_line([c for p in pts for c in p], fill=MIL["khaki"], width=2)
+        else:
+            self.create_text(gx + gw / 2, gy + gh / 2, text="крива напруги збирається під час розряду",
+                             fill=MIL["mut"], font=("Segoe UI", 8))
+
+        # --- струм у коридорі уставки ---
+        pwm = bool(d.get("pwm"))
+        ma = abs(d.get("ma", 0)); setMa = d.get("setMa", 0) or 1
+        lo_ma, hi_ma = d.get("bandLoMa", 0), d.get("bandHiMa", 0)
+        # Шкала — до 125 % уставки: коридор займає більшу частину доріжки, а
+        # вихід за нього одразу впадає в око.
+        scale = max(setMa * 1.25, ma * 1.05, 1)
+        self.create_text(P, 186, text="струм / уставка", anchor="w", fill=MIL["mut"], font=("Segoe UI", 8))
+        right = ("уставка %d мА · пік %d мА" % (setMa, d.get("peakMa", 0))) if pwm \
+                else "ШІМ недоступний — струм не обмежено"
+        self.create_text(W - P, 186, text=right, anchor="e",
+                         fill=(MIL["olive"] if d.get("inBand") else MIL["khaki"]) if pwm else MIL["maroon"],
+                         font=("Segoe UI", 8))
+        bx, by, bw = P, 196, W - 2 * P
+        self._bar(bx, by, bw, 14, ma / scale, MIL["khaki"] if (not run or d.get("inBand")) else MIL["maroon"])
+        # коридор — ПОВЕРХ заливки, інакше вона його перекриє
+        cl = bx + 1 + (bw - 2) * lo_ma / scale
+        cr = bx + 1 + (bw - 2) * min(hi_ma, scale) / scale
+        self.create_rectangle(cl, by + 1, cr, by + 13, outline="#e7e3d2", width=2)
+        mkx = bx + 1 + (bw - 2) * min(setMa, scale) / scale
+        self.create_line(mkx, by, mkx, by + 14, fill=MIL["fg"], width=2)
+
+        # --- шпаруватість ключа ---
+        duty = d.get("duty", 0) if pwm else 100
+        self.create_text(P, 222, text="шпаруватість ключа (ШІМ)", anchor="w",
+                         fill=MIL["mut"], font=("Segoe UI", 8))
+        self.create_text(W - P, 222, text=("%d %%" % duty) if pwm else "ключ відкрито постійно",
+                         anchor="e", fill=MIL["mut"], font=("Segoe UI", 8))
+        self._bar(P, 232, W - 2 * P, 14, duty / 100.0, "#4a5a38")
+
+        # --- плитки показань: одиниці в підписі, значення — саме число ---
+        tiles = [("віддано, мА·год", str(d.get("mah", 0)), True),
+                 ("DCA, мА·год",     str(d.get("dcaMah", 0)), False),
+                 ("струм, мА",       str(d.get("ma", 0)), False),
+                 ("потужність, Вт",  str(d.get("watts", "—")), False),
+                 ("температура, °C", str(d.get("tempC", "—")), False),
+                 ("ICA · старт %s" % d.get("icaStart", "—"), str(d.get("ica", 0)), False),
+                 ("лишилось ≈",      self._eta(d, run), False)]
+        tw, gap, ty0 = (W - 2 * P - 3 * 8) / 4.0, 8, 258
+        for i, (lab, val, acc) in enumerate(tiles):
+            col, row = i % 4, i // 4
+            self._tile(P + col * (tw + gap), ty0 + row * 48, tw, 44, lab, val, acc)
+
+        if pwm or not run:
+            return
+        self.create_text(W // 2, H - 8, anchor="s", fill="#ff9b8f", font=("Segoe UI", 8),
+                         text="ШІМ недоступний: ключ відкритий постійно, струм не обмежується")
+
+    def _eta(self, d, run):
+        # Оцінка з фактичного темпу за весь сеанс. Груба (наприкінці крива
+        # положистіша, та й струм ми навмисне зменшуємо), тож і подана як «≈»,
+        # але дає зрозуміти, чекати десять хвилин чи дві години.
+        el, mv, st0, tgt = d.get("elapsedS", 0), d.get("mv", 0), d.get("startMv", 0), d.get("targetMv", 0)
+        if not run or el <= 60 or st0 <= mv:
+            return "—"
+        left = (mv - tgt) / ((st0 - mv) / float(el))
+        return self._fmt_t(left) if left > 0 else "ось-ось"
+
+    def _tick(self):
+        if not self._alive:
+            return
+        self.phase += 0.08
+        try:
+            self.redraw()
+            self.after(80, self._tick)
+        except tk.TclError:
+            self._alive = False          # вікно закрилось під час перемальовки
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -133,9 +361,12 @@ class App:
         except Exception:
             pass
 
+        self._disBusy = False
+
         self._build()
         self.refresh_ports()
         self.root.after(40, self._poll)
+        self.root.after(1000, self._dis_tick)     # стан розряду тягнеться сам
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ---- обмін із фоновим потоком --------------------------------------
@@ -481,14 +712,17 @@ class App:
         b2d = ttk.LabelFrame(p, text="Розряд перед калібруванням (навантаження MOSFET)", padding=8); b2d.pack(fill="x", pady=4)
         ttk.Label(b2d, text="Станція не бере АКБ на калібрування, поки бачить його зарядженим. Розряд до 7.2 В\n"
                             "змушує її піти в повний цикл; заразом рахується реальна ємність нових банок.\n"
+                            "Струм обмежується ШІМом і веде за напругою: 1000 мА на 8.40 В → 300 мА на 7.20 В.\n"
                             "Аварійна зупинка: < 6.00 В, перегрів 45 °C, стеля часу, втрата зв'язку з монітором.\n"
-                            "Резистор гріється (~14 Вт на 5 Ом) — не лишайте без нагляду.",
+                            "Резистор гріється — не лишайте без нагляду.",
                   foreground="#b9bd86", justify="left").pack(anchor="w")
         df = ttk.Frame(b2d); df.pack(anchor="w", pady=3)
         ttk.Button(df, text="🪫 Почати розряд (7.2 В)", command=self.discharge_start).pack(side="left", padx=2)
         ttk.Button(df, text="⏹ Зупинити", command=self.discharge_stop).pack(side="left", padx=2)
-        ttk.Button(df, text="🔄 Стан", command=self.discharge_status).pack(side="left", padx=2)
-        self.lblDis = ttk.Label(b2d, text="—", foreground="#e0e0e0"); self.lblDis.pack(anchor="w")
+        ttk.Button(df, text="🔄 Оновити зараз", command=self.discharge_status).pack(side="left", padx=2)
+        # Стан тягнеться сам (див. _dis_tick) — кнопка лишилась тільки щоб не
+        # чекати періоду, коли й так стоїш біля пристрою.
+        self.monDis = DischargeMonitor(b2d); self.monDis.pack(anchor="w", pady=(6, 0))
 
         b2c = ttk.LabelFrame(p, text="Крок 3 — калібрування на IMPRES-ЗП (обов'язково)", padding=8); b2c.pack(fill="x", pady=4)
         ttk.Label(b2c, text="Після ремонту навчена калібровка порожня — рація приймає пакет як фірмовий і просить\n"
@@ -927,41 +1161,51 @@ class App:
 
     # ---- керований розряд ---------------------------------------------
     def _dis_show(self, r):
+        # Уся візуалізація — у DischargeMonitor; тут лише передаємо стан і
+        # знімаємо ознаку «запит у польоті».
+        self._disBusy = False
         d = (r or {}).get("discharge") if isinstance(r, dict) else None
-        if not d:
-            self.lblDis.config(text="—"); return
-        if not d.get("available"):
-            self.lblDis.config(text="не налаштовано (LOAD_PIN у settings.h)"); return
-        names = {"idle": "очікування", "run": "іде розряд",
-                 "done": "готово — на IMPRES-ЗП", "abort": "АВАРІЯ: " + (d.get("reason") or "")}
-        # Струм тут СЕРЕДНІЙ: ключ працює ШІМом, тож виміряний пік (струм при
-        # 100 % шпаруватості) і те, що насправді тече, — різні числа.
-        lim = ("уст %d мА · ШІМ %d %% · пік %d мА"
-               % (d.get("setMa", 0), d.get("duty", 0), d.get("peakMa", 0))
-               ) if d.get("pwm") else "БЕЗ ШІМ, струм не обмежено"
-        # Показуємо і наш інтеграл, і апаратний лічильник DCA самого DS2438:
-        # DCA рахує неперервно, тож розбіжність вкаже, що опитування щось пропускає.
-        self.lblDis.config(text="%s · %.2f В · %d мА · %s Вт · %s · %d мА·год (DCA %d) · ICA %d · %s °C · %d с" % (
-            names.get(d.get("state"), d.get("state", "?")), d.get("mv", 0) / 1000.0,
-            d.get("ma", 0), d.get("watts", "?"), lim, d.get("mah", 0), d.get("dcaMah", 0),
-            d.get("ica", 0), d.get("tempC", "?"), d.get("elapsedS", 0)))
+        self.monDis.update_state(d)
+
+    def _dis_tick(self):
+        """Автоопитування стану розряду.
+
+        Раз на 3 с, поки розряд іде, і раз на 30 с у спокої — щоб побачити
+        розряд, запущений кнопкою на самому пристрої, а не звідси. Прапорець
+        _disBusy не дає накопичувати запити в черзі порту, якщо пристрій
+        відповідає повільно (а він відповідає повільно: під час розряду кожне
+        опитування — це два читання 1-Wire з паузами на вимір).
+        """
+        try:
+            d = self.monDis.d
+            run = bool(d) and d.get("state") == "run"
+            if self.connected and not self._disBusy:
+                self._disBusy = True
+                self.cmd("DISCHARGE ?", 8.0, cb=self._dis_show)
+            self.root.after(3000 if run else 30000, self._dis_tick)
+        except tk.TclError:
+            pass                      # вікно закрилось
 
     def discharge_status(self):
         if not self.need_conn():
             return
+        self._disBusy = True
         self.cmd("DISCHARGE ?", 8.0, cb=self._dis_show)
 
     def discharge_start(self):
         if not self.need_conn():
             return
         if not messagebox.askyesno("Розряд",
-                "Почати розряд до 7.2 В?\n\nНавантаження буде увімкнено, резистор нагріється.\n"
+                "Почати розряд до 7.2 В?\n\n"
+                "Струм обмежується ШІМом: 1000 мА на повному заряді, лінійно до 300 мА на 7.20 В.\n"
+                "Навантаження буде увімкнено, резистор нагріється.\n"
                 "Не лишайте пристрій без нагляду."):
             return
         def done(r):
             if isinstance(r, dict) and r.get("ok"):
-                self.status("Розряд почато"); self._dis_show(r)
+                self.status("Розряд почато"); self.monDis.reset_history(); self._dis_show(r)
             else:
+                self._disBusy = False
                 self.status("Помилка: " + str((r or {}).get("err", "")))
         self.maybe_auth(lambda: self.cmd("DISCHARGE 7200", 15.0, cb=done))
 

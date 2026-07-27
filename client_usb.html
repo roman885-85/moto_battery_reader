@@ -39,6 +39,50 @@ header h1{font-size:1.05em;margin:0;color:var(--gold)}
 input,select,textarea{background:#171a10;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:8px}
 input,select{width:auto}.pw{width:100%;margin:6px 0}
 .bar{font-size:.8em;color:var(--mut)}
+/* ---- Монітор розряду (той самий вигляд, що й у веб-версії пристрою) --------
+   Розряд триває годинами, тож це панель процесу, а не рядок тексту: пульсуючий
+   індикатор, смуга прогресу з «течією» (видно, що процес живий і між
+   опитуваннями), графік напруги за весь сеанс і плитки показань зі спалахом на
+   зміні. Стан тягнеться сам — раз на 3 с під час розряду, раз на 30 с у спокої
+   (щоб побачити розряд, запущений кнопкою на самому пристрої). */
+.dm{background:#171a10;border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:10px}
+.dm.run{border-color:var(--org);box-shadow:0 0 0 2px rgba(200,162,58,.16)}
+.dm.done{border-color:var(--grn)}.dm.abort{border-color:var(--red)}
+.dmhead{display:flex;align-items:center;gap:9px;font-weight:700;font-size:.92em}
+.dmled{width:11px;height:11px;border-radius:50%;background:var(--mut);flex:0 0 auto}
+.dm.run .dmled{background:var(--org);animation:dmpulse 1.4s ease-in-out infinite}
+.dm.done .dmled{background:var(--grn)}.dm.abort .dmled{background:var(--red)}
+@keyframes dmpulse{0%,100%{box-shadow:0 0 0 0 rgba(200,162,58,.55)}70%{box-shadow:0 0 0 9px rgba(200,162,58,0)}}
+.dmclock{margin-left:auto;font-family:monospace;color:var(--mut);font-variant-numeric:tabular-nums}
+.dmbig{display:flex;align-items:baseline;gap:10px;margin:10px 0 6px;flex-wrap:wrap}
+.dmv{font-size:2.1em;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+.dmv small{font-size:.42em;color:var(--mut);margin-left:4px}
+.dmto{color:var(--mut);font-size:.85em}
+.dmbar{position:relative;height:16px;background:#0e1108;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+.dmfill{height:100%;width:0;border-radius:8px;transition:width .7s ease;background:linear-gradient(90deg,var(--grn),var(--gold))}
+.dm.run .dmfill{background-image:repeating-linear-gradient(115deg,rgba(255,255,255,.18) 0 9px,transparent 9px 20px),
+                linear-gradient(90deg,var(--grn),var(--gold));
+                background-size:40px 100%,100% 100%;animation:dmflow 1s linear infinite}
+@keyframes dmflow{to{background-position:40px 0,0 0}}
+.dmbartxt{position:absolute;inset:0;display:flex;align-items:center;justify-content:flex-end;padding-right:9px;
+          font-size:.72em;font-weight:700;color:var(--txt);text-shadow:0 0 4px #0e1108,0 0 4px #0e1108}
+.dmspark{width:100%;height:58px;margin-top:10px;display:block;background:#0e1108;border:1px solid var(--line);border-radius:9px}
+.dmlab{display:flex;justify-content:space-between;font-size:.76em;color:var(--mut);margin:10px 0 4px;gap:8px}
+.dmtrack{position:relative;height:12px;background:#0e1108;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.dmcur{position:absolute;top:0;bottom:0;left:0;width:0;border-radius:6px;background:var(--org);transition:width .7s ease}
+.dmcur.out{background:var(--red)}
+.dmband{position:absolute;top:0;bottom:0;background:rgba(231,227,210,.12);
+        border-left:2px solid rgba(231,227,210,.55);border-right:2px solid rgba(231,227,210,.55)}
+.dmmark{position:absolute;top:0;bottom:0;width:2px;background:var(--txt);transition:left .7s ease}
+.dmg{display:grid;grid-template-columns:repeat(auto-fit,minmax(102px,1fr));gap:7px;margin-top:11px}
+.dmc{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:6px 9px;
+     display:flex;flex-direction:column;justify-content:space-between}
+.dmc.hero{border-color:var(--grn)}
+.dmck{font-size:.72em;color:var(--mut);min-height:2.3em;line-height:1.15}
+.dmcv{font-weight:700;font-family:monospace;font-size:1.08em;font-variant-numeric:tabular-nums}
+.dmcv.flash{animation:dmflash .9s ease}
+@keyframes dmflash{0%{color:var(--gold)}100%{color:inherit}}
+.dmwarn{margin-top:9px;font-size:.82em;padding:8px 10px;border-radius:8px;background:#4a1512;color:#ff9b8f;display:none}
 .badge{padding:2px 8px;border-radius:20px;font-size:.85em}.bo{background:#123d24;color:var(--grn)}.bb{background:#4a1512;color:#ff9b8f}
 .zone{font-weight:700;font-size:.88em;padding:8px 11px;border-radius:8px;margin:16px 0 8px}
 .zone.zi{background:#232a17;color:#cdd0a8}.zone.zd{background:#4a1512;color:#ff9b8f;border:1px solid var(--red)}
@@ -238,10 +282,39 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         вимірювальний резистор DS2438 усередині пакета).</div>
       <div class="note w">⚠️ Аварійна зупинка: напруга &lt; 6.00 В, перегрів 45 °C, стеля часу, втрата зв'язку з
         монітором. Резистор гріється (~14 Вт на 5 Ом) — не лишайте без нагляду.</div>
-      <div class="row"><span class="k">Стан</span><span class="v" id="disSt">—</span></div>
+      <div class="dm" id="disMon">
+        <div class="dmhead"><span class="dmled"></span><span id="disSt">—</span>
+             <span class="dmclock" id="disEl">0:00:00</span></div>
+        <div class="dmbig"><span class="dmv" id="disMvBig">—<small>В</small></span>
+             <span class="dmto" id="disMvSub">—</span></div>
+        <div class="dmbar"><div class="dmfill" id="disFill"></div>
+             <span class="dmbartxt" id="disPct"></span></div>
+        <svg class="dmspark" id="disSpark" viewBox="0 0 300 58" preserveAspectRatio="none">
+          <polyline id="disSparkArea" fill="rgba(111,143,58,.22)" stroke="none" points=""/>
+          <line id="disSparkTarget" x1="0" x2="300" y1="-9" y2="-9" stroke="#a3312e"
+                stroke-width="1" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>
+          <polyline id="disSparkLine" fill="none" stroke="#c8b04a" stroke-width="2"
+                    vector-effect="non-scaling-stroke" stroke-linejoin="round" points=""/>
+        </svg>
+        <div class="dmlab"><span>струм / уставка</span><span id="disLim">—</span></div>
+        <div class="dmtrack"><div class="dmcur" id="disCur"></div>
+             <div class="dmband" id="disBand"></div><div class="dmmark" id="disMark"></div></div>
+        <div class="dmlab"><span>шпаруватість ключа (ШІМ)</span><span id="disDutyTxt">—</span></div>
+        <div class="dmtrack"><div class="dmcur" id="disDuty" style="background:var(--blu)"></div></div>
+        <div class="dmg">
+          <div class="dmc hero"><div class="dmck">віддано, мА·год</div><div class="dmcv" id="disMah">—</div></div>
+          <div class="dmc"><div class="dmck">DCA, мА·год</div><div class="dmcv" id="disDca">—</div></div>
+          <div class="dmc"><div class="dmck">струм, мА</div><div class="dmcv" id="disMa">—</div></div>
+          <div class="dmc"><div class="dmck">потужність, Вт</div><div class="dmcv" id="disW">—</div></div>
+          <div class="dmc"><div class="dmck">температура, °C</div><div class="dmcv" id="disT">—</div></div>
+          <div class="dmc"><div class="dmck" id="disIcaK">паливомір ICA</div><div class="dmcv" id="disIca">—</div></div>
+          <div class="dmc"><div class="dmck">лишилось ≈</div><div class="dmcv" id="disEta">—</div></div>
+        </div>
+        <div class="dmwarn" id="disWarn"></div>
+      </div>
       <button class="btn b-warn" onclick="disStart()">🪫 ПОЧАТИ РОЗРЯД (до 7.2 В)</button>
       <button class="btn" onclick="disStop()">⏹ ЗУПИНИТИ</button>
-      <button class="btn" onclick="disStatus()">🔄 Стан розряду</button>
+      <button class="btn" onclick="disStatus()">🔄 Оновити зараз</button>
     </div>
 
     <div class="card" style="border-color:var(--ok)">
@@ -413,7 +486,8 @@ async function connect(){
     log('> порт відкрито, очікування завантаження ESP32 (1.6 с)...');
     await new Promise(r=>setTimeout(r,1600));   // ESP32 перезавантажується при відкритті порту
     const p=await cmd('PING',3000);
-    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')'; await refresh(); await loadTemplates(); }
+    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')'; await refresh(); await loadTemplates();
+                 await disTick(); }   // одразу підхопити розряд, якщо він уже йде
     else { $('st').textContent='Немає відповіді (перевірте порт/швидкість)'; }
   }catch(e){ log('! '+e.message); $('st').textContent='Помилка: '+e.message; disconnect(); }
 }
@@ -775,24 +849,112 @@ async function wizJournalDelete(serial){
   if(r&&r.ok){toast('Видалено'); wizJournalsLoad();} else toast('Помилка: '+((r&&r.err)||''));
 }
 // ---- керований розряд ------------------------------------------------------
-function disShow(d){
-  if(!d){$('disSt').textContent='—';return;}
-  if(!d.available){$('disSt').textContent='не налаштовано (LOAD_PIN)';return;}
-  const n={idle:'очікування',run:'іде розряд',done:'✅ готово — на IMPRES-ЗП',abort:'⛔ '+(d.reason||'аварія')}[d.state]||d.state;
-  // Струм тут СЕРЕДНІЙ (ключ під ШІМом), поруч — уставка, шпаруватість і пік.
-  const lim = d.pwm ? ('уст '+d.setMa+' мА · ШІМ '+d.duty+' % · пік '+d.peakMa+' мА')
-                    : ('⚠ БЕЗ ШІМ, струм не обмежено');
-  $('disSt').textContent=n+' · '+(d.mv/1000).toFixed(2)+' В · '+d.ma+' мА · '+d.watts+' Вт · '
-      +lim+' · '+d.mah+' мА·год (DCA '+d.dcaMah+') · ICA '+d.ica+' · '+d.tempC+' °C';
+let disHist=[], disStep=10, disLast=null, disLastAt=0, disTimer=null, disPeriod=0, disBusy=false;
+function disFmtT(s){const h=Math.floor(s/3600),m=Math.floor(s/60)%60,x=s%60;
+  return h+':'+String(m).padStart(2,'0')+':'+String(x).padStart(2,'0');}
+function disSchedule(ms){ if(disPeriod===ms&&disTimer)return;
+  if(disTimer)clearInterval(disTimer); disPeriod=ms; disTimer=setInterval(disTick,ms); }
+function disSet(id,txt){ const el=$(id); if(!el||el.textContent===txt)return;
+  el.textContent=txt; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
+// Точки графіка не викидаються з початку — коли їх забагато, ряд проріджується
+// вдвічі, а крок подвоюється. Так на екрані лишається крива за ВЕСЬ сеанс.
+function disPush(t,mv){ const last=disHist[disHist.length-1];
+  if(last&&t-last.t<disStep)return; disHist.push({t:t,mv:mv});
+  if(disHist.length>300){disHist=disHist.filter((_,i)=>i%2===0); disStep*=2;} }
+function disSpark(targetMv){
+  const tl=$('disSparkTarget');
+  if(disHist.length<2){$('disSparkLine').setAttribute('points','');$('disSparkArea').setAttribute('points','');
+                       tl.setAttribute('y1',-9);tl.setAttribute('y2',-9);return;}
+  const vs=disHist.map(p=>p.mv); let lo=Math.min(...vs)-20, hi=Math.max(...vs)+20;
+  if(targetMv&&targetMv<lo) lo=targetMv-20;
+  const t0=disHist[0].t, t1=Math.max(disHist[disHist.length-1].t,t0+1);
+  const X=p=>3+((p.t-t0)/(t1-t0))*294, Y=v=>56-((v-lo)/(hi-lo||1))*52;
+  const pts=disHist.map(p=>X(p).toFixed(1)+','+Y(p.mv).toFixed(1)).join(' ');
+  $('disSparkLine').setAttribute('points',pts);
+  $('disSparkArea').setAttribute('points','3,58 '+pts+' 297,58');
+  const ty=Y(targetMv); tl.setAttribute('y1',ty); tl.setAttribute('y2',ty);
 }
-async function disStatus(){ if(!connected){toast('Підключіться');return;}
-  const r=await cmd('DISCHARGE ?',8000); disShow(r&&r.discharge); }
+function disShow(d){
+  const mon=$('disMon');
+  if(!d){mon.className='dm';$('disSt').textContent='—';return;}
+  if(!d.available){mon.className='dm';$('disSt').textContent='не налаштовано (LOAD_PIN)';return;}
+  const run=d.state==='run';
+  mon.className='dm '+d.state;
+  $('disSt').textContent={idle:'очікування',run:'ІДЕ РОЗРЯД',
+    done:'✅ ГОТОВО — на IMPRES-ЗП',abort:'⛔ '+(d.reason||'аварія')}[d.state]||d.state;
+
+  if(run){
+    if(disHist.length&&d.elapsedS<disHist[disHist.length-1].t){disHist=[];disStep=10;}
+    disPush(d.elapsedS,d.mv);
+  }
+  disSpark(d.targetMv);
+
+  $('disMvBig').innerHTML=(d.mv/1000).toFixed(2)+'<small>В</small>';
+  $('disMvSub').textContent='старт '+(d.startMv/1000).toFixed(2)+' В → ціль '+(d.targetMv/1000).toFixed(2)+' В';
+  const span=d.startMv-d.targetMv, dn=d.startMv-d.mv;
+  const pct=span>0?Math.max(0,Math.min(100,Math.round(dn*100/span))):0;
+  $('disFill').style.width=pct+'%'; $('disPct').textContent=pct+' %';
+
+  // Струм тут СЕРЕДНІЙ (ключ під ШІМом): шкала — до 125 % уставки, щоб коридор
+  // займав більшу частину доріжки, а вихід за нього одразу впадав в око.
+  const ma=Math.abs(d.ma), scale=Math.max(d.setMa*1.25,ma*1.05,1);
+  $('disCur').style.width=Math.min(100,ma*100/scale)+'%';
+  $('disCur').className='dmcur'+(run&&!d.inBand?' out':'');
+  $('disBand').style.left=(d.bandLoMa*100/scale)+'%';
+  $('disBand').style.width=Math.max(0,(d.bandHiMa-d.bandLoMa)*100/scale)+'%';
+  $('disMark').style.left=Math.min(100,d.setMa*100/scale)+'%';
+  $('disLim').textContent=d.pwm?('уставка '+d.setMa+' мА · пік '+d.peakMa+' мА'):'⚠ ШІМ недоступний';
+  $('disLim').style.color=d.pwm?(d.inBand?'var(--grn)':'var(--org)'):'var(--red)';
+  $('disDuty').style.width=(d.pwm?d.duty:100)+'%';
+  $('disDutyTxt').textContent=d.pwm?(d.duty+' %'):'ключ відкрито постійно';
+
+  disSet('disMah',String(d.mah));
+  disSet('disDca',String(d.dcaMah));      // апаратний лічильник — перевірка нашого інтеграла
+  disSet('disMa',String(d.ma));
+  disSet('disW',String(d.watts));
+  disSet('disT',String(d.tempC));
+  disSet('disIca',String(d.ica));
+  $('disIcaK').textContent='паливомір ICA · старт '+d.icaStart;
+
+  let eta='—';
+  if(run&&d.elapsedS>60&&d.startMv>d.mv){
+    const left=Math.max(0,(d.mv-d.targetMv)/((d.startMv-d.mv)/d.elapsedS));
+    eta=left>0?disFmtT(Math.round(left)):'ось-ось';
+  }
+  disSet('disEta',eta);
+
+  const w=$('disWarn');
+  if(!d.pwm&&(run||d.state==='done')){ w.style.display='block';
+    w.textContent='ШІМ недоступний: каналу LEDC не знайшлося, ключ відкритий постійно і струм не обмежується ('
+                 +d.peakMa+' мА на '+d.loadOhm+' Ом). Перевірте LOAD_LEDC_CH у settings.h.'; }
+  else w.style.display='none';
+
+  disLast=d; disLastAt=Date.now();
+  $('disEl').textContent=disFmtT(d.elapsedS);
+  disSchedule(run?3000:30000);
+}
+// Автоопитування: раз на 3 с під час розряду, раз на 30 с у спокої (щоб
+// побачити розряд, запущений кнопкою на самому пристрої). disBusy не дає
+// накопичувати запити в черзі, якщо порт відповідає повільно.
+async function disTick(){
+  if(!connected||disBusy)return;
+  disBusy=true;
+  try{ const r=await cmd('DISCHARGE ?',8000); if(r&&r.discharge)disShow(r.discharge); }
+  catch(e){}
+  disBusy=false;
+}
+// Годинник між опитуваннями: секунди мають бігти рівно, інакше здається, що зависло.
+setInterval(()=>{ if(!disLast||disLast.state!=='run')return;
+  $('disEl').textContent=disFmtT(disLast.elapsedS+Math.floor((Date.now()-disLastAt)/1000)); },1000);
+disSchedule(30000);   // повільний фон із самого початку; disTick сам мовчить, поки не підключено
+async function disStatus(){ if(!connected){toast('Підключіться');return;} await disTick(); }
 async function disStart(){
   if(!connected){toast('Підключіться');return;}
   if(!confirm('🪫 Почати розряд до 7.2 В?\n\nСтрум обмежується ШІМом: 1000 мА на повному заряді, лінійно до 300 мА на 7.20 В.\nНавантаження буде увімкнено, резистор нагріється.\nНе лишайте пристрій без нагляду.'))return;
   await ensureAuth();
   const r=await cmd('DISCHARGE 7200',15000);
-  if(r&&r.ok){toast('✅ Розряд почато');disShow(r.discharge);} else toast('Помилка: '+((r&&r.err)||''),'err');
+  if(r&&r.ok){toast('✅ Розряд почато');disHist=[];disStep=10;disShow(r.discharge);}
+  else toast('Помилка: '+((r&&r.err)||''),'err');
 }
 async function disStop(){
   if(!connected){toast('Підключіться');return;}

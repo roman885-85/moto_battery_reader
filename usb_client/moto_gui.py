@@ -13,6 +13,64 @@ Moto IMPRES USB — нативний графічний клієнт (Tkinter, �
 import sys, os, time, json, math, queue, threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import font as tkfont
+
+# ===========================================================================
+#  МАСШТАБУВАННЯ ВМІСТУ
+# ===========================================================================
+#  Вікно можна тягнути й розгортати на весь екран, і вміст має рости разом із
+#  ним, а не лишатися острівцем дрібного тексту посеред порожнечі.
+#
+#  Механізм — ІМЕНОВАНІ шрифти Tk. Віджет, якому дали такий шрифт, підхоплює
+#  будь-яку його зміну сам: досить переналаштувати розмір — і весь інтерфейс
+#  перемальовується без перебудови. Тому в коді немає жодного font=fnt("Segoe UI",
+#  10) — усюди fnt("Segoe UI", 10), який віддає саме такий іменований шрифт.
+#
+#  Розміри в дужках — БАЗОВІ, для масштабу 100 %. Реальний розмір щоразу
+#  перераховується як базовий * поточний масштаб.
+_FONTS = {}                 # (сімейство, базовий розмір, накреслення) -> tkfont.Font
+_TK_BASE = {}               # вбудовані шрифти Tk -> їхній рідний розмір
+_FONT_SCALE = 1.0
+
+# Tk трактує ВІД'ЄМНИЙ розмір як пікселі, додатний — як пункти. Зберігаємо знак,
+# інакше на системах із піксельними шрифтами (типовий Linux) масштаб перевернув
+# би одиниці й текст стрибнув би в кілька разів.
+def _scaled(base, k):
+    v = max(6, int(round(abs(base) * k)))
+    return -v if base < 0 else v
+
+def fnt(family, size, weight="normal"):
+    key = (family, size, weight)
+    f = _FONTS.get(key)
+    if f is None:
+        f = tkfont.Font(family=family, size=_scaled(size, _FONT_SCALE), weight=weight)
+        _FONTS[key] = f
+    return f
+
+def fonts_init():
+    """Запам'ятати рідні розміри вбудованих шрифтів Tk.
+
+    Під ними живуть УСІ ttk-віджети (кнопки, вкладки, поля), яким шрифт явно не
+    задавали. Масштабувати треба й їх, інакше половина інтерфейсу росла б, а
+    половина — ні.
+    """
+    for name in ("TkDefaultFont", "TkTextFont", "TkFixedFont", "TkMenuFont",
+                 "TkHeadingFont", "TkCaptionFont", "TkSmallCaptionFont", "TkIconFont"):
+        try:
+            _TK_BASE[name] = tkfont.nametofont(name).cget("size")
+        except tk.TclError:
+            pass
+
+def fonts_rescale(k):
+    global _FONT_SCALE
+    _FONT_SCALE = k
+    for (family, size, weight), f in _FONTS.items():
+        f.configure(size=_scaled(size, k))
+    for name, base in _TK_BASE.items():
+        try:
+            tkfont.nametofont(name).configure(size=_scaled(base, k))
+        except tk.TclError:
+            pass
 
 
 def resource_path(name):
@@ -123,8 +181,14 @@ class DischargeMonitor(tk.Canvas):
 
     Малює себе сама раз на 80 мс (анімація й рівний хід годинника), дані
     отримує ззовні через update_state() — опитування живе в App.
+
+    МАСШТАБ. redraw() малює в БАЗОВИХ координатах (W×H нижче), а наприкінці всю
+    картинку розтягує canvas.scale(). Шрифти при цьому не чіпаються — вони й так
+    приходять із fnt(), тобто вже масштабовані тим самим коефіцієнтом. Тому
+    достатньо тримати self.k рівним масштабу інтерфейсу, і панель росте разом із
+    рештою вікна, а розмічати її можна й далі в зручних числах.
     """
-    W, H = 720, 358
+    W, H = 720, 358          # базові («дизайнерські») розміри, масштаб 100 %
     PAD = 14
 
     def __init__(self, master):
@@ -135,8 +199,19 @@ class DischargeMonitor(tk.Canvas):
         self.hist = []           # [(t, mv)] — крива напруги за весь сеанс
         self.step = 10           # поточний крок між точками кривої, с
         self.phase = 0.0
+        self.k = 1.0             # масштаб вмісту
         self._alive = True
         self._tick()
+
+    def set_scale(self, k):
+        if abs(k - self.k) < 0.01:
+            return
+        self.k = k
+        try:
+            self.config(width=int(self.W * k), height=int(self.H * k))
+            self.redraw()
+        except tk.TclError:
+            pass
 
     def destroy(self):
         self._alive = False
@@ -185,9 +260,9 @@ class DischargeMonitor(tk.Canvas):
         self.create_rectangle(x, y, x + w, y + h, fill=MIL["bg"],
                               outline=MIL["olive"] if accent else MIL["line"])
         self.create_text(x + 8, y + 6, text=label, anchor="nw", fill=MIL["mut"],
-                         font=("Segoe UI", 8))
+                         font=fnt("Segoe UI", 8))
         self.create_text(x + 8, y + h - 8, text=value, anchor="sw", fill=MIL["fg"],
-                         font=("Consolas", 13, "bold"))
+                         font=fnt("Consolas", 13, "bold"))
 
     def _fmt_t(self, s):
         s = int(max(0, s))
@@ -196,6 +271,15 @@ class DischargeMonitor(tk.Canvas):
     # ---- повна перемальовка --------------------------------------------
     def redraw(self):
         self.delete("all")
+        self._redraw_base()
+        # Розмітка вище — у базових координатах; тут розтягуємо її під поточний
+        # масштаб. Шрифти вже масштабовані (див. fnt), тож текст і позиції
+        # ростуть разом. Товщину ліній лишаємо як є: волосяні лінії на великому
+        # масштабі виглядають краще за роздуті.
+        if self.k != 1.0:
+            self.scale("all", 0, 0, self.k, self.k)
+
+    def _redraw_base(self):
         P, W, H = self.PAD, self.W, self.H
         d = self.d
         state = (d or {}).get("state", "idle")
@@ -210,11 +294,11 @@ class DischargeMonitor(tk.Canvas):
 
         if not d:
             self.create_text(W // 2, H // 2, text="стан розряду не запитано",
-                             fill=MIL["mut"], font=("Segoe UI", 10))
+                             fill=MIL["mut"], font=fnt("Segoe UI", 10))
             return
         if not d.get("available"):
             self.create_text(W // 2, H // 2, text="розряд не налаштовано (LOAD_PIN у settings.h)",
-                             fill=MIL["mut"], font=("Segoe UI", 10))
+                             fill=MIL["mut"], font=fnt("Segoe UI", 10))
             return
 
         # --- шапка: пульсуючий вогник + стан + годинник ---
@@ -226,29 +310,31 @@ class DischargeMonitor(tk.Canvas):
         names = {"idle": "очікування", "run": "ІДЕ РОЗРЯД",
                  "done": "ГОТОВО — на IMPRES-ЗП", "abort": "АВАРІЯ: " + (d.get("reason") or "")}
         self.create_text(P + 22, 20, text=names.get(state, state), anchor="w",
-                         fill=MIL["fg"], font=("Segoe UI", 11, "bold"))
+                         fill=MIL["fg"], font=fnt("Segoe UI", 11, "bold"))
         el = d.get("elapsedS", 0) + (time.time() - self.at if run else 0)
         self.create_text(W - P, 20, text=self._fmt_t(el), anchor="e",
-                         fill=MIL["mut"], font=("Consolas", 11))
+                         fill=MIL["mut"], font=fnt("Consolas", 11))
 
         # --- велика напруга ---
         mv, tgt, st0 = d.get("mv", 0), d.get("targetMv", 0), d.get("startMv", 0)
         big = self.create_text(P, 58, text="%.2f" % (mv / 1000.0), anchor="w",
-                               fill=MIL["fg"], font=("Segoe UI", 26, "bold"))
+                               fill=MIL["fg"], font=fnt("Segoe UI", 26, "bold"))
         # Підпис «В» і рядок цілі ставимо ПО ФАКТИЧНІЙ ширині числа: шрифт
         # 26 pt на різних системах міряється по-різному, і фіксовані відступи
-        # то залишали діру, то налазили на цифри.
-        x = self.bbox(big)[2] + 6
-        self.create_text(x, 62, text="В", anchor="w", fill=MIL["mut"], font=("Segoe UI", 11))
+        # то залишали діру, то налазили на цифри. bbox() віддає ширину вже
+        # масштабованого шрифта, а розмічаємо ми в базових координатах — тому
+        # ділимо на масштаб, інакше на 150 % підпис поїхав би праворуч.
+        x = P + (self.bbox(big)[2] - P) / self.k + 6
+        self.create_text(x, 62, text="В", anchor="w", fill=MIL["mut"], font=fnt("Segoe UI", 11))
         self.create_text(x + 22, 62, text="старт %.2f В  →  ціль %.2f В" % (st0 / 1000.0, tgt / 1000.0),
-                         anchor="w", fill=MIL["mut"], font=("Segoe UI", 9))
+                         anchor="w", fill=MIL["mut"], font=fnt("Segoe UI", 9))
 
         # --- прогрес до цілі ---
         span, done = st0 - tgt, st0 - mv
         pct = max(0, min(100, int(round(done * 100.0 / span)))) if span > 0 else 0
         self._bar(P, 80, W - 2 * P, 17, pct / 100.0, MIL["olive"], striped=run)
         self.create_text(W - P - 8, 88, text="%d %%" % pct, anchor="e",
-                         fill=MIL["fg"], font=("Segoe UI", 8, "bold"))
+                         fill=MIL["fg"], font=fnt("Segoe UI", 8, "bold"))
 
         # --- графік напруги за весь сеанс ---
         gx, gy, gw, gh = P, 106, W - 2 * P, 66
@@ -269,7 +355,7 @@ class DischargeMonitor(tk.Canvas):
             self.create_line([c for p in pts for c in p], fill=MIL["khaki"], width=2)
         else:
             self.create_text(gx + gw / 2, gy + gh / 2, text="крива напруги збирається під час розряду",
-                             fill=MIL["mut"], font=("Segoe UI", 8))
+                             fill=MIL["mut"], font=fnt("Segoe UI", 8))
 
         # --- струм у коридорі уставки ---
         pwm = bool(d.get("pwm"))
@@ -278,12 +364,12 @@ class DischargeMonitor(tk.Canvas):
         # Шкала — до 125 % уставки: коридор займає більшу частину доріжки, а
         # вихід за нього одразу впадає в око.
         scale = max(setMa * 1.25, ma * 1.05, 1)
-        self.create_text(P, 186, text="струм / уставка", anchor="w", fill=MIL["mut"], font=("Segoe UI", 8))
+        self.create_text(P, 186, text="струм / уставка", anchor="w", fill=MIL["mut"], font=fnt("Segoe UI", 8))
         right = ("уставка %d мА · пік %d мА" % (setMa, d.get("peakMa", 0))) if pwm \
                 else "ШІМ недоступний — струм не обмежено"
         self.create_text(W - P, 186, text=right, anchor="e",
                          fill=(MIL["olive"] if d.get("inBand") else MIL["khaki"]) if pwm else MIL["maroon"],
-                         font=("Segoe UI", 8))
+                         font=fnt("Segoe UI", 8))
         bx, by, bw = P, 196, W - 2 * P
         self._bar(bx, by, bw, 14, ma / scale, MIL["khaki"] if (not run or d.get("inBand")) else MIL["maroon"])
         # коридор — ПОВЕРХ заливки, інакше вона його перекриє
@@ -296,9 +382,9 @@ class DischargeMonitor(tk.Canvas):
         # --- шпаруватість ключа ---
         duty = d.get("duty", 0) if pwm else 100
         self.create_text(P, 222, text="шпаруватість ключа (ШІМ)", anchor="w",
-                         fill=MIL["mut"], font=("Segoe UI", 8))
+                         fill=MIL["mut"], font=fnt("Segoe UI", 8))
         self.create_text(W - P, 222, text=("%d %%" % duty) if pwm else "ключ відкрито постійно",
-                         anchor="e", fill=MIL["mut"], font=("Segoe UI", 8))
+                         anchor="e", fill=MIL["mut"], font=fnt("Segoe UI", 8))
         self._bar(P, 232, W - 2 * P, 14, duty / 100.0, "#4a5a38")
 
         # --- плитки показань: одиниці в підписі, значення — саме число ---
@@ -316,7 +402,7 @@ class DischargeMonitor(tk.Canvas):
 
         if pwm or not run:
             return
-        self.create_text(W // 2, H - 8, anchor="s", fill="#ff9b8f", font=("Segoe UI", 8),
+        self.create_text(W // 2, H - 8, anchor="s", fill="#ff9b8f", font=fnt("Segoe UI", 8),
                          text="ШІМ недоступний: ключ відкритий постійно, струм не обмежується")
 
     def _eta(self, d, run):
@@ -341,11 +427,25 @@ class DischargeMonitor(tk.Canvas):
 
 
 class App:
+    # Базовий розмір вікна = масштаб 100 %. Автомасштаб рахується як відношення
+    # поточного розміру до цього — по МЕНШІЙ зі сторін, інакше широке й низьке
+    # вікно роздуло б шрифти так, що вміст довелося б прокручувати.
+    BASE_W, BASE_H = 760, 620
+    ZOOM_MIN, ZOOM_MAX = 0.8, 2.2
+
     def __init__(self, root):
         self.root = root
         root.title("Moto IMPRES — USB")
-        root.geometry("760x620")
-        root.minsize(680, 560)
+        root.geometry("%dx%d" % (self.BASE_W, self.BASE_H))
+        # Мінімум — під найменший масштаб: нижче вміст усе одно прокручується.
+        root.minsize(620, 480)
+        root.resizable(True, True)
+
+        fonts_init()
+        self.zoom = 1.0
+        self.zoomAuto = tk.BooleanVar(value=True)
+        self._zoomJob = None
+        self._fullscreen = False
 
         self.worker = SerialWorker()
         self.worker.start()
@@ -364,10 +464,89 @@ class App:
         self._disBusy = False
 
         self._build()
+        self._bind_zoom()
         self.refresh_ports()
         self.root.after(40, self._poll)
         self.root.after(1000, self._dis_tick)     # стан розряду тягнеться сам
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ---- масштабування вмісту ------------------------------------------
+    def _bind_zoom(self):
+        r = self.root
+        r.bind("<Configure>", self._on_resize)
+        for k in ("<Control-plus>", "<Control-equal>", "<Control-KP_Add>"):
+            r.bind(k, lambda e: self.zoom_step(+0.1))
+        for k in ("<Control-minus>", "<Control-KP_Subtract>"):
+            r.bind(k, lambda e: self.zoom_step(-0.1))
+        r.bind("<Control-0>", lambda e: self.zoom_set(1.0))
+        # Ctrl+коліщатко. Прив'язка з модифікатором точніша за просту
+        # <MouseWheel> зі _scroll_area, тож Tk обере саме її — прокрутка й
+        # масштаб не заважають одне одному.
+        r.bind_all("<Control-MouseWheel>", lambda e: self.zoom_step(0.1 if e.delta > 0 else -0.1))
+        r.bind_all("<Control-Button-4>", lambda e: self.zoom_step(+0.1))   # Linux
+        r.bind_all("<Control-Button-5>", lambda e: self.zoom_step(-0.1))
+        r.bind("<F11>", lambda e: self.toggle_fullscreen())
+        r.bind("<Escape>", lambda e: self.toggle_fullscreen(False))
+        self._apply_zoom(self._auto_zoom(), force=True)
+
+    def _auto_zoom(self):
+        w = max(1, self.root.winfo_width())
+        h = max(1, self.root.winfo_height())
+        if w < 50 or h < 50:                    # вікно ще не розкладене
+            return self.zoom
+        return min(w / float(self.BASE_W), h / float(self.BASE_H))
+
+    def _on_resize(self, e):
+        # Подія спливає й від дочірніх віджетів — реагуємо лише на саме вікно.
+        if e.widget is not self.root or not self.zoomAuto.get():
+            return
+        # Затримка: під час перетягування краю подія летить десятками разів,
+        # а перерахунок шрифтів — робота не безкоштовна.
+        if self._zoomJob:
+            self.root.after_cancel(self._zoomJob)
+        self._zoomJob = self.root.after(180, lambda: self._apply_zoom(self._auto_zoom()))
+
+    def zoom_step(self, d):
+        self.zoomAuto.set(False)                # руками — значить руками
+        self.zoom_set(self.zoom + d)
+
+    def zoom_set(self, k):
+        self.zoomAuto.set(False)
+        self._apply_zoom(k, force=True)
+
+    def zoom_auto_now(self):
+        if self.zoomAuto.get():
+            self._apply_zoom(self._auto_zoom(), force=True)
+
+    def _apply_zoom(self, k, force=False):
+        k = max(self.ZOOM_MIN, min(self.ZOOM_MAX, k))
+        # Поріг потрібен не лише щоб не смикати інтерфейс: зміна шрифтів може
+        # трохи посунути розмір вікна, звідки прилетить нова <Configure>.
+        # Без порога це замкнулося б у петлю «більший шрифт -> більше вікно».
+        if not force and abs(k - self.zoom) < 0.05:
+            return
+        self.zoom = k
+        fonts_rescale(k)
+        # Відступи ttk у шрифт не входять — масштабуємо окремо, інакше на 200 %
+        # великий текст сидів би у вузьких кнопках і тісних вкладках.
+        try:
+            st = ttk.Style()
+            st.configure("TButton", padding=max(2, int(round(5 * k))))
+            st.configure("TNotebook.Tab", padding=(int(round(12 * k)), int(round(6 * k))))
+        except tk.TclError:
+            pass
+        if hasattr(self, "monDis"):
+            self.monDis.set_scale(k)
+        if hasattr(self, "lblZoom"):
+            self.lblZoom.config(text="%d %%" % round(k * 100))
+
+    def toggle_fullscreen(self, on=None):
+        self._fullscreen = (not self._fullscreen) if on is None else on
+        try:
+            self.root.attributes("-fullscreen", self._fullscreen)
+        except tk.TclError:
+            pass                                # деякі середовища не вміють
+        self.zoom_auto_now()
 
     # ---- обмін із фоновим потоком --------------------------------------
     def _submit(self, kind, *args, cb=None):
@@ -399,6 +578,7 @@ class App:
     def _build(self):
         top = ttk.Frame(self.root, padding=6)
         top.pack(fill="x")
+
         ttk.Label(top, text="COM-порт:").pack(side="left")
         self.cbPort = ttk.Combobox(top, width=28, state="readonly")
         self.cbPort.pack(side="left", padx=4)
@@ -408,8 +588,26 @@ class App:
         ttk.Label(top, text="Пароль (опц.):").pack(side="left")
         self.pw = ttk.Entry(top, width=12, show="•")
         self.pw.pack(side="left", padx=2)
-        self.lblStatus = ttk.Label(self.root, text="Не підключено", foreground="#a00", padding=(8, 0))
-        self.lblStatus.pack(fill="x")
+        # Другий рядок: стан ліворуч, керування масштабом праворуч. Верхній
+        # рядок для масштабу не годиться — там і так тісно, і на 175 % поле
+        # пароля вичавлювало за край.
+        bar = ttk.Frame(self.root); bar.pack(fill="x")
+        # Масштаб вмісту. «Авто» (типово) веде розмір за розміром вікна: тягнеш
+        # край або розгортаєш на весь екран — і все росте разом. Кнопки ± та
+        # Ctrl+коліщатко перемикають на ручний режим, Ctrl+0 — рівно 100 %,
+        # F11 — на весь екран. Пакується ПЕРШИМ: у pack хто раніше, той і
+        # отримує місце, а керування масштабом має лишатись досяжним завжди.
+        zf = ttk.Frame(bar); zf.pack(side="right", padx=(6, 8))
+        ttk.Checkbutton(zf, text="авто", variable=self.zoomAuto,
+                        command=self.zoom_auto_now).pack(side="right", padx=(6, 0))
+        ttk.Button(zf, text="+", width=3, command=lambda: self.zoom_step(+0.1)).pack(side="right")
+        self.lblZoom = ttk.Label(zf, text="100 %", width=6, anchor="center")
+        self.lblZoom.pack(side="right")
+        ttk.Button(zf, text="−", width=3, command=lambda: self.zoom_step(-0.1)).pack(side="right")
+        ttk.Label(zf, text="Масштаб:").pack(side="right", padx=(0, 4))
+
+        self.lblStatus = ttk.Label(bar, text="Не підключено", foreground="#a00", padding=(8, 0))
+        self.lblStatus.pack(side="left", fill="x", expand=True)
 
         nb = ttk.Notebook(self.root)
         nb.pack(fill="both", expand=True, padx=6, pady=6)
@@ -452,7 +650,7 @@ class App:
 
     def _kv(self, parent, label, r):
         ttk.Label(parent, text=label).grid(row=r, column=0, sticky="w", pady=2)
-        v = ttk.Label(parent, text="—", font=("Segoe UI", 10, "bold"))
+        v = ttk.Label(parent, text="—", font=fnt("Segoe UI", 10, "bold"))
         v.grid(row=r, column=1, sticky="w", padx=10)
         return v
 
@@ -473,14 +671,14 @@ class App:
     def _build_wizard(self):
         f = self._scroll_area(self.tabWiz)
         top = ttk.Frame(f); top.pack(fill="x")
-        ttk.Label(top, text="🧙 Майстер відновлення", font=("Segoe UI", 11, "bold")).pack(side="left")
+        ttk.Label(top, text="🧙 Майстер відновлення", font=fnt("Segoe UI", 11, "bold")).pack(side="left")
         ttk.Button(top, text="🔍 Аналізувати", command=self.wiz_analyze).pack(side="right", padx=3)
         ttk.Button(top, text="↺ Скинути", command=self.wiz_reset).pack(side="right", padx=3)
         ttk.Label(f, text="Аналіз стану → проблеми → пропозиції → покрокове виконання. Багатоетапні\n"
                          "сценарії з зарядною станцією продовжуються після повернення АКБ.",
                   foreground="#b9bd86", justify="left").pack(anchor="w", pady=(2, 6))
 
-        self.wizVerdict = ttk.Label(f, text="Натисніть «Аналізувати».", font=("Segoe UI", 10, "bold"))
+        self.wizVerdict = ttk.Label(f, text="Натисніть «Аналізувати».", font=fnt("Segoe UI", 10, "bold"))
         self.wizVerdict.pack(anchor="w", pady=2)
         self.wizProbFrame = ttk.LabelFrame(f, text="Проблеми", padding=6)
         self.wizPlanFrame = ttk.LabelFrame(f, text="План відновлення", padding=6)
@@ -527,7 +725,7 @@ class App:
             row = ttk.Frame(self.wizJrnList); row.pack(fill="x", pady=3)
             head = j.get("serial", "") + (" · " + j.get("model", "") if j.get("model") else "") \
                 + ("   [на ЗП]" if j.get("await") else "")
-            ttk.Label(row, text=head, font=("Segoe UI", 9, "bold")).pack(anchor="w")
+            ttk.Label(row, text=head, font=fnt("Segoe UI", 9, "bold")).pack(anchor="w")
             ttk.Label(row, text="Прогрес: %d/%d · лишилось %d" % (j.get("done", 0), j.get("total", 0), rem),
                       foreground="#9a9c82").pack(anchor="w")
             ttk.Label(row, text="Заплановано: " + planned, foreground="#8a9a5a",
@@ -576,7 +774,7 @@ class App:
                 row = ttk.Frame(self.wizProbFrame); row.pack(fill="x", pady=2)
                 ttk.Label(row, text=ico, foreground=col).pack(side="left", anchor="n")
                 txt = ttk.Frame(row); txt.pack(side="left", fill="x", expand=True)
-                ttk.Label(txt, text=p.get("problem", ""), font=("Segoe UI", 9, "bold"),
+                ttk.Label(txt, text=p.get("problem", ""), font=fnt("Segoe UI", 9, "bold"),
                           wraplength=440, justify="left").pack(anchor="w")
                 ttk.Label(txt, text="→ " + p.get("fix", ""), foreground="#8a9a5a",
                           wraplength=440, justify="left").pack(anchor="w")
@@ -609,7 +807,7 @@ class App:
             row = ttk.Frame(self.wizStepsFrame); row.pack(fill="x", pady=1)
             ttk.Label(row, text=ico, foreground=col).pack(side="left", anchor="n")
             box = ttk.Frame(row); box.pack(side="left", fill="x", expand=True)
-            ttk.Label(box, text=s.get("title", ""), font=("Segoe UI", 9, "bold" if cur else "normal"),
+            ttk.Label(box, text=s.get("title", ""), font=fnt("Segoe UI", 9, "bold" if cur else "normal"),
                       foreground=col).pack(anchor="w")
             ttk.Label(box, text=s.get("detail", ""), foreground="#9a9c82",
                       wraplength=440, justify="left").pack(anchor="w")
@@ -670,11 +868,11 @@ class App:
         self.dCCA = self._kv(box, "Заряджено CCA:", 6)
         self.dDCA = self._kv(box, "Розряджено DCA:", 7)
         ttk.Label(f, text="Дамп DS2433 (512 Б):").pack(anchor="w", pady=(8, 0))
-        self.tx33 = scrolledtext.ScrolledText(f, height=6, font=("Consolas", 8),
+        self.tx33 = scrolledtext.ScrolledText(f, height=6, font=fnt("Consolas", 8),
                                               bg=MIL["field"], fg="#b9bd86", insertbackground=MIL["khaki"],
                                               relief="flat", bd=0); self.tx33.pack(fill="both", expand=True)
         ttk.Label(f, text="Дамп DS2438 (64 Б):").pack(anchor="w", pady=(6, 0))
-        self.tx38 = scrolledtext.ScrolledText(f, height=3, font=("Consolas", 8),
+        self.tx38 = scrolledtext.ScrolledText(f, height=3, font=fnt("Consolas", 8),
                                               bg=MIL["field"], fg="#b9bd86", insertbackground=MIL["khaki"],
                                               relief="flat", bd=0); self.tx38.pack(fill="x")
 
@@ -784,7 +982,7 @@ class App:
 
     def _build_hex(self):
         f = self.tabHex
-        mono = ("Consolas", 10)
+        mono = fnt("Consolas", 10)
         bar = ttk.Frame(f); bar.pack(fill="x")
         ttk.Label(bar, text="Мікросхема:").pack(side="left")
         self.hxTarget = ttk.Combobox(bar, width=16, state="readonly", values=["DS2433 (512 Б)", "DS2438 (64 Б)"])
@@ -965,7 +1163,7 @@ class App:
         return "break"
 
     def _build_log(self):
-        self.txLog = scrolledtext.ScrolledText(self.tabLog, font=("Consolas", 8),
+        self.txLog = scrolledtext.ScrolledText(self.tabLog, font=fnt("Consolas", 8),
                                                bg=MIL["field"], fg="#b9bd86", insertbackground=MIL["khaki"],
                                                relief="flat", bd=0); self.txLog.pack(fill="both", expand=True)
 

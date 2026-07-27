@@ -776,20 +776,26 @@ inline void drawPageDischarge() {
     tSet(FONT_MODEL, chargeColor(impresPercentFromMv(d.lastMv)));
     tPut(EDGE, HDR_H + 36, b);
 
-    // Прогрес: від старту до цілі.
+    // Прогрес до цілі — числом у рядку «ціль» нижче.
     int span = (int)d.startMv - (int)d.targetMv;
     int done = (int)d.startMv - (int)d.lastMv;
     int pct  = (span > 0) ? (done * 100 / span) : 0;
     if (pct < 0) pct = 0; if (pct > 100) pct = 100;
-    int bx = EDGE, bw = TFT_W - 2 * EDGE, by = HDR_H + 46, bh = 10;
-    tft.drawRect(bx, by, bw, bh, C_MUTED);
-    tft.fillRect(bx + 1, by + 1, bw - 2, bh - 2, C_BG);
-    tft.fillRect(bx + 1, by + 1, (bw - 2) * pct / 100, bh - 2, C_GREEN);
+
+    // Рівень заряду — ТАКОЮ Ж анімованою іконкою батареї, як на головній
+    // сторінці: drawBatteryBar() запам'ятовує геометрію в g_battX/Y/W/H, а
+    // displayAnimTick() ганяє по заповненню той самий градієнт.
+    const char *csrc; int chargePct = batteryPercent(&csrc);
+    int by = HDR_H + 44, bh = 22;
+    int bx = EDGE, bw = TFT_W - 2 * EDGE - 6;      // −6 px під «плюсовий» вивід
+    tft.fillRect(0, by - 2, TFT_W, bh + 4, C_BG);
+    drawBatteryBar(bx, by, bw, bh, chargePct, chargeColor(chargePct));
+    g_pctTx = g_pctTy = g_pctTw = g_pctTh = 0;     // цифр усередині шкали немає
 
     // Рядки показань. Кожен сам чистить свою смужку на всю ширину, тож при
     // оновленні раз на 5 с екран не блимає і старий текст не «просвічує».
     tSet(FONT_BODY, C_TEXT);
-    int y = by + bh + 16;
+    int y = by + bh + 18;
     auto row = [&](const char *txt, uint16_t col) {
         tft.fillRect(0, y - 12, TFT_W, 16, C_BG);
         tSet(FONT_BODY, col);
@@ -962,7 +968,10 @@ static const uint8_t ANIM_SINE32[32] = {
   128,103, 79, 57, 37, 21,  9,  1,  0,  1,  9, 21, 37, 57, 79,103};
 
 inline void displayAnimTick() {
-    if (g_displayPage != 0 || g_battW == 0) return;
+    // Анімуємо на головній сторінці та на сторінці РОЗРЯДУ (там показник заряду
+    // такий самий, і статична шкала під час довгої операції виглядала б як
+    // «завис»).
+    if (!(g_displayPage == 0 || dischargeScreenActive()) || g_battW == 0) return;
     if (g_errTint) return;              // під час оповіщення про помилку — статичний
                                         // червоний екран (без руху градієнта)
     if (g_ledMode == LED_READ || g_ledMode == LED_WRITE)

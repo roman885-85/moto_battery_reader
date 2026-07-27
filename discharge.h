@@ -132,9 +132,19 @@ inline void dischargeDismiss() {
     if (g_dis.state != DIS_RUN) { g_dis.state = DIS_IDLE; dischargeMarkDirty(2); }
 }
 
-// Зупинити (навантаження — першою дією).
+// Зупинити. Порядок важливий: СПОЧАТКУ навантаження (щоб струм припинився за
+// будь-яких обставин), потім знімаємо утримання enable. Саме утримання гасить
+// dischargeReleaseEnable() — воно визначене у web_server.h, де доступний
+// об'єкт battery; тут лишається прапорець-запит, щоб discharge.h не залежав
+// від драйвера 1-Wire.
+static bool g_disReleaseEnable = false;
+inline bool dischargeConsumeReleaseEnable() {
+    bool r = g_disReleaseEnable; g_disReleaseEnable = false; return r;
+}
+
 inline void dischargeStop(uint8_t reason) {
     loadOff();
+    g_disReleaseEnable = true;             // зняти утримання enable (див. loop)
     dischargeMarkDirty(2);                 // режим змінився -> перемалювати повністю
     if (g_dis.state == DIS_RUN) {
         g_dis.state  = (reason == DISR_TARGET) ? DIS_DONE : DIS_ABORT;

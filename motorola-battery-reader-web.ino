@@ -154,7 +154,10 @@ void loop() {
     else if (act == 5) performRecalPrepare();
     else if (act == 6) performWipe2438();
     else if (act >= NUM_BASE_ACTIONS && act < NUM_BASE_ACTIONS + BATTERY_TEMPLATE_COUNT)
-        performInitBattery(BATTERY_TEMPLATES[act - NUM_BASE_ACTIONS].name, BATTERY_RATED_MAH);
+        { const char *nm = BATTERY_TEMPLATES[act - NUM_BASE_ACTIONS].name;
+          // Початковий заряд = 50% паспортної ємності ЦІЄЇ моделі (раніше сюди
+          // йшла єдина константа BATTERY_RATED_MAH для всіх моделей).
+          performInitBattery(nm, impresRatedMah(nm) / 2); }
     else if (act >= NUM_BASE_ACTIONS + BATTERY_TEMPLATE_COUNT &&
              act <  NUM_BASE_ACTIONS + 2 * BATTERY_TEMPLATE_COUNT)
         performRestoreTemplate(BATTERY_TEMPLATES[act - NUM_BASE_ACTIONS - BATTERY_TEMPLATE_COUNT].name);

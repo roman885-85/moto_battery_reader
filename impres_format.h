@@ -1,0 +1,388 @@
+#ifndef IMPRES_FORMAT_H
+#define IMPRES_FORMAT_H
+// ===========================================================================
+//  impres_format.h — ФОРМАТ ПРОШИВКИ IMPRES (DS2433 512 Б + DS2438 64 Б).
+//
+//  Єдине місце, де описано структуру прошивки. Чисті функції над буферами,
+//  без глобальних змінних — щоб один і той самий код використовували веб,
+//  екранне меню, USB-міст і десктопний клієнт.
+//
+//  Побудовано на повторному аналізі 49 реальних АКБ з dumps/ (98 файлів),
+//  де кожен дамп має опис поведінки рації/ЗП від власника. Деталі й докази —
+//  у docs/FIRMWARE_ANALYSIS.md.
+//
+//  ──────────────────────────────────────────────────────────────────────────
+//  1. ЗАПИСИ (records)
+//  ──────────────────────────────────────────────────────────────────────────
+//  Уся змістовна частина DS2433 — ланцюг записів однакового вигляду:
+//
+//      [ДОВЖИНА][дані ...][КОНТРОЛЬНА СУМА]      Σ усіх байт запису ≡ 0x5A
+//
+//  ДОВЖИНА — це ПОВНА довжина запису разом із самим байтом довжини й сумою.
+//  Проміжки між записами заповнені 0xFF. Ланцюг «упакований» до кінця чипа:
+//  останній запис завершується рівно на 0x200.
+//
+//  ⚠️ РАНІШЕ у проєкті запис шукали як «тег + 0x00» (find_record/decodeCapacity),
+//  тобто перший байт вважали ТЕГОМ. Це помилка: перший байт — довжина, а другий
+//  байт довільний. Через це «ємність» читалася з фіксованого зсуву +21 у першому
+//  ж записі довжини 0x17 і ЗАВЖДИ давала 100% (див. п.4).
+//
+//  ──────────────────────────────────────────────────────────────────────────
+//  2. КАРТА ПАМ'ЯТІ DS2433
+//  ──────────────────────────────────────────────────────────────────────────
+//  0x000..0x01F  Заголовок ідентичності. Σ(0x00..0x1F) ≡ 0x41 (0x1F — сума).
+//  0x020..0x065  Профіль моделі: службовий блок + розрядна крива.
+//                Байт 0x041 — лічильник записів (змінюється), решта — стала.
+//  0x066..0x0DF  Кільцевий ЖУРНАЛ використання (записи різної довжини).
+//  0x0E0..0x0FF  Рядок COPYRIGHT20xx MOTOROLASOLUTIONS (формати 2014/2021).
+//  0x100..0x11F  Продовження журналу використання.
+//  0x120..0x13F  ЗАВОДСЬКА таблиця (запис 0x17 @0x129). Однакова для всіх
+//                екземплярів моделі — це НЕ поточне здоров'я АКБ.
+//  0x140..0x152  Запис МОДЕЛІ (0x0B @0x148: 9 символів ASCII + сума).
+//  0x153..0x189  Навчені записи ємності (пишуться ЗП під час калібрування).
+//  0x18A..0x1FF  ⚑ НАВЧЕНИЙ КАЛІБРУВАЛЬНИЙ ХВІСТ. Саме він блокує АКБ після
+//                заміни елементів (див. п.3).
+//
+//  Діапазон 0x000..0x065 БАЙТ-У-БАЙТ однаковий у всіх екземплярів однієї
+//  моделі (перевірено: 19×PMNN4409A, 8×PMNN4409B, 8×PMNN4488A, 3×PMNN4493A,
+//  3×PMNN4809A). Це і є «прошивка моделі». Все, що вище 0x066, — індивідуальне.
+//
+//  ──────────────────────────────────────────────────────────────────────────
+//  3. ЧОМУ ПІСЛЯ ЗАМІНИ ЕЛЕМЕНТІВ РАЦІЯ КАЖЕ «НЕВІДОМИЙ АКУМУЛЯТОР»
+//  ──────────────────────────────────────────────────────────────────────────
+//  Заголовок і профіль моделі у «непрацюючих» АКБ ІДЕНТИЧНІ робочим — справа
+//  не в ідентичності. Блокує НАВЧЕНИЙ ХВІСТ 0x18A..0x1FF: він описує реальні
+//  банки (виміряні ємність/імпеданс), і після заміни елементів суперечить
+//  новому пакету. Рація/ЗП звіряють його з поведінкою АКБ і відкидають пакет.
+//
+//  Ключове (і контрінтуїтивне) спостереження: якщо хвіст ВІДСУТНІЙ або
+//  СТРУКТУРНО НЕВАЛІДНИЙ, рація приймає АКБ як фірмовий і просить калібрування,
+//  а ЗП запускає повний цикл. Тобто «порожньо» краще за «чуже». Це підтверджено
+//  двома незалежними дослідами власника:
+//    • dumps/13-dozaryadka-na-stantsii — стерто хвіст до кінця чипа
+//      → «IMPRES(tm)», рівень заряду вірний, ЗП заряджає й калібрує;
+//    • те саме після обнулення лише двох байт останнього запису хвоста.
+//  І навпаки, dumps/08-nova-batareya: записано ПОВНИЙ еталон (разом із чужим
+//  хвостом) → «невідомий акумулятор», ЗП лише світить зеленим.
+//
+//  Звідси РЕМОНТ ПІСЛЯ ЗАМІНИ ЕЛЕМЕНТІВ = стерти 0x18A..0x1FF у 0xFF,
+//  зберігши все нижче (ідентичність, крива, copyright, заводська таблиця,
+//  модель), і привести DS2438 у стан «новий пакет».
+//
+//  ──────────────────────────────────────────────────────────────────────────
+//  4. ЧОГО В ПРОШИВЦІ НЕМАЄ
+//  ──────────────────────────────────────────────────────────────────────────
+//  • «Здоров'я / строк служби, %» — НЕ зберігається. Перебір усіх зсувів по
+//    7 АКБ із відомими показами рації (97/100/100/34/100/100/99 %) не дав
+//    жодного збігу. Рація рахує цей відсоток сама з навчених даних.
+//    Тому impresFactoryHealth() позначено як ЗАВОДСЬКУ таблицю, а не здоров'я.
+//  • «Дата першого користування» — теж НЕ зберігається. Перебір 6 АКБ із
+//    відомими датами по всіх зсувах і 10 кодуваннях (unix32, days-since-epoch,
+//    DOS-date, BCD, y/m/d) не дав збігу в жодному спільному полі. Рація
+//    обчислює дату як «зараз − ETM» (лічильник напрацювання DS2438).
+//  Обидва показники позначаємо як «рахує рація», а не вигадуємо число.
+//
+//  ──────────────────────────────────────────────────────────────────────────
+//  5. DS2438 (монітор)
+//  ──────────────────────────────────────────────────────────────────────────
+//  0x00        статус/конфіг (у всіх справних АКБ = 0x0F)
+//  0x01..0x02  температура (LSB, MSB)
+//  0x03..0x04  напруга (LSB, MSB), одиниця 10 мВ
+//  0x05..0x06  струм (LSB, MSB), зі знаком
+//  0x07        поріг (у всіх справних АКБ = 0x40)
+//  0x08..0x0B  ETM — лічильник напрацювання, 4 байти LE, секунди
+//  0x0C        ICA — паливомір (1 байт)
+//  0x0D..0x0E  OFFSET — апаратне калібрування АЦП струму (0x0018) — НЕ чіпати
+//  0x0F        0xFC (стале)
+//  0x18..0x31  ДЗЕРКАЛО DS2433[0x01..0x1A]
+//  0x3C..0x3D  CCA (LE)   0x3E..0x3F  DCA (LE)
+// ===========================================================================
+
+#include <stdint.h>
+#include <string.h>
+
+#define IMPRES_33_SIZE        512
+#define IMPRES_38_SIZE        64
+
+// ---- межі регіонів DS2433 --------------------------------------------------
+#define IMPRES_HDR_END        0x020   // заголовок 0x000..0x01F, Σ≡0x41
+#define IMPRES_ID_END         0x066   // кінець блока моделі (ідентичність+крива)
+#define IMPRES_ID_COUNTER     0x041   // лічильник записів усередині блока моделі
+#define IMPRES_LOG_BEGIN      0x066   // журнал використання
+#define IMPRES_COPYRIGHT      0x0E0   // рядок COPYRIGHT20xx (32 Б)
+#define IMPRES_LOG2_BEGIN     0x100
+#define IMPRES_FACTORY_REC    0x129   // заводська таблиця, довжина 0x17
+#define IMPRES_MODEL_REC      0x148   // запис моделі, довжина 0x0B
+#define IMPRES_MODEL_LEN      0x0B
+#define IMPRES_MODEL_CHARS    9
+#define IMPRES_LEARNED_BEGIN  0x18A   // ⚑ навчений калібрувальний хвіст
+#define IMPRES_LEARNED_END    IMPRES_33_SIZE
+
+#define IMPRES_REC_SUM        0x5A    // Σ байт запису
+#define IMPRES_HDR_SUM        0x41    // Σ байт заголовка
+
+// ---- стан хвоста -----------------------------------------------------------
+enum {
+    IMPRES_TAIL_BLANK = 0,   // стертий (0xFF/0x00) — АКБ приймається як «не калібрований»
+    IMPRES_TAIL_VALID = 1,   // цілий ланцюг записів — навчені дані присутні
+    IMPRES_TAIL_BROKEN = 2,  // є дані, але ланцюг б'ється — теж приймається рацією
+};
+
+// ---------------------------------------------------------------- заголовок
+inline bool impresHeaderOk(const uint8_t *d33) {
+    int s = 0;
+    for (int i = 0; i < IMPRES_HDR_END; i++) s += d33[i];
+    return (s & 0xFF) == IMPRES_HDR_SUM;
+}
+inline void impresFixHeader(uint8_t *d33) {
+    int s = 0;
+    for (int i = 0; i < IMPRES_HDR_END - 1; i++) s += d33[i];
+    d33[IMPRES_HDR_END - 1] = (uint8_t)((IMPRES_HDR_SUM - s) & 0xFF);
+}
+
+// ---------------------------------------------------------------- записи
+// Чи є за зсувом off коректний запис [len][...][Σ≡0x5A].
+inline bool impresRecordOk(const uint8_t *d33, int off) {
+    if (off < 0 || off >= IMPRES_33_SIZE) return false;
+    int len = d33[off];
+    if (len < 2 || off + len > IMPRES_33_SIZE) return false;
+    int s = 0;
+    for (int k = 0; k < len; k++) s += d33[off + k];
+    return (s & 0xFF) == IMPRES_REC_SUM;
+}
+// Перерахувати контрольну суму запису довжини len за зсувом off.
+inline void impresFixRecord(uint8_t *d33, int off, int len) {
+    if (off < 0 || len < 2 || off + len > IMPRES_33_SIZE) return;
+    int s = 0;
+    for (int k = 0; k < len - 1; k++) s += d33[off + k];
+    d33[off + len - 1] = (uint8_t)((IMPRES_REC_SUM - s) & 0xFF);
+}
+
+// Пройти ланцюг записів від start. Повертає к-сть знайдених записів;
+// у *bad — к-сть записів із хибною сумою, у *end — зсув, на якому ланцюг
+// завершився (-1, якщо наткнулися на неможливу довжину). Проміжки 0xFF
+// пропускаються.
+//
+// У справному дампі ланцюг «упакований» до кінця чипа, тобто *end == 512.
+// Рівно ОДИН запис у хвості (3 байти виду [0x03][прапорець][прапорець]) суми
+// НЕ має: ЗП дописує ці два байти на місці, не перераховуючи нічого. Тому
+// критерій цілісності хвоста — «дійшли рівно до 512 і не більше однієї
+// розбіжності», а не «жодної розбіжності».
+inline int impresWalk(const uint8_t *d33, int start, int *bad, int *end) {
+    int n = 0, b = 0, i = start;
+    while (i < IMPRES_33_SIZE) {
+        if (d33[i] == 0xFF) { i++; continue; }
+        int len = d33[i];
+        if (len < 2 || i + len > IMPRES_33_SIZE) { if (end) *end = -1; if (bad) *bad = b; return n; }
+        if (!impresRecordOk(d33, i)) b++;
+        n++; i += len;
+    }
+    if (bad) *bad = b;
+    if (end) *end = i;
+    return n;
+}
+
+// ---------------------------------------------------------------- модель
+// Запис моделі — це запис довжини 0x0B, чиї 9 байт даних — [A-Z0-9] (з
+// доповненням пробілами) і сума якого ≡ 0x5A. Спочатку дивимось на штатне
+// місце 0x148, потім скануємо чип. Перевірка суми прибирає хибні спрацювання
+// «0x0B + літера» на стертих/сміттєвих чипах, через які модель писалася не туди.
+inline bool impresModelAt(const uint8_t *d33, int off) {
+    if (!impresRecordOk(d33, off) || d33[off] != IMPRES_MODEL_LEN) return false;
+    bool digit = false, letter = false;
+    for (int k = 0; k < IMPRES_MODEL_CHARS; k++) {
+        uint8_t c = d33[off + 1 + k];
+        if (c >= '0' && c <= '9') digit = true;
+        else if (c >= 'A' && c <= 'Z') letter = true;
+        else if (c != ' ') return false;
+    }
+    return digit && letter;
+}
+inline int impresFindModel(const uint8_t *d33) {
+    if (impresModelAt(d33, IMPRES_MODEL_REC)) return IMPRES_MODEL_REC;
+    for (int i = 0x20; i + IMPRES_MODEL_LEN <= IMPRES_33_SIZE; i++)
+        if (impresModelAt(d33, i)) return i;
+    return -1;
+}
+inline bool impresModelName(const uint8_t *d33, char *out, size_t n) {
+    int off = impresFindModel(d33);
+    if (off < 0 || n < 2) { if (n) out[0] = '\0'; return false; }
+    size_t len = 0;
+    for (int k = 0; k < IMPRES_MODEL_CHARS && len + 1 < n; k++) {
+        uint8_t c = d33[off + 1 + k];
+        if (c == ' ') break;
+        out[len++] = (char)c;
+    }
+    out[len] = '\0';
+    return len > 0;
+}
+
+// ---------------------------------------------------------------- хвіст
+// Перевірено на всіх 49 дампах з dumps/: у ВСІХ 30 каталогізованих АКБ (і
+// робочих, і «невідомих») хвіст = IMPRES_TAIL_VALID, а IMPRES_TAIL_BLANK /
+// IMPRES_TAIL_BROKEN трапляються рівно там, де власник зафіксував, що рація й
+// ЗП АКБ ПРИЙНЯЛИ (13-dozaryadka, 11-chastkove, 09-4409a-z-proshyvkoyu-4809a).
+inline int impresTailState(const uint8_t *d33) {
+    bool blank = true;
+    for (int i = IMPRES_LEARNED_BEGIN; i < IMPRES_LEARNED_END; i++)
+        if (d33[i] != 0xFF && d33[i] != 0x00) { blank = false; break; }
+    if (blank) return IMPRES_TAIL_BLANK;
+    int bad = 0, end = 0;
+    int n = impresWalk(d33, IMPRES_LEARNED_BEGIN, &bad, &end);
+    return (end == IMPRES_33_SIZE && n >= 3 && bad <= 1) ? IMPRES_TAIL_VALID
+                                                         : IMPRES_TAIL_BROKEN;
+}
+// Стерти навчений хвіст у 0xFF. Повертає к-сть змінених байт.
+inline int impresEraseTail(uint8_t *d33) {
+    int n = 0;
+    for (int i = IMPRES_LEARNED_BEGIN; i < IMPRES_LEARNED_END; i++)
+        if (d33[i] != 0xFF) { d33[i] = 0xFF; n++; }
+    return n;
+}
+// Стерти навчені записи ЄМНОСТІ (0x153..0x189) — глибша чистка, коли ЗП і після
+// стирання хвоста тримає стару ємність. Модель (0x148..0x152) НЕ чіпаємо.
+inline int impresEraseLearnedCapacity(uint8_t *d33) {
+    int n = 0;
+    for (int i = IMPRES_MODEL_REC + IMPRES_MODEL_LEN; i < IMPRES_LEARNED_BEGIN; i++)
+        if (d33[i] != 0xFF) { d33[i] = 0xFF; n++; }
+    return n;
+}
+// Стерти кільцевий журнал використання (історія сеансів). Ідентичність,
+// copyright, заводську таблицю й модель не чіпає.
+inline int impresEraseUsageLog(uint8_t *d33) {
+    int n = 0;
+    for (int i = IMPRES_LOG_BEGIN; i < IMPRES_COPYRIGHT; i++)
+        if (d33[i] != 0xFF) { d33[i] = 0xFF; n++; }
+    for (int i = IMPRES_LOG2_BEGIN; i < 0x120; i++)
+        if (d33[i] != 0xFF) { d33[i] = 0xFF; n++; }
+    return n;
+}
+
+// ---------------------------------------------------------------- DS2438
+inline uint32_t impresEtm(const uint8_t *d38) {          // секунди напрацювання
+    return (uint32_t)d38[8] | ((uint32_t)d38[9] << 8) |
+           ((uint32_t)d38[10] << 16) | ((uint32_t)d38[11] << 24);
+}
+inline uint16_t impresCca(const uint8_t *d38) { return (uint16_t)d38[60] | ((uint16_t)d38[61] << 8); }
+inline uint16_t impresDca(const uint8_t *d38) { return (uint16_t)d38[62] | ((uint16_t)d38[63] << 8); }
+inline uint16_t impresVoltageMv(const uint8_t *d38) {
+    return (uint16_t)(((uint16_t)d38[3] | ((uint16_t)d38[4] << 8)) * 10);
+}
+inline bool impresMirrorOk(const uint8_t *d33, const uint8_t *d38) {
+    for (int i = 0; i < 26; i++) if (d33[1 + i] != d38[24 + i]) return false;
+    return true;
+}
+// Чи придатне дзеркало як ДЖЕРЕЛО (не суцільні 0x00/0xFF).
+inline bool impresMirrorUsable(const uint8_t *d38) {
+    bool z = true, f = true;
+    for (int i = 24; i < 50; i++) { if (d38[i]) z = false; if (d38[i] != 0xFF) f = false; }
+    return !z && !f;
+}
+inline void impresSyncMirror(uint8_t *d33, const uint8_t *d38) {
+    for (int i = 0; i < 26; i++) d33[1 + i] = d38[24 + i];
+    impresFixHeader(d33);
+}
+
+// Привести монітор до стану «новий пакет», НЕ стираючи його в 0xFF.
+//
+// ⚠️ Раніше «підготовка до калібрування» заливала DS2438 суцільним 0xFF. Це
+// ламало сам монітор: у байт статусу/конфігу 0x00 потрапляло 0xFF (замість
+// 0x0F — виставлені зарезервовані біти), у поріг 0x07 — 0xFF замість 0x40, і
+// затиралися апаратний OFFSET АЦП струму (0x0D..0x0E) та ДЗЕРКАЛО (0x18..0x31).
+// Симптом — ЗП бачить АКБ, світить зеленим і не заряджає. Тепер обнуляємо лише
+// лічильники, зберігаючи конфіг, апаратне калібрування й дзеркало.
+//
+// ica — початковий паливомір (0..255). d33 може бути nullptr (тоді дзеркало
+// не оновлюємо).
+inline void impresResetMonitor(uint8_t *d38, const uint8_t *d33, uint8_t ica) {
+    d38[0x00] = 0x0F;                       // IAD+CA+EE+AD, зарезервовані біти = 0
+    d38[0x07] = 0x40;                       // поріг
+    d38[0x08] = d38[0x09] = d38[0x0A] = d38[0x0B] = 0x00;   // ETM -> 0
+    d38[0x0C] = ica;                        // паливомір
+    d38[0x0F] = 0xFC;                       // стале у всіх справних АКБ
+    d38[0x3C] = d38[0x3D] = 0x00;           // CCA -> 0
+    d38[0x3E] = d38[0x3F] = 0x00;           // DCA -> 0
+    if (d33) for (int i = 0; i < 26; i++) d38[24 + i] = d33[1 + i];
+}
+
+// ---------------------------------------------------------------- ємність
+// Паспортна ємність за моделлю. У прошивці її НЕМАЄ у придатному для читання
+// вигляді: PMNN4409A і PMNN4409B мають однакові «ємнісні» поля заголовка, а
+// PMNN4488A і PMNN4493A — взагалі побайтово однаковий заголовок і різняться
+// лише рядком назви. Тому — таблиця, яку можна правити під свої пакети.
+struct ImpresRated { const char *model; int mah; };
+static const ImpresRated IMPRES_RATED[] = {
+    { "PMNN4409A", 2150 },
+    { "PMNN4409B", 2250 },
+    { "PT4409A",   2150 },   // копія 4409A
+    { "PMNN4488A", 3000 },   // спільний заголовок із 4493A
+    { "PMNN4493A", 3000 },
+    { "PMNN4809A", 2450 },
+    { "APLI4810C", 2450 },
+};
+static const int IMPRES_RATED_N = (int)(sizeof(IMPRES_RATED) / sizeof(IMPRES_RATED[0]));
+#ifndef IMPRES_RATED_DEFAULT
+  #define IMPRES_RATED_DEFAULT 2500
+#endif
+
+inline int impresRatedMah(const char *model) {
+    if (model && *model)
+        for (int i = 0; i < IMPRES_RATED_N; i++)
+            if (strcmp(IMPRES_RATED[i].model, model) == 0) return IMPRES_RATED[i].mah;
+    return IMPRES_RATED_DEFAULT;
+}
+
+// Заряд, % за напругою (7.00 В = 0 %, 8.40 В = 100 %) — запит власника:
+// показання паливоміра після ремонту не відповідають реальному стану, а ЗП
+// потім сама їх уточнить.
+#ifndef IMPRES_EMPTY_MV
+  #define IMPRES_EMPTY_MV 7000
+#endif
+#ifndef IMPRES_FULL_MV
+  #define IMPRES_FULL_MV  8400
+#endif
+inline int impresPercentFromMv(int mv) {
+    long p = ((long)mv - IMPRES_EMPTY_MV) * 100 / (IMPRES_FULL_MV - IMPRES_EMPTY_MV);
+    if (p < 0) p = 0;
+    if (p > 100) p = 100;
+    return (int)p;
+}
+// ICA, що відповідає заданому відсотку (паливомір — 1 байт, 0..255).
+inline uint8_t impresIcaFromPercent(int pct) {
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    return (uint8_t)((pct * 255 + 50) / 100);
+}
+
+// Паливомір ICA <-> залишок у мА·год, ВІДНОСНО паспортної ємності моделі.
+//
+// ⚠️ Раніше всюди рахували ica * DS2438_MAH_PER_LSB, де DS2438_MAH_PER_LSB
+// виводиться з ПІДІБРАНОГО вручну DS2438_RSENSE_OHM. При типовому 0.025 Ом це
+// дає 19.5 мА·год на одиницю, тобто повна шкала ICA=255 -> 4978 мА·год — удвічі
+// більше за будь-який із цих пакетів (PMNN4409A = 2150). Через це «залишок,
+// мА·год» не збігався з тим, що показує станція. ICA — це паливомір із повною
+// шкалою в один повний пакет, тож перераховуємо через паспортну ємність.
+inline int impresIcaToMah(uint8_t ica, int ratedMah) {
+    return (int)(((long)ica * ratedMah) / 255);
+}
+inline uint8_t impresIcaFromMah(long mah, int ratedMah) {
+    if (mah < 0) mah = 0;
+    if (ratedMah <= 0) ratedMah = IMPRES_RATED_DEFAULT;
+    long ica = (mah * 255 + ratedMah / 2) / ratedMah;
+    if (ica > 255) ica = 255;
+    return (uint8_t)ica;
+}
+
+// ---------------------------------------------------------------- формат
+inline int impresFormatYear(const uint8_t *d33) {
+    static const char c21[] = "COPYRIGHT2021", c14[] = "COPYRIGHT2014", mot[] = "MOTOROLA";
+    for (int i = 0; i + 13 <= IMPRES_33_SIZE; i++) {
+        if (memcmp(d33 + i, c21, 13) == 0) return 2021;
+        if (memcmp(d33 + i, c14, 13) == 0) return 2014;
+    }
+    for (int i = 0; i + 8 <= IMPRES_33_SIZE; i++)
+        if (memcmp(d33 + i, mot, 8) == 0) return 2017;
+    return 0;
+}
+
+#endif // IMPRES_FORMAT_H

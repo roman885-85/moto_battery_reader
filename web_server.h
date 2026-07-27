@@ -7,6 +7,7 @@
 #include <ArduinoJson.h>
 #include "battery_reader.h"
 #include "settings.h"
+#include "impres_format.h"     // структура прошивки IMPRES (єдине джерело правди)
 #include "leds.h"
 #include "display.h"
 #include "templates.h"
@@ -369,13 +370,19 @@ void handleDumpInfo2438() {
     json += ",\"ica\":" + String(ica);
     json += ",\"cca\":" + String(cca);
     json += ",\"dca\":" + String(dca);
-    json += ",\"icaMah\":" + String((int)(ica * DS2438_MAH_PER_LSB));
+    // Паспортна ємність — ЗА МОДЕЛЛЮ (таблиця IMPRES_RATED в impres_format.h),
+    // а не одна константа на всі АКБ. Через єдину BATTERY_RATED_MAH=2500 цикли
+    // й залишок у мА·год не збігалися з тим, що показує станція, на всіх
+    // моделях, крім однієї.
+    char rmModel[16] = "";
+    decodeModel(rmModel, sizeof(rmModel));
+    int ratedMah = impresRatedMah(rmModel);
+    json += ",\"icaMah\":" + String(impresIcaToMah((uint8_t)ica, ratedMah));
     json += ",\"ccaMah\":" + String((int)(cca * DS2438_MAH_PER_LSB));
     json += ",\"dcaMah\":" + String((int)(dca * DS2438_MAH_PER_LSB));
-    // Цикли: сумарний заряд (розряд) / паспортна ємність (BATTERY_RATED_MAH).
-    json += ",\"ccaCycles\":" + String((int)(cca * DS2438_MAH_PER_LSB / BATTERY_RATED_MAH));
-    json += ",\"dcaCycles\":" + String((int)(dca * DS2438_MAH_PER_LSB / BATTERY_RATED_MAH));
-    json += ",\"ratedMah\":" + String((int)BATTERY_RATED_MAH);
+    json += ",\"ccaCycles\":" + String((int)(cca * DS2438_MAH_PER_LSB / ratedMah));
+    json += ",\"dcaCycles\":" + String((int)(dca * DS2438_MAH_PER_LSB / ratedMah));
+    json += ",\"ratedMah\":" + String(ratedMah);
     json += ",\"charge\":" + String(charge);
     json += ",\"chargeSrc\":\"" + String(csrc) + "\"";
     // ETM (DS2438[8..11], сек наробітку). Рація показує «дату першого користування»
@@ -630,6 +637,11 @@ void handleDumpInfo() {
     json += ",\"authReason\":\"" + String(reason) + "\"";
     json += ",\"headerOk\":" + String(hdrOk ? "true" : "false");
     json += ",\"mirrorOk\":" + String(mirOk ? "true" : "false");
+    // Стан навченого калібрувального хвоста 0x18A..0x1FF — ключове поле для
+    // ремонту після заміни елементів (див. impres_format.h).
+    { int t = impresTailState(batteryDump);
+      json += ",\"tail\":\"" + String(t == IMPRES_TAIL_BLANK ? "blank"
+                                    : t == IMPRES_TAIL_VALID ? "learned" : "broken") + "\""; }
     json += ",\"preview\":\"";
     
     json += hexPreview(batteryDump, 16);
@@ -655,17 +667,14 @@ void resetBatteryData() {
         batteryDump2438[60] = batteryDump2438[61] = 0;         // CCA
         batteryDump2438[62] = batteryDump2438[63] = 0;         // DCA
     }
-    if (hasDump) {
-        // Ємність -> 100% (знос 0) в записи історії 0x17 (лише байт стану,
-        // калібрувальну криву не чіпаємо).
-        for (int i = 0x100; i < 0x1F0 - 23; i++) {
-            if (batteryDump[i] == 0x17 && batteryDump[i + 1] == 0x00) {
-                batteryDump[i + 21] = 0x64;
-                fixRecordChecksum(batteryDump, i, 0x17);
-                break;
-            }
-        }
-    }
+    // ⚠️ Раніше тут «ставили здоров'я 100%»: у першому записі довжини 0x17
+    // байту +21 присвоювали 0x64 і перераховували суму. Це було двічі хибно.
+    // По-перше, запис шукали як «тег 0x17 + 0x00», хоча перший байт — довжина.
+    // По-друге, запис @0x129 — ЗАВОДСЬКА таблиця: у всіх 19 екземплярів
+    // PMNN4409A і всіх 8 екземплярів PMNN4409B у dumps/ вона побайтово
+    // ОДНАКОВА, тобто це не поточне здоров'я АКБ, а константа моделі, і
+    // правити її не можна й немає сенсу. Реальне «здоров'я/строк служби»
+    // у прошивці не зберігається — його рахує рація (див. impres_format.h).
 }
 
 // Ядро скидання: редагує дампи, пише в обидві мікросхеми, зберігає. Без HTTP —
@@ -710,36 +719,26 @@ void factoryCleanData() {
     if (hasDump) fixHeaderChecksum(batteryDump);
 }
 
-// Стерти LEARNED-калібрування (TLV-записи 0x0A, Σ≡0x5A) у калібр-зоні DS2433.
-// Перевірено діффом однієї й тієї ж АКБ ДО/ПІСЛЯ калібрування на IMPRES-ЗП:
-// саме запис 0x0A ЗП створює під час навчання (він кодує виміряну ємність/
-// імпеданс РЕАЛЬНИХ банок). Після заміни елементів старий 0x0A суперечить новим
-// банкам → рація каже «невідома». Стирання його (→0xFF) повертає пакет у стан
-// «валідний, НЕ відкалібрований», який рація приймає, а ЗП бере на калібрування.
-// Повертає к-сть стертих записів.
-int eraseLearnedCalib() {
-    int erased = 0;
-    // Стираємо ЛИШЕ валідні записи 0x0A (Σ≡0x5A) у ДВОХ безпечних зонах, НЕ чіпаючи
-    // модель/записи ємності (0x140..0x17F) — інакше після підготовки рація каже
-    // «нема моделі». Головна learned-зона IMPRES-ЗП — ПІСЛЯ записів (0x180..кінець):
-    // саме там (напр. 0x1D2/0x1F0) лежить «навчене» калібрування реальних банок,
-    // що суперечить новим елементам і блокує повторну калібровку (підтверджено
-    // ручним стиранням цієї зони). Зона 0x68..0x140 (переважно 0xFF) — про запас
-    // для інших форматів; модель/записи між ними лишаються недоторканими.
-    for (int pass = 0; pass < 2; pass++) {
-        int lo = (pass == 0) ? 0x68  : 0x180;
-        int hi = (pass == 0) ? 0x140 : (int)DUMP_SIZE;
-        for (int i = lo; i < hi - 10; i++) {
-            if (batteryDump[i] == 0x0A) {
-                int s = 0; for (int k = 0; k < 10; k++) s += batteryDump[i + k];
-                if ((s & 0xFF) == 0x5A) {              // валідний запис 0x0A
-                    for (int k = 0; k < 10; k++) batteryDump[i + k] = 0xFF;
-                    erased++; i += 9;
-                }
-            }
-        }
-    }
-    return erased;
+// Стерти НАВЧЕНИЙ калібрувальний хвіст DS2433 (0x18A..0x1FF) — донорські/старі
+// дані про РЕАЛЬНІ банки, які після заміни елементів суперечать новому пакету.
+//
+// ⚠️ ЩО БУЛО НЕ ТАК РАНІШЕ. Тут шукали «записи 0x0A»: байт 0x0A, після якого
+// 10 байт дають суму 0x5A. Це помилка на двох рівнях:
+//   • перший байт запису — це ДОВЖИНА, а не тег, тож «0x0A» = будь-який запис
+//     довжини 10, а не якийсь особливий «learned»-запис;
+//   • на 500 зсувах випадкове вікно дає суму 0x5A приблизно двічі на дамп, тож
+//     функція стирала по 10 байт у ВИПАДКОВИХ місцях (у т.ч. у журналі та в
+//     заводських таблицях), псуючи прошивку замість ремонту.
+// Плюс зона стирання (0x180..кінець) не збігалася з реальною межею навчених
+// даних, а другий прохід (0x68..0x140) заходив на заводські таблиці.
+//
+// Тепер стираємо РІВНО регіон 0x18A..0x1FF — межу визначено побайтовим
+// порівнянням 49 дампів (нижче 0x18A лежать ідентичність, крива, copyright,
+// заводська таблиця й запис моделі; вище — тільки навчене калібрування).
+// Повертає к-сть змінених байт.
+int eraseDonorLearned() {
+    if (!hasDump) return 0;
+    return impresEraseTail(batteryDump);
 }
 
 // ПОВНЕ стирання DS2433 (КРАЙНІЙ ВИПАДОК). Заповнює всі 512 байт 0xFF (стан
@@ -804,57 +803,67 @@ bool performFactoryClean() {
 // модель/криву — лише прибирає СТАРЕ learned-калібрування і обнуляє лічильники,
 // щоб пакет став «валідним, але не відкаліброваним»: рація приймає («потребує
 // відновлення»), а IMPRES-ЗП запускає цикл калібрування нових банок.
-//   1) стерти learned-запис(и) 0x0A (→0xFF);
-//   2) обнулити РЕАЛЬНІ лічильники DS2438 (CCA/DCA/ETM), здоров'я 0x17 → 100%;
-//      калібрувальні записи 0x0D/0x16 НЕ чіпаємо (там ємність/крива, не лічильники);
-//   3) виставити паливомір ICA на 0 (порожньо), щоб зарядка почала повний заряд;
-//   4) перерахувати суми, синхронізувати дзеркало.
+//   1) DS2433: стерти НАВЧЕНИЙ ХВІСТ 0x18A..0x1FF (→0xFF);
+//   2) DS2438: обнулити лічильники (ETM/CCA/DCA), зберігши конфіг, апаратний
+//      OFFSET АЦП і дзеркало; паливомір виставити за фактичною напругою.
+//
+// Межа 0x18A і сам механізм підтверджені дампами з dumps/:
+//   • 13-dozaryadka-na-stantsii/01 — хвіст стерто до кінця чипа: рація показала
+//     «IMPRES(tm)», рівень заряду вірний, ЗП і заряджає, і калібрує;
+//   • 11-chastkove-stirannya, 09-4409a-z-proshyvkoyu-4809a — хвіст побитий:
+//     ЗП теж приймає АКБ і йде в калібрування;
+//   • 08-nova-batareya — записано ПОВНИЙ еталон разом із ЧУЖИМ хвостом:
+//     «невідомий акумулятор», ЗП лише світить зеленим.
+// Тобто рація/ЗП відкидають не «зіпсовану», а САМЕ ЧУЖУ навчену калібровку;
+// порожній хвіст читається як «пакет фірмовий, але не калібрований».
+//
 // ⚠️ Фізичну калібровку це НЕ замінює — далі АКБ обов'язково калібрувати на ЗП.
-// Перевірений емпірично рецепт (підтверджено на пересобраному 4409B): щоб пакет
-// із НОВИМИ банками зарядка прийняла на калібрування, треба прибрати ДОНОРСЬКЕ
-// learned-калібрування з ОБОХ чіпів:
-//   • DS2433: стерти learned-записи 0x0A + весь донорський калібр-блок у ХВОСТІ
-//     (0x1B0..0x1FF — таблиця 3C0F0C64.., напруги/імпеданси банок, запис 0x0A,
-//     контрольний хвіст). Модель/ємність/криву (до 0x1B0) НЕ чіпаємо, тож рація
-//     бачить пакет як фірмовий. Формат 2021 (R7) — інша розкладка, хвіст не чіпаємо.
-//   • DS2438: ПОВНЕ стирання монітора (0xFF) — донорський стан лічильників/
-//     навчання блокує калібровку; зарядка переініціалізує монітор під час циклу.
-// Результат: «фірмовий, рівень заряду адекватний, усі функції ЗП працюють, але
-// потребує калібрування» — саме те, що треба перед постановкою на IMPRES-ЗП.
-// ⚠️ Фізичну калібровку це НЕ замінює — далі АКБ обов'язково калібрувати на ЗП.
-bool performRecalPrepare() {
+// deep = true — додатково стерти навчені записи ЄМНОСТІ (0x153..0x189) і
+// кільцевий журнал використання. Потрібно, коли після звичайної підготовки ЗП
+// усе ще тримається за стару ємність. Модель, крива й copyright не чіпаються
+// НІКОЛИ (інакше рація каже «нема моделі» — саме це сталося в експерименті
+// власника зі стиранням від 0x130).
+bool performRecalPrepare(bool deep) {
     if (!hasDump && !hasDump2438) { displayShow("СПОЧАТКУ ЧИТАЙ"); return false; }
-    Serial.println("\n=== Prepare for recalibration (validated recipe) ===");
+    Serial.println("\n=== Prepare for recalibration ===");
     ledSet(LED_WRITE); displayShow("ПІД КАЛІБР...");
     bool ok = true;
 
     if (hasDump) {
-        int er = eraseLearnedCalib();               // записи 0x0A (Σ≡0x5A)
-        // Формат 2021 (R7)? Тоді хвіст має іншу роль — не чіпаємо.
-        bool is2021 = false;
-        { static const char c21[] = "COPYRIGHT2021"; const int cl = 13;
-          for (int i = 0; i + cl <= (int)DUMP_SIZE && !is2021; i++) {
-              int k = 0; while (k < cl && batteryDump[i + k] == (uint8_t)c21[k]) k++;
-              if (k == cl) is2021 = true; } }
-        int cleared = 0;
-        if (!is2021) {                              // донорський калібр-блок у хвості -> 0xFF
-            for (int i = 0x1B0; i < (int)DUMP_SIZE; i++)
-                if (batteryDump[i] != 0xFF) { batteryDump[i] = 0xFF; cleared++; }
+        // 1) Навчений хвіст -> 0xFF. Це і є ремонт: рація починає бачити пакет
+        //    як фірмовий «не калібрований», ЗП запускає повний цикл.
+        //    Стирання виконуємо для ВСІХ форматів, включно з 2021 (R7): дамп
+        //    09-4409a-z-proshyvkoyu-4809a з нульовим хвостом — саме той, на
+        //    якому в R7-форматі запрацювали і заряд, і калібрування.
+        int cleared = impresEraseTail(batteryDump);
+        int deepCleared = 0;
+        if (deep) {
+            deepCleared += impresEraseLearnedCapacity(batteryDump);
+            deepCleared += impresEraseUsageLog(batteryDump);
         }
-        Serial.printf("erased 0x0A: %d, tail bytes cleared: %d (is2021=%d)\n", er, cleared, is2021);
-        fixHeaderChecksum(batteryDump);             // заголовок поза хвостом — узгоджуємо про запас
+        Serial.printf("tail cleared: %d B, deep: %d B\n", cleared, deepCleared);
+        impresFixHeader(batteryDump);               // заголовок поза хвостом — узгоджуємо про запас
         ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
         if (ok) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
     }
 
-    // DS2438: повне стирання (0xFF). Донорський стан монітора (лічильники,
-    // навчена калібровка сторінок 3-6) суперечить новим банкам; зарядка
-    // переініціалізує монітор під час калібрування. Критичний крок рецепта.
+    // 2) DS2438: обнулити ЛІЧИЛЬНИКИ, не стираючи монітор.
+    //
+    // ⚠️ Раніше сюди заливали суцільний 0xFF. Це не «скидання», а псування
+    // монітора: байт статусу/конфігу отримував 0xFF замість 0x0F (виставлені
+    // зарезервовані біти), поріг — 0xFF замість 0x40, і затиралися апаратний
+    // OFFSET АЦП струму та дзеркало ідентичності. Симптом збігається з тим, що
+    // описував власник: ЗП бачить АКБ, світить зеленим і не заряджає.
     if (hasDump2438) {
-        static uint8_t blank38[DS2438_MEM_SIZE];
-        memset(blank38, 0xFF, DS2438_MEM_SIZE);
-        bool o38 = battery.writeDS2438(blank38, DS2438_MEM_SIZE);
-        if (o38) { memcpy(batteryDump2438, blank38, DS2438_MEM_SIZE); saveDump("/dump2438.bin", blank38, DS2438_MEM_SIZE); }
+        // Паливомір ставимо за фактичною напругою — щоб ЗП стартувала з
+        // осмисленого рівня, а не з нуля на зарядженому пакеті.
+        int pct = impresPercentFromMv(impresVoltageMv(batteryDump2438));
+        impresResetMonitor(batteryDump2438, hasDump ? batteryDump : nullptr,
+                           impresIcaFromPercent(pct));
+        Serial.printf("monitor reset, ICA from %d%% (U=%u mV)\n",
+                      pct, (unsigned)impresVoltageMv(batteryDump2438));
+        bool o38 = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+        if (o38) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
         ok &= o38;
     }
 
@@ -863,6 +872,7 @@ bool performRecalPrepare() {
     Serial.println("=== Recal-prepare completed ===\n");
     return ok;
 }
+inline bool performRecalPrepare() { return performRecalPrepare(false); }
 
 // ------------------- Ремонт / правка / зміна ємності -------------------
 
@@ -880,9 +890,23 @@ void repairDumps() {
     }
     if (hasDump) {
         fixHeaderChecksum(batteryDump);
-        // Перерахунок контрольної суми записи історії ємності 0x17 (якщо знайдена).
-        for (int i = 0x100; i < 0x1F0 - 23; i++)
-            if (batteryDump[i] == 0x17 && batteryDump[i + 1] == 0x00) { fixRecordChecksum(batteryDump, i, 23); break; }
+        // Перерахунок контрольних сум записів. Раніше тут «шукали запис 0x17»
+        // як «байт 0x17, за яким 0x00», тобто трактували довжину як тег і
+        // правили суму випадковому запису. Тепер ідемо ЛАНЦЮГОМ від 0x120
+        // (заводська таблиця + модель + навчені записи) і перераховуємо суму
+        // лише тим записам, які її мають і в яких вона зараз хибна.
+        int i = 0x120;
+        while (i < (int)DUMP_SIZE) {
+            if (batteryDump[i] == 0xFF) { i++; continue; }
+            int len = batteryDump[i];
+            if (len < 2 || i + len > (int)DUMP_SIZE) break;
+            // 3-байтовий запис прапорців ЗП контрольної суми не має — не чіпаємо.
+            if (len > 3 && !impresRecordOk(batteryDump, i)) {
+                impresFixRecord(batteryDump, i, len);
+                Serial.printf("repair: record @0x%03X len=%d checksum fixed\n", i, len);
+            }
+            i += len;
+        }
     }
 }
 
@@ -970,14 +994,16 @@ static bool modelNameValid(const char *name) {
     return true;
 }
 
-// Знаходить зсув запису 0x0B з назвою моделі (0x0B + літера A-Z) або -1.
-// Скануємо з 0x30 (одразу після заголовка/дзеркала) до кінця: на всіх реальних
-// дампах єдиний збіг «0x0B + літера» — саме запис моделі, тож ширший діапазон
-// безпечний і ловить запис навіть якщо він нижче 0x100.
+// Знаходить зсув запису моделі або -1.
+//
+// ⚠️ Раніше шукали просто «байт 0x0B, за яким літера A-Z». На цілому дампі це
+// випадково працює, але на частково стертому/сміттєвому чипі дає хибне влучання
+// раніше за справжній запис — і модель писалася не туди (власник це й бачив:
+// «ошибку не выдало, но и действий записи не было»). Тепер перевіряємо повний
+// запис: довжина 0x0B, 9 символів [A-Z0-9 ] і контрольна сума Σ≡0x5A, зі
+// штатним місцем 0x148 у пріоритеті.
 int findModelRecord() {
-    for (int i = 0x30; i < (int)DUMP_SIZE - 11; i++)
-        if (batteryDump[i] == 0x0B && batteryDump[i + 1] >= 'A' && batteryDump[i + 1] <= 'Z') return i;
-    return -1;
+    return impresFindModel(batteryDump);
 }
 
 // Правит дамп: МОДЕЛЬ (part number) зберігається у ДВОХ місцях —
@@ -1063,8 +1089,14 @@ void handleSetModel() {
            : "{\"status\":\"error\",\"message\":\"Write failed (see serial log)\"}");
 }
 
-// Змінити відображувану ємність/знос (0..100 %) і записати в АКБ. Редагує
-// останню пробу в записи історії ємності 0x17 + її контрольну суму.
+// РУЧНИЙ РЕЖИМ: правка байта у ЗАВОДСЬКІЙ таблиці моделі (запис @0x129, зсув +21).
+//
+// ⚠️ Це НЕ «здоров'я АКБ». Порівняння dumps/ показало, що запис @0x129 побайтово
+// однаковий у всіх екземплярів моделі (19×PMNN4409A, 8×PMNN4409B), тобто це
+// заводська константа, а байт +21 у ній завжди 0x64. Рація свій «строк служби»
+// рахує сама й на цей байт не дивиться — правка тут показань станції НЕ змінить.
+// Функцію лишено для ручного аналізу (власник просив зберегти ручний режим);
+// у відповіді про це попереджаємо явно.
 void handleSetCapacity() {
     if (!requireAdmin()) return;
     if (!hasDump) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return; }
@@ -1072,13 +1104,15 @@ void handleSetCapacity() {
     int cap = server.arg("cap").toInt();
     if (cap < 0) cap = 0; if (cap > 100) cap = 100;
 
-    int rec = -1;
-    for (int i = 0x100; i < 0x1F0 - 23; i++)
-        if (batteryDump[i] == 0x17 && batteryDump[i + 1] == 0x00) { rec = i; break; }
-    if (rec < 0) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Capacity record not found\"}"); return; }
+    // Запис на ФІКСОВАНОМУ місці 0x129 (раніше шукали «тег 0x17 + 0x00», хоча
+    // перший байт запису — довжина; пошук міг влучити в інший запис).
+    const int rec = IMPRES_FACTORY_REC;
+    if (!impresRecordOk(batteryDump, rec) || batteryDump[rec] != 0x17) {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Заводську таблицю @0x129 не знайдено або вона пошкоджена\"}"); return;
+    }
 
-    batteryDump[rec + 21] = (uint8_t)cap;      // остання проба ємності, %
-    fixRecordChecksum(batteryDump, rec, 23);   // контрольна сума записи (Σ≡0x5A)
+    batteryDump[rec + 21] = (uint8_t)cap;
+    impresFixRecord(batteryDump, rec, 0x17);   // контрольна сума запису (Σ≡0x5A)
 
     ledSet(LED_WRITE); displayShow("ЗАПИС ЄМН...");
     bool ok = battery.writeBattery(batteryDump, DUMP_SIZE);
@@ -1086,20 +1120,22 @@ void handleSetCapacity() {
     else displayShow("ЄМН. ЗБІЙ");
     ledSet(ok ? LED_OK : LED_ERROR);
     server.send(ok ? 200 : 500, "application/json",
-        ok ? "{\"status\":\"success\",\"message\":\"Capacity written\"}"
+        ok ? "{\"status\":\"success\",\"message\":\"Записано в заводську таблицю @0x129. Увага: рація рахує строк служби сама і цей байт не використовує — показання станції не зміняться.\"}"
            : "{\"status\":\"error\",\"message\":\"Write failed\"}");
 }
 
 // Змінити залишкову ємність (заряд) в мА·ч і записати в DS2438. Пише регістр
-// ICA (байт 12): ICA = mAh / (0.4882/Rsense), 0..255. Це то, що рація
-// показує як рівень заряду — тепер задається в мА·ч, а не в відсотках.
+// ICA (байт 12) як паливомір ВІДНОСНО паспортної ємності моделі:
+// ICA = 255 * mAh / ratedMah. Раніше ділили на DS2438_MAH_PER_LSB, і повна
+// шкала виходила ~4978 мА·год — більше за сам пакет.
 void handleSetMah() {
     if (!requireAdmin()) return;
     if (!hasDump2438) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return; }
     if (!server.hasArg("mah")) { server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No mah\"}"); return; }
     long mah = server.arg("mah").toInt();
-    long ica = (long)(mah / DS2438_MAH_PER_LSB + 0.5f);
-    if (ica < 0) ica = 0; if (ica > 255) ica = 255;
+    char smModel[16] = "";
+    if (hasDump) impresModelName(batteryDump, smModel, sizeof(smModel));
+    long ica = impresIcaFromMah(mah, impresRatedMah(smModel));
     batteryDump2438[12] = (uint8_t)ica;
     ledSet(LED_WRITE); displayShow("ЗАПИС ЄМН mAh");
     bool ok = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
@@ -1107,17 +1143,15 @@ void handleSetMah() {
     displayShow(ok ? "ЄМН mAh OK" : "ЄМН mAh ЗБІЙ");
     ledSet(ok ? LED_OK : LED_ERROR);
     String m = String("{\"status\":\"") + (ok ? "success" : "error") +
-               "\",\"ica\":" + ica + ",\"mah\":" + (long)(ica * DS2438_MAH_PER_LSB) + "}";
+               "\",\"ica\":" + ica + ",\"mah\":" + impresIcaToMah((uint8_t)ica, impresRatedMah(smModel)) + "}";
     server.send(ok ? 200 : 500, "application/json", m);
 }
 
 // Рівень заряду з поточної напруги: 7.0 В = 0%, 8.4 В = 100% (лінійно).
 inline int chargePctFromVoltage() {
-    uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
-    long vmv = (long)vraw * 10;                       // vraw*0.01В -> мВ
-    long pct = (vmv - 7000) * 100 / (8400 - 7000);
-    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
-    return (int)pct;
+    // Спільна шкала з batteryPercent() і підготовкою до калібрування
+    // (BATTERY_EMPTY_MV..BATTERY_FULL_MV з settings.h).
+    return impresPercentFromMv((int)impresVoltageMv(batteryDump2438));
 }
 // Записати рівень заряду у % в регістр ICA (DS2438[12]).
 inline bool performSetChargePct(int pct) {
@@ -1243,7 +1277,10 @@ void handleRecalPrepare() {
     if (!hasDump && !hasDump2438) {
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Спочатку зчитайте АКБ\"}"); return;
     }
-    bool ok = performRecalPrepare();
+    // deep=1 — додатково стерти навчені записи ємності й журнал використання
+    // (ручний режим, коли після звичайної підготовки ЗП тримає стару ємність).
+    bool deep = server.hasArg("deep") && server.arg("deep") == "1";
+    bool ok = performRecalPrepare(deep);
     server.send(ok ? 200 : 500, "application/json",
         ok ? "{\"status\":\"success\",\"message\":\"Готово. Тепер поставте АКБ на IMPRES-ЗП для калібрування.\"}"
            : "{\"status\":\"error\",\"message\":\"Помилка запису\"}");
@@ -1264,33 +1301,23 @@ bool performInitBattery(const char *model, long mah) {
     memcpy_P(batteryDump2438, BATTERY_TEMPLATES[t].d38, DS2438_MEM_SIZE);
     hasDump = true; hasDump2438 = true;
 
+    // ⚑ КЛЮЧОВЕ. Шаблон у templates.h — це побайтова копія ОДНОГО реального
+    // АКБ, разом із його навченим калібруванням. Записати його цілком = віддати
+    // новому пакету ЧУЖІ виміряні дані про банки; саме так і виходив «невідомий
+    // акумулятор» (dumps/08-nova-batareya: шаблон 4409A побайтово дорівнює
+    // робочому 02-katalog-osnovnyi/10_PMNN4409A, і рація його не прийняла).
+    // Тому з шаблону лишаємо ЛИШЕ модельну частину, а навчений хвіст стираємо.
+    int cleared = impresEraseTail(batteryDump);
+    Serial.printf("INIT: donor learned tail cleared: %d B\n", cleared);
     // Свіжий стан: зануляємо лічильники/історію/статистику, лишаємо
-    // ідентичність/калібрування/дзеркало. Ставить і здоров'я 0x17 -> 100%.
+    // ідентичність/криву/дзеркало.
     factoryCleanData();
-    // Чи це формат 2021 (IMPRES 2, R7)? У ньому запис 0x0A на 0x160 — ЗАВОДСЬКА
-    // калібрувальна, а не «наученная» донором. Її стирання ламало калібрування на
-    // IMPRES 2-ЗП (цикл стартує і через кілька хвилин — помилка). Тому для 2021
-    // пишемо еталон ТОЧНО, як є (не стираємо 0x0A).
-    bool is2021 = false;
-    { static const char c21[] = "COPYRIGHT2021"; const int cl = 13;
-      for (int i = 0; i + cl <= (int)DUMP_SIZE && !is2021; i++) {
-          int k = 0; while (k < cl && batteryDump[i + k] == (uint8_t)c21[k]) k++;
-          if (k == cl) is2021 = true; } }
-    if (!is2021) {
-        // Старий формат (2014): стерти learned-калібрування ДОНОРА (0x0A), інакше
-        // рація бачить чужі виміряні дані й каже «невідома».
-        eraseLearnedCalib();
-    } else {
-        Serial.println("INIT: 2021 format -> keep factory calib (no erase)");
-    }
-    fixHeaderChecksum(batteryDump);
+    impresFixHeader(batteryDump);
 
+    // Монітор — у стан «новий пакет» (конфіг/поріг/дзеркало зберігаються).
     // Введена ємність (поточний заряд) у мА·год -> регістр ICA DS2438.
-    long ica = (long)(mah / DS2438_MAH_PER_LSB + 0.5f);
-    if (ica < 0) ica = 0; if (ica > 255) ica = 255;
-    batteryDump2438[12] = (uint8_t)ica;
-
-    fixHeaderChecksum(batteryDump);   // узгодити суму заголовка (дзеркало вже збігається)
+    long ica = impresIcaFromMah(mah, impresRatedMah(model));
+    impresResetMonitor(batteryDump2438, batteryDump, (uint8_t)ica);
 
     ledSet(LED_WRITE); displayShow("НОВИЙ АКБ...");
     bool ok = battery.writeBattery(batteryDump, DUMP_SIZE);
@@ -1305,27 +1332,41 @@ bool performInitBattery(const char *model, long mah) {
     return ok;
 }
 
-// ------------------- Відновлення еталона «як є» (verbatim) -------------------
-// Пише вшитий genuine-еталон DS2433+DS2438 ТОЧНО, байт-у-байт: БЕЗ очистки, БЕЗ
-// стирання learned-калібрування (записи 0x0A), БЕЗ правки ICA й БЕЗ перерахунку
-// сум (шаблон уже валідний: заголовок Σ≡0x41, записи Σ≡0x5A, дзеркало збігається).
-// Результат — бітово точна копія РОБОЧОГО АКБ цієї моделі з УСІЄЮ навченою
-// історією/калібруванням (гістограма 0x17, крива 0x16, CCA/DCA/ETM/ICA), яку
-// приймають і рація, і IMPRES-ЗП — тому це найнадійніший «ремонт з нуля».
+// ------------------- Відновлення еталона моделі -------------------
+// Пише вшитий еталон DS2433+DS2438 на порожній/битий чип.
+//
+// ⚠️ ЗА ЗАМОВЧУВАННЯМ хвіст навченого калібрування (0x18A..0x1FF) НЕ пишеться,
+// а лишається стертим. Шаблони в templates.h — побайтові копії конкретних
+// робочих АКБ, і їхній хвіст описує ЧУЖІ банки. Побайтове відновлення давало
+// саме те, на що скаржився власник: рація «невідомий акумулятор», ЗП світить
+// зеленим і не заряджає (dumps/08-nova-batareya). Модельна частина (0x000..0x189
+// — ідентичність, крива, copyright, заводська таблиця, запис моделі) у всіх
+// екземплярів моделі однакова, тож саме її й переносимо.
+//
+// verbatim = true — записати шаблон байт-у-байт, разом із чужим хвостом. Це
+// РУЧНИЙ режим для аналізу/експериментів; для ремонту не використовувати.
 //
 // Працює на ПОРОЖНЬОМУ (усе 0xFF) чи БИТОМУ чіпі: перезапис повністю замінює
 // вміст, а ROM шукається по шині (Search/Match ROM), попереднє читання не треба.
 // Кожен чіп пишемо НЕЗАЛЕЖНО й повертаємо true, якщо записався хоча б DS2433
 // (ідентичність); фактичний стан кожного — в ok33/ok38 і Serial-лог.
-bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 = nullptr) {
+bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 = nullptr,
+                            bool verbatim = false) {
     if (ok33) *ok33 = false;
     if (ok38) *ok38 = false;
     int t = findTemplate(model);
     if (t < 0) { displayShow("НЕМА ШАБЛОНУ"); return false; }
 
-    Serial.printf("\n=== Restore verbatim: %s ===\n", model);
+    Serial.printf("\n=== Restore %s: %s ===\n", verbatim ? "VERBATIM" : "model-part", model);
     memcpy_P(batteryDump,     BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
     memcpy_P(batteryDump2438, BATTERY_TEMPLATES[t].d38, DS2438_MEM_SIZE);
+    if (!verbatim) {
+        int cleared = impresEraseTail(batteryDump);
+        impresFixHeader(batteryDump);
+        impresResetMonitor(batteryDump2438, batteryDump,
+                           impresIcaFromPercent(impresPercentFromMv(impresVoltageMv(batteryDump2438))));
+        Serial.printf("Restore: donor learned tail cleared: %d B\n", cleared);
+    }
 
     ledSet(LED_WRITE); displayShow("ВІДНОВЛ. ЕТАЛОН");
     bool w33 = battery.writeBattery(batteryDump, DUMP_SIZE);
@@ -1351,7 +1392,10 @@ void handleRestore() {
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Немає вшитого шаблону для цієї моделі\"}"); return;
     }
     bool ok33 = false, ok38 = false;
-    bool ok = performRestoreTemplate(model.c_str(), &ok33, &ok38);
+    // verbatim=1 — ручний режим: записати шаблон байт-у-байт разом із навченим
+    // хвостом донора. Для аналізу; для ремонту лишайте вимкненим.
+    bool verbatim = server.hasArg("verbatim") && server.arg("verbatim") == "1";
+    bool ok = performRestoreTemplate(model.c_str(), &ok33, &ok38, verbatim);
     String j = String("{\"status\":\"") + (ok ? "success" : "error") + "\",\"ds2433\":" +
                (ok33 ? "true" : "false") + ",\"ds2438\":" + (ok38 ? "true" : "false") + ",\"message\":\"";
     if (ok && ok38)      j += String("Відновлено еталон ") + model + " (обидві мікросхеми)";

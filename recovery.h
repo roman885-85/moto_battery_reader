@@ -40,15 +40,17 @@ enum {
     ISS_NO_2438      = 1u << 6,  // DS2438 відсутній/не читається
     ISS_NEEDS_CALIB  = 1u << 7,  // структурно валідна, але потрібне калібрування
     ISS_HEALTH_LOW   = 1u << 8,  // здоров'я/ємність нижче порогу
+    ISS_TAIL_FOREIGN = 1u << 9,  // ⚑ навчена калібровка ЧУЖОГО пакета (див. нижче)
 };
 
 // ---- Дії Майстра ----------------------------------------------------------
 enum {
     ACT_NONE = 0,
     ACT_READ,            // перечитати чіпи
-    ACT_RESTORE,         // відновити еталон verbatim (потребує моделі)
+    ACT_RESTORE,         // відновити модельну частину еталона (потребує моделі)
     ACT_REPAIR,          // ремонт цілісності (суми + дзеркало)
     ACT_RECAL,           // підготовка до калібрування (після заміни банок)
+    ACT_RECAL_DEEP,      // те саме + стерти навчені записи ємності й журнал
     ACT_RESET,           // скидання лічильників
     ACT_CLEAN,           // очистка історії
     ACT_SETCHARGE_AUTO,  // виставити заряд із напруги
@@ -70,6 +72,8 @@ static const RecoveryRule RECOVERY_RULES[] = {
     { ISS_NO_MODEL,     2, "Відсутній запис моделі (0x0B)",                   "Відновити еталон обраної моделі (модель+калібрування)" },
     { ISS_HDR_BAD,      2, "Пошкоджений заголовок DS2433 (Σ≠0x41)",           "Ремонт цілісності (перерахунок суми заголовка)" },
     { ISS_MIRROR_BAD,   1, "Дзеркало калібрування DS2438<->DS2433 розійшлось","Ремонт цілісності (синхронізувати дзеркало)" },
+    { ISS_TAIL_FOREIGN, 2, "Навчена калібровка НЕ від цього пакета (0x18A..0x1FF)",
+                           "Ремонт після заміни елементів: стерти навчений хвіст + калібрування на ЗП" },
     { ISS_CCA_OVERFLOW, 1, "Лічильник заряду CCA переповнений (залочено)",    "Підготовка + калібрування на IMPRES-ЗП" },
     { ISS_NEEDS_CALIB,  1, "Потрібне калібрування ємності",                   "Підготовка + калібрування на IMPRES-ЗП" },
     { ISS_HEALTH_LOW,   1, "Низьке показане здоров'я/ємність",                "Скидання зносу або калібрування на ЗП" },
@@ -85,6 +89,7 @@ struct BatteryDiag {
     int      fmt;           // 0 невідомий / 2014 / 2017 / 2021
     bool     have33, have38;
     bool     hdrOk, mirrorOk, genuine;
+    int      tail;          // IMPRES_TAIL_BLANK / _VALID / _BROKEN
 };
 
 // ---- Метадані дії (заголовок/опис/зовнішній) ------------------------------
@@ -94,13 +99,15 @@ static void wizActionMeta(uint8_t a, const char **title, const char **detail, bo
         case ACT_READ:    *title = "Зчитати чіпи";
                           *detail = "Перевірте контакти АКБ і повторіть зчитування 1-Wire."; break;
         case ACT_RESTORE: *title = "Відновити еталон";
-                          *detail = "Записати genuine-еталон обраної моделі байт-у-байт (модель+калібрування). Працює й на порожньому чипі."; break;
+                          *detail = "Записати модельну частину еталона (ідентичність, крива, copyright, заводська таблиця, модель). Навчений калібрувальний хвіст НЕ переноситься — інакше пакет отримав би чужу калібровку. Працює й на порожньому чипі."; break;
         case ACT_REPAIR:  *title = "Ремонт цілісності";
                           *detail = "Перерахувати контрольні суми (заголовок Σ≡0x41) і синхронізувати дзеркало калібрування."; break;
-        case ACT_RECAL:   *title = "Підготовка до калібрування";
-                          *detail = "Стерти learned-калібрування, обнулити лічильники, паливомір -> 0. Пакет стане «валідний, не відкалібрований»."; break;
+        case ACT_RECAL:   *title = "Ремонт після заміни елементів";
+                          *detail = "Стерти навчений калібрувальний хвіст DS2433 (0x18A..0x1FF), обнулити лічильники DS2438 і виставити паливомір за напругою. Ідентичність, крива й модель лишаються. Пакет стане «фірмовий, не відкалібрований»."; break;
+        case ACT_RECAL_DEEP: *title = "Глибока підготовка";
+                          *detail = "Те саме + стерти навчені записи ємності (0x153..0x189) і журнал використання. Застосовувати, коли після звичайної підготовки ЗП тримається за стару ємність."; break;
         case ACT_RESET:   *title = "Скидання лічильників";
-                          *detail = "Обнулити знос/лічильники, здоров'я -> 100%."; break;
+                          *detail = "Обнулити лічильники DS2438 (ETM/CCA/DCA). Навчену калібровку й ідентичність не чіпає."; break;
         case ACT_CLEAN:   *title = "Очистка історії";
                           *detail = "Стерти історію/статистику, лишити ідентичність і калібрування."; break;
         case ACT_SETCHARGE_AUTO: *title = "Заряд із напруги";
@@ -189,6 +196,25 @@ static void wizAnalyze(BatteryDiag &d) {
         if (cca == 0xFFFF) d.issues |= ISS_CCA_OVERFLOW;
     }
 
+    // ---- навчений калібрувальний хвіст 0x18A..0x1FF -----------------------
+    // Саме він вирішує, чи прийме рація пакет після заміни елементів.
+    d.tail = hasDump ? impresTailState(batteryDump) : IMPRES_TAIL_BLANK;
+    // Сама наявність навченої калібровки — НЕ проблема (у робочому АКБ вона й
+    // має бути), тож у issues не потрапляє: інакше кожен справний АКБ показувався
+    // б як «нездоровий». Стан хвоста віддаємо окремим полем d.tail.
+    if (hasDump && d.tail == IMPRES_TAIL_VALID) {
+        // ЧУЖА калібровка: навчені дані про реальні банки присутні, а монітор
+        // каже «пакет щойно почав жити» (напрацювання < доби). Такий збіг
+        // означає, що хвіст дістався пакету ззовні — записом еталона/донора або
+        // лишився від старих банок після скидання лічильників. На всіх 49
+        // дампах з dumps/ цей критерій спрацьовує рівно на тих АКБ, де власник
+        // зафіксував «невідомий акумулятор» після запису еталона чи скидання
+        // (08-nova-batareya 01/02/03, 07-skydannya-vidnovlennya), і не дає
+        // хибних спрацювань на жодному робочому АКБ.
+        if (hasDump2438 && impresEtm(batteryDump2438) < 86400UL)
+            d.issues |= ISS_TAIL_FOREIGN;
+    }
+
     const char *reason = "";
     d.genuine = batteryGenuine(&reason);
 
@@ -212,7 +238,11 @@ static void wizComputeActions(const BatteryDiag &d) {
     if (is & (ISS_BLANK33 | ISS_NO_MODEL))       add(ACT_RESTORE);
     else if (is & (ISS_HDR_BAD | ISS_MIRROR_BAD)) add(ACT_REPAIR);
 
-    if (is & (ISS_CCA_OVERFLOW | ISS_NEEDS_CALIB)) { add(ACT_RECAL); add(ACT_CHARGE_STATION); }
+    // ЧУЖА навчена калібровка — головна причина «невідомого акумулятора» після
+    // заміни елементів. Прибираємо її ПЕРШОЮ, далі обов'язково цикл на ЗП.
+    if (is & (ISS_TAIL_FOREIGN | ISS_CCA_OVERFLOW | ISS_NEEDS_CALIB)) {
+        add(ACT_RECAL); add(ACT_CHARGE_STATION);
+    }
     else if (is & ISS_HEALTH_LOW)                   add(ACT_RESET);
 
     add(ACT_VERIFY);
@@ -327,6 +357,7 @@ static const char *wizActionName(uint8_t a) {
     switch (a) {
         case ACT_READ: return "read";            case ACT_RESTORE: return "restore";
         case ACT_REPAIR: return "repair";        case ACT_RECAL: return "recal";
+        case ACT_RECAL_DEEP: return "recaldeep";
         case ACT_RESET: return "reset";          case ACT_CLEAN: return "clean";
         case ACT_SETCHARGE_AUTO: return "charge";case ACT_CHARGE_STATION: return "station";
         case ACT_VERIFY: return "verify";        default: return "none";
@@ -402,6 +433,10 @@ static String wizStatusJson(const char *resultMsg = nullptr, bool resultOk = tru
     o += ",\"hdrOk\":" + String(d.hdrOk ? "true" : "false");
     o += ",\"mirrorOk\":" + String(d.mirrorOk ? "true" : "false");
     o += ",\"genuine\":" + String(d.genuine ? "true" : "false");
+    // Стан навченого калібрувального хвоста 0x18A..0x1FF — ключове поле для
+    // ремонту після заміни елементів. blank = рація прийме як «не калібрований».
+    o += ",\"tail\":\"" + String(d.tail == IMPRES_TAIL_BLANK ? "blank"
+                               : d.tail == IMPRES_TAIL_VALID ? "learned" : "broken") + "\"";
     o += ",\"healthy\":" + String((d.issues == 0 && !g_wizJ.active) ? "true" : "false");
 
     o += ",\"problems\":[";
@@ -483,7 +518,12 @@ static String wizExecStep(int idx, const String &model) {
             if (ok) strncpy(g_wizJ.model, m.c_str(), sizeof(g_wizJ.model) - 1);
         } break;
         case ACT_REPAIR:        ok = performRepair();        msg = ok ? "Цілісність відновлено" : "Помилка ремонту"; break;
-        case ACT_RECAL:         ok = performRecalPrepare();  msg = ok ? "Готово до калібрування на ЗП" : "Помилка підготовки"; break;
+        case ACT_RECAL:         ok = performRecalPrepare(false);
+                                msg = ok ? "Навчений хвіст стерто, лічильники скинуто — готово до калібрування на ЗП"
+                                         : "Помилка підготовки"; break;
+        case ACT_RECAL_DEEP:    ok = performRecalPrepare(true);
+                                msg = ok ? "Глибока підготовка виконана — готово до калібрування на ЗП"
+                                         : "Помилка підготовки"; break;
         case ACT_RESET:         ok = performReset();         msg = ok ? "Лічильники скинуто" : "Помилка скидання"; break;
         case ACT_CLEAN:         ok = performFactoryClean();  msg = ok ? "Історію очищено" : "Помилка очистки"; break;
         case ACT_SETCHARGE_AUTO:{ int p = chargePctFromVoltage(); ok = (p >= 0) && performSetChargePct(p);

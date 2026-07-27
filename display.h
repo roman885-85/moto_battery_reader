@@ -2,6 +2,7 @@
 #define DISPLAY_H
 
 #include "settings.h"
+#include "impres_format.h"
 #include "battery_reader.h"
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — для дій «Новий АКБ» у меню
 
@@ -455,28 +456,10 @@ inline int batteryPercent(const char **src) {
 inline bool decodeModel(char *out, size_t n) {
     if (!hasDump) return false;
 
-    // 1) Запис 0x0B c назвою моделі (0x0B + літера: PMNN, NNTN, HNN…).
-    // Скануємо з 0x30 (як і findModelRecord у web_server) — читання і запис
-    // мають дивитись на той самий запис.
-    for (int i = 0x30; i < (int)DUMP_SIZE - 12; i++) {
-        if (batteryDump[i] == 0x0B && batteryDump[i + 1] >= 'A' && batteryDump[i + 1] <= 'Z') {
-            int j = i + 1, len = 0;
-            char tmp[16];
-            while (j < (int)DUMP_SIZE && len < 12) {
-                uint8_t d = batteryDump[j];
-                if ((d >= '0' && d <= '9') || (d >= 'A' && d <= 'Z')) { tmp[len++] = (char)d; j++; }
-                else break;
-            }
-            // валідна модель: довжина 6..11 і є цифра
-            bool digit = false;
-            for (int k = 0; k < len; k++) if (tmp[k] >= '0' && tmp[k] <= '9') digit = true;
-            if (len >= 6 && len <= 11 && digit) {
-                if ((size_t)len >= n) len = n - 1;
-                memcpy(out, tmp, len); out[len] = '\0';
-                return true;
-            }
-        }
-    }
+    // 1) Валідний запис моделі: довжина 0x0B, 9 символів [A-Z0-9 ], Σ≡0x5A
+    //    (штатне місце 0x148). Перевірка суми прибирає хибні влучання
+    //    «0x0B + літера» на частково стертих чипах.
+    if (impresModelName(batteryDump, out, n)) return true;
 
     // 2) Запасний варіант: найбільш довга компактна рядок [A-Z0-9] з цифрою.
     int best = -1, bestLen = 0, i = 0;
@@ -504,22 +487,20 @@ inline bool decodeModel(char *out, size_t n) {
     return true;
 }
 
-// Ємність/знос з записи історії ємності DS2433 (тег/довжина 0x17, "17 00 ...").
-// Формат записи: [0x17][22 байта даних][контрольна сума]; останній байт
-// даних (перед CRC) — найбільш свіже значення ємності в % (перевірено на дампах
-// робочих і залочених PMNN4409/4493). Знос = 100 - ємність.
+// Здоров'я / строк служби, %.
+//
+// ⚠️ РАНІШЕ повертали байт зі зсуву +21 у першому записі довжини 0x17.
+// Це неправильно: перший байт запису — ДОВЖИНА, а не тег, і сам запис @0x129 —
+// ЗАВОДСЬКА таблиця моделі (у dumps/ вона побайтово однакова в усіх 19
+// екземплярів PMNN4409A і всіх 8 екземплярів PMNN4409B, байт +21 завжди 0x64).
+// Тобто програма ЗАВЖДИ показувала «100% / знос 0%» — саме про цю розбіжність
+// із показаннями станції й писав власник.
+//
+// Перебір усіх зсувів і кодувань по 7 АКБ із відомими показаннями рації збігу
+// не дав: строк служби в прошивці НЕ зберігається, його рахує рація. Тому
+// чесно повертаємо «невідомо».
 inline bool decodeCapacity(int *capPct, int *wearPct) {
-    if (!hasDump) return false;
-    for (int i = 0x100; i < (int)DUMP_SIZE - 23; i++) {
-        if (batteryDump[i] == 0x17 && batteryDump[i + 1] == 0x00) {
-            int cap = batteryDump[i + 21];   // останнє значення ємності, %
-            if (cap <= 100) {
-                *capPct = cap;
-                *wearPct = 100 - cap;
-                return true;
-            }
-        }
-    }
+    (void)capPct; (void)wearPct;
     return false;
 }
 
@@ -541,9 +522,10 @@ inline bool batteryGenuine(const char **reason) {
     if ((hs & 0xFF) != 0x41) { *reason = "хибний заголовок"; return false; }
 
     // Має бути запис моделі 0x0B (ідентичність). Немає — чіп без прошивки.
-    bool hasModel = false;
-    for (int i = 0x30; i < (int)DUMP_SIZE - 11 && !hasModel; i++)
-        if (batteryDump[i] == 0x0B && batteryDump[i + 1] >= 'A' && batteryDump[i + 1] <= 'Z') hasModel = true;
+    // Валідний запис моделі (довжина 0x0B, 9 символів, Σ≡0x5A). Раніше тут
+    // вистачало «байт 0x0B, за яким літера», через що сміттєвий чіп міг
+    // вважатися таким, що має модель.
+    bool hasModel = impresFindModel(batteryDump) >= 0;
     if (!hasModel) { *reason = "нема моделі"; return false; }
 
     // Переповнений лічильник заряду CCA (0xFFFF) в DS2438 — типова ознака
@@ -580,9 +562,14 @@ inline bool batteryGenuine(const char **reason) {
 // ---------- сторінки меню ----------
 
 // залишкова ємність (заряд) в мА·ч з регістра ICA (DS2438 байт 12).
+// Залишок, мА·год: паливомір ICA перерахований через ПАСПОРТНУ ємність моделі
+// (див. impres_format.h). Раніше множили на DS2438_MAH_PER_LSB, і повна шкала
+// виходила ~4978 мА·год — більше за сам пакет.
 inline int batteryRemainingMah() {
     if (!hasDump2438) return -1;
-    return (int)(batteryDump2438[12] * DS2438_MAH_PER_LSB);
+    char m[16] = "";
+    if (hasDump) impresModelName(batteryDump, m, sizeof(m));
+    return impresIcaToMah(batteryDump2438[12], impresRatedMah(m));
 }
 
 inline void drawPageMain() {
@@ -702,7 +689,7 @@ inline void drawPageTech() {
     float    i_mA = (float)iraw / (4096.0f * DS2438_RSENSE_OHM) * 1000.0f;
     uint8_t  rem  = batteryDump2438[12];                                             // ICA
 
-    int remMah = (int)(rem * DS2438_MAH_PER_LSB);   // залишок в мА*ч
+    int remMah = batteryRemainingMah();            // залишок в мА*ч (за моделлю)
 
     u8g2.setFont(BODY_FONT);
     snprintf(buf, sizeof(buf), "Напруга:  %.2f V", vraw * 0.01f);      u8g2.drawUTF8(0, ROW(0), buf);
@@ -730,8 +717,10 @@ inline void drawPageHealth() {
         uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
         uint16_t dca = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
         // Цикли: сумарний заряд (розряд) / паспортна ємність (settings.h).
-        int chgCyc = (int)(cca * DS2438_MAH_PER_LSB / BATTERY_RATED_MAH);
-        int disCyc = (int)(dca * DS2438_MAH_PER_LSB / BATTERY_RATED_MAH);
+        char cyModel[16] = ""; if (hasDump) impresModelName(batteryDump, cyModel, sizeof(cyModel));
+        int  rated = impresRatedMah(cyModel);   // паспортна ємність ЗА МОДЕЛЛЮ
+        int chgCyc = (int)(cca * DS2438_MAH_PER_LSB / rated);
+        int disCyc = (int)(dca * DS2438_MAH_PER_LSB / rated);
         snprintf(buf, sizeof(buf), "Циклів: зар.%d роз.%d", chgCyc, disCyc);
         u8g2.drawUTF8(0, ROW(2), buf);
     }

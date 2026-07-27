@@ -188,6 +188,7 @@
             <div class="row"><span class="k">Знос</span><span class="v" id="ovWear">—</span></div>
             <div class="row"><span class="k">Циклів</span><span class="v" id="ovCycles">—</span></div>
             <div class="row"><span class="k">Справжність</span><span class="v" id="ovAuth">—</span></div>
+            <div class="row"><span class="k">Навчена калібровка</span><span class="v" id="ovTail">—</span></div>
         </div>
     </div>
 
@@ -299,15 +300,22 @@
         <div class="card" style="border-color:var(--warn)">
             <h2>🔧 Ремонт після заміни елементів (підготовка до калібрування)</h2>
             <div class="note i">Для АКБ, яку рація бачить <b>«невідома»</b> / не переходить у калібрування після заміни
-                банок. Виконує <b>перевірений рецепт</b>: у DS2433 стирає донорське <b>learned-калібрування</b> (записи
-                0x0A + весь калібр-блок у хвості <b>0x1B0–0x1FF</b>: виміряні параметри РОДНИХ банок донора), лишаючи
-                модель/ємність/криву/ID; <b>DS2438 стирається повністю</b> (0xFF) — донорський стан монітора теж блокує
-                калібрування. Пакет стає <b>фірмовим, але не відкаліброваним</b>: рація приймає, рівень заряду адекватний,
-                а IMPRES-ЗП запускає калібрування нових банок.</div>
-            <div class="note w">⚠️ <b>DS2438 буде стерто</b> (зарядка переініціалізує його при калібруванні). Фізичну
-                калібровку це не замінює — після цього обов'язково поставте АКБ на IMPRES-зарядку на повний цикл.</div>
+                банок. У DS2433 стирається <b>навчений калібрувальний хвіст 0x18A–0x1FF</b> — виміряні параметри СТАРИХ
+                (або донорських) банок, які суперечать новому пакету. Ідентичність, розрядна крива, copyright, заводська
+                таблиця й <b>запис моделі</b> лишаються недоторканими. У DS2438 обнуляються лише <b>лічильники</b>
+                (ETM/CCA/DCA), а конфіг, апаратне калібрування АЦП струму й дзеркало зберігаються; паливомір виставляється
+                за фактичною напругою. Пакет стає <b>фірмовим, але не відкаліброваним</b>: рація приймає й показує рівень
+                заряду, а IMPRES-ЗП запускає повний цикл калібрування нових банок.</div>
+            <div class="note i">Межу 0x18A і сам механізм підтверджено дампами з <code>dumps/</code>: там, де хвіст
+                стерто або побито, рація писала <b>IMPRES(tm)</b> і ЗП працювала; там, де записано ПОВНИЙ еталон разом
+                із чужим хвостом — «невідомий акумулятор» і зелений індикатор без заряду.</div>
+            <div class="note w">⚠️ Фізичну калібровку це не замінює — після цього обов'язково поставте АКБ на
+                IMPRES-зарядку на повний цикл.</div>
             <input type="password" class="pw" id="pwRecal" placeholder="🔑 Пароль адміністратора">
-            <button class="btn btn-warn" style="width:100%" onclick="recalPrep()">🔧 ПІДГОТУВАТИ ДО КАЛІБРУВАННЯ</button>
+            <label style="display:block;margin:8px 0"><input type="checkbox" id="recalDeep"> Глибока чистка — додатково
+                стерти навчені записи ємності (0x153–0x189) і журнал використання. Вмикайте, лише якщо після звичайної
+                підготовки ЗП тримається за стару ємність.</label>
+            <button class="btn btn-warn" style="width:100%" onclick="recalPrep()">🔧 РЕМОНТ ПІСЛЯ ЗАМІНИ ЕЛЕМЕНТІВ</button>
         </div>
 
         <div class="card">
@@ -517,6 +525,18 @@ async function refreshAll(){
             if(typeof d.capacity==='number'&&d.capacity>=0){
                 $('ovCap').textContent=d.capacity+' %'; $('ovWear').textContent=d.wear+' %';
                 $('capNow').textContent=d.capacity+' %'; $('capVal').value=d.capacity;
+            } else {
+                // Строк служби / знос у прошивці НЕ зберігається — рація рахує його
+                // сама з навчених даних. Раніше сюди підставлявся байт заводської
+                // таблиці, тому завжди показувало «100 % / знос 0 %».
+                $('ovCap').textContent='рахує рація'; $('ovWear').textContent='рахує рація';
+                $('capNow').textContent='—';
+            }
+            if(d.tail!==undefined){
+                const tl={blank:['порожня — АКБ приймається як «не калібрований»','#22c55e'],
+                          learned:['присутня (навчена на реальних банках)','#eab308'],
+                          broken:['пошкоджена — рація прийме як «не калібрований»','#eab308']}[d.tail];
+                if(tl){$('ovTail').textContent=tl[0];$('ovTail').style.color=tl[1];}
             }
             if(typeof d.headerOk==='boolean'){
                 $('intHdr').textContent=d.headerOk?'✅ OK':'❌ пошкоджено';
@@ -866,11 +886,12 @@ async function setModel(){
 }
 
 async function recalPrep(){
-    const pw=$('pwRecal').value; 
-    if(!confirm('🔧 Підготувати АКБ до рекалібрування?\nСтерти старе learned-калібрування і обнулити лічильники (модель/крива лишаються). Далі — калібрування на IMPRES-ЗП.'))return;
-    prog(true,'Підготовка до калібрування...');
+    const pw=$('pwRecal').value;
+    const deep=$('recalDeep')&&$('recalDeep').checked;
+    if(!confirm('🔧 Ремонт після заміни елементів?\nБуде стерто навчений калібрувальний хвіст 0x18A–0x1FF'+(deep?' + навчені записи ємності й журнал':'')+' і обнулено лічильники DS2438.\nМодель, крива й ідентичність лишаються. Далі — калібрування на IMPRES-ЗП.'))return;
+    prog(true,'Ремонт після заміни елементів...');
     try{
-        const r=await postForm('/api/recalprep',{password:pw});
+        const r=await postForm('/api/recalprep',{password:pw,deep:deep?'1':'0'});
         toast(r.status==='success'?'✅ Готово. Поставте АКБ на IMPRES-ЗП.':('Помилка: '+r.message),r.status==='success'?'ok':'err');
         if(r.status==='success')await refreshAll();
     }catch(e){toast('Помилка: '+e.message,'err')}

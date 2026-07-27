@@ -773,7 +773,7 @@ inline void drawPageDischarge() {
     char b[40];
     tft.fillRect(0, HDR_H + 4, TFT_W, 40, C_BG);
     snprintf(b, sizeof(b), "%u.%02u В", d.lastMv / 1000, (d.lastMv % 1000) / 10);
-    tSet(FONT_BIG, chargeColor(impresPercentFromMv(d.lastMv)));
+    tSet(FONT_MODEL, chargeColor(impresPercentFromMv(d.lastMv)));
     tPut(EDGE, HDR_H + 36, b);
 
     // Прогрес: від старту до цілі.

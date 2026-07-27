@@ -1272,8 +1272,12 @@ class App:
         self.dT.config(text=(f"{t:.1f} °C" if isinstance(t, (int, float)) else "—"))
         m = d.get("model") or "—"
         self.ovModel.config(text=m); self.dModel.config(text=m)
+        # Прочерк тут читався як «даних ще немає, зчитайте ще раз», хоча насправді
+        # строк служби в прошивці НЕ зберігається — його рахує рація з навчених
+        # даних. Кажемо це прямо, щоб не штовхати шукати неіснуючу дію.
         cap = d.get("capacity"); wear = d.get("wear")
-        self.ovCap.config(text=(f"{cap}% / знос {wear}%" if isinstance(cap, int) and cap >= 0 else "—"))
+        self.ovCap.config(text=(f"{cap}% / знос {wear}%" if isinstance(cap, int) and cap >= 0
+                                else "рахує рація (у прошивці не зберігається)"))
         if d.get("ccaCycles") is not None:
             self.ovCyc.config(text=f"{d['ccaCycles']} зар. / {d['dcaCycles']} розр.")
         if "genuine" in d:

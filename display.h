@@ -706,17 +706,52 @@ inline void drawPageTech() {
     drawFooter();
 }
 
+// Сторінка «Стан АКБ».
+//
+//  Тут раніше стояло «Ємність: (зчитайте)» — і воно НЕ зникало після зчитування,
+//  бо decodeCapacity() принципово повертає false: строк служби в прошивці не
+//  зберігається, його рахує рація. Напис штовхав шукати неіснуючу дію.
+//
+//  Тепер показуємо те, що прошивка справді знає: ПАСПОРТНУ ємність за моделлю і
+//  ЗАЛИШОК за паливоміром DS2438. Рядки йдуть за спаданням важливості: на 128x64
+//  їх влазить лише чотири, тож зауваження про знос дістається великим екранам.
 inline void drawPageHealth() {
     char buf[48];
     drawHeader("Стан АКБ");
     u8g2.setFont(BODY_FONT);
 
-    int cap, wear;
-    if (decodeCapacity(&cap, &wear)) {
-        snprintf(buf, sizeof(buf), "Ємність: %d %%", cap);  u8g2.drawUTF8(0, ROW(0), buf);
-        snprintf(buf, sizeof(buf), "Знос:    %d %%", wear); u8g2.drawUTF8(0, ROW(1), buf);
+    int r = 0;
+    auto row = [&](const char *txt) {
+        if (ROW(r) >= FOOT_HL) return;
+        u8g2.drawUTF8(0, ROW(r), txt); r++;
+    };
+
+    if (!hasDump && !hasDump2438) {
+        row("Ємність: зчитайте АКБ");
     } else {
-        u8g2.drawUTF8(0, ROW(0), "Ємність: (зчитайте)");
+        char m[16] = "";
+        if (hasDump) impresModelName(batteryDump, m, sizeof(m));
+        snprintf(buf, sizeof(buf), "Ємність: %d мА*год", impresRatedMah(m));
+        row(buf);
+        int rem = batteryRemainingMah();
+        if (rem >= 0) {
+            const char *src; int pct = batteryPercent(&src);
+            snprintf(buf, sizeof(buf), "Залишок: %d (%d%%)", rem, pct < 0 ? 0 : pct);
+            row(buf);
+        }
+    }
+
+    // Вирок про справжність — ТРЕТІМ рядком, до лічильника циклів: на 84x48
+    // влазить лише три рядки, і там він потрібніший за кількість циклів.
+    // Поки нічого не зчитано, вироку немає: «РИЗИК: нема дампу» лише лякав би.
+    if (hasDump || hasDump2438) {
+        const char *reason;
+        if (batteryGenuine(&reason)) {
+            row("Справжня: ТАК");
+        } else {
+            snprintf(buf, sizeof(buf), "РИЗИК: %s", reason);
+            row(buf);
+        }
     }
 
     if (hasDump2438) {
@@ -728,16 +763,11 @@ inline void drawPageHealth() {
         int chgCyc = (int)(cca * DS2438_MAH_PER_LSB / rated);
         int disCyc = (int)(dca * DS2438_MAH_PER_LSB / rated);
         snprintf(buf, sizeof(buf), "Циклів: зар.%d роз.%d", chgCyc, disCyc);
-        u8g2.drawUTF8(0, ROW(2), buf);
+        row(buf);
     }
 
-    const char *reason;
-    if (batteryGenuine(&reason)) {
-        u8g2.drawUTF8(0, ROW(3), "Справжня: ТАК");
-    } else {
-        snprintf(buf, sizeof(buf), "РИЗИК: %s", reason);
-        u8g2.drawUTF8(0, ROW(3), buf);
-    }
+    // Знос — останнім: він нічого не вимірює, лише пояснює, чому числа немає.
+    if (hasDump || hasDump2438) row("Знос: рахує рація");
 
     drawFooter();
 }

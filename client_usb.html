@@ -591,7 +591,9 @@ async function refresh(){
   $('model').textContent=d.model||'—';$('dModel').textContent=d.model||'—';
   if(d.model){$('mdNow').textContent=d.model; if(!$('mdVal').value)$('mdVal').placeholder=d.model;}
   if(typeof d.capacity==='number'&&d.capacity>=0){$('cap').textContent=d.capacity+' %';$('wear').textContent=d.wear+' %';$('capv').value=d.capacity;}
-  else {$('cap').textContent='—';$('wear').textContent='—';}
+  // Строк служби в прошивці НЕ зберігається — його рахує рація з навчених даних.
+  // Прочерк читався як «зчитайте ще раз», тож кажемо прямо.
+  else {$('cap').textContent='рахує рація';$('wear').textContent='рахує рація';}
   if(d.ccaCycles!==undefined)$('cyc').textContent=d.ccaCycles+' зар. / '+d.dcaCycles+' розр.';
   if(typeof d.genuine==='boolean')$('auth').innerHTML=d.genuine?'<span class="badge bo">OK</span>':'<span class="badge bb">РИЗИК ('+(d.authReason||'')+')</span>';
   if(typeof d.headerOk==='boolean')$('integ').innerHTML='заголовок '+(d.headerOk?'✅':'❌')+' · дзеркало '+(d.mirrorOk?'✅':'❌');

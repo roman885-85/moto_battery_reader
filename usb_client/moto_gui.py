@@ -934,11 +934,16 @@ class App:
             self.lblDis.config(text="не налаштовано (LOAD_PIN у settings.h)"); return
         names = {"idle": "очікування", "run": "іде розряд",
                  "done": "готово — на IMPRES-ЗП", "abort": "АВАРІЯ: " + (d.get("reason") or "")}
+        # Струм тут СЕРЕДНІЙ: ключ працює ШІМом, тож виміряний пік (струм при
+        # 100 % шпаруватості) і те, що насправді тече, — різні числа.
+        lim = ("уст %d мА · ШІМ %d %% · пік %d мА"
+               % (d.get("setMa", 0), d.get("duty", 0), d.get("peakMa", 0))
+               ) if d.get("pwm") else "БЕЗ ШІМ, струм не обмежено"
         # Показуємо і наш інтеграл, і апаратний лічильник DCA самого DS2438:
         # DCA рахує неперервно, тож розбіжність вкаже, що опитування щось пропускає.
-        self.lblDis.config(text="%s · %.2f В · %d мА · %s Вт · %d мА·год (DCA %d) · ICA %d · %s °C · %d с" % (
+        self.lblDis.config(text="%s · %.2f В · %d мА · %s Вт · %s · %d мА·год (DCA %d) · ICA %d · %s °C · %d с" % (
             names.get(d.get("state"), d.get("state", "?")), d.get("mv", 0) / 1000.0,
-            d.get("ma", 0), d.get("watts", "?"), d.get("mah", 0), d.get("dcaMah", 0),
+            d.get("ma", 0), d.get("watts", "?"), lim, d.get("mah", 0), d.get("dcaMah", 0),
             d.get("ica", 0), d.get("tempC", "?"), d.get("elapsedS", 0)))
 
     def discharge_status(self):

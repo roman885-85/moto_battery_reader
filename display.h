@@ -782,7 +782,7 @@ inline int numActions() { return opCount(); }
 // навантаження увімкнене, і має пріоритет над гортанням меню.
 inline void drawPageDischarge() {
     const DischargeState &d = g_dis;
-    char b[32];
+    char b[48];                    // кирилиця в UTF-8 — 2 байти на літеру
     snprintf(b, sizeof(b), "РОЗРЯД %d%%",
              (d.startMv > d.targetMv)
                  ? (int)(((long)d.startMv - d.lastMv) * 100 / ((long)d.startMv - d.targetMv))
@@ -802,9 +802,16 @@ inline void drawPageDischarge() {
     }
 
     u8g2.setFont(BODY_FONT);
-    int wx10 = dischargeWattsX10(d.lastMv, d.lastMa);
-    snprintf(b, sizeof(b), "ціль %u.%02u В  %d.%d Вт",
-             d.targetMv / 1000, (d.targetMv % 1000) / 10, wx10 / 10, wx10 % 10);
+    // Уставка струму й шпаруватість ключа: розряд іде не «скільки дасть
+    // резистор», а на заданому струмі — 1000 мА на повному заряді, 300 мА у
+    // кінці, ШІМ тримає уставку. Цільової напруги тут немає свідомо: на
+    // 128 пікселів рядок не влазить, а прогрес до цілі вже у шапці (кольоровий
+    // екран і веб показують і ціль, і пік).
+    if (dischargePwmOk()) {
+        snprintf(b, sizeof(b), "уст%uмА ШІМ%u%%", d.setMa, d.dutyPct);
+    } else {
+        snprintf(b, sizeof(b), "БЕЗ ШІМ! пік%u", d.peakMa);
+    }
     u8g2.drawUTF8(0, HEAD_LINE + 24, b);
 
     // Наш інтеграл і апаратний лічильник DCA самого DS2438 — поруч, для звірки.

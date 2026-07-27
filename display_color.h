@@ -777,7 +777,7 @@ inline void drawPageDischarge() {
     const DischargeState &d = g_dis;
 
     // Напруга — найбільшим, це головне число процесу.
-    char b[40];
+    char b[56];                    // кирилиця в UTF-8 — 2 байти на літеру
     tft.fillRect(0, HDR_H + 4, TFT_W, 40, C_BG);
     snprintf(b, sizeof(b), "%u.%02u В", d.lastMv / 1000, (d.lastMv % 1000) / 10);
     tSet(FONT_MODEL, chargeColor(impresPercentFromMv(d.lastMv)));
@@ -803,7 +803,11 @@ inline void drawPageDischarge() {
     // оновленні раз на 5 с екран не блимає і старий текст не «просвічує».
     tSet(FONT_BODY, C_TEXT);
     int y = by + bh + 18;
+    // Рядки, що не влізли до статус-смуги, просто не малюємо: на вузьких
+    // панелях (240×240) місця менше, і краще втратити «час», ніж заїхати
+    // текстом на підвал. Порядок нижче — за спаданням важливості.
     auto row = [&](const char *txt, uint16_t col) {
+        if (y > FOOT_Y - 4) return;
         tft.fillRect(0, y - 12, TFT_W, 16, C_BG);
         tSet(FONT_BODY, col);
         tPut(EDGE, y, txt);
@@ -814,10 +818,20 @@ inline void drawPageDischarge() {
     row(b, C_TEXT);
 
     // Струм і потужність — з ВБУДОВАНОГО датчика струму DS2438 (його резистор
-    // стоїть усередині пакета послідовно з банками).
+    // стоїть усередині пакета послідовно з банками). Показуємо СЕРЕДНІЙ струм:
+    // ключ працює ШІМом, тож саме він і тече, а не виміряний пік.
     int wx10 = dischargeWattsX10(d.lastMv, d.lastMa);
     snprintf(b, sizeof(b), "струм %d мА · %d.%d Вт", d.lastMa, wx10 / 10, wx10 % 10);
-    row(b, C_TEXT);
+    row(b, (d.state == DIS_RUN && !dischargeInBand(d)) ? C_YELLOW : C_TEXT);
+
+    // Обмеження струму: уставка веде за напругою (1000 мА на повному заряді ->
+    // 300 мА у кінці), ключ тримає її шпаруватістю. Пік — струм при 100 %.
+    if (dischargePwmOk()) {
+        snprintf(b, sizeof(b), "уст %u · ШІМ %u%% · пік %u", d.setMa, d.dutyPct, d.peakMa);
+        row(b, C_MUTED);
+    } else {
+        row("БЕЗ ШІМ: струм не обмежено!", C_RED);
+    }
 
     // Віддано: наш інтеграл по опитуваннях і апаратний лічильник DCA самого
     // DS2438. DCA рахує неперервно, тож велика розбіжність = опитування щось
@@ -930,7 +944,7 @@ inline void displayRenderBody(bool clearBody) {
 inline void displayRender() { displayRenderBody(true); }
 
 // Оновлення екрана під час РОЗРЯДУ. full=false — перемальовуємо лише рядки
-// показань (кожен сам чистить свою смужку), тож картинка не блимає раз на 10 с.
+// показань (кожен сам чистить свою смужку), тож картинка не блимає раз на 5 с.
 // full=true — повна перемальовка: потрібна на вході в режим і на виході з нього,
 // інакше поверх моніторингу лишаються написи попередньої сторінки.
 inline void displayDischargeRefresh(bool full) {

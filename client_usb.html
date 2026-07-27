@@ -779,14 +779,17 @@ function disShow(d){
   if(!d){$('disSt').textContent='—';return;}
   if(!d.available){$('disSt').textContent='не налаштовано (LOAD_PIN)';return;}
   const n={idle:'очікування',run:'іде розряд',done:'✅ готово — на IMPRES-ЗП',abort:'⛔ '+(d.reason||'аварія')}[d.state]||d.state;
+  // Струм тут СЕРЕДНІЙ (ключ під ШІМом), поруч — уставка, шпаруватість і пік.
+  const lim = d.pwm ? ('уст '+d.setMa+' мА · ШІМ '+d.duty+' % · пік '+d.peakMa+' мА')
+                    : ('⚠ БЕЗ ШІМ, струм не обмежено');
   $('disSt').textContent=n+' · '+(d.mv/1000).toFixed(2)+' В · '+d.ma+' мА · '+d.watts+' Вт · '
-      +d.mah+' мА·год (DCA '+d.dcaMah+') · ICA '+d.ica+' · '+d.tempC+' °C';
+      +lim+' · '+d.mah+' мА·год (DCA '+d.dcaMah+') · ICA '+d.ica+' · '+d.tempC+' °C';
 }
 async function disStatus(){ if(!connected){toast('Підключіться');return;}
   const r=await cmd('DISCHARGE ?',8000); disShow(r&&r.discharge); }
 async function disStart(){
   if(!connected){toast('Підключіться');return;}
-  if(!confirm('🪫 Почати розряд до 7.2 В?\n\nНавантаження буде увімкнено, резистор нагріється.\nНе лишайте пристрій без нагляду.'))return;
+  if(!confirm('🪫 Почати розряд до 7.2 В?\n\nСтрум обмежується ШІМом: 1000 мА на повному заряді, лінійно до 300 мА на 7.20 В.\nНавантаження буде увімкнено, резистор нагріється.\nНе лишайте пристрій без нагляду.'))return;
   await ensureAuth();
   const r=await cmd('DISCHARGE 7200',15000);
   if(r&&r.ok){toast('✅ Розряд почато');disShow(r.discharge);} else toast('Помилка: '+((r&&r.err)||''),'err');

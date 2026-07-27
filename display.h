@@ -785,10 +785,17 @@ inline void drawPageDischarge() {
                  : 0);
     drawHeader(b);
 
-    // Напруга + струм із вбудованого датчика DS2438 — найбільшим шрифтом.
+    // Напруга + струм із вбудованого датчика DS2438 — найбільшим шрифтом,
+    // праворуч — та сама анімована іконка батареї, що й на головній сторінці
+    // (drawBatteryIcon запам'ятовує геометрію для displayAnimTick).
     u8g2.setFont(u8g2_font_6x12_t_cyrillic);
-    snprintf(b, sizeof(b), "%u.%02u В  %d мА", d.lastMv / 1000, (d.lastMv % 1000) / 10, d.lastMa);
+    snprintf(b, sizeof(b), "%u.%02u В %d мА", d.lastMv / 1000, (d.lastMv % 1000) / 10, d.lastMa);
     u8g2.drawUTF8(0, HEAD_LINE + 13, b);
+    {
+        const char *csrc; int chargePct = batteryPercent(&csrc);
+        int iw = 22, ih = 10;
+        drawBatteryIcon(DISP_W - iw - 5, HEAD_LINE + 4, iw, ih, chargePct);
+    }
 
     u8g2.setFont(BODY_FONT);
     int wx10 = dischargeWattsX10(d.lastMv, d.lastMa);
@@ -925,7 +932,9 @@ inline void displayRender() {
 // заряду плавно «дихає» (±2 px). Оновлює ЛИШЕ область іконки батареї — дешево
 // навіть для повільного SSD1327, решту екрана й шину не чіпає.
 inline void displayAnimTick() {
-    if (g_displayPage != 0 || g_battW == 0) return;
+    // Головна сторінка + сторінка РОЗРЯДУ: там показник заряду такий самий,
+    // і статична шкала під час довгої операції виглядала б як «завис».
+    if (!(g_displayPage == 0 || dischargeScreenActive()) || g_battW == 0) return;
     const char *src; int pct = batteryPercent(&src);
     if (pct < 0) return;
     g_animPhase++;

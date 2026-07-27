@@ -953,6 +953,11 @@ const char *dischargeStart(uint16_t targetMv) {
     g_dis.startDca = g_dis.lastDca = impresDca(batteryDump2438);
     g_dis.startIca = g_dis.lastIca = batteryDump2438[12];   // паливомір на старті
 
+    // ⚑ ENABLE — ПЕРШИМ, ще до навантаження. Пін PULLUP_PIN активує сам АКБ, і в
+    // штатному режимі піднімається лише на час транзакції 1-Wire. Без утримання
+    // пакет між читаннями неактивний: струм тече тільки в моменти опитування, і
+    // розряд фактично не йде (саме це й спостерігалось).
+    battery.holdEnable(true);
     loadOn();
     ledSet(LED_DISCHARGE);
     dischargeMarkDirty(2);                 // увійшли в режим -> повна перемальовка

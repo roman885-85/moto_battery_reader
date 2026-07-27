@@ -12,6 +12,20 @@ bool BatteryReader::begin() {
     return true;
 }
 
+// Опустити enable/підтяжку, якщо не тримаємо примусово (див. holdEnable).
+void BatteryReader::pullupOff() {
+    if (_holdEnable) return;
+    digitalWrite(_pullupPin, LOW);
+}
+
+// Тримати сигнал enable піднятим постійно (режим керованого розряду): без цього
+// АКБ активний лише під час транзакції 1-Wire, і навантаження споживає струм
+// тільки в моменти читання.
+void BatteryReader::holdEnable(bool on) {
+    _holdEnable = on;
+    digitalWrite(_pullupPin, on ? HIGH : LOW);
+}
+
 // --- Допоміжний Метод ДЛЯ Пошуку Пристроїв ---
 // Повертає true, якщо вдалося знайти обидва чипа і зберегти їх адреси
 bool BatteryReader::findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr) {
@@ -74,7 +88,7 @@ bool BatteryReader::findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr) {
 
     // Вимикаємо підтяжку, якщо не знайшли ні жодного пристрою
     if (!found2433 && !found2438) {
-        digitalWrite(_pullupPin, LOW);
+        pullupOff();
         return false;
     }
 
@@ -88,7 +102,7 @@ bool BatteryReader::readBattery(uint8_t *buffer, size_t size) {
     // 1. Шукаємо пристрою на шині
     if (!findDevices(ds2433_addr, ds2438_addr)) {
         Serial.println("Error: No devices found on 1-Wire bus!");
-        digitalWrite(_pullupPin, LOW);
+        pullupOff();
         return false;
     }
 
@@ -111,7 +125,7 @@ bool BatteryReader::readBattery(uint8_t *buffer, size_t size) {
     // 3. Читаємо основну пам'ять з DS2433
     if (ds2433_addr[0] == 0x00) {
         Serial.println("Error: DS2433 not found!");
-        digitalWrite(_pullupPin, LOW);
+        pullupOff();
         return false;
     }
 
@@ -126,7 +140,7 @@ bool BatteryReader::readBattery(uint8_t *buffer, size_t size) {
     }
 
     _ow->reset();
-    digitalWrite(_pullupPin, LOW); // Вимикаємо підтяжку
+    pullupOff(); // Вимикаємо підтяжку
     return true;
 }
 
@@ -137,13 +151,13 @@ bool BatteryReader::writeBattery(const uint8_t *buffer, size_t size) {
     // 1. Шукаємо пристрою
     if (!findDevices(ds2433_addr, ds2438_addr)) {
         Serial.println("Error: No devices found on 1-Wire bus!");
-        digitalWrite(_pullupPin, LOW);
+        pullupOff();
         return false;
     }
 
     if (ds2433_addr[0] != DS2433_ID) {
         Serial.println("Error: DS2433 not found for writing!");
-        digitalWrite(_pullupPin, LOW);
+        pullupOff();
         return false;
     }
 
@@ -181,7 +195,7 @@ bool BatteryReader::writeBattery(const uint8_t *buffer, size_t size) {
             Serial.printf("ERROR: scratchpad address mismatch @0x%04X (got %02X%02X)\n",
                           (unsigned)offset, r_ta2, r_ta1);
             _ow->reset();
-            digitalWrite(_pullupPin, LOW);
+            pullupOff();
             return false;
         }
         // Біт PF (E/S bit 5): дані scratchpad неповні/недостовірні.
@@ -189,7 +203,7 @@ bool BatteryReader::writeBattery(const uint8_t *buffer, size_t size) {
             Serial.printf("ERROR: partial-write flag set @0x%04X (E/S=%02X)\n",
                           (unsigned)offset, es);
             _ow->reset();
-            digitalWrite(_pullupPin, LOW);
+            pullupOff();
             return false;
         }
         // Звіряємо вміст scratchpad з вихідними даними.
@@ -200,7 +214,7 @@ bool BatteryReader::writeBattery(const uint8_t *buffer, size_t size) {
         if (!dataOk) {
             Serial.printf("ERROR: scratchpad data mismatch @0x%04X\n", (unsigned)offset);
             _ow->reset();
-            digitalWrite(_pullupPin, LOW);
+            pullupOff();
             return false;
         }
 
@@ -236,7 +250,7 @@ bool BatteryReader::writeBattery(const uint8_t *buffer, size_t size) {
     }
 
     _ow->reset();
-    digitalWrite(_pullupPin, LOW);
+    pullupOff();
 
     if (!verifyOk) {
         Serial.println("ERROR: Write verification failed!");
@@ -259,12 +273,12 @@ bool BatteryReader::writeBatteryRange(const uint8_t *buffer, size_t regionStart,
 
     if (!findDevices(ds2433_addr, ds2438_addr)) {
         Serial.println("Error: No devices found on 1-Wire bus!");
-        digitalWrite(_pullupPin, LOW);
+        pullupOff();
         return false;
     }
     if (ds2433_addr[0] != DS2433_ID) {
         Serial.println("Error: DS2433 not found for writing!");
-        digitalWrite(_pullupPin, LOW);
+        pullupOff();
         return false;
     }
 
@@ -295,13 +309,13 @@ bool BatteryReader::writeBatteryRange(const uint8_t *buffer, size_t regionStart,
         if (r_ta1 != ta1 || r_ta2 != ta2 || (es & 0x20)) {
             Serial.printf("ERROR: scratchpad addr/PF @0x%04X (ta=%02X%02X es=%02X)\n",
                           (unsigned)offset, r_ta2, r_ta1, es);
-            _ow->reset(); digitalWrite(_pullupPin, LOW); return false;
+            _ow->reset(); pullupOff(); return false;
         }
         bool dataOk = true;
         for (size_t i = 0; i < pageSize; i++) if (_ow->read() != buffer[offset + i]) dataOk = false;
         if (!dataOk) {
             Serial.printf("ERROR: scratchpad data mismatch @0x%04X\n", (unsigned)offset);
-            _ow->reset(); digitalWrite(_pullupPin, LOW); return false;
+            _ow->reset(); pullupOff(); return false;
         }
 
         // --- Copy Scratchpad (авторизація TA1,TA2,E/S) + tPROG ---
@@ -334,7 +348,7 @@ bool BatteryReader::writeBatteryRange(const uint8_t *buffer, size_t regionStart,
     }
 
     _ow->reset();
-    digitalWrite(_pullupPin, LOW);
+    pullupOff();
     if (!verifyOk) { Serial.println("ERROR: Range write verification failed!"); return false; }
     Serial.printf("Range write OK: pages 0x%04X..0x%04X\n", (unsigned)firstPage, (unsigned)lastPage);
     return true;
@@ -350,17 +364,17 @@ bool BatteryReader::readDS2438(uint8_t *buffer, size_t size) {
 
     if (!findDevices(ds2433_addr, ds2438_addr)) {
         Serial.println("Error: No devices found on 1-Wire bus!");
-        digitalWrite(_pullupPin, LOW);
+        pullupOff();
         return false;
     }
     if (ds2438_addr[0] != DS2438_ID) {
         Serial.println("Error: DS2438 not found!");
-        digitalWrite(_pullupPin, LOW);
+        pullupOff();
         return false;
     }
     if (size < DS2438_MEM_SIZE) {
         Serial.println("Error: DS2438 buffer too small!");
-        digitalWrite(_pullupPin, LOW);
+        pullupOff();
         return false;
     }
 
@@ -393,14 +407,14 @@ bool BatteryReader::readDS2438(uint8_t *buffer, size_t size) {
         if (OneWire::crc8(sp, 8) != sp[8]) {
             Serial.printf("ERROR: DS2438 CRC mismatch on page %d\n", (int)page);
             _ow->reset();
-            digitalWrite(_pullupPin, LOW);
+            pullupOff();
             return false;
         }
         memcpy(buffer + page * DS2438_PAGE_SIZE, sp, DS2438_PAGE_SIZE);
     }
 
     _ow->reset();
-    digitalWrite(_pullupPin, LOW);
+    pullupOff();
     Serial.println("DS2438 read completed");
     return true;
 }
@@ -418,17 +432,17 @@ bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
 
     if (!findDevices(ds2433_addr, ds2438_addr)) {
         Serial.println("Error: No devices found on 1-Wire bus!");
-        digitalWrite(_pullupPin, LOW);
+        pullupOff();
         return false;
     }
     if (ds2438_addr[0] != DS2438_ID) {
         Serial.println("Error: DS2438 not found for writing!");
-        digitalWrite(_pullupPin, LOW);
+        pullupOff();
         return false;
     }
     if (size < DS2438_MEM_SIZE) {
         Serial.println("Error: DS2438 source too small!");
-        digitalWrite(_pullupPin, LOW);
+        pullupOff();
         return false;
     }
 
@@ -485,7 +499,7 @@ bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
     }
 
     _ow->reset();
-    digitalWrite(_pullupPin, LOW);
+    pullupOff();
     Serial.println(ok ? "DS2438 write completed (calib pages 3-6 verified)"
                       : "DS2438 write: calibration pages did NOT persist");
     return ok;

@@ -49,6 +49,20 @@ public:
     bool writeDS2438(const uint8_t *buffer, size_t size);
     void printDump(const uint8_t *buffer, size_t size);
 
+    // ── УТРИМАННЯ СИГНАЛУ ENABLE ───────────────────────────────────────────
+    // Пін _pullupPin — це не лише підтяжка 1-Wire: ним АКТИВУЄТЬСЯ сам АКБ.
+    // У штатному режимі він піднімається на час транзакції й опускається після
+    // неї, тож між читаннями пакет неактивний. Для КЕРОВАНОГО РОЗРЯДУ цього
+    // замало: із опущеним enable струм тече лише в моменти читання, і розряд
+    // фактично не йде.
+    //
+    // holdEnable(true) — тримати сигнал піднятим постійно: транзакції 1-Wire
+    // працюють як звичайно (вони й так ведуться з піднятим піном), але після
+    // них він НЕ опускається. holdEnable(false) повертає штатну поведінку й
+    // одразу опускає пін.
+    void holdEnable(bool on);
+    bool enableHeld() const { return _holdEnable; }
+
     // лазерний 1-Wire ROM-ID (серійний номер) останніх знайдених чипів.
     bool hasRom2433() const { return _haveRom2433; }
     bool hasRom2438() const { return _haveRom2438; }
@@ -64,6 +78,12 @@ private:
     uint8_t _rom2438[8];
     bool _haveRom2433 = false;
     bool _haveRom2438 = false;
+    bool _holdEnable  = false;   // тримати enable піднятим (режим розряду)
+
+    // Опустити enable/підтяжку — але ЛИШЕ якщо не тримаємо його примусово.
+    // Усі місця, де раніше стояло digitalWrite(_pullupPin, LOW), тепер кличуть
+    // це: інакше будь-яка транзакція гасила б АКБ посеред розряду.
+    void pullupOff();
 
     // Новий метод для пошуку пристроїв
     bool findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr);

@@ -313,7 +313,33 @@
 
 <div class="zone zi">🔌 Крок 3 — калібрування на IMPRES-ЗП (обов’язково, прошивкою не замінюється)</div>
 
-<div class="card" style="border-color:var(--ok)">
+<div class="card" style="border-color:var(--warn)">
+            <h2>🪫 Розряд перед калібруванням</h2>
+            <div class="note i">Зарядна станція <b>не бере АКБ на калібрування, поки бачить його зарядженим</b> —
+                світить зеленим і просто тримає. Керований розряд до <b>7.20 В</b> знімає цю невизначеність:
+                пакет свідомо не повний, і станція йде в повний цикл. Заразом рахується <b>реальна ємність</b>
+                нових банок — струм іде через вимірювальний резистор DS2438 усередині пакета, тож мА·год
+                рахуються за фактом.</div>
+            <div class="note w">⚠️ Розряд — єдина операція, що може <b>фізично</b> зашкодити банкам. Аварійна
+                зупинка спрацьовує за напругою нижче 6.00 В, перегрівом (45 °C), стелею часу й втратою зв'язку
+                з монітором. Резистор нагрівається — на 5 Ом це ~14 Вт.</div>
+            <div class="row"><span class="k">Стан</span><span class="v" id="disState">—</span></div>
+            <div class="row"><span class="k">Напруга</span><span class="v" id="disMv">—</span></div>
+            <div class="row"><span class="k">Струм</span><span class="v" id="disMa">—</span></div>
+            <div class="row"><span class="k">Віддано</span><span class="v" id="disMah">—</span></div>
+            <div class="row"><span class="k">Температура</span><span class="v" id="disT">—</span></div>
+            <div class="row"><span class="k">Час</span><span class="v" id="disEl">—</span></div>
+            <div class="row"><span class="k">Цільова напруга, мВ</span>
+                <input type="number" id="disTarget" value="7200" min="6200" max="8300"
+                       style="border-radius:8px;border:none;padding:6px;width:110px"></div>
+            <input type="password" class="pw" id="pwDis" placeholder="🔑 Пароль адміністратора">
+            <div class="btns">
+                <button class="btn btn-warn" onclick="disStart()">🪫 ПОЧАТИ РОЗРЯД</button>
+                <button class="btn btn-danger" onclick="disStop()">⏹ ЗУПИНИТИ</button>
+            </div>
+        </div>
+
+        <div class="card" style="border-color:var(--ok)">
             <h2>🔌 Калібрування на зарядній станції</h2>
             <div class="note i">Після ремонту навчена калібровка в АКБ <b>порожня</b> — рація приймає пакет як
                 фірмовий і просить калібрування. Поставте АКБ на <b>оригінальну IMPRES-ЗП</b> на повний цикл
@@ -544,6 +570,7 @@ async function readDump(){
 }
 
 async function refreshAll(){
+    disPoll();
     // DS2433 info
     try{
         const r=await fetch('/api/info');
@@ -914,6 +941,49 @@ async function setModel(){
         const r=await postForm('/api/setmodel',{password:pw,model:m});
         toast(r.status==='success'?('✅ Модель записано: '+r.model):('Помилка: '+r.message),r.status==='success'?'ok':'err');
         if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+// ---- керований розряд: старт/стоп + живий моніторинг ----------------------
+// Поки розряд іде, опитуємо стан раз на 5 с. Пристрій знімає показання раз на
+// 10 с (DISCHARGE_POLL_MS), частіше сенсу немає.
+let disTimer=null;
+function disFmtT(s){const h=Math.floor(s/3600),m=Math.floor(s/60)%60,x=s%60;
+    return h+':'+String(m).padStart(2,'0')+':'+String(x).padStart(2,'0');}
+async function disPoll(){
+    try{
+        const r=await fetch('/api/discharge'); const d=await r.json();
+        if(!d.available){$('disState').textContent='не налаштовано (LOAD_PIN)';return;}
+        const st={idle:['очікування','#9ca3af'],run:['іде розряд','#eab308'],
+                  done:['✅ готово — на IMPRES-ЗП','#22c55e'],abort:['⛔ '+(d.reason||'аварія'),'#ef4444']}[d.state];
+        if(st){$('disState').textContent=st[0];$('disState').style.color=st[1];}
+        $('disMv').textContent=(d.mv/1000).toFixed(2)+' В (ціль '+(d.targetMv/1000).toFixed(2)+' В)';
+        $('disMa').textContent=d.ma+' мА (очік. '+d.expectedMa+' мА на '+d.loadOhm+' Ом)';
+        $('disMah').textContent=d.mah+' мА·год';
+        $('disT').textContent=d.tempC+' °C';
+        $('disEl').textContent=disFmtT(d.elapsedS);
+        if(d.state==='run'&&!disTimer) disTimer=setInterval(disPoll,5000);
+        if(d.state!=='run'&&disTimer){clearInterval(disTimer);disTimer=null;await refreshAll();}
+    }catch(e){}
+}
+async function disStart(){
+    const pw=$('pwDis').value, t=parseInt($('disTarget').value)||7200;
+    if(!confirm('🪫 Почати розряд до '+(t/1000).toFixed(2)+' В?\n\nНавантаження буде увімкнено; резистор нагріється. Не залишайте пристрій без нагляду.\nЗупинити можна кнопкою «ЗУПИНИТИ» або довгим натисканням на пристрої.'))return;
+    prog(true,'Запуск розряду...');
+    try{
+        const r=await postForm('/api/discharge/start',{password:pw,target:t});
+        toast(r.status==='success'?'✅ Розряд почато':('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        await disPoll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+async function disStop(){
+    prog(true,'Зупинка...');
+    try{
+        const r=await postForm('/api/discharge/stop',{password:$('pwDis').value});
+        toast(r.status==='success'?'⏹ Розряд зупинено':'Помилка','info');
+        await disPoll();
     }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);
 }

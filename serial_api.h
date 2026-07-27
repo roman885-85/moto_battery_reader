@@ -31,6 +31,8 @@
 //   SETETM <сек>         -> ETM (наробіток) -> «дата першого користування» у рації
 //   TEMPLATES            -> список вшитих моделей для ініціалізації (без пароля)
 //   OPS                  -> каталог операцій (спільний для екрана/веба/клієнта)
+//   DISCHARGE [мВ]       -> почати керований розряд (типово до 7200 мВ)
+//   DISCHARGE STOP       -> зупинити розряд;  DISCHARGE ? -> стан розряду
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
 //   RESTORE <MODEL> [VERBATIM] -> відновити модельну частину еталона (без чужого
 //                          навченого хвоста); VERBATIM — байт-у-байт, ручний режим
@@ -317,6 +319,13 @@ static void serialExec(const String &line) {
                                                  : String(",\"err\":\"збій запису\"}");
                                          sResp(r); } }
     else if (cmd == "OPS")      { sResp(serBuildOps()); }
+    // DISCHARGE [мВ] — почати розряд; DISCHARGE STOP — зупинити; DISCHARGE? — стан.
+    else if (cmd == "DISCHARGE"){ String a2 = arg; a2.trim(); a2.toUpperCase();
+                                  if (a2 == "STOP") { dischargeStop(DISR_USER); sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); }
+                                  else if (a2 == "?" || a2 == "STATUS") sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}");
+                                  else { const char *e = dischargeStart((uint16_t)a2.toInt());
+                                         if (e) { String r = "{\"ok\":false,\"err\":\""; r += e; r += "\"}"; sResp(r); }
+                                         else sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); } }
     else if (cmd == "WIZARD")   { sResp(wizStart()); }
     else if (cmd == "WIZSTEP")  { int s2 = arg.indexOf(' ');
                                   String si = (s2 < 0) ? arg : arg.substring(0, s2);

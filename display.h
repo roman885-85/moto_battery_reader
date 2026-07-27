@@ -6,6 +6,7 @@
 #include "battery_reader.h"
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — для дій «Новий АКБ» у меню
 #include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
+#include "discharge.h"    // стан керованого розряду для сторінки моніторингу
 
 // Стан, яке відображаємо (заповнюється з .ino і обробників веб-сервера).
 extern bool hasDump;
@@ -773,6 +774,38 @@ inline int numActions() { return opCount(); }
 
 // Сторінка «Дії»: показуємо ОДНУ обрану операцію крупно + опис + попередження.
 // [<] коротко — наступна операція; [<] утримати (0.8с) — ВИКОНАТИ; [>] — вихід.
+// Сторінка МОНІТОРИНГУ РОЗРЯДУ (монохром). Показується автоматично, поки
+// навантаження увімкнене, і має пріоритет над гортанням меню.
+inline void drawPageDischarge() {
+    const DischargeState &d = g_dis;
+    char b[32];
+    snprintf(b, sizeof(b), "РОЗРЯД %d%%",
+             (d.startMv > d.targetMv)
+                 ? (int)(((long)d.startMv - d.lastMv) * 100 / ((long)d.startMv - d.targetMv))
+                 : 0);
+    drawHeader(b);
+
+    u8g2.setFont(u8g2_font_6x12_t_cyrillic);
+    snprintf(b, sizeof(b), "%u.%02u В  %d мА", d.lastMv / 1000, (d.lastMv % 1000) / 10, d.lastMa);
+    u8g2.drawUTF8(0, HEAD_LINE + 13, b);
+
+    u8g2.setFont(BODY_FONT);
+    snprintf(b, sizeof(b), "ціль %u.%02u В", d.targetMv / 1000, (d.targetMv % 1000) / 10);
+    u8g2.drawUTF8(0, HEAD_LINE + 24, b);
+    snprintf(b, sizeof(b), "віддано %lu мА·год", (unsigned long)dischargeMah());
+    u8g2.drawUTF8(0, HEAD_LINE + 33, b);
+    snprintf(b, sizeof(b), "%d.%d C   %lu:%02lu:%02lu",
+             d.lastTempC10 / 10, abs(d.lastTempC10 % 10),
+             (unsigned long)(d.elapsedS / 3600), (unsigned long)((d.elapsedS / 60) % 60),
+             (unsigned long)(d.elapsedS % 60));
+    u8g2.drawUTF8(0, HEAD_LINE + 42, b);
+
+    u8g2.drawHLine(0, FOOT_HL, DISP_W);
+    u8g2.drawUTF8(0, FOOT_Y, d.state == DIS_RUN ? "трим=ЗУПИНИТИ"
+                           : d.state == DIS_DONE ? "ГОТОВО -> на ЗП"
+                           : dischargeReasonText(d.reason));
+}
+
 inline void drawPageActions() {
     // Назви/описи/небезпека — з operations.h (той самий каталог, що в кольоровому
     // екрані, вебі й USB-клієнті). Локального списку дій більше немає.
@@ -854,6 +887,13 @@ inline void drawPageWizard() {
 
 inline void displayRender() {
     u8g2.clearBuffer();
+    // Поки навантаження увімкнене — примусово моніторинг розряду, хоч би яку
+    // сторінку було обрано: довга операція із запобіжниками має бути видима.
+    if (dischargeRunning()) {
+        drawPageDischarge();
+        u8g2.sendBuffer();
+        return;
+    }
     switch (g_displayPage) {
         case 0:  drawPageMain();     break;
         case 1:  drawPageModel();    break;
@@ -1007,7 +1047,9 @@ inline void displayHandleButton() {
     // 2 кнопки: BTN2 суміщає навігацію + вибір/аналіз (коротко) + виконання (довго).
     if (g_displayPage == RESET_PAGE) {               // сторінка «Дії»
         if (e2 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRender(); }
-        else if (e2 == 2) { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
+        else if (e2 == 2) { if (dischargeRunning()) {      // під час розряду довге натискання = АВАРІЙНА ЗУПИНКА
+                              dischargeStop(DISR_USER); displaySetStatus("РОЗРЯД СТОП"); displayRender();
+                          } else { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); } }
     } else if (g_displayPage == WIZARD_PAGE) {       // сторінка Майстра
         if (e2 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
         else if (e2 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
@@ -1025,7 +1067,9 @@ inline void displayHandleButton() {
     int e3 = pollButton(MENU_BTN3_PIN, b3, 800);
     if (g_displayPage == RESET_PAGE) {
         if (e3 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRender(); }
-        else if (e3 == 2) { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
+        else if (e3 == 2) { if (dischargeRunning()) {      // під час розряду довге натискання = АВАРІЙНА ЗУПИНКА
+                              dischargeStop(DISR_USER); displaySetStatus("РОЗРЯД СТОП"); displayRender();
+                          } else { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); } }
     } else if (g_displayPage == WIZARD_PAGE) {
         if (e3 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
         else if (e3 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }

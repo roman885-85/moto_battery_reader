@@ -909,6 +909,18 @@ inline bool performRecalPrepare() { return performRecalPrepare(false); }
 //  КЕРОВАНИЙ РОЗРЯД — опитування й запобіжники (тут, бо потрібен battery/дампи)
 // ===========================================================================
 
+// Витримка на встановлення режиму ключа перед зняттям показань. Замість
+// delay(): у циклі крутимо ledTask(), щоб індикація не залежала від того, скільки
+// триває цикл вимірювання. Головну роботу тут робить апаратне згасання (див.
+// leds.h) — воно взагалі не потребує процесора, — але перевертання півхвилі
+// все одно має статися вчасно, інакше на краю хвилі з'явиться зайва пауза.
+// Веб-сервер тут НЕ опитуємо свідомо: обробник міг би запустити ще одну
+// операцію просто посеред циклу вимірювання.
+static void dischargeSettle(unsigned long ms) {
+    unsigned long t0 = millis();
+    while (millis() - t0 < ms) { ledTask(); delay(1); }
+}
+
 // Зняти показання монітора під навантаженням. true — читання вдалось.
 static bool dischargeSample(uint16_t *mv, int16_t *ma, int16_t *tC10) {
     static uint8_t buf[DS2438_MEM_SIZE];
@@ -1010,7 +1022,7 @@ inline void dischargeTask() {
     //  роблять вимір однаковим від початку до кінця розряду.
     uint16_t mv = 0; int16_t ma = 0, t = 0;
     loadOff();
-    delay(DISCHARGE_PEAK_SETTLE_MS);
+    dischargeSettle(DISCHARGE_PEAK_SETTLE_MS);
     bool okV = dischargeSample(&mv, &ma, &t);
 
     // --- крок 2: ПІК струму при повністю відкритому ключі --------------------
@@ -1020,7 +1032,7 @@ inline void dischargeTask() {
     //  однозначно рахується все інше.
     uint16_t mvLoaded = 0; int16_t peakRaw = 0, tLoaded = 0;
     loadFull();
-    delay(DISCHARGE_PEAK_SETTLE_MS);
+    dischargeSettle(DISCHARGE_PEAK_SETTLE_MS);
     bool okI = dischargeSample(&mvLoaded, &peakRaw, &tLoaded);
     // Ключ НЕГАЙНО назад у робочу шпаруватість — повністю відкритим його не
     // лишаємо ні на мить довше, ніж триває вимір.

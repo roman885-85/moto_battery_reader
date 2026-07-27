@@ -69,13 +69,42 @@ inline void ledWrite(bool g, bool r) {
 #define LED_BREATH_BITS 10                     // 0..1023
 #define LED_BREATH_FREQ 2000
 #define LED_BREATH_MS   3000UL                 // повний цикл «яскраво->темно», мс
+
+// АПАРАТНЕ згасання (ledcFade) замість покрокового ledcWrite() з loop().
+//
+//  Навіщо. Яскравість рахувалася з millis() і виставлялася в кожному проході
+//  loop() — тобто «дихання» жило рівно доти, доки loop() крутиться. А під час
+//  розряду кожні 5 с іде цикл вимірювання: двічі витримка на встановлення
+//  режиму ключа плюс два читання DS2438 по 1-Wire, разом кілька сотень
+//  мілісекунд, коли loop() не працює взагалі. Світлодіод на цей час завмирав, а
+//  потім стрибав на рівень, який «мав би» бути — і якщо пауза припадала на
+//  вершину хвилі, ще й міняв напрямок. Саме це й виглядало як «притормаживает і
+//  скидається при оновленні показань».
+//
+//  Тепер ШІМ-контролер сам плавно веде шпаруватість від краю до краю за
+//  LED_BREATH_MS/2, а програма лише перевертає напрямок на кінці півхвилі. Тож
+//  навіть якщо loop() застряг на пів секунди, згасання триває в залізі, а
+//  запізніле перевертання дає щонайбільше коротку затримку на краю хвилі —
+//  вона читається як частина дихання, а не як збій.
+//
+//  Якщо ядро ESP32 старіше за 3.0 і ledcFade у ньому немає — поставте тут 0,
+//  повернеться попередній програмний розрахунок (він і далі працює, просто
+//  чутливий до блокувань).
+#ifndef LED_BREATH_HW_FADE
+  #define LED_BREATH_HW_FADE 1
+#endif
+
 static bool g_ledPwmOn = false;                // чи захоплені піни під ШІМ
+static bool g_breathUp = false;                // куди йде поточна півхвиля
+static bool g_breathArmed = false;             // чи запущено згасання
+static unsigned long g_breathUntil = 0;        // коли перевертати напрямок
 
 inline void ledPwmAttach() {
     if (g_ledPwmOn) return;
     ledcAttach(LED_GREEN_PIN, LED_BREATH_FREQ, LED_BREATH_BITS);
     ledcAttach(LED_RED_PIN,   LED_BREATH_FREQ, LED_BREATH_BITS);
     g_ledPwmOn = true;
+    g_breathArmed = false;                     // згасання ще не запущено
 }
 inline void ledPwmDetach() {
     if (!g_ledPwmOn) return;
@@ -86,10 +115,36 @@ inline void ledPwmDetach() {
     digitalWrite(LED_GREEN_PIN, LOW);
     digitalWrite(LED_RED_PIN, LOW);
     g_ledPwmOn = false;
+    g_breathArmed = false;
 }
-// Трикутна хвиля 0..max..0 за LED_BREATH_MS. Червоний трохи притлумлений:
-// на більшості двоколірних складок червоний кристал яскравіший за зелений, і
-// без корекції «помаранчевий» виходить червоним.
+
+// Червоний притлумлений на третину: на більшості двоколірних складок червоний
+// кристал яскравіший за зелений, і без корекції «помаранчевий» виходить
+// червоним.
+#define LED_BREATH_RED(v) ((v) * 2 / 3)
+
+#if LED_BREATH_HW_FADE
+// Запустити півхвилю: контролер сам веде шпаруватість від краю до краю.
+inline void ledBreathLeg(unsigned long now) {
+    uint32_t mx = (1UL << LED_BREATH_BITS) - 1;
+    uint32_t a  = g_breathUp ? 0 : mx;
+    uint32_t b  = g_breathUp ? mx : 0;
+    int ms = (int)(LED_BREATH_MS / 2);
+    ledcFade(LED_GREEN_PIN, a, b, ms);
+    ledcFade(LED_RED_PIN, LED_BREATH_RED(a), LED_BREATH_RED(b), ms);
+    g_breathUntil = now + LED_BREATH_MS / 2;
+}
+inline void ledBreathe(unsigned long now) {
+    ledPwmAttach();
+    if (!g_breathArmed) {                       // вхід у режим — почати знизу вгору
+        g_breathUp = true; g_breathArmed = true; ledBreathLeg(now); return;
+    }
+    // Перевертаємо напрямок на кінці півхвилі. Порівняння через різницю зі
+    // знаком — коректне й після переповнення millis().
+    if ((long)(now - g_breathUntil) >= 0) { g_breathUp = !g_breathUp; ledBreathLeg(now); }
+}
+#else
+// Запасний варіант: трикутна хвиля 0..max..0, рахується в кожному виклику.
 inline void ledBreathe(unsigned long now) {
     ledPwmAttach();
     unsigned long ph = now % LED_BREATH_MS;
@@ -98,8 +153,11 @@ inline void ledBreathe(unsigned long now) {
     uint32_t lvl = (ph < half) ? (uint32_t)(ph * maxv / half)
                                : (uint32_t)((LED_BREATH_MS - ph) * maxv / half);
     ledcWrite(LED_GREEN_PIN, lvl);
-    ledcWrite(LED_RED_PIN,   lvl * 2 / 3);
+    ledcWrite(LED_RED_PIN,   LED_BREATH_RED(lvl));
+    g_breathUp = (ph < half);
+    g_breathArmed = true;
 }
+#endif
 
 // Стан підсвітки кнопок за поточним режимом. Під час ОПЕРАЦІЙ (читання/запис)
 // підсвітка світиться РІВНО (без блимання) — «зайнято, працюю»; блимання
@@ -150,7 +208,10 @@ inline void ledTask() {
             // Плавне помаранчеве дихання — процес довгий (десятки хвилин),
             // тож індикація має читатись як «іде робота», а не як помилка.
             ledBreathe(now);
-            if (now - g_ledLast > LED_BREATH_MS / 2) { g_ledPhase = !g_ledPhase; g_ledLast = now; }
+            // Підсвітка кнопок іде В ТАКТ із хвилею, а не за власним таймером:
+            // окремий таймер після кожного застрягання loop() розходився з
+            // дихінням, і два індикатори блимали врозбіг.
+            g_ledPhase = g_breathUp;
             break;
 
         case LED_IDLE:

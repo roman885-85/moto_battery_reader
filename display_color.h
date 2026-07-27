@@ -570,7 +570,14 @@ inline void drawPageMain() {
     if (hasDump2438) {
         uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
         int16_t  traw = ((int16_t)((batteryDump2438[2] << 8) | batteryDump2438[1])) >> 3;
-        snprintf(buf, sizeof(buf), "%.2f В    %.1f °C", vraw * 0.01f, traw * 0.03125f);
+        // Струм із вбудованого датчика DS2438 (його вимірювальний резистор стоїть
+        // усередині пакета послідовно з банками). Від'ємний = розряд, додатний =
+        // заряд. Раніше на головній сторінці його не було взагалі — лишалися
+        // тільки напруга й температура.
+        int16_t  iraw = (int16_t)(((uint16_t)batteryDump2438[6] << 8) | batteryDump2438[5]);
+        int      i_mA = (int)((float)iraw / (4096.0f * DS2438_RSENSE_OHM) * 1000.0f);
+        snprintf(buf, sizeof(buf), "%.2fВ %dмА %.1f°C",
+                 vraw * 0.01f, i_mA, traw * 0.03125f);
     } else snprintf(buf, sizeof(buf), "DS2438: немає даних");
     tPut(CX, y, buf); y += rh;
 

@@ -651,24 +651,56 @@ inline void drawPageTech() {
     drawFooterBar();
 }
 
+// Сторінка «Стан АКБ».
+//
+//  Тут раніше стояло «Ємність: (зчитайте)» — і воно НЕ зникало після зчитування,
+//  бо decodeCapacity() принципово повертає false: строк служби в прошивці не
+//  зберігається, його рахує рація з навчених даних (див. коментар до
+//  decodeCapacity вище). Напис штовхав шукати неіснуючу дію.
+//
+//  Тепер сторінка показує те, що прошивка справді знає: ПАСПОРТНУ ємність за
+//  моделлю і ЗАЛИШОК за паливоміром DS2438 — обидва числа реальні. Про знос
+//  сказано чесно, і лише за відсутності дампу пропонується зчитати.
 inline void drawPageHealth() {
     char buf[48];
     drawHeaderBar("Стан АКБ");
 
-    int cap = -1, wear = -1;
     int y = 66;
-    tSet(FONT_BODY, C_TEXT);
-    if (decodeCapacity(&cap, &wear)) {
-        snprintf(buf, sizeof(buf), "Ємність: %d %%", cap);  tPut(CX, y, buf);
-        // кольорова смуга ємності (у межах безпечної зони)
-        int barx = 150, barw = TFT_W - EDGE - barx;
-        uint16_t cc = cap >= 80 ? C_GREEN : cap >= 50 ? C_YELLOW : C_RED;
-        tft.drawRect(barx, y - 12, barw, 14, C_MUTED);
-        tft.fillRect(barx + 1, y - 11, (barw - 2) * (cap > 100 ? 100 : cap) / 100, 12, cc);
-        y += 30;
-        snprintf(buf, sizeof(buf), "Знос:    %d %%", wear); tPut(CX, y, buf); y += 30;
+    // Рядки, що не влазять до статус-смуги, просто не малюємо — порядок нижче
+    // за спаданням важливості (на вузьких панелях місця менше).
+    auto row = [&](const char *txt, uint16_t col, int step) {
+        if (y > FOOT_Y - 10) return;
+        tSet(FONT_BODY, col); tPut(CX, y, txt); y += step;
+    };
+
+    if (!hasDump && !hasDump2438) {
+        row("Ємність: зчитайте АКБ", C_MUTED, 30);
     } else {
-        tPut(CX, y, "Ємність: (зчитайте)"); y += 30;
+        char m[16] = "";
+        if (hasDump) impresModelName(batteryDump, m, sizeof(m));
+        int rated = impresRatedMah(m);
+        snprintf(buf, sizeof(buf), "Ємність: %d мА*год", rated);
+        row(buf, C_TEXT, 30);
+
+        int rem = batteryRemainingMah();
+        if (rem >= 0) {
+            const char *src; int pct = batteryPercent(&src);
+            snprintf(buf, sizeof(buf), "Залишок: %d мА*год (%d%%)", rem, pct < 0 ? 0 : pct);
+            row(buf, chargeColor(pct), 30);
+        }
+    }
+
+    // Вирок про справжність — до лічильника циклів: якщо рядків забракне
+    // (вузькі панелі), обрізати треба менш важливе.
+    if (hasDump || hasDump2438) {
+        const char *reason;
+        if (batteryGenuine(&reason)) {
+            snprintf(buf, sizeof(buf), "Справжня: ТАК  (%s)", reason);
+            row(buf, C_GREEN, 30);
+        } else {
+            snprintf(buf, sizeof(buf), "РИЗИК: %s", reason);
+            row(buf, C_RED, 30);
+        }
     }
 
     if (hasDump2438) {
@@ -679,18 +711,17 @@ inline void drawPageHealth() {
         int chgCyc = (int)(cca * DS2438_MAH_PER_LSB / rated);
         int disCyc = (int)(dca * DS2438_MAH_PER_LSB / rated);
         snprintf(buf, sizeof(buf), "Циклів: зар.%d роз.%d", chgCyc, disCyc);
-        tPut(CX, y, buf); y += 30;
+        row(buf, C_TEXT, 30);
     }
 
-    const char *reason;
-    if (batteryGenuine(&reason)) {
-        tSet(FONT_BODY, C_GREEN);
-        snprintf(buf, sizeof(buf), "Справжня: ТАК  (%s)", reason);
-        tPut(CX, y, buf);
-    } else {
-        tSet(FONT_BODY, C_RED);
-        snprintf(buf, sizeof(buf), "РИЗИК: %s", reason);
-        tPut(CX, y, buf);
+    // Знос/строк служби — останнім: він нічого не вимірює, лише пояснює, чому
+    // числа немає. Саме цей рядок раніше й казав «(зчитайте)».
+    if (hasDump || hasDump2438) {
+        row("Знос: рахує рація", C_MUTED, 22);
+        if (y <= FOOT_Y - 10) {
+            tSet(FONT_SMALL, C_MUTED);
+            tPut(CX, y, "у прошивці не зберігається");
+        }
     }
 
     drawFooterBar();

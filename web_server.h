@@ -954,6 +954,7 @@ const char *dischargeStart(uint16_t targetMv) {
 
     loadOn();
     ledSet(LED_DISCHARGE);
+    dischargeMarkDirty(2);                 // увійшли в режим -> повна перемальовка
     Serial.printf("\n=== Discharge started: %u -> %u mV, expected %d mA ===\n",
                   mv, targetMv, dischargeExpectedMa(mv));
     return nullptr;
@@ -1001,6 +1002,7 @@ inline void dischargeTask() {
 
     Serial.printf("discharge: %u mV, %d mA, %.1f C, %lu mAh, %lus\n",
                   mv, ma, t / 10.0f, (unsigned long)dischargeMah(), (unsigned long)g_dis.elapsedS);
+    dischargeMarkDirty(1);                 // нові показання -> оновити екран
 
     if (mv <= DISCHARGE_HARD_MIN_MV) {
         dischargeStop(DISR_HARD_MIN);

@@ -642,6 +642,7 @@ void handleDumpInfo() {
     // ремонту після заміни елементів (див. impres_format.h).
     { int t = impresTailState(batteryDump);
       json += ",\"tail\":\"" + String(t == IMPRES_TAIL_BLANK ? "blank"
+                                    : t == IMPRES_TAIL_FRESH ? "fresh"
                                     : t == IMPRES_TAIL_VALID ? "learned" : "broken") + "\""; }
     json += ",\"preview\":\"";
     
@@ -737,9 +738,24 @@ void factoryCleanData() {
 // порівнянням 49 дампів (нижче 0x18A лежать ідентичність, крива, copyright,
 // заводська таблиця й запис моделі; вище — тільки навчене калібрування).
 // Повертає к-сть змінених байт.
-int eraseDonorLearned() {
-    if (!hasDump) return 0;
-    return impresEraseTail(batteryDump);
+// Знайти «чистий» хвіст для моделі, зчитаної з АКБ. nullptr — вибірки дампів
+// для цієї моделі бракує, робити ремонт наосліп не можна.
+static const uint8_t *freshTailForDump(char *modelOut, size_t n) {
+    if (modelOut && n) modelOut[0] = '\0';
+    if (!hasDump) return nullptr;
+    char m[16] = "";
+    if (!impresModelName(batteryDump, m, sizeof(m))) return nullptr;
+    if (modelOut && n) { strncpy(modelOut, m, n - 1); modelOut[n - 1] = '\0'; }
+    int t = findTemplate(m);
+    return (t < 0) ? nullptr : BATTERY_TEMPLATES[t].fresh;
+}
+
+// Записати ЧИСТИЙ хвіст у буфер дампа. -1 — немає перевіреного шаблону.
+static int applyFreshTail(const uint8_t *fresh) {
+    if (!fresh) return -1;
+    static uint8_t buf[IMPRES_FRESH_TAIL_LEN];
+    memcpy_P(buf, fresh, IMPRES_FRESH_TAIL_LEN);
+    return impresResetTailFrom(batteryDump, buf);
 }
 
 // ПОВНЕ стирання DS2433 (КРАЙНІЙ ВИПАДОК). Заповнює всі 512 байт 0xFF (стан
@@ -831,18 +847,31 @@ bool performRecalPrepare(bool deep) {
     bool ok = true;
 
     if (hasDump) {
-        // 1) Навчений хвіст -> 0xFF. Це і є ремонт: рація починає бачити пакет
-        //    як фірмовий «не калібрований», ЗП запускає повний цикл.
-        //    Стирання виконуємо для ВСІХ форматів, включно з 2021 (R7): дамп
-        //    09-4409a-z-proshyvkoyu-4809a з нульовим хвостом — саме той, на
-        //    якому в R7-форматі запрацювали і заряд, і калібрування.
-        int cleared = impresEraseTail(batteryDump);
+        // 1) Записати ЧИСТИЙ хвіст: скелет записів і сталі моделі лишаються,
+        //    навчені значення обнулені, суми правильні.
+        //
+        //    ⚠️ Раніше тут хвіст СТИРАВСЯ у 0xFF. Рація такий пакет приймала,
+        //    але калібрування щоразу падало в помилку: ЗП пише навчені значення
+        //    за фіксованими адресами й НЕ створює структуру записів заново.
+        //    У dumps/13-dozaryadka-na-stantsii після повного циклу на стертому
+        //    хвості з'явилися рівно два байти (0x1E1, 0x1E2), а байт довжини
+        //    0x1E0 лишився 0xFF — навчений блок не міг стати валідним ніколи.
+        char mdl[16];
+        const uint8_t *fresh = freshTailForDump(mdl, sizeof(mdl));
+        int changed = applyFreshTail(fresh);
+        if (changed < 0) {
+            Serial.printf("no verified fresh tail for model '%s'\n", mdl[0] ? mdl : "?");
+            displayShow("НЕМА ШАБЛОНУ");
+            ledSet(LED_ERROR);
+            return false;                          // краще нічого, ніж наосліп
+        }
         int deepCleared = 0;
         if (deep) {
             deepCleared += impresEraseLearnedCapacity(batteryDump);
             deepCleared += impresEraseUsageLog(batteryDump);
         }
-        Serial.printf("tail cleared: %d B, deep: %d B\n", cleared, deepCleared);
+        Serial.printf("fresh tail written for %s: %d B changed, deep: %d B\n",
+                      mdl, changed, deepCleared);
         impresFixHeader(batteryDump);               // заголовок поза хвостом — узгоджуємо про запас
         ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
         if (ok) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
@@ -1308,8 +1337,14 @@ bool performInitBattery(const char *model, long mah) {
     // акумулятор» (dumps/08-nova-batareya: шаблон 4409A побайтово дорівнює
     // робочому 02-katalog-osnovnyi/10_PMNN4409A, і рація його не прийняла).
     // Тому з шаблону лишаємо ЛИШЕ модельну частину, а навчений хвіст стираємо.
-    int cleared = impresEraseTail(batteryDump);
-    Serial.printf("INIT: donor learned tail cleared: %d B\n", cleared);
+    int cleared = applyFreshTail(BATTERY_TEMPLATES[t].fresh);
+    if (cleared < 0) {                              // немає перевіреного шаблону
+        cleared = impresEraseTail(batteryDump);     // хоча б не чужі дані
+        Serial.printf("INIT: no fresh tail for %s, tail erased: %d B "
+                      "(калібрування на ЗП може не завершитись)\n", model, cleared);
+    } else {
+        Serial.printf("INIT: fresh (unlearned) tail written: %d B\n", cleared);
+    }
     // Свіжий стан: зануляємо лічильники/історію/статистику, лишаємо
     // ідентичність/криву/дзеркало.
     factoryCleanData();
@@ -1362,7 +1397,8 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
     memcpy_P(batteryDump,     BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
     memcpy_P(batteryDump2438, BATTERY_TEMPLATES[t].d38, DS2438_MEM_SIZE);
     if (!verbatim) {
-        int cleared = impresEraseTail(batteryDump);
+        int cleared = applyFreshTail(BATTERY_TEMPLATES[t].fresh);
+        if (cleared < 0) cleared = impresEraseTail(batteryDump);
         impresFixHeader(batteryDump);
         impresResetMonitor(batteryDump2438, batteryDump,
                            impresIcaFromPercent(impresPercentFromMv(impresVoltageMv(batteryDump2438))));

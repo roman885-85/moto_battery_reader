@@ -90,13 +90,18 @@ def model_name(d):
 
 
 def tail_state(d):
-    """'blank' | 'learned' | 'broken' — стан навченого хвоста 0x18A..0x1FF."""
+    """'blank' | 'fresh' | 'learned' | 'broken' — стан хвоста 0x18A..0x1FF."""
     if all(x in (0xFF, 0x00) for x in d[LEARNED_BEGIN:]):
         return 'blank'
     recs, end = walk(d, LEARNED_BEGIN)
     bad = sum(1 for _, _, ok in recs if not ok)
     # рівно один запис у хвості ([0x03][прапорець][прапорець]) суми не має
-    return 'learned' if (end == len(d) and len(recs) >= 3 and bad <= 1) else 'broken'
+    if not (end == len(d) and len(recs) >= 3 and bad <= 1):
+        return 'broken'
+    # «чистий»: скелет цілий, історія розряду (перший запис) обнулена
+    if d[LEARNED_BEGIN] == 0x16 and all(x == 0 for x in d[LEARNED_BEGIN + 1:LEARNED_BEGIN + 0x15]):
+        return 'fresh'
+    return 'learned'
 
 
 def fmt_year(d):
@@ -169,11 +174,15 @@ def decode(d33, d38):
     ts = tail_state(d33)
     print("\n⚑ НАВЧЕНИЙ КАЛІБРУВАЛЬНИЙ ХВІСТ 0x18A..0x1FF: %s" % ts.upper())
     print({
-        'blank':   "  Порожній -> рація приймає АКБ як фірмовий «не калібрований»,\n"
-                   "  ЗП запускає повний цикл. Це цільовий стан після заміни елементів.",
+        'blank':   "  ⛔ СТЕРТИЙ у 0xFF — скелет записів знищено. Рація АКБ приймає, але ЗП\n"
+                   "  пише навчені значення за ФІКСОВАНИМИ адресами і структуру заново НЕ\n"
+                   "  створює, тож калібрування щоразу завершується помилкою. Потрібен\n"
+                   "  «чистий» хвіст (скелет + нулі), а не стирання.",
+        'fresh':   "  ✅ ЧИСТИЙ: скелет записів цілий, навчені значення обнулені, суми вірні.\n"
+                   "  Це цільовий стан після заміни елементів — ЗП може провести калібрування.",
         'learned': "  Навчені дані ПРИСУТНІ. Якщо це не рідні дані цього пакета (заміна\n"
                    "  елементів / записаний чужий еталон) — рація скаже «невідомий акумулятор».",
-        'broken':  "  Пошкоджений -> рація так само приймає АКБ як «не калібрований».",
+        'broken':  "  Пошкоджений ланцюг записів — потрібен ремонт після заміни елементів.",
     }[ts])
 
     if d38:
@@ -214,11 +223,13 @@ def survey(root):
                      tail_state(d33), etm(d38) if d38 else -1))
     print("%-46s %-10s %-5s %-4s %-8s %s" % ("файл", "модель", "фмт", "hdr", "хвіст", "ETM, с"))
     for r in rows:
-        flag = "  <== чужа навчена калібровка" if (r[4] == 'learned' and 0 <= r[5] < 86400) else ""
+        flag = ("  <== чужа навчена калібровка" if (r[4] == 'learned' and 0 <= r[5] < 86400)
+                else "  <== СТЕРТО: ЗП не завершить калібрування" if r[4] == 'blank' else "")
         print("%-46s %-10s %-5s %-4s %-8s %-11d%s" % (r[0], r[1], r[2], r[3], r[4], r[5], flag))
     n = len(rows)
-    print("\nусього %d; хвіст: blank=%d learned=%d broken=%d; без моделі=%d; заголовок BAD=%d" %
+    print("\nусього %d; хвіст: blank=%d fresh=%d learned=%d broken=%d; без моделі=%d; заголовок BAD=%d" %
           (n, sum(1 for r in rows if r[4] == 'blank'),
+           sum(1 for r in rows if r[4] == 'fresh'),
            sum(1 for r in rows if r[4] == 'learned'),
            sum(1 for r in rows if r[4] == 'broken'),
            sum(1 for r in rows if r[1] == '—'),

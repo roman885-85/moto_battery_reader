@@ -1437,7 +1437,12 @@ function disTargetMv(){
     t=Math.max(disRampCfg.tgtMinMv,Math.min(disRampCfg.tgtMaxMv,t));
     return t;
 }
-function disSetTarget(mv){ $('disTarget').value=mv; disRamp(); }
+function disSetTarget(mv){
+    // dataset.touched обов'язковий: без нього наступне опитування стану (раз на
+    // 2–20 с) мовчки поверне типову ціль, і обрані кнопкою 7.80 В зникнуть.
+    const e=$('disTarget'); e.value=mv; e.dataset.touched=1;
+    disRamp();
+}
 // Та сама формула, що в discharge.h: 300 мА рівно на цілі, 1000 мА на верху.
 function disSetpointMa(mv, targetMv){
     const c=disRampCfg;

@@ -418,7 +418,14 @@ inline void tSet(const uint8_t *font, uint16_t fg, uint16_t bg = C_BG) {
     u8g2Fonts.setForegroundColor(fg);
     u8g2Fonts.setBackgroundColor(bg);
 }
-inline void tPut(int x, int y, const char *s) { u8g2Fonts.drawUTF8(x, y, s); }
+static bool g_tFooter = false;        // малюємо саму смугу статусу — їй униз можна
+// Статус-смуга малюється ПОВЕРХ сторінки, тож усе, що заїхало під неї, однаково
+// не видно — але встигає накластися на сусідні рядки. Тому нижче просто не
+// пишемо: краще не показати рядок, ніж показати кашу.
+inline void tPut(int x, int y, const char *s) {
+    if (!g_tFooter && y > FOOT_Y - 2) return;
+    u8g2Fonts.drawUTF8(x, y, s);
+}
 inline int  tWidth(const char *s) { return u8g2Fonts.getUTF8Width(s); }
 
 inline uint16_t chargeColor(int pct) {
@@ -431,12 +438,22 @@ inline uint16_t chargeColor(int pct) {
 inline void drawHeaderBar(const char *title) {
     tft.fillRect(0, 0, TFT_W, HDR_H, C_HDRBG);
     tft.drawFastHLine(0, HDR_H - 1, TFT_W, C_BLUE);
-    tSet(FONT_HDR, C_YELLOW, C_HDRBG);
-    tPut(EDGE, 21, title);
     char h[16];
     snprintf(h, sizeof(h), "%d/%d", g_displayPage + 1, NUM_DISPLAY_PAGES);
     tSet(FONT_SMALL, C_TEXT, C_HDRBG);
-    tPut(TFT_W - tWidth(h) - EDGE, 20, h);
+    int cx = TFT_W - tWidth(h) - EDGE;
+    tPut(cx, 20, h);
+    // Заголовок обрізаємо так, щоб він не заліз під лічильник сторінок: назви
+    // на сторінці «Дії» довгі («Дія 12/27 2433+2438»), і на 240-піксельній
+    // панелі вони налазили на «7/8».
+    tSet(FONT_HDR, C_YELLOW, C_HDRBG);
+    char t2[40];
+    snprintf(t2, sizeof(t2), "%s", title);
+    for (int n = (int)strlen(t2); n > 0 && EDGE + tWidth(t2) > cx - 6; ) {
+        while (n > 0 && ((unsigned char)t2[n - 1] & 0xC0) == 0x80) n--;   // UTF-8
+        if (n > 0) t2[--n] = 0;
+    }
+    tPut(EDGE, 21, t2);
 }
 
 inline void drawFooterBar() {
@@ -445,7 +462,7 @@ inline void drawFooterBar() {
     char f[42];
     snprintf(f, sizeof(f), "%s", g_displayStatus);
     tSet(FONT_BODY, C_GREEN, C_CARD);
-    tPut(EDGE, TFT_H - 8, f);
+    g_tFooter = true; tPut(EDGE, TFT_H - 8, f); g_tFooter = false;
 }
 
 // Іконка батареї зі шкалою заповнення; pct<0 — даних немає.
@@ -473,6 +490,10 @@ inline void drawBatteryBar(int x, int y, int w, int h, int pct, uint16_t col) {
 #endif
 
 inline void displaySplash() {
+    // Заставка — на ВЕСЬ екран, статус-смуги на ній немає, тож запобіжник
+    // «нижче смуги не писати» тут має бути вимкнений: інакше нижній рядок
+    // напису зник би на низьких панелях.
+    g_tFooter = true;
     tft.fillScreen(C_BG);
 
 #if defined(DISPLAY_SPLASH_CUSTOM)
@@ -500,6 +521,7 @@ inline void displaySplash() {
     tSet(FONT_BODY, C_MUTED);
     tPut((TFT_W - tWidth(l3)) / 2, gy + NGU_H + 82, l3);
 #endif
+    g_tFooter = false;
 }
 
 // Плавна поява/зникнення заставки (замість displaySplash()+delay() у setup()).
@@ -542,20 +564,27 @@ inline void drawPageMain() {
     // щоб текст і шкала не наповзали одне на одне.
     if (pct >= 0) snprintf(buf, sizeof(buf), "%d%%", pct);
     else          snprintf(buf, sizeof(buf), "--%%");
-    int by = HDR_H + 12, bh = 52;
-    int pctW = 6 * BIG_TSIZE * 4;                 // зона під найширше "100%"
+    // На НИЗЬКИХ панелях (320x170, 240x135 у ландшафті) на все місця немає:
+    // віддаємо його рядкам показань, а батарею й цифри стискаємо. Інакше
+    // великий відсоток налазив би на текст — так було й раніше.
+    int by = HDR_H + 12;
+    bool tight  = (FOOT_Y - by) < 150;
+    bool vtight = (FOOT_Y - by) < 90;              // 240x135: місця майже немає
+    int bh   = vtight ? 24 : (tight ? 36 : 52);
+    int bts  = vtight ? 2 : (tight ? (BIG_TSIZE > 3 ? 3 : BIG_TSIZE) : BIG_TSIZE);
+    int pctW = 6 * bts * 4;                       // зона під найширше "100%"
     int gap  = 10;
     int bx = CX + pctW + gap;                     // батарея праворуч від тексту
     int bw = TFT_W - CX - 4 - bx;                 // решта ширини (−4 px під «+» вивід)
     // % — вертикально по центру батареї, вирівняно ПРАВОРУЧ у своїй зоні (правий
     // край числа завжди біля батареї, попри різну кількість цифр).
     {
-        int cw = 6 * BIG_TSIZE * (int)strlen(buf);
-        int ch = 8 * BIG_TSIZE;
+        int cw = 6 * bts * (int)strlen(buf);
+        int ch = 8 * bts;
         int tx = CX + (pctW - cw);
         int ty = by + (bh - ch) / 2;
         tft.setTextColor(C_TEXT);
-        tft.setTextSize(BIG_TSIZE);
+        tft.setTextSize(bts);
         tft.setCursor(tx, ty);
         tft.print(buf);
         tft.setTextSize(1);
@@ -563,46 +592,122 @@ inline void drawPageMain() {
     drawBatteryBar(bx, by, bw, bh, pct, col);
     g_pctTx = g_pctTy = g_pctTw = g_pctTh = 0;    // цифри поза шкалою -> градієнт на всю батарею
 
-    // Джерело показника (ICA/volt).
-    tSet(FONT_SMALL, C_MUTED);
-    snprintf(buf, sizeof(buf), "джерело: %s", src);
-    tPut(CX, by + bh + 14, buf);
+    // Джерело показника (ICA/volt). На найкоротших панелях його немає куди
+    // подіти без накладання — і воно найменш потрібне: сам відсоток видно.
+    if (!vtight && FOOT_Y - (by + bh) > 40) {
+        tSet(FONT_SMALL, C_MUTED);
+        snprintf(buf, sizeof(buf), "джерело: %s", src);
+        tPut(CX, by + bh + (tight ? 11 : 14), buf);
+    }
 
-    // Деталі. Крок підібраний так, щоб 4 рядки влазили навіть на найнижчій
-    // портретній панелі (240 -> статус-смуга з ~214), тож на 280/320 і поготів.
-    const int rh = 22;
-    int y = by + bh + 34;                          // базова лінія 1-го рядка
-    if (y + 3 * rh > FOOT_Y - 6)                    // страховка від наїзду на смугу
-        y = FOOT_Y - 6 - 3 * rh;
-    tSet(FONT_BODY, C_TEXT);
+    // Деталі. П'ять рядків: залишок, DS2438, IP, точка доступу, пароль.
+    //
+    // Підказку по кнопках малюємо ОКРЕМО й ВНИЗУ, тим самим шрифтом, що
+    // показання: їх читають безперервно, а підказку — коли шукають, куди
+    // натиснути, і шукають її саме внизу екрана.
+    //
+    // ⚑ Рядки, що не влазять, НЕ малюємо взагалі. Коротким панелям (320x170,
+    // 240x135) місця фізично бракує, і раніше нижні рядки просто лягали
+    // поверх верхніх. Показати менше — чесніше, ніж накласти текст на текст.
+    int hintY = FOOT_Y - 9;                        // базова лінія підказки
+    bool showHint = true;
+    int y  = by + bh + (vtight ? 12 : (tight ? 26 : 34));   // базова лінія 1-го рядка
+    int rh = 22, rs = 16;                          // крок великих / малих рядків
+    int need = 2 * rh + 2 * rs;                    // від 1-го до 5-го рядка
+    int room = (hintY - 20) - y;
+    while (need > room && (rh > 15 || rs > 12)) {  // тиснемо, поки не влізе
+        if (rh > 15) rh--;
+        if (rs > 12) rs--;
+        need = 2 * rh + 2 * rs;
+    }
+    // Що саме показуємо. Порядок на екрані фіксований, а от ЩО викидати, коли
+    // місця бракує, вирішує prio: менше число — важливіше. IP, назва точки
+    // доступу й пароль ідуть першими, бо їх нема більше ніде; заряд у мА·год
+    // дублює великий відсоток вище, а напруга/струм мають власну сторінку.
+    struct MainRow { char txt[48]; bool small; uint16_t col; int prio; bool keep; };
+    MainRow rows[5];
+    int nr = 0;
+    auto addRow = [&](const char *t, bool small, uint16_t col, int prio) {
+        snprintf(rows[nr].txt, sizeof(rows[nr].txt), "%s", t);
+        rows[nr].small = small; rows[nr].col = col; rows[nr].prio = prio;
+        rows[nr].keep = true; nr++;
+    };
+
     if (mah >= 0) snprintf(buf, sizeof(buf), "Залишок: %d мА·год", mah);
     else          snprintf(buf, sizeof(buf), "Залишок: --");
-    tPut(CX, y, buf); y += rh;
+    addRow(buf, false, C_TEXT, 4);
 
     if (hasDump2438) {
         uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
         int16_t  traw = ((int16_t)((batteryDump2438[2] << 8) | batteryDump2438[1])) >> 3;
         // Струм із вбудованого датчика DS2438 (його вимірювальний резистор стоїть
-        // усередині пакета послідовно з банками). Від'ємний = розряд, додатний =
-        // заряд. Раніше на головній сторінці його не було взагалі — лишалися
-        // тільки напруга й температура.
+        // усередині пакета послідовно з банками). Від'ємний = розряд.
         int16_t  iraw = (int16_t)(((uint16_t)batteryDump2438[6] << 8) | batteryDump2438[5]);
         int      i_mA = (int)((float)iraw / (4096.0f * DS2438_RSENSE_OHM) * 1000.0f);
         snprintf(buf, sizeof(buf), "%.2fВ %dмА %.1f°C",
                  vraw * 0.01f, i_mA, traw * 0.03125f);
     } else snprintf(buf, sizeof(buf), "DS2438: немає даних");
-    tPut(CX, y, buf); y += rh;
+    addRow(buf, false, C_TEXT, 5);
 
-    tSet(FONT_BODY, C_BLUE);
     snprintf(buf, sizeof(buf), "IP: %s", ESP_IP);
-    tPut(CX, y, buf); y += rh;
+    addRow(buf, false, C_BLUE, 1);
+    // Точка доступу й пароль — поруч з IP: щоб під'єднатися з телефона, потрібні
+    // всі три, а шукати їх у settings.h саме тоді, коли пристрій у руках, —
+    // найгірший момент.
+    snprintf(buf, sizeof(buf), "Wi-Fi: %s", AP_SSID);
+    addRow(buf, true, C_MUTED, 2);
+    snprintf(buf, sizeof(buf), "Пароль: %s", AP_PASSWORD);
+    addRow(buf, true, C_MUTED, 3);
 
-    tSet(FONT_SMALL, C_MUTED);
+    // Викидаємо найменш важливе, поки решта не влізе. Раніше нижні рядки просто
+    // лягали поверх верхніх — на коротких панелях (320x170, 240x135) сторінка
+    // перетворювалась на кашу.
+    if (vtight) for (int i = 0; i < nr; i++) rows[i].small = true;
+    auto totalH = [&]() {
+        int h = 0;
+        for (int i = 0; i < nr; i++) if (rows[i].keep) h += rows[i].small ? rs : rh;
+        return h;
+    };
+    int avail = (hintY - 16) - (y - 15);           // від верху 1-го рядка до підказки
+    // Якщо навіть найпотрібніше (IP + точка доступу + пароль) не влазить —
+    // жертвуємо ПІДКАЗКОЮ, а не даними: без пароля пристроєм не скористатись,
+    // а що кнопки гортають меню, видно з лічильника сторінок у шапці.
+    {
+        int needTop = 0;
+        for (int i = 0; i < nr; i++)
+            if (rows[i].prio <= 3) needTop += rows[i].small ? rs : rh;
+        if (needTop > avail) { showHint = false; avail = (FOOT_Y - 8) - (y - 15); }
+    }
+    while (totalH() > avail) {
+        int worst = -1;
+        for (int i = 0; i < nr; i++)
+            if (rows[i].keep && (worst < 0 || rows[i].prio > rows[worst].prio)) worst = i;
+        if (worst < 0) break;
+        rows[worst].keep = false;
+    }
+    for (int i = 0; i < nr; i++) {
+        if (!rows[i].keep) continue;
+        tSet(rows[i].small ? FONT_SMALL : FONT_BODY, rows[i].col);
+        tPut(CX, y, rows[i].txt);
+        y += rows[i].small ? rs : rh;
+    }
+
+    // Підказка по кнопках — унизу й ТИМ САМИМ шрифтом, що показання: раніше
+    // вона стояла в загальному потоці рядків найдрібнішим шрифтом і читалась
+    // гірше за все інше на екрані.
+    // Підказка — тим самим шрифтом, що показання. Довгий варіант не на кожній
+    // панелі влазить у ширину, тож обираємо за реальним виміром, а не «на око»:
+    // обрізаний хвіст читається гірше за коротший, але цілий напис.
+    tSet(FONT_BODY, C_MUTED);
 #ifdef MENU_BTN3_PIN
-    tPut(CX, y, "[<][>] гортати   [OK] читати");
+    const char *hint = "[<][>] гортати  [OK] читати";
+    if (CX + tWidth(hint) > TFT_W - 4) hint = "[<][>] меню  [OK] чит.";
+    if (CX + tWidth(hint) > TFT_W - 4) hint = "[<][>] [OK]";
 #else
-    tPut(CX, y, "[>] довго — зчитати АКБ");
+    const char *hint = "[>] довго — зчитати АКБ";
+    if (CX + tWidth(hint) > TFT_W - 4) hint = "[>] довго — читати";
 #endif
+    if (showHint) tPut(CX, hintY, hint);
 
     drawFooterBar();
 }
@@ -697,7 +802,7 @@ inline void drawPageHealth() {
         int rem = batteryRemainingMah();
         if (rem >= 0) {
             const char *src; int pct = batteryPercent(&src);
-            snprintf(buf, sizeof(buf), "Залишок: %d мА*год (%d%%)", rem, pct < 0 ? 0 : pct);
+            snprintf(buf, sizeof(buf), "Залишок: %d мА*год %d%%", rem, pct < 0 ? 0 : pct);
             row(buf, chargeColor(pct), 30);
         }
     }
@@ -791,7 +896,7 @@ inline void drawPageActions() {
     // калібрування вимірювача струму.
     char t[36];
     if (chips == OPC_NONE) snprintf(t, sizeof(t), "Дія %d/%d", sel + 1, total);
-    else                   snprintf(t, sizeof(t), "Дія %d/%d -> %s", sel + 1, total,
+    else                   snprintf(t, sizeof(t), "Дія %d/%d %s", sel + 1, total,
                                     opChipsShort(chips));
     drawHeaderBar(t);
 
@@ -890,7 +995,7 @@ inline void drawPageDischarge() {
         snprintf(b, sizeof(b), "уст %u · ШІМ %u%% · пік %u", d.setMa, d.dutyPct, d.peakMa);
         row(b, C_MUTED);
     } else {
-        row("БЕЗ ШІМ: струм не обмежено!", C_RED);
+        row("БЕЗ ШІМ: не обмежено!", C_RED);
     }
 
     // Віддано: наш інтеграл по опитуваннях і апаратний лічильник DCA самого
@@ -1228,7 +1333,6 @@ inline int displayConsumeWizRequest() { int r = g_wizReq; g_wizReq = 0; return r
 // Плавний перехід між сторінками: короткий «дип» підсвітки (crossfade). Без
 // BLK-піна — звичайний рендер без анімації.
 inline void displayFlip() {
-    buzzClick();                                 // звуковий клік перемикання
 #ifdef DISPLAY_BLK_PIN
     for (int b = 255; b > 90; b -= 33) { analogWrite(DISPLAY_BLK_PIN, b); delay(5); }
     displayRender();
@@ -1237,6 +1341,13 @@ inline void displayFlip() {
 #else
     displayRender();
 #endif
+    // ⚑ Звук — В КІНЦІ, після всієї блокуючої роботи. Фразу веде buzzTask() із
+    // loop(); поки триває «дип» підсвітки (12 × delay(5)) і displayRender() по
+    // SPI, loop() стоїть, тік не приходить жодного разу — і 76-мілісекундний
+    // бліп, запущений ДО переходу, просто протікав повз: перший же тік після
+    // повернення бачив, що фраза скінчилась, і гасив вихід. Саме так виглядало
+    // «бліп не працює».
+    buzzClick();
 }
 
 inline void displayHandleButton() {

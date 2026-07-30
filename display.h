@@ -616,11 +616,20 @@ inline void drawPageMain() {
         snprintf(buf, sizeof(buf), "%.2fV %dmA %.1fC", vraw * 0.01f, i_mA, traw * 0.03125f);
     } else snprintf(buf, sizeof(buf), "DS2438: немає даних");
     u8g2.drawUTF8(0, 84, buf);
-    snprintf(buf, sizeof(buf), "IP: %s", ESP_IP);        u8g2.drawUTF8(0, 98, buf);
+    snprintf(buf, sizeof(buf), "IP: %s", ESP_IP);        u8g2.drawUTF8(0, 96, buf);
+    // Точка доступу й пароль — поруч з IP: щоб під'єднатися з телефона,
+    // потрібні всі три, а шукати їх у settings.h саме тоді, коли пристрій в
+    // руках, — найгірший момент. Дрібним шрифтом: місця на 128x128 обмаль.
+    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+    snprintf(buf, sizeof(buf), "Wi-Fi: %s", AP_SSID);    u8g2.drawUTF8(0, 105, buf);
+    snprintf(buf, sizeof(buf), "Пароль: %s", AP_PASSWORD); u8g2.drawUTF8(0, 113, buf);
+    // Підказка по кнопках — нижче й ТИМ САМИМ шрифтом, що показання (раніше
+    // ділила рядок із рештою і читалась гірше за все на екрані).
+    u8g2.setFont(BODY_FONT);
 #ifdef MENU_BTN3_PIN
-    u8g2.drawUTF8(0, 112, "[<][>] меню  [OK] чит.");
+    u8g2.drawUTF8(0, FOOT_HL - 2, "[<][>] меню  [OK] чит.");
 #else
-    u8g2.drawUTF8(0, 112, "[>] довго - зчитати");
+    u8g2.drawUTF8(0, FOOT_HL - 2, "[>] довго - зчитати");
 #endif
 #elif DISP_W < 100
     // Nokia 84x48: компактно.
@@ -655,6 +664,12 @@ inline void drawPageMain() {
         snprintf(buf, sizeof(buf), "%.2fV %.1fC %s", vraw * 0.01f, traw * 0.03125f, ESP_IP);
     } else snprintf(buf, sizeof(buf), "DS2438 нема  %s", ESP_IP);
     u8g2.drawUTF8(0, 48, buf);
+    // 128x64: цілого рядка під точку доступу немає, тож SSID і пароль ідуть
+    // одним дрібним рядком під IP. Довгий SSID обріжеться — це чесніше, ніж
+    // не показати пароль узагалі.
+    u8g2.setFont(u8g2_font_4x6_t_cyrillic);
+    snprintf(buf, sizeof(buf), "%s / %s", AP_SSID, AP_PASSWORD);
+    u8g2.drawUTF8(0, 55, buf);
 #endif
 
     drawFooter();
@@ -1029,12 +1044,16 @@ inline int displayConsumeWizRequest() { int r = g_wizReq; g_wizReq = 0; return r
 // Плавний перехід між сторінками меню: короткий «дип» яскравості (crossfade
 // старий->новий вміст). Деградує коректно, якщо контраст не підтримується.
 inline void displayFlip() {
-    buzzClick();                                 // звуковий клік перемикання
     int lo = DISP_BRIGHT / 3;
     for (int c = DISP_BRIGHT; c > lo; c -= 24) u8g2.setContrast(c < 0 ? 0 : c), delay(5);
     displayRender();
     for (int c = lo; c < DISP_BRIGHT; c += 24) u8g2.setContrast(c), delay(5);
     u8g2.setContrast(DISP_BRIGHT);
+    // ⚑ Звук — В КІНЦІ, після всієї блокуючої роботи. Фразу веде buzzTask() із
+    // loop(); поки триває «дип» контрасту й displayRender(), loop() стоїть і
+    // тік не приходить жодного разу — бліп, запущений ДО переходу, протікав
+    // повз, і перший тік після повернення просто гасив вихід.
+    buzzClick();
 }
 
 inline void displayButtonSetup() {

@@ -39,15 +39,28 @@ header h1{font-size:1.05em;margin:0;color:var(--gold)}
 .card h2{font-size:1em;margin:0 0 10px}
 .row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line);gap:10px}
 .row:last-child{border-bottom:none}.k{color:var(--mut)}.v{font-weight:600;text-align:right;word-break:break-all}
-.btn{border:none;border-radius:10px;padding:11px 14px;font-size:.95em;font-weight:600;color:#fff;cursor:pointer;margin:4px 0;width:100%}
+/* ⚠️ Колір ФОНУ задає й сам .btn, а не лише модифікатори: кнопка без .b-*
+   діставала світло-сірий фон від браузера, і білий напис на ньому зникав
+   (контраст 1.15 — «білі кнопки, тексту не видно»). Тепер типовий фон темний.
+   На світлих заливках (.b-warn — золото) напис ТЕМНИЙ: білий по золотому дає
+   2.4 замість потрібних 4.5, і читається він так само погано. */
+.btn{border:none;border-radius:10px;padding:11px 14px;font-size:.95em;font-weight:600;
+     color:#fff;background:#39412c;cursor:pointer;margin:4px 0;width:100%}
+.btn:hover{filter:brightness(1.12)}
 .btn:disabled{opacity:.45;cursor:not-allowed}
-.b-pri{background:var(--blu)}.b-ok{background:#2a9d5a}.b-warn{background:var(--org)}.b-dng{background:var(--red)}.b-inf{background:#4a5a38}
+.b-pri{background:var(--blu)}.b-ok{background:#2a9d5a}
+.b-warn{background:var(--org);color:#1a1400}
+.b-dng{background:var(--red)}.b-inf{background:#4a5a38}
 .btns{display:flex;gap:8px;flex-wrap:wrap}.btns .btn{flex:1;min-width:130px;width:auto}
 .note{font-size:.82em;border-radius:8px;padding:8px 10px;margin:8px 0;line-height:1.35}
 .note.i{background:#232a17;color:#cdd0a8}.note.w{background:#4a2f10;color:#ffd9a8}
 input,select,textarea{background:#171a10;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:8px}
 input,select{width:auto}.pw{width:100%;margin:6px 0}
 .bar{font-size:.8em;color:var(--mut)}
+/* Пресети цільової напруги розряду — ті самі, що у веб-інтерфейсі пристрою. */
+.tgtb{background:#171a10;color:var(--txt);border:1px solid var(--line);border-radius:8px;
+      padding:5px 9px;margin:2px 3px 2px 0;cursor:pointer;font-size:.9em;width:auto}
+.tgtb.on{background:var(--blu);border-color:var(--gold);font-weight:700}
 /* ---- Правки еталона під конкретний пакет ---------------------------------
    Три стовпці поруч — «еталон / цей пакет / буде записано»: різницю видно
    оком, і не треба вірити на слово, що правка потрібна. */
@@ -367,9 +380,35 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         </div>
         <div class="dmwarn" id="disWarn"></div>
       </div>
-      <button class="btn b-warn" onclick="disStart()">🪫 ПОЧАТИ РОЗРЯД (до 7.2 В)</button>
-      <button class="btn" onclick="disStop()">⏹ ЗУПИНИТИ</button>
-      <button class="btn" onclick="disStatus()">🔄 Оновити зараз</button>
+      <div class="row" style="margin-top:10px"><span class="k">Розряджати до</span>
+        <span>
+          <button type="button" class="tgtb" onclick="disSetTarget(7800)">7.80 В</button>
+          <button type="button" class="tgtb" onclick="disSetTarget(7600)">7.60 В</button>
+          <button type="button" class="tgtb" onclick="disSetTarget(7400)">7.40 В</button>
+          <button type="button" class="tgtb" onclick="disSetTarget(7200)">7.20 В</button>
+          <button type="button" class="tgtb" onclick="disSetTarget(7000)">7.00 В</button>
+          <input type="number" id="disTarget" value="7200" min="6800" max="8000" step="50"
+                 oninput="this.dataset.touched=1;disRamp()" style="width:90px"> <span style="opacity:.7">мВ</span>
+        </span></div>
+      <div class="note i" id="disRampNote"></div>
+      <!-- Графік УСТАВКИ СТРУМУ за напругою: перемальовується при зміні цілі,
+           тож видно, що малий струм припадає рівно на неї. -->
+      <svg id="disRampSvg" viewBox="0 0 300 84" preserveAspectRatio="none"
+           style="width:100%;height:84px;background:#171a10;border:1px solid var(--line);
+                  border-radius:8px;margin-top:6px">
+        <polyline id="disRampArea" fill="rgba(111,143,58,.20)" stroke="none" points=""/>
+        <polyline id="disRampLine" fill="none" stroke="#c8b04a" stroke-width="2"
+                  vector-effect="non-scaling-stroke" stroke-linejoin="round" points=""/>
+        <line id="disRampNow" x1="-9" x2="-9" y1="2" y2="70" stroke="#6f8f3a"
+              stroke-width="1" vector-effect="non-scaling-stroke"/>
+        <text id="disRampL"  x="4"   y="12" fill="#8b9166" font-size="9"></text>
+        <text id="disRampR"  x="296" y="12" fill="#8b9166" font-size="9" text-anchor="end"></text>
+        <text id="disRampLo" x="4"   y="80" fill="#8b9166" font-size="9"></text>
+        <text id="disRampHi" x="296" y="80" fill="#8b9166" font-size="9" text-anchor="end"></text>
+      </svg>
+      <button class="btn b-warn" id="btnDisStart" onclick="disStart()">🪫 ПОЧАТИ РОЗРЯД</button>
+      <button class="btn b-dng" onclick="disStop()">⏹ ЗУПИНИТИ</button>
+      <button class="btn b-inf" onclick="disStatus()">🔄 Оновити зараз</button>
     </div>
 
     <div class="card" style="border-color:var(--ok)">
@@ -1143,6 +1182,13 @@ function disShow(d){
   const mon=$('disMon');
   if(!d){mon.className='dm';$('disSt').textContent='—';return;}
   if(!d.available){mon.className='dm';$('disSt').textContent='не налаштовано (LOAD_PIN)';return;}
+  // Межі лінійки і цілі — з ПРИСТРОЮ: він їх і застосовує, тож інтерфейс не має
+  // права мати власну думку. Поле цілі не чіпаємо, якщо його вже правив
+  // користувач — інакше опитування стану щоразу скидало б набране число.
+  if(d.rampHiMv){ disRampCfg=d; const e=$('disTarget');
+    if(e){ e.min=d.tgtMinMv; e.max=d.tgtMaxMv;
+           if(!e.dataset.touched && d.tgtDefMv) e.value=d.tgtDefMv;
+           disRamp(); } }
   const run=d.state==='run';
   mon.className='dm '+d.state;
   $('disSt').textContent={idle:'очікування',run:'ІДЕ РОЗРЯД',
@@ -1213,11 +1259,66 @@ setInterval(()=>{ if(!disLast||disLast.state!=='run')return;
   $('disEl').textContent=disFmtT(disLast.elapsedS+Math.floor((Date.now()-disLastAt)/1000)); },1000);
 disSchedule(30000);   // повільний фон із самого початку; disTick сам мовчить, поки не підключено
 async function disStatus(){ if(!connected){toast('Підключіться');return;} await disTick(); }
+// --- цільова напруга розряду ------------------------------------------------
+// Межі й лінійка струму приходять від пристрою (DISCHARGE ?): тримати їхню
+// копію тут означало б розійтися з discharge.h після наступної правки.
+let disRampCfg={rampHiMv:8250,maHi:1000,maLo:300,tgtMinMv:6800,tgtMaxMv:8000,tgtDefMv:7200};
+function disTargetMv(){
+  const e=$('disTarget');
+  let t=parseInt(e&&e.value)||disRampCfg.tgtDefMv||7200;
+  return Math.max(disRampCfg.tgtMinMv,Math.min(disRampCfg.tgtMaxMv,t));
+}
+function disSetTarget(mv){
+  const e=$('disTarget');
+  if(e){ e.value=mv; e.dataset.touched=1; }   // інакше опитування стану поверне типове
+  disRamp();
+}
+// Та сама формула, що в discharge.h: маленький струм рівно на цілі.
+function disSetpointMa(mv,targetMv){
+  const c=disRampCfg;
+  if(targetMv>=c.rampHiMv) return c.maLo;
+  if(mv>=c.rampHiMv)       return c.maHi;
+  if(mv<=targetMv)         return c.maLo;
+  return Math.round(c.maLo+(mv-targetMv)*(c.maHi-c.maLo)/(c.rampHiMv-targetMv));
+}
+function disRamp(){
+  const t=disTargetMv(), c=disRampCfg, n=$('disRampNote');
+  if(n)n.innerHTML='Струм веде за напругою: <b>'+c.maHi+' мА</b> на '+(c.rampHiMv/1000).toFixed(2)+
+      ' В → <b>'+c.maLo+' мА</b> рівно на цілі '+(t/1000).toFixed(2)+' В. '+
+      'Малий струм у кінці дає чесніший вимір ємності й щадить банки.';
+  document.querySelectorAll('.tgtb').forEach(b=>{
+    const m=/([\d.]+)\s*В/.exec(b.textContent);
+    b.classList.toggle('on', !!m && Math.round(parseFloat(m[1])*1000)===t);
+  });
+  const line=$('disRampLine'); if(!line)return;
+  const x0=t, x1=Math.max(c.rampHiMv,t+1);
+  const X=mv=>4+((mv-x0)/(x1-x0))*292;
+  const Y=ma=>70-(ma/(c.maHi||1))*62;
+  const pts=[];
+  for(let i=0;i<=60;i++){
+    const mv=x0+(x1-x0)*i/60;
+    pts.push(X(mv).toFixed(1)+','+Y(disSetpointMa(Math.round(mv),t)).toFixed(1));
+  }
+  line.setAttribute('points',pts.join(' '));
+  $('disRampArea').setAttribute('points','4,70 '+pts.join(' ')+' 296,70');
+  $('disRampL').textContent=c.maLo+' мА';
+  $('disRampR').textContent=c.maHi+' мА';
+  $('disRampLo').textContent='ціль '+(t/1000).toFixed(2)+' В';
+  $('disRampHi').textContent=(c.rampHiMv/1000).toFixed(2)+' В';
+  const nowMv=(disLast&&disLast.state==='run')?disLast.mv:0;
+  const nl=$('disRampNow');
+  if(nowMv>=x0&&nowMv<=x1){const x=X(nowMv);nl.setAttribute('x1',x);nl.setAttribute('x2',x);}
+  else {nl.setAttribute('x1',-9);nl.setAttribute('x2',-9);}
+}
 async function disStart(){
   if(!connected){toast('Підключіться');return;}
-  if(!confirm('🪫 Почати розряд до 7.2 В?\n\nСтрум обмежується ШІМом: 1000 мА на повному заряді, лінійно до 300 мА на 7.20 В.\nНавантаження буде увімкнено, резистор нагріється.\nНе лишайте пристрій без нагляду.'))return;
+  const t=disTargetMv(), c=disRampCfg;
+  if(!confirm('🪫 Почати розряд до '+(t/1000).toFixed(2)+' В?\n\nСтрум обмежується ШІМом: '+c.maHi+
+              ' мА на '+(c.rampHiMv/1000).toFixed(2)+' В, далі лінійно до '+c.maLo+' мА на '+
+              (t/1000).toFixed(2)+' В.\nНавантаження буде увімкнено, резистор нагріється.\n'+
+              'Не лишайте пристрій без нагляду.'))return;
   await ensureAuth();
-  const r=await cmd('DISCHARGE 7200',15000);
+  const r=await cmd('DISCHARGE '+t,15000);
   if(r&&r.ok){toast('✅ Розряд почато');disHist=[];disStep=10;disShow(r.discharge);}
   else toast('Помилка: '+((r&&r.err)||''),'err');
 }

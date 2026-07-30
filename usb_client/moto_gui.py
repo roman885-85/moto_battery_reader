@@ -186,6 +186,9 @@ class SerialWorker(threading.Thread):
 #
 #  Контекстного меню в Tk немає взагалі — його треба будувати руками, що й
 #  зроблено нижче для всіх полів вводу й обох панелей редактора.
+# Пункт списку «шунт беремо не з бібліотеки, а руками / зі свого пакета».
+RP_RS_MANUAL = "— вручну —"
+
 CTRL_MASK = 0x0004
 _CTRL_KEYS = {"c": ("c", "cyrillic_es"),      # С
               "v": ("v", "cyrillic_em"),      # М
@@ -1142,7 +1145,10 @@ class App:
             model = self.cbWiz.get()
             if not model:
                 messagebox.showwarning("Модель", "Оберіть модель для відновлення"); return
-        cmd = "WIZSTEP %d%s" % (idx, (" " + model) if model else "")
+        # Майстер бере ТІ САМІ правки, що й картка «Відновити еталон»: інакше
+        # галочки (наробіток, шунт, ємність) для нього нічого б не значили.
+        cmd = "WIZSTEP %d%s%s" % (idx, (" " + model) if model else "",
+                                  self._rp_fixes_arg())
         self.status("Виконую крок…")
         self.maybe_auth(lambda: self.cmd(cmd, 25.0, cb=lambda res: self._wiz_after(res)))
 
@@ -2134,17 +2140,38 @@ class App:
         except (ValueError, tk.TclError):
             return 0
 
+    def _rp_rsense(self):
+        """Вписаний вручну шунт у «сирих» одиницях чипа (мОм×100); 0 — не вписано."""
+        e = getattr(self, "eRpRs", None)
+        if e is None:
+            return 0
+        try:
+            return max(0, int(round(float((e.get() or "").strip().replace(",", ".") or 0) * 100)))
+        except (ValueError, tk.TclError):
+            return 0
+
+    def _rp_rsmodel(self):
+        """Модель, з еталона якої взяти шунт; порожньо — вручну / зі свого пакета."""
+        c = getattr(self, "cbRpRs", None)
+        v = c.get().strip() if c is not None else ""
+        return "" if v in ("", RP_RS_MANUAL) else v.split(" ")[0]
+
     def _rp_keys(self):
         k = [key for key, v in self.rpVars.items() if v.get()]
         # Вписана ємність — це вже згода її записати, галочки для неї може ще
         # не бути (рядок був недоступним, поки поле стояло порожнім).
         if self._rp_rated() and "rated" not in k:
             k.append("rated")
+        if (self._rp_rsense() or self._rp_rsmodel()) and "rsense" not in k:
+            k.append("rsense")
         return ",".join(k)
 
     def _rp_args(self):
         r = self._rp_rated()
-        return " FIXES=" + self._rp_keys() + (" RATED=%d" % r if r else "")
+        # Модель із бібліотеки й ручне число взаємно виключні — так само, як у полях.
+        rsm, rs = self._rp_rsmodel(), self._rp_rsense()
+        return (" FIXES=" + self._rp_keys() + (" RATED=%d" % r if r else "") +
+                (" RSMODEL=%s" % rsm if rsm else (" RSENSE=%d" % rs if rs else "")))
 
     def _rp_fixes_arg(self):
         if self.rpPlan is None:
@@ -2188,6 +2215,17 @@ class App:
         arg = f"RESTOREPLAN {model}" + ("" if reread else " NOREAD")
         self.cmd(arg, 20.0, cb=self._on_plan)
 
+    def _rp_rs_pick(self):
+        """Обрано модель — ручне число гасимо: писати можна тільки щось одне."""
+        if getattr(self, "eRpRs", None) is not None:
+            self.eRpRs.delete(0, "end")
+        self._rp_recalc()
+
+    def _rp_rs_typed(self):
+        if getattr(self, "cbRpRs", None) is not None and self._rp_rsense():
+            self.cbRpRs.set(RP_RS_MANUAL)
+        self._rp_recalc()
+
     def _rp_recalc(self):
         # Перерахунок робить ПРИСТРІЙ: паливомір залежить від того, який шунт
         # опиниться в чипі, і рахувати це вдруге тут означало б завести другу
@@ -2224,7 +2262,7 @@ class App:
             else:
                 ttk.Label(self.rpGrid, text="—", foreground="#6b6f58").grid(row=i, column=0, sticky="w")
             title = f.get("title", "") + "  ·  пише в " + f.get("chipsText", "")
-            if not avail and f.get("key") != "rated":
+            if not avail and f.get("key") not in ("rated", "rsense"):
                 title += "  (джерела немає)"
             # wraplength — щоб довга назва переносилась, а не заповзала під
             # стовпець значень і не обрізалась на вузькому вікні.
@@ -2245,6 +2283,34 @@ class App:
                 self.eRpRated.bind("<FocusOut>", lambda _e: self._rp_recalc())
                 ttk.Label(sub, text="(порожньо — лишити як є, крок %d)" % p.get("ratedStep", 25),
                           foreground="#6b6f58").pack(side="left")
+            # Шунт — так само правиться руками: у «чистому» моніторі його немає
+            # зовсім, і без нього струм, залишок і знос не рахуються. Другий
+            # шлях — узяти з еталона моделі: плата в усіх екземплярів однакова.
+            if f.get("key") == "rsense":
+                sub = ttk.Frame(cell); sub.pack(anchor="w", pady=(2, 0))
+                ttk.Label(sub, text="з еталона:", foreground="#b9bd86").pack(side="left")
+                lib = [RP_RS_MANUAL] + ["%s — %.2f мОм" % (m.get("model", ""), m.get("raw", 0) / 100.0)
+                                        for m in p.get("rsLib", [])]
+                self.cbRpRs = ttk.Combobox(sub, values=lib, state="readonly", width=22)
+                self.cbRpRs.set(RP_RS_MANUAL)
+                for v in lib[1:]:
+                    if v.split(" ")[0] == p.get("rsSrc", ""):
+                        self.cbRpRs.set(v)
+                self.cbRpRs.pack(side="left", padx=4)
+                self.cbRpRs.bind("<<ComboboxSelected>>", lambda _e: self._rp_rs_pick())
+                ttk.Label(sub, text="або вручну, мОм:", foreground="#b9bd86").pack(side="left")
+                self.eRpRs = ttk.Entry(sub, width=8)
+                self.eRpRs.pack(side="left", padx=4)
+                # Ручне поле заповнюємо ЛИШЕ коли значення вписали руками:
+                # інакше після вибору моделі заповнені обидва, і незрозуміло,
+                # що саме піде в чип.
+                if p.get("rsUser", 0) > 0 and not p.get("rsSrc"):
+                    self.eRpRs.insert(0, "%.2f" % (p["rsUser"] / 100.0))
+                self.eRpRs.bind("<Return>", lambda _e: self._rp_rs_typed())
+                self.eRpRs.bind("<FocusOut>", lambda _e: self._rp_rs_typed())
+                if not p.get("rsPack"):
+                    ttk.Label(sub, text="(у пакеті шунта немає!)",
+                              foreground="#d08a3a").pack(side="left")
             for c, key, col in ((2, "tpl", "#9a9c82"), (3, "pack", "#e7e3d2"), (4, "use", "#c8b04a")):
                 ttk.Label(self.rpGrid, text=f.get(key, "—"), font=mono,
                           foreground=col if avail else "#6b6f58").grid(row=i, column=c, sticky="e", padx=4)

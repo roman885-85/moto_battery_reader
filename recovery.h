@@ -550,7 +550,8 @@ static String wizStart() {
 // галочки, поставлені в картці правок, для Майстра нічого б не значили —
 // власник саме на це й наштовхнувся з наробітком.
 static String wizExecStep(int idx, const String &model, const String &fixes = String(),
-                          long ratedMah = -1) {
+                          long ratedMah = -1, long rsRaw = -1,
+                          const String &rsModel = String()) {
     BatteryDiag d; wizAnalyze(d);
     wizJournalLoad();
 
@@ -583,13 +584,8 @@ static String wizExecStep(int idx, const String &model, const String &fixes = St
             bool o33 = false, o38 = false;
             RestorePlan wp; const RestorePlan *wpp = nullptr;
             if (buildRestorePlanFor(m.c_str(), wp, true)) {
-                if (ratedMah >= 0) restorePlanSetRated(wp, ratedMah);
-                if (fixes.length()) {
-                    uint32_t mk = restoreMaskFromKeys(fixes.c_str(), wp);
-                    int user = wp.ratedUser;
-                    restorePlanSetMask(wp, mk);
-                    if (user > 0 && (mk & (1UL << RPF_RATED))) restorePlanSetRated(wp, user);
-                }
+                restorePlanOverride(wp, fixes.length() ? fixes.c_str() : nullptr,
+                                    ratedMah, rsRaw, rsModel.c_str());
                 wpp = &wp;
             }
             ok = performRestoreTemplate(m.c_str(), &o33, &o38, false, wpp);

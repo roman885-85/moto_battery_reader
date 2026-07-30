@@ -1708,19 +1708,40 @@ static void keepMonitorCalibration(uint8_t *dst, const uint8_t *src) {
 //  неадекватний»: ідентичність (DS2433) правильна, а монітор — від іншого
 //  екземпляра.
 //
-//  Тому шаблон монітора потрібен ЛИШЕ тоді, коли свого немає: чіп не читається,
-//  порожній (усе 0x00/0xFF) або без заводського шунта. У всіх інших випадках
-//  монітор пакета лишається СВОЇМ, а ми тільки обнуляємо лічильники й
-//  виставляємо паливомір — тобто робимо рівно те, що обіцяє операція.
+//  Тому шаблон монітора потрібен ЛИШЕ тоді, коли свого немає ЗОВСІМ: чіп не
+//  читається або порожній (усе 0x00/0xFF). У всіх інших випадках монітор пакета
+//  лишається СВОЇМ, а ми тільки обнуляємо лічильники й виставляємо паливомір —
+//  тобто робимо рівно те, що обіцяє операція.
+//
+//  ⚠️ Відсутній ШУНТ (0x38..0x39 = 0) сюда НЕ входить. Спершу він теж вважався
+//  причиною замінити монітор цілком — і на пакеті власника саме так і сталося:
+//  шунт у чипі був нульовий, тож у монітор поїхала копія донора разом із
+//  0x32..0x35 і 0x3A..0x3B, і рація далі не приймала пакет. Порожнє поле треба
+//  ЗАПОВНИТИ, а не міняти через нього всі 64 байти.
 static bool monitorIsOwn(const uint8_t *d38) {
     if (!d38) return false;
-    if (impresBmsRsense(d38) <= 0.0f) return false;      // немає заводського шунта
     bool allZero = true, allFF = true;
     for (int i = 0; i < DS2438_MEM_SIZE; i++) {
         if (d38[i] != 0x00) allZero = false;
         if (d38[i] != 0xFF) allFF = false;
     }
     return !allZero && !allFF;
+}
+
+// Шунт — заводське значення КОНКРЕТНОГО екземпляра, відновити його нізвідки.
+// Якщо в пакеті його немає, беремо з еталона моделі: він хоч і чужий, зате того
+// самого порядку (у родині 4409 це 0.045..0.046 Ом проти 0.025 в інших), а без
+// шунта струм, залишок і знос не рахуються взагалі. Це свідомий компроміс, і він
+// має бути ГУЧНИМ у лозі, а не тихою підміною.
+static bool fillMissingRsense(uint8_t *d38, const uint8_t *tpl38) {
+    if (!d38 || !tpl38) return false;
+    if (impresBmsRsense(d38) > 0.0f) return false;         // свій є — не чіпаємо
+    if (impresBmsRsense(tpl38) <= 0.0f) return false;      // і в еталона немає
+    d38[56] = tpl38[56]; d38[57] = tpl38[57];
+    Serial.printf("Restore: у пакеті НЕМАЄ заводського шунта — узято з еталона "
+                  "моделі (%.5f Ом). Струм і залишок будуть приблизними.\n",
+                  impresBmsRsense(d38));
+    return true;
 }
 
 // ------------------- Ініціалізація нового акумулятора -------------------
@@ -1845,8 +1866,19 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
         // verbatim — це ручний режим «байт-у-байт», там не втручаємось
         if (!verbatim && had38) keepMonitorCalibration(batteryDump2438, was38);
     }
-    if (ownMon) Serial.println("Restore: монітор пакета власний — лишаємо його, "
-                               "еталон DS2438 не пишемо");
+    if (ownMon) {
+        Serial.println("Restore: монітор пакета власний — лишаємо його, "
+                       "еталон DS2438 не пишемо");
+        // Єдине, чого може не бути у своєму моніторі, — шунт. Доливаємо ЛИШЕ його,
+        // і лише коли власник не задав опір сам: явний вибір людини (вручну або
+        // з бібліотеки еталонів) головніший за наш запасний варіант.
+        bool rsChosen = plan && plan->fx[RPF_RSENSE].on && plan->fx[RPF_RSENSE].useVal > 0;
+        if (BATTERY_TEMPLATES[t].d38 && !rsChosen) {
+            uint8_t tpl38[DS2438_MEM_SIZE];
+            memcpy_P(tpl38, BATTERY_TEMPLATES[t].d38, DS2438_MEM_SIZE);
+            fillMissingRsense(batteryDump2438, tpl38);
+        }
+    }
     if (!verbatim) {
         int cleared = applyFreshTail(BATTERY_TEMPLATES[t].fresh);
         if (cleared < 0) cleared = impresEraseTail(batteryDump);
@@ -1912,6 +1944,28 @@ static String restorePlanJson(const RestorePlan &p) {
     j += ",\"ratedStep\":"; j += IMPRES_RATED_STEP;
     j += ",\"ratedMin\":";  j += IMPRES_RATED_MIN_MAH;
     j += ",\"ratedMax\":";  j += IMPRES_RATED_MAX_MAH;
+    // Шунт — у «сирих» одиницях чипа (Ом×100000 == мОм×100), щоб клієнт не
+    // ганяв дроби туди-сюди і не втрачав сотих на округленні.
+    j += ",\"rsPack\":";    j += (int)p.rsRawPack;
+    j += ",\"rsTpl\":";     j += (int)p.rsRawTpl;
+    j += ",\"rsUser\":";    j += (int)p.rsUser;
+    j += ",\"rsSrc\":\"";   j += p.rsSrc;
+    j += "\",\"rsMin\":";   j += (int)RP_RS_MIN_RAW;
+    j += ",\"rsMax\":";     j += (int)RP_RS_MAX_RAW;
+    // Бібліотека: у кожної вшитої моделі свій шунт — його можна взяти звідси,
+    // коли в самому пакеті шунта немає.
+    j += ",\"rsLib\":[";
+    bool first = true;
+    for (int i = 0; i < BATTERY_TEMPLATE_COUNT; i++) {
+        uint16_t raw = templateRsenseRaw(i);
+        if (!raw) continue;                     // без монітора нема чого пропонувати
+        if (!first) j += ",";
+        first = false;
+        j += "{\"model\":\""; j += BATTERY_TEMPLATES[i].name;
+        j += "\",\"raw\":";   j += (int)raw;
+        j += "}";
+    }
+    j += "]";
     j += ",\"icaTpl\":";    j += (int)p.icaTpl;
     j += ",\"icaPack\":";   j += (int)p.icaPack;
     j += ",\"icaUse\":";    j += (int)p.icaUse;
@@ -1937,19 +1991,43 @@ static String restorePlanJson(const RestorePlan &p) {
     return j;
 }
 
+// ── Накласти на план те, що прийшло ззовні ─────────────────────────────────
+// Один код на всі три входи (веб, USB-команди, Майстер): інакше кожен із них
+// по-своєму трактує «маска не має стирати введене вручну», і галочка в клієнті
+// починає означати різне залежно від того, звідки її натиснули.
+//   fixes   — список ключів через кому (nullptr/"" — не чіпати маску)
+//   rated   — ємність нових банок, <0 — не чіпати
+//   rsRaw   — шунт числом (мОм×100), <0 — не чіпати
+//   rsModel — шунт із бібліотеки еталонів за назвою моделі; головніший за rsRaw
+static void restorePlanOverride(RestorePlan &p, const char *fixes, long rated,
+                                long rsRaw, const char *rsModel) {
+    if (rated >= 0) restorePlanSetRated(p, rated);
+    if (rsModel && *rsModel)
+        restorePlanSetRsense(p, templateRsenseRawByName(rsModel), rsModel);
+    else if (rsRaw >= 0) restorePlanSetRsense(p, rsRaw);
+    if (fixes && *fixes) {
+        uint32_t m = restoreMaskFromKeys(fixes, p);
+        int  user   = p.ratedUser;              // маска не має стирати введене
+        long rsUser = p.rsUser;
+        char rsSrc[16]; snprintf(rsSrc, sizeof(rsSrc), "%s", p.rsSrc);
+        restorePlanSetMask(p, m);
+        if (user > 0 && (m & (1UL << RPF_RATED))) restorePlanSetRated(p, user);
+        if (rsUser > 0 && (m & (1UL << RPF_RSENSE))) restorePlanSetRsense(p, rsUser, rsSrc);
+    }
+}
+
 // GET /api/restore/plan?model=XXX[&fixes=a,b][&read=0]
 // Що саме буде виправлено в еталоні перед записом у ЦЕЙ пакет.
 // rated — ємність нових банок, вписана вручну. Ставимо ДО маски: увімкнення
 // правки ємності міняє й паливомір, і робити це двома незалежними кроками
 // означало б показати проміжне (неправильне) число.
 static void applyPlanArgs(RestorePlan &p) {
-    if (server.hasArg("rated")) restorePlanSetRated(p, server.arg("rated").toInt());
-    if (server.hasArg("fixes")) {
-        uint32_t m = restoreMaskFromKeys(server.arg("fixes").c_str(), p);
-        int user = p.ratedUser;                 // маска не має стирати введене
-        restorePlanSetMask(p, m);
-        if (user > 0 && (m & (1UL << RPF_RATED))) restorePlanSetRated(p, user);
-    }
+    String rsm = server.arg("rsmodel"); rsm.trim(); rsm.toUpperCase();
+    restorePlanOverride(p,
+        server.hasArg("fixes")  ? server.arg("fixes").c_str() : nullptr,
+        server.hasArg("rated")  ? server.arg("rated").toInt() : -1,
+        server.hasArg("rsense") ? server.arg("rsense").toInt() : -1,
+        rsm.c_str());
 }
 
 void handleRestorePlan() {
@@ -2313,7 +2391,9 @@ void handleWizardStep() {
     // галочки в картці правок для нього нічого не значили б.
     String wfx = server.hasArg("fixes") ? server.arg("fixes") : String();
     long wrated = server.hasArg("rated") ? server.arg("rated").toInt() : -1;
-    server.send(200, "application/json", wizExecStep(idx, model, wfx, wrated));
+    long wrs    = server.hasArg("rsense") ? server.arg("rsense").toInt() : -1;
+    String wrsm = server.arg("rsmodel"); wrsm.trim(); wrsm.toUpperCase();
+    server.send(200, "application/json", wizExecStep(idx, model, wfx, wrated, wrs, wrsm));
 }
 // POST /api/wizard/reset — скинути журнал продовження ПОТОЧНОГО АКБ (під паролем).
 void handleWizardReset() {

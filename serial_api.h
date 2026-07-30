@@ -34,12 +34,13 @@
 //   DISCHARGE [мВ]       -> почати керований розряд (типово до 7200 мВ)
 //   DISCHARGE STOP       -> зупинити розряд;  DISCHARGE ? -> стан розряду
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
-//   RESTORE <MODEL> [VERBATIM] [FIXES=..] [RATED=мАг] -> відновити модельну
+//   RESTORE <MODEL> [VERBATIM] [FIXES=..] [RATED=мАг] [RSENSE=мОм*100|RSMODEL=..]
+//            -> відновити модельну
 //                          частину еталона (без чужого навченого хвоста), з
 //                          правками під цей пакет; VERBATIM — байт-у-байт
-//   RESTOREPLAN <MODEL> [NOREAD] [FIXES=..] [RATED=мАг] -> що саме буде
+//   RESTOREPLAN <MODEL> [NOREAD] [FIXES=..] [RATED=мАг] [RSENSE=..|RSMODEL=..] -> що саме буде
 //                          виправлено в еталоні під цей пакет (нічого не пише)
-//   FIXES <MODEL> [FIXES=..] [RATED=мАг] -> записати ЛИШЕ правки до того, що вже
+//   FIXES <MODEL> [FIXES=..] [RATED=мАг] [RSENSE=..|RSMODEL=..] -> записати ЛИШЕ правки до того, що вже
 //                          в чипах; еталон і навчена калібровка не чіпаються
 //   WIZARD               -> Майстер: зчитати + аналіз/проблеми/план (JSON)
 //   WIZSTEP <idx> [MODEL]-> Майстер: виконати крок плану (model для відновлення)
@@ -334,13 +335,17 @@ static String serSound(const String &argIn) {
     return j;
 }
 
-// Хвіст команд RESTORE / RESTOREPLAN: «<МОДЕЛЬ> [VERBATIM] [NOREAD] [FIXES=a,b]».
+// Хвіст команд RESTORE / RESTOREPLAN: «<МОДЕЛЬ> [VERBATIM] [NOREAD] [FIXES=a,b]
+// [RATED=мАг] [RSENSE=мОм*100] [RSMODEL=МОДЕЛЬ]». RSENSE/RSMODEL — шунт, коли в
+// пакеті свого немає: числом або з бібліотеки еталонів.
 // Одна функція на обидві команди — щоб вони не розійшлися в тому, що вважають
 // моделлю, а що прапорцем. Модель — перше слово, яке не є прапорцем; регістр
 // моделі й прапорців не має значення, а от ключі правок завжди малими.
-struct SerRestoreArgs { String model, fixes; bool verbatim, reread, haveFixes; long rated; };
+struct SerRestoreArgs { String model, fixes, rsModel; bool verbatim, reread, haveFixes;
+                       long rated, rsense; };
 static SerRestoreArgs serParseRestore(const String &argIn) {
-    SerRestoreArgs a; a.verbatim = false; a.reread = true; a.haveFixes = false; a.rated = -1;
+    SerRestoreArgs a; a.verbatim = false; a.reread = true; a.haveFixes = false;
+    a.rated = -1; a.rsense = -1;
     String rest = argIn; rest.trim();
     while (rest.length()) {
         int s = rest.indexOf(' ');
@@ -353,6 +358,9 @@ static SerRestoreArgs serParseRestore(const String &argIn) {
         else if (up == "NOREAD")          a.reread = false;
         else if (up.startsWith("FIXES=")) { a.fixes = tok.substring(6); a.fixes.toLowerCase(); a.haveFixes = true; }
         else if (up.startsWith("RATED="))  a.rated = up.substring(6).toInt();
+        // Шунт: RSENSE=4565 — числом (мОм×100), RSMODEL=PMNN4488A — з бібліотеки.
+        else if (up.startsWith("RSENSE="))  a.rsense  = up.substring(7).toInt();
+        else if (up.startsWith("RSMODEL=")) a.rsModel = up.substring(8);
         else if (!a.model.length())       a.model = up;
     }
     return a;
@@ -361,13 +369,8 @@ static SerRestoreArgs serParseRestore(const String &argIn) {
 // Ємність нових банок ставимо ДО маски: увімкнення правки ємності міняє й
 // паливомір, тож двома незалежними кроками ми показали б проміжне число.
 static void serApplyPlanArgs(RestorePlan &p, const SerRestoreArgs &a) {
-    if (a.rated >= 0) restorePlanSetRated(p, a.rated);
-    if (a.haveFixes) {
-        uint32_t m = restoreMaskFromKeys(a.fixes.c_str(), p);
-        int user = p.ratedUser;                  // маска не має стирати введене
-        restorePlanSetMask(p, m);
-        if (user > 0 && (m & (1UL << RPF_RATED))) restorePlanSetRated(p, user);
-    }
+    restorePlanOverride(p, a.haveFixes ? a.fixes.c_str() : nullptr,
+                        a.rated, a.rsense, a.rsModel.c_str());
 }
 
 // Каталог операцій (operations.h) — щоб десктопний клієнт малював той самий
@@ -537,13 +540,14 @@ static void serialExec(const String &line) {
                                          if (e) { String r = "{\"ok\":false,\"err\":\""; r += e; r += "\"}"; sResp(r); }
                                          else sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); } }
     else if (cmd == "WIZARD")   { sResp(wizStart()); }
-    // WIZSTEP <idx> [MODEL] [FIXES=…] [RATED=…]
+    // WIZSTEP <idx> [MODEL] [FIXES=…] [RATED=…] [RSENSE=…|RSMODEL=…]
     else if (cmd == "WIZSTEP")  { int s2 = arg.indexOf(' ');
                                   String si = (s2 < 0) ? arg : arg.substring(0, s2);
                                   String rest = (s2 < 0) ? String("") : arg.substring(s2 + 1);
                                   si.trim();
                                   SerRestoreArgs wa = serParseRestore(rest);
-                                  sResp(wizExecStep(si.toInt(), wa.model, wa.fixes, wa.rated)); }
+                                  sResp(wizExecStep(si.toInt(), wa.model, wa.fixes, wa.rated,
+                                                    wa.rsense, wa.rsModel)); }
     else if (cmd == "WIZRESET") { wizJournalClear(); sResp("{\"ok\":true}"); }
     else if (cmd == "WIZLIST")  { sResp(wizJournalListJson()); }
     else if (cmd == "WIZDEL")   { String s = arg; s.trim(); s.toUpperCase();

@@ -639,6 +639,13 @@ void handleDumpInfo() {
     json += ",\"authReason\":\"" + String(reason) + "\"";
     json += ",\"headerOk\":" + String(hdrOk ? "true" : "false");
     json += ",\"mirrorOk\":" + String(mirOk ? "true" : "false");
+    // Друга 32-байтна сума (блок профілю моделі) і запис COPYRIGHT — раніше не
+    // перевірялись узагалі. copyright: "ok" / "broken" / "none" (немає — це
+    // норма для 4409A та APLI4810C, вони його штатно не мають).
+    json += ",\"profileOk\":" + String(impresProfileOk(batteryDump) ? "true" : "false");
+    json += ",\"copyright\":\"" + String(!impresHasCopyright(batteryDump) ? "none"
+                                       : impresRecordOk(batteryDump, IMPRES_COPYRIGHT) ? "ok"
+                                       : "broken") + "\"";
     // Стан навченого калібрувального хвоста 0x18A..0x1FF — ключове поле для
     // ремонту після заміни елементів (див. impres_format.h).
     { int t = impresTailState(batteryDump);
@@ -1155,6 +1162,23 @@ void repairDumps() {
     }
     if (hasDump) {
         fixHeaderChecksum(batteryDump);
+
+        // Запис COPYRIGHT (0x0E0, довжина 0x20) має звичайну суму Σ≡0x5A, але
+        // ремонт його НЕ бачив: ланцюг нижче йде лише від 0x120, а цей запис
+        // лежить окремо, поза ланцюгом. Правимо явно, за фіксованою адресою.
+        // Моделі без нього (4409A, APLI4810C) пропускаються — його відсутність
+        // не є пошкодженням, рація такі пакети приймає.
+        if (impresFixCopyright(batteryDump))
+            Serial.println("repair: COPYRIGHT record @0x0E0 checksum fixed");
+
+        // Блок профілю моделі 0x021..0x040 (Σ≡0x00) свідомо НЕ правимо: він
+        // побайтово однаковий у всіх екземплярів моделі, тож зіпсована сума
+        // означає пошкоджені ДАНІ, і лікується це записом модельної частини з
+        // еталона, а не підгонкою байта. Тільки повідомляємо.
+        if (!impresProfileOk(batteryDump))
+            Serial.println("repair: WARNING profile block 0x021..0x040 checksum is wrong "
+                           "-> потрібен запис модельної частини еталона");
+
         // Перерахунок контрольних сум записів. Раніше тут «шукали запис 0x17»
         // як «байт 0x17, за яким 0x00», тобто трактували довжину як тег і
         // правили суму випадковому запису. Тепер ідемо ЛАНЦЮГОМ від 0x120

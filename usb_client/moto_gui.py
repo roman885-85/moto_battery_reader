@@ -1556,7 +1556,17 @@ class App:
         if "genuine" in d:
             self.ovAuth.config(text=("OK" if d["genuine"] else "РИЗИК (" + str(d.get("authReason", "")) + ")"))
         if "headerOk" in d:
-            self.ovInteg.config(text=("заголовок " + ("OK" if d["headerOk"] else "✗") + " · дзеркало " + ("OK" if d.get("mirrorOk") else "✗")))
+            # Профіль моделі — друга 32-байтна сума (0x021–0x040, Σ≡0x00).
+            # COPYRIGHT є не в усіх моделей: 4409A й APLI4810C його штатно не
+            # мають, і рація такі пакети приймає, тож «—» тут не помилка.
+            t = ("заголовок " + ("OK" if d["headerOk"] else "✗")
+                 + " · дзеркало " + ("OK" if d.get("mirrorOk") else "✗"))
+            if "profileOk" in d:
+                t += " · профіль " + ("OK" if d["profileOk"] else "✗ побитий")
+            if "copyright" in d:
+                t += " · © " + {"ok": "OK", "broken": "✗ сума хибна",
+                                "none": "немає (норма для моделі)"}.get(d["copyright"], "?")
+            self.ovInteg.config(text=t)
         self.dSerial.config(text=d.get("serial") or "—")
         etm = d.get("etmSec")
         if isinstance(etm, int):

@@ -596,7 +596,12 @@ async function refresh(){
   else {$('cap').textContent='рахує рація';$('wear').textContent='рахує рація';}
   if(d.ccaCycles!==undefined)$('cyc').textContent=d.ccaCycles+' зар. / '+d.dcaCycles+' розр.';
   if(typeof d.genuine==='boolean')$('auth').innerHTML=d.genuine?'<span class="badge bo">OK</span>':'<span class="badge bb">РИЗИК ('+(d.authReason||'')+')</span>';
-  if(typeof d.headerOk==='boolean')$('integ').innerHTML='заголовок '+(d.headerOk?'✅':'❌')+' · дзеркало '+(d.mirrorOk?'✅':'❌');
+  // Профіль моделі — друга 32-байтна сума (0x021–0x040). COPYRIGHT є не в усіх
+  // моделей: 4409A й APLI4810C його штатно не мають, тож «—» тут не помилка.
+  if(typeof d.headerOk==='boolean')$('integ').innerHTML='заголовок '+(d.headerOk?'✅':'❌')
+    +' · дзеркало '+(d.mirrorOk?'✅':'❌')
+    +(d.profileOk===undefined?'':' · профіль '+(d.profileOk?'✅':'❌'))
+    +(d.copyright===undefined?'':' · ©'+({ok:'✅',broken:'❌',none:'—'}[d.copyright]||'?'));
   $('dI').textContent=(d.currentMa!==undefined?d.currentMa:'—')+' мА';
   $('dSer').textContent=d.serial||'—';
   const mah=(v,raw)=>v!==undefined?('≈'+v+' мА·год (raw '+raw+')'):'—';

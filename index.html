@@ -370,7 +370,8 @@
             <h2>🛠 Ремонт цілісності</h2>
             <div class="note i">Перераховує контрольні суми (заголовок Σ≡0x41, записи Σ≡0x5A) і відновлює
                 дзеркало калібрування з уцілілого DS2438. Використовуйте, якщо рація «не бачить» АКБ, а чіп
-                читається. Стан: заголовок <b id="intHdr">—</b>, дзеркало <b id="intMir">—</b>.</div>
+                читається. Стан: заголовок <b id="intHdr">—</b>, дзеркало <b id="intMir">—</b>,
+                профіль моделі <b id="intProf">—</b>, COPYRIGHT <b id="intCp">—</b>.</div>
             <input type="password" class="pw" id="pwRep" placeholder="🔑 Пароль адміністратора">
             <button class="btn btn-warn" style="width:100%" onclick="repairFw()">🛠 ВІДНОВИТИ ЦІЛІСНІСТЬ</button>
         </div>
@@ -700,6 +701,16 @@ async function refreshAll(){
             if(typeof d.headerOk==='boolean'){
                 $('intHdr').textContent=d.headerOk?'✅ OK':'❌ пошкоджено';
                 $('intMir').textContent=d.mirrorOk?'✅ OK':'❌ розсинхрон';
+                // Профіль моделі — друга 32-байтна сума (0x021–0x040, Σ≡0x00).
+                // Автоматично НЕ правиться: блок побайтово однаковий у всіх
+                // екземплярів моделі, тож хибна сума = побиті дані, і лікується
+                // це записом модельної частини еталона.
+                if($('intProf'))$('intProf').textContent =
+                    d.profileOk===undefined?'—':(d.profileOk?'✅ OK':'❌ побитий — запишіть модельну частину');
+                // COPYRIGHT є не в усіх моделей: 4409A й APLI4810C його штатно
+                // не мають, і рація такі пакети приймає. «немає» — не помилка.
+                if($('intCp'))$('intCp').textContent =
+                    {ok:'✅ OK',broken:'❌ сума хибна',none:'— немає (норма для цієї моделі)'}[d.copyright]||'—';
             }
             if(typeof d.genuine==='boolean'){
                 $('ovAuth').innerHTML=d.genuine

@@ -245,6 +245,85 @@ static void serSetCap(const String &arg) {
              : "{\"ok\":false,\"err\":\"write failed\"}");
 }
 
+// SOUND — налаштування звуку через USB. Формати:
+//   SOUND               поточні значення, межі й перелік сигналів
+//   SOUND SET tempo=150 glide=200 vol=180 en=1 clk=0 atk=30 rel=80 st=-2
+//   SOUND TEST ok       прослухати сигнал (нічого не змінює)
+//   SOUND RESET         повернути заводські
+// Межі затискає buzzSetCfg() — та сама функція, що й для вебу, тож USB не може
+// виставити те, чого не дозволяє веб, і навпаки.
+static String serSound(const String &argIn) {
+    String a = argIn; a.trim();
+    String head = a; int sp = a.indexOf(' ');
+    if (sp >= 0) head = a.substring(0, sp);
+    head.toUpperCase();
+    String rest = (sp < 0) ? String("") : a.substring(sp + 1);
+    rest.trim();
+
+    if (head == "TEST") {
+        rest.toLowerCase();
+        // Невідомий ключ і вимкнений звук — різні речі: перше помилка клієнта,
+        // друге штатна тиша, яку треба пояснити, а не видати за програвання.
+        if (!buzzFindSignal(rest.c_str()))
+            return String("{\"ok\":false,\"err\":\"невідомий сигнал '") + rest + "'\"}";
+        uint32_t ms = buzzPlayNamed(rest.c_str());
+        String r = String("{\"ok\":true,\"name\":\"") + rest + "\",\"ms\":" + (int)ms +
+                   ",\"played\":" + (ms ? "true" : "false");
+        if (!ms) r += ",\"note\":\"звук вимкнено в налаштуваннях\"";
+        return r + "}";
+    }
+    if (head == "" || head == "?" || head == "GET") {
+        String j = soundFullJson(); j.replace("\"status\":\"success\"", "\"ok\":true");
+        return j;
+    }
+    if (head != "SET" && head != "RESET")
+        return "{\"ok\":false,\"err\":\"очікується SET / TEST / RESET\"}";
+
+    BuzzCfg c = buzzGetCfg();
+    if (head == "RESET") {
+        BuzzCfg d = { true, true, BUZZER_VOLUME, 100, 100,
+                      BUZZ_ATTACK_MS, BUZZ_RELEASE_MS, 0 };
+        c = d;
+        rest = "";
+    }
+    String test;
+    // Розбираємо «ключ=значення», розділені пробілами. Невідомий ключ — це
+    // помилка, а не мовчазне ігнорування: інакше друкарська помилка виглядала б
+    // як «пристрій не слухається».
+    while (rest.length()) {
+        int s = rest.indexOf(' ');
+        String tok = (s < 0) ? rest : rest.substring(0, s);
+        rest = (s < 0) ? String("") : rest.substring(s + 1);
+        rest.trim();
+        int eq = tok.indexOf('=');
+        if (eq < 0) return String("{\"ok\":false,\"err\":\"очікується ключ=значення, а не '") + tok + "'\"}";
+        String k = tok.substring(0, eq), v = tok.substring(eq + 1);
+        k.trim(); k.toLowerCase(); v.trim();
+        long n = v.toInt();
+        bool b = !(v == "0" || v == "off" || v == "false" || v == "no");
+        if      (k == "en"    || k == "enabled")   c.enabled   = b;
+        else if (k == "clk"   || k == "click")     c.clickOn   = b;
+        else if (k == "vol"   || k == "volume")    c.volume    = (uint8_t)constrain(n, 0, 255);
+        else if (k == "tempo")                     c.tempoPct  = (uint16_t)constrain(n, 0, 1000);
+        else if (k == "glide")                     c.glidePct  = (uint16_t)constrain(n, 0, 1000);
+        else if (k == "atk"   || k == "attack")    c.attackMs  = (uint16_t)constrain(n, 0, 1000);
+        else if (k == "rel"   || k == "release")   c.releaseMs = (uint16_t)constrain(n, 0, 1000);
+        else if (k == "st"    || k == "semitones") c.semitones = (int8_t)constrain(n, -12, 12);
+        else if (k == "test")                      { v.toLowerCase(); test = v; }
+        else return String("{\"ok\":false,\"err\":\"невідомий ключ '") + k + "'\"}";
+    }
+    buzzSetCfg(c);
+    bool saved = soundCfgSave();
+    uint32_t ms = test.length() ? buzzPlayNamed(test.c_str()) : 0;
+
+    String j = soundFullJson();
+    j.replace("\"status\":\"success\"", "\"ok\":true");
+    j.remove(j.length() - 1);
+    j += ",\"saved\":"; j += saved ? "true" : "false";
+    j += ",\"testMs\":"; j += (int)ms; j += "}";
+    return j;
+}
+
 // Каталог операцій (operations.h) — щоб десктопний клієнт малював той самий
 // список у тому самому порядку, що екран і веб, без власних копій текстів.
 static String serBuildOps() {
@@ -372,6 +451,7 @@ static void serialExec(const String &line) {
                                                  : String(",\"err\":\"збій запису\"}");
                                          sResp(r); } }
     else if (cmd == "OPS")      { sResp(serBuildOps()); }
+    else if (cmd == "SOUND")    { sResp(serSound(arg)); }
     // DISCHARGE [мВ] — почати розряд; DISCHARGE STOP — зупинити; DISCHARGE? — стан.
     else if (cmd == "DISCHARGE"){ String a2 = arg; a2.trim(); a2.toUpperCase();
                                   if (a2 == "STOP") { dischargeStop(DISR_USER); sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); }

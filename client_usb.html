@@ -8,6 +8,11 @@
     .chipb{display:inline-block;vertical-align:middle;margin-left:8px;padding:2px 8px;
            border-radius:999px;font-size:.62em;font-weight:700;
            background:#2a335c;color:#cfe3ff;border:1px solid #3d4a7d;white-space:nowrap}
+    /* .chipb каже «пише в таку-то мікросхему»; .nochip — протилежне, і плутати
+       ці два сенси не можна навіть кольором. */
+    .nochip{display:inline-block;vertical-align:middle;margin-left:8px;padding:2px 8px;
+           border-radius:999px;font-size:.62em;font-weight:700;
+           background:#1e3324;color:#bfe3c8;border:1px solid #3d6b4a;white-space:nowrap}
 
 :root{ /* Мілітарна тема НГУ: оливково-хакі поле + акцент «краповий» */
  --bg:#14160f;--card:#20241a;--line:#3b4230;--txt:#e7e3d2;--mut:#9a9c82;
@@ -43,6 +48,21 @@ header h1{font-size:1.05em;margin:0;color:var(--gold)}
 input,select,textarea{background:#171a10;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:8px}
 input,select{width:auto}.pw{width:100%;margin:6px 0}
 .bar{font-size:.8em;color:var(--mut)}
+/* ---- Налаштування звуку --------------------------------------------------
+   Підпис / повзунок / значення. Значення показуємо завжди: «десь посередині»
+   нічого не означає, а «150 %» можна запам'ятати й повторити. */
+.snd{display:grid;grid-template-columns:auto 1fr auto;gap:9px 12px;align-items:center;
+     margin-top:8px;font-size:.9em}
+.snd label{color:var(--mut);white-space:nowrap}
+.snd input[type=range]{width:100%;padding:0;accent-color:var(--khaki);cursor:pointer;border:none;background:none}
+.snd .sv{font-family:ui-monospace,monospace;font-weight:700;min-width:66px;text-align:right}
+.sndsw{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:4px}
+.sndsw label{display:flex;align-items:center;gap:6px;cursor:pointer}
+.sndsw input{accent-color:var(--khaki);width:16px;height:16px;cursor:pointer;padding:0}
+.sndtest{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.sndtest button{padding:8px 12px;border-radius:8px;border:1px solid var(--line);
+                background:#171a10;color:var(--txt);cursor:pointer;font-size:.85em}
+.sndtest button:hover{border-color:var(--khaki)}
 /* ---- Монітор розряду (той самий вигляд, що й у веб-версії пристрою) --------
    Розряд триває годинами, тож це панель процесу, а не рядок тексту: пульсуючий
    індикатор, смуга прогресу з «течією» (видно, що процес живий і між
@@ -425,6 +445,48 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <button class="btn b-warn" onclick="initBattery()">🆕 ЗАПИСАТИ НОВИЙ АКБ</button>
     </div>
 
+<div class="card">
+      <h2>🔊 Налаштування звуку <span class="nochip">в АКБ не пише</span></h2>
+      <div class="note i">Нічого не пише в акумулятор — це налаштування самого пристрою; воно
+        зберігається в його пам'яті й переживає перезавантаження. Кожен п'єзо має свій резонанс:
+        на одному звук м'який, на іншому ледь чутний. Крутіть повзунок і одразу тисніть «прослухати».</div>
+      <div class="sndsw">
+        <label><input type="checkbox" id="sndEn" onchange="sndPush()"> Звук увімкнено</label>
+        <label><input type="checkbox" id="sndClk" onchange="sndPush()"> Блiп при перегортанні меню</label>
+      </div>
+      <div class="snd">
+        <label for="sndVol">Гучність</label>
+        <input type="range" id="sndVol" min="0" max="255" oninput="sndShow()" onchange="sndPush()">
+        <span class="sv" id="svVol">—</span>
+
+        <label for="sndTempo">Швидкість</label>
+        <input type="range" id="sndTempo" min="25" max="400" step="5" oninput="sndShow()" onchange="sndPush()">
+        <span class="sv" id="svTempo">—</span>
+
+        <label for="sndGlide">Перетікання нот</label>
+        <input type="range" id="sndGlide" min="0" max="300" step="5" oninput="sndShow()" onchange="sndPush()">
+        <span class="sv" id="svGlide">—</span>
+
+        <label for="sndAtk">Наростання</label>
+        <input type="range" id="sndAtk" min="0" max="200" step="2" oninput="sndShow()" onchange="sndPush()">
+        <span class="sv" id="svAtk">—</span>
+
+        <label for="sndRel">Згасання</label>
+        <input type="range" id="sndRel" min="0" max="400" step="5" oninput="sndShow()" onchange="sndPush()">
+        <span class="sv" id="svRel">—</span>
+
+        <label for="sndSt">Висота тону</label>
+        <input type="range" id="sndSt" min="-12" max="12" step="1" oninput="sndShow()" onchange="sndPush()">
+        <span class="sv" id="svSt">—</span>
+      </div>
+      <div class="note i" id="sndHint">Швидкість розтягує і ноти, і перетікання разом, тож повільна фраза
+        лишається злитою. Перетікання 0 % — ноти перемикаються стрибком, 200–300 % — довге ковзання.
+        Висота тону зсуває всю мелодію: якщо ваш п'єзо на заводських частотах тихий, підніміть її на
+        кілька півтонів і знайдіть його резонанс на слух.</div>
+      <div class="sndtest" id="sndSignals"></div>
+      <button class="btn b-warn" onclick="sndReset()">↩️ Заводські значення</button>
+    </div>
+
 <div class="zone zd">🧪 Ручний режим / експерт — для аналізу та нештатних ситуацій</div>
 
 <div class="card">
@@ -516,7 +578,7 @@ async function connect(){
     log('> порт відкрито, очікування завантаження ESP32 (1.6 с)...');
     await new Promise(r=>setTimeout(r,1600));   // ESP32 перезавантажується при відкритті порту
     const p=await cmd('PING',3000);
-    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')'; await refresh(); await loadTemplates();
+    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')'; await refresh(); await loadTemplates(); await sndLoad();
                  await disTick(); }   // одразу підхопити розряд, якщо він уже йде
     else { $('st').textContent='Немає відповіді (перевірте порт/швидкість)'; }
   }catch(e){ log('! '+e.message); $('st').textContent='Помилка: '+e.message; disconnect(); }
@@ -841,6 +903,68 @@ async function setModel(){
   const r=await cmd('SETMODEL '+m,15000);
   toast(r.ok?('✅ Модель записано: '+(r.model||m)):('Помилка: '+(r.err||'')));
   await refresh(); setBusy(false);
+}
+
+// ============ НАЛАШТУВАННЯ ЗВУКУ ============
+// Межі повзунків і перелік сигналів приходять із пристрою (SOUND): власна копія
+// тут розійшлася б із buzzCfgClamp() після наступної правки прошивки.
+let sndLimits=null, sndTimer=null, sndBusy=false;
+const SND_FIELDS=[
+  ['volume','sndVol','svVol',    v=>v+' / 255'],
+  ['tempo','sndTempo','svTempo', v=>v+' %'],
+  ['glide','sndGlide','svGlide', v=>v==0?'вимкн.':(v+' %')],
+  ['attack','sndAtk','svAtk',    v=>v+' мс'],
+  ['release','sndRel','svRel',   v=>v+' мс'],
+  ['semitones','sndSt','svSt',   v=>v==0?'заводська':((v>0?'+':'')+v+' пів.')],
+];
+const SND_KEY={volume:'vol',tempo:'tempo',glide:'glide',attack:'atk',release:'rel',semitones:'st'};
+function sndShow(){
+  SND_FIELDS.forEach(([k,id,vid,fmt])=>{const e=$(id); if(e) $(vid).textContent=fmt(+e.value);});
+}
+function sndFill(r){
+  if(!r||!r.sound)return;
+  sndLimits=r.limits||{};
+  $('sndEn').checked=!!r.sound.enabled; $('sndClk').checked=!!r.sound.click;
+  SND_FIELDS.forEach(([k,id])=>{
+    const e=$(id), lim=sndLimits[k];
+    if(lim){e.min=lim[0]; e.max=lim[1];}
+    e.value=r.sound[k];
+  });
+  sndShow();
+  const box=$('sndSignals');
+  if(box&&r.signals) box.innerHTML=r.signals.map(s=>
+    '<button onclick="sndTest(\''+s.key+'\')">▶ '+wesc(s.title)+' <span style="opacity:.6">'+s.ms+' мс</span></button>').join('');
+  if(r.hasBuzzer===false)
+    $('sndHint').innerHTML='⚠️ У цій збірці буззер не підключено (BUZZER_PIN у settings.h не задано) — '+
+      'налаштування зберігаються, але звучати нема чому.';
+}
+async function sndLoad(){
+  if(!connected)return;
+  sndFill(await cmd('SOUND',5000));
+}
+// Повзунок шлють із затримкою: інакше кожен піксель руху — окрема команда й
+// запис у SPIFFS, а її ресурс перезапису не безмежний.
+function sndPush(test){ clearTimeout(sndTimer); sndTimer=setTimeout(()=>sndSend(test),250); }
+async function sndSend(test){
+  if(!connected){toast('Підключіться');return;}
+  if(sndBusy)return;
+  sndBusy=true;
+  let a='SET en='+($('sndEn').checked?1:0)+' clk='+($('sndClk').checked?1:0);
+  SND_FIELDS.forEach(([k,id])=>a+=' '+SND_KEY[k]+'='+$(id).value);
+  if(test)a+=' test='+test;
+  const r=await cmd('SOUND '+a,6000);
+  if(r&&r.ok)sndFill(r); else toast('Звук: '+((r&&r.err)||'збій'));
+  sndBusy=false;
+}
+// «Прослухати» надсилає й поточні значення повзунків: користувач має почути те,
+// що бачить на екрані, а не те, що встигло долетіти минулою командою.
+function sndTest(name){ clearTimeout(sndTimer); sndSend(name); }
+async function sndReset(){
+  if(!connected){toast('Підключіться');return;}
+  clearTimeout(sndTimer);
+  const r=await cmd('SOUND RESET',6000);
+  if(r&&r.ok){ sndFill(r); await cmd('SOUND TEST ok',4000); toast('🔊 Повернуто заводські значення'); }
+  else toast('Звук: '+((r&&r.err)||'збій'));
 }
 
 // Список вшитих моделей для «Новий акумулятор» / «Відновити еталон»

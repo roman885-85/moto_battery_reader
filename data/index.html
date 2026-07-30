@@ -94,9 +94,29 @@
         .chipb{display:inline-block;vertical-align:middle;margin-left:8px;padding:2px 8px;
                border-radius:999px;font-size:.62em;font-weight:700;letter-spacing:.02em;
                background:#2a335c;color:#cfe3ff;border:1px solid #3d4a7d;white-space:nowrap}
+        .nochip{display:inline-block;vertical-align:middle;margin-left:8px;padding:2px 8px;
+               border-radius:999px;font-size:.62em;font-weight:700;letter-spacing:.02em;
+               background:#1e3324;color:#bfe3c8;border:1px solid #3d6b4a;white-space:nowrap}
         .tgtb{background:var(--card2);color:var(--fg);border:1px solid var(--line);border-radius:8px;
               padding:5px 9px;margin-right:4px;cursor:pointer;font-size:.9em}
         .tgtb.on{background:var(--ua-blue);border-color:var(--ua-yellow);font-weight:700}
+        /* ---- Налаштування звуку -------------------------------------------
+           Кожен рядок — підпис, повзунок і поточне значення. Значення показуємо
+           обов'язково: «десь посередині» нічого не означає, а «150 %» можна
+           запам'ятати й повторити на іншому пристрої. */
+        .snd{display:grid;grid-template-columns:auto 1fr auto;gap:10px 12px;align-items:center;
+             margin-top:10px;font-size:.9em}
+        .snd label{color:var(--muted);white-space:nowrap}
+        .snd input[type=range]{width:100%;accent-color:var(--khaki);cursor:pointer}
+        .snd .sv{font-family:'Courier New',monospace;font-weight:700;min-width:62px;text-align:right}
+        .sndsw{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:6px}
+        .sndsw label{display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text)}
+        .sndsw input{accent-color:var(--khaki);width:16px;height:16px;cursor:pointer}
+        .sndtest{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+        .sndtest button{padding:8px 14px;border-radius:8px;border:1px solid var(--line);
+                        background:var(--card2);color:var(--text);cursor:pointer;font-size:.88em}
+        .sndtest button:hover{border-color:var(--khaki)}
+        .sndtest button:active{transform:scale(.96)}
         .hex{font-family:'Courier New',monospace;font-size:.82em;color:#9fe3c0;
              white-space:pre;overflow-x:auto;
              background:var(--card2);padding:10px;border-radius:8px;border:1px solid var(--line)}
@@ -674,6 +694,51 @@
             </div></form>
             <input type="password" class="pw" id="pw38" placeholder="🔑 Пароль адміністратора">
             <button class="btn btn-danger" style="width:100%" onclick="writeDump2438()">⚡ ЗАПИСАТИ DS2438</button>
+        </div>
+
+<div class="card">
+            <h2>🔊 Налаштування звуку <span class="nochip">в АКБ не пише</span></h2>
+            <div class="note i">Нічого не пише в акумулятор — це налаштування самого пристрою; воно
+                зберігається в його пам'яті й переживає перезавантаження. Заводські значення підібрані
+                «в середньому», але кожен п'єзо має свій резонанс: на одному звук м'який, на іншому ледь
+                чутний. Крутіть повзунок і одразу тисніть «прослухати».</div>
+            <div class="sndsw">
+                <label><input type="checkbox" id="sndEn" onchange="sndPush()"> Звук увімкнено</label>
+                <label><input type="checkbox" id="sndClk" onchange="sndPush()"> Блiп при перегортанні меню</label>
+            </div>
+            <div class="snd">
+                <label for="sndVol">Гучність</label>
+                <input type="range" id="sndVol" min="0" max="255" oninput="sndShow()" onchange="sndPush()">
+                <span class="sv" id="svVol">—</span>
+
+                <label for="sndTempo">Швидкість</label>
+                <input type="range" id="sndTempo" min="25" max="400" step="5" oninput="sndShow()" onchange="sndPush()">
+                <span class="sv" id="svTempo">—</span>
+
+                <label for="sndGlide">Перетікання нот</label>
+                <input type="range" id="sndGlide" min="0" max="300" step="5" oninput="sndShow()" onchange="sndPush()">
+                <span class="sv" id="svGlide">—</span>
+
+                <label for="sndAtk">Наростання</label>
+                <input type="range" id="sndAtk" min="0" max="200" step="2" oninput="sndShow()" onchange="sndPush()">
+                <span class="sv" id="svAtk">—</span>
+
+                <label for="sndRel">Згасання</label>
+                <input type="range" id="sndRel" min="0" max="400" step="5" oninput="sndShow()" onchange="sndPush()">
+                <span class="sv" id="svRel">—</span>
+
+                <label for="sndSt">Висота тону</label>
+                <input type="range" id="sndSt" min="-12" max="12" step="1" oninput="sndShow()" onchange="sndPush()">
+                <span class="sv" id="svSt">—</span>
+            </div>
+            <div class="note i" id="sndHint">Швидкість розтягує і ноти, і перетікання разом, тож повільна
+                фраза лишається злитою. Перетікання 0 % — ноти перемикаються стрибком (сухо, «як таймер»),
+                200–300 % — довге ковзання. Висота тону зсуває всю мелодію: якщо ваш п'єзо на заводських
+                частотах тихий, підніміть її на кілька півтонів і знайдіть його резонанс на слух.</div>
+            <div class="sndtest" id="sndSignals"></div>
+            <div class="btns">
+                <button class="btn btn-warn" onclick="sndReset()">↩️ Заводські значення</button>
+            </div>
         </div>
 
 <div class="zone zd">⛔ НЕБЕЗПЕЧНА ЗОНА — незворотні операції. Спочатку зробіть копію!</div>
@@ -1592,7 +1657,70 @@ async function rebootDevice(){
     prog(false);
 }
 
-window.onload=function(){refreshAll();loadTemplates();setInterval(refreshAll,10000)};
+// ============ НАЛАШТУВАННЯ ЗВУКУ ============
+// Межі повзунків приходять із пристрою (/api/sound -> limits): тримати їхню
+// копію тут означало б розійтися з buzzCfgClamp() при наступній правці прошивки.
+let sndCfg=null, sndLimits=null, sndBusy=false, sndTimer=null;
+const SND_FIELDS=[
+    ['volume','sndVol','svVol',    v=>v+' / 255'],
+    ['tempo','sndTempo','svTempo', v=>v+' %'],
+    ['glide','sndGlide','svGlide', v=>v==0?'вимкн.':(v+' %')],
+    ['attack','sndAtk','svAtk',    v=>v+' мс'],
+    ['release','sndRel','svRel',   v=>v+' мс'],
+    ['semitones','sndSt','svSt',   v=>v==0?'заводська':((v>0?'+':'')+v+' пів.')],
+];
+function sndShow(){                       // тільки підписи, без звернення до пристрою
+    SND_FIELDS.forEach(([k,id,vid,fmt])=>{const e=$(id); if(e) $(vid).textContent=fmt(+e.value);});
+}
+function sndFill(r){
+    sndCfg=r.sound; sndLimits=r.limits||{};
+    $('sndEn').checked=!!r.sound.enabled; $('sndClk').checked=!!r.sound.click;
+    SND_FIELDS.forEach(([k,id])=>{
+        const e=$(id), lim=sndLimits[k];
+        if(lim){e.min=lim[0]; e.max=lim[1];}
+        e.value=r.sound[k];
+    });
+    sndShow();
+    // Кнопки «прослухати» — теж із пристрою: перелік сигналів живе в buzzer.h.
+    const box=$('sndSignals');
+    if(box && r.signals) box.innerHTML=r.signals.map(s=>
+        '<button onclick="sndTest(\''+s.key+'\')">▶ '+esc(s.title)+' <span style="opacity:.6">'+s.ms+' мс</span></button>').join('');
+    if(r.hasBuzzer===false)
+        $('sndHint').innerHTML='⚠️ У цій збірці буззер не підключено (BUZZER_PIN у settings.h не задано) — '+
+            'налаштування зберігаються, але звучати нема чому.';
+}
+async function sndLoad(){
+    try{ const r=await(await fetch('/api/sound')).json(); if(r.status==='success') sndFill(r); }
+    catch(e){}
+}
+// Повзунок шлють із затримкою: інакше кожен піксель руху — окремий POST і запис
+// у SPIFFS, а її ресурс перезапису не безмежний.
+function sndPush(test){
+    clearTimeout(sndTimer);
+    sndTimer=setTimeout(()=>sndSend(test),250);
+}
+async function sndSend(test){
+    if(sndBusy) return;
+    sndBusy=true;
+    const o={enabled:$('sndEn').checked?1:0, click:$('sndClk').checked?1:0};
+    SND_FIELDS.forEach(([k,id])=>o[k]=$(id).value);
+    if(test) o.test=test;
+    try{ const r=await postForm('/api/sound',o); if(r.status==='success') sndFill(r); }
+    catch(e){ toast('Не вдалось зберегти налаштування звуку','err'); }
+    sndBusy=false;
+}
+// «Прослухати» надсилає й поточні значення повзунків: користувач має почути те,
+// що бачить на екрані, а не те, що встигло долетіти минулим запитом.
+function sndTest(name){ clearTimeout(sndTimer); sndSend(name); }
+async function sndReset(){
+    clearTimeout(sndTimer);
+    try{
+        const r=await postForm('/api/sound',{reset:1,test:'ok'});
+        if(r.status==='success'){ sndFill(r); toast('🔊 Повернуто заводські значення','ok'); }
+    }catch(e){ toast('Не вдалось скинути','err'); }
+}
+
+window.onload=function(){refreshAll();loadTemplates();sndLoad();setInterval(refreshAll,10000)};
 </script>
 </body>
 </html>

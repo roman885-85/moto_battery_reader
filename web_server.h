@@ -1872,6 +1872,163 @@ void handleDischargeStatus() {
     server.send(200, "application/json", dischargeJson());
 }
 
+// ===========================================================================
+//  НАЛАШТУВАННЯ ЗВУКУ
+//
+//  Заводські значення в buzzer.h підібрані «в середньому», але реальний п'єзо
+//  має власний резонанс і власну гучність: те, що на одному екземплярі звучить
+//  м'яко, на іншому ледь чутно або, навпаки, різко. Тому все, що формує
+//  характер сигналу, править користувач і воно переживає перезавантаження.
+//
+//  Файл — один рядок «ключ=значення»: його можна прочитати очима й полагодити
+//  руками, на відміну від дампа структури.
+// ===========================================================================
+#define SOUND_CFG_PATH "/sound.cfg"
+
+static bool soundCfgSave() {
+    const BuzzCfg &c = buzzGetCfg();
+    File f = SPIFFS.open(SOUND_CFG_PATH, "w");
+    if (!f) { Serial.println("SOUND: cannot write " SOUND_CFG_PATH); return false; }
+    f.printf("v1 en=%d clk=%d vol=%u tempo=%u glide=%u atk=%u rel=%u st=%d\n",
+             c.enabled ? 1 : 0, c.clickOn ? 1 : 0, (unsigned)c.volume,
+             (unsigned)c.tempoPct, (unsigned)c.glidePct,
+             (unsigned)c.attackMs, (unsigned)c.releaseMs, (int)c.semitones);
+    f.close();
+    return true;
+}
+
+// Прочитати збережені налаштування. Відсутній або побитий файл — не помилка:
+// лишаються заводські значення, і пристрій просто звучить «як з коробки».
+static void soundCfgLoad() {
+    if (!SPIFFS.exists(SOUND_CFG_PATH)) { Serial.println("SOUND: defaults (no file)"); return; }
+    File f = SPIFFS.open(SOUND_CFG_PATH, "r");
+    if (!f) return;
+    String line = f.readStringUntil('\n');
+    f.close();
+    int en = 1, clk = 1, vol = BUZZER_VOLUME, tempo = 100, glide = 100;
+    int atk = BUZZ_ATTACK_MS, rel = BUZZ_RELEASE_MS, st = 0;
+    int n = sscanf(line.c_str(),
+                   "v1 en=%d clk=%d vol=%d tempo=%d glide=%d atk=%d rel=%d st=%d",
+                   &en, &clk, &vol, &tempo, &glide, &atk, &rel, &st);
+    if (n != 8) { Serial.printf("SOUND: bad cfg (%d fields), using defaults\n", n); return; }
+    BuzzCfg c;
+    c.enabled   = en != 0;
+    c.clickOn   = clk != 0;
+    c.volume    = (uint8_t)constrain(vol, 0, 255);
+    c.tempoPct  = (uint16_t)constrain(tempo, 0, 1000);
+    c.glidePct  = (uint16_t)constrain(glide, 0, 1000);
+    c.attackMs  = (uint16_t)constrain(atk, 0, 1000);
+    c.releaseMs = (uint16_t)constrain(rel, 0, 1000);
+    c.semitones = (int8_t)constrain(st, -12, 12);
+    buzzSetCfg(c);                       // затисне решту меж сам
+    const BuzzCfg &g = buzzGetCfg();
+    Serial.printf("SOUND: loaded en=%d vol=%u tempo=%u%% glide=%u%% st=%d\n",
+                  g.enabled ? 1 : 0, (unsigned)g.volume, (unsigned)g.tempoPct,
+                  (unsigned)g.glidePct, (int)g.semitones);
+}
+
+static String soundJson() {
+    const BuzzCfg &c = buzzGetCfg();
+    String j = "{\"enabled\":"; j += c.enabled ? "true" : "false";
+    j += ",\"click\":";        j += c.clickOn ? "true" : "false";
+    j += ",\"volume\":";       j += (int)c.volume;
+    j += ",\"tempo\":";        j += (int)c.tempoPct;
+    j += ",\"glide\":";        j += (int)c.glidePct;
+    j += ",\"attack\":";       j += (int)c.attackMs;
+    j += ",\"release\":";      j += (int)c.releaseMs;
+    j += ",\"semitones\":";    j += (int)c.semitones;
+    j += "}";
+    return j;
+}
+
+// Повна відповідь: значення + межі повзунків + перелік сигналів. Межі віддає
+// пристрій, щоб клієнт не тримав власну копію діапазонів і не розійшовся з
+// buzzCfgClamp() після наступної правки.
+static String soundFullJson() {
+    String j = "{\"status\":\"success\",\"sound\":" + soundJson();
+    j += ",\"limits\":{\"volume\":[0,255],\"tempo\":[25,400],\"glide\":[0,300],"
+         "\"attack\":[0,200],\"release\":[0,400],\"semitones\":[-12,12]}";
+    j += ",\"defaults\":{\"enabled\":true,\"click\":true,\"volume\":" + String((int)BUZZER_VOLUME) +
+         ",\"tempo\":100,\"glide\":100,\"attack\":" + String((int)BUZZ_ATTACK_MS) +
+         ",\"release\":" + String((int)BUZZ_RELEASE_MS) + ",\"semitones\":0}";
+#ifdef BUZZER_PIN
+    j += ",\"hasBuzzer\":true,\"pin\":" + String((int)BUZZER_PIN);
+#else
+    j += ",\"hasBuzzer\":false,\"pin\":-1";
+#endif
+    j += ",\"signals\":[";
+    for (int i = 0; i < BZ_SIGNAL_COUNT; i++) {
+        if (i) j += ",";
+        j += "{\"key\":\""; j += BZ_SIGNALS[i].key;
+        j += "\",\"title\":\""; j += BZ_SIGNALS[i].title;
+        j += "\",\"ms\":"; j += (int)buzzPhraseMs(BZ_SIGNALS[i].seq, BZ_SIGNALS[i].len);
+        j += "}";
+    }
+    j += "]}";
+    return j;
+}
+
+void handleSoundGet() { server.send(200, "application/json", soundFullJson()); }
+
+// POST /api/sound — приймає будь-яку підмножину полів: чого немає, те не
+// чіпаємо. Так повзунок гучності не скидає темп, і навпаки.
+//   test=<ключ>  — одразу прослухати сигнал уже з НОВИМИ значеннями;
+//   reset=1      — повернути заводські;
+//   save=0       — приміряти без запису в SPIFFS (для «живого» повзунка).
+void handleSoundSet() {
+    if (!requireAdmin()) return;
+    BuzzCfg c = buzzGetCfg();
+    if (server.hasArg("reset") && server.arg("reset") != "0") {
+        BuzzCfg d = { true, true, BUZZER_VOLUME, 100, 100,
+                      BUZZ_ATTACK_MS, BUZZ_RELEASE_MS, 0 };
+        c = d;
+    }
+    auto flag = [&](const char *k, bool cur) {
+        if (!server.hasArg(k)) return cur;
+        String v = server.arg(k);
+        return !(v == "0" || v == "false" || v == "off");
+    };
+    c.enabled = flag("enabled", c.enabled);
+    c.clickOn = flag("click",   c.clickOn);
+    if (server.hasArg("volume"))    c.volume    = (uint8_t)constrain(server.arg("volume").toInt(), 0, 255);
+    if (server.hasArg("tempo"))     c.tempoPct  = (uint16_t)constrain(server.arg("tempo").toInt(), 0, 1000);
+    if (server.hasArg("glide"))     c.glidePct  = (uint16_t)constrain(server.arg("glide").toInt(), 0, 1000);
+    if (server.hasArg("attack"))    c.attackMs  = (uint16_t)constrain(server.arg("attack").toInt(), 0, 1000);
+    if (server.hasArg("release"))   c.releaseMs = (uint16_t)constrain(server.arg("release").toInt(), 0, 1000);
+    if (server.hasArg("semitones")) c.semitones = (int8_t)constrain(server.arg("semitones").toInt(), -12, 12);
+    buzzSetCfg(c);                       // затиск меж — усередині
+
+    bool saved = true;
+    if (!server.hasArg("save") || server.arg("save") != "0") saved = soundCfgSave();
+
+    uint32_t testMs = 0;
+    if (server.hasArg("test")) testMs = buzzPlayNamed(server.arg("test").c_str());
+
+    String j = soundFullJson();
+    j.remove(j.length() - 1);            // прибрати '}' і дописати службові поля
+    j += ",\"saved\":"; j += saved ? "true" : "false";
+    j += ",\"testMs\":"; j += (int)testMs; j += "}";
+    server.send(200, "application/json", j);
+}
+
+// Окремий маршрут «просто прослухати»: нічого не міняє й не пише в SPIFFS.
+// Невідомий ключ і вимкнений звук — різні речі: у першому випадку клієнт помилився,
+// у другому все правильно, просто чути нема чого, і мовчання треба пояснити.
+void handleSoundTest() {
+    if (!requireAdmin()) return;
+    String name = server.hasArg("name") ? server.arg("name") : String("ok");
+    if (!buzzFindSignal(name.c_str())) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Невідомий сигнал\"}");
+        return;
+    }
+    uint32_t ms = buzzPlayNamed(name.c_str());
+    String j = String("{\"status\":\"success\",\"name\":\"") + name +
+               "\",\"ms\":" + (int)ms + ",\"played\":" + (ms ? "true" : "false");
+    if (!ms) j += ",\"message\":\"Звук вимкнено в налаштуваннях\"";
+    server.send(200, "application/json", j + "}");
+}
+
 void handleOps() {
     String j = "{\"status\":\"success\",\"ops\":[";
     bool first = true;
@@ -2040,6 +2197,9 @@ void setupWebServer() {
     server.on("/api/reboot", HTTP_POST, handleReboot);           // перезавантаження ESP32
     server.on("/api/templates", HTTP_GET, handleTemplates);      // список вшитих моделей
     server.on("/api/ops", HTTP_GET, handleOps);                  // каталог операцій (operations.h)
+    server.on("/api/sound", HTTP_GET, handleSoundGet);           // налаштування звуку
+    server.on("/api/sound", HTTP_POST, handleSoundSet);          // змінити налаштування звуку
+    server.on("/api/sound/test", HTTP_POST, handleSoundTest);    // прослухати сигнал
     server.on("/api/discharge", HTTP_GET, handleDischargeStatus);        // стан розряду
     server.on("/api/discharge/start", HTTP_POST, handleDischargeStart);  // почати розряд
     server.on("/api/discharge/stop", HTTP_POST, handleDischargeStop);    // зупинити розряд

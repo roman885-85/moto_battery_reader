@@ -1338,8 +1338,78 @@ class App:
         ttk.Button(b6, text="🔥 ПОВНЕ стирання DS2433", command=self.wipe33).pack(anchor="w", pady=2)
         ttk.Button(b6, text="🔥 ПОВНЕ стирання DS2438", command=self.wipe38).pack(anchor="w", pady=2)
 
+        self._build_sound(p)
+
         b7 = ttk.LabelFrame(p, text="Пристрій", padding=8); b7.pack(fill="x", pady=4)
         ttk.Button(b7, text="🔁 Перезавантажити ESP32", command=self.reboot).pack(side="left", padx=3)
+
+    # ---- налаштування звуку ---------------------------------------------
+    #  Нічого не пише в акумулятор: це налаштування самого пристрою. Межі
+    #  повзунків приходять із прошивки (SOUND -> limits) — власна копія тут
+    #  розійшлася б із buzzCfgClamp() після наступної правки firmware.
+    SND_FIELDS = [
+        # (ключ у JSON, ключ команди, підпис, крок, як показати значення)
+        ("volume",    "vol",   "Гучність",         1, lambda v: "%d / 255" % v),
+        ("tempo",     "tempo", "Швидкість",        5, lambda v: "%d %%" % v),
+        ("glide",     "glide", "Перетікання нот",  5, lambda v: "вимкн." if v == 0 else "%d %%" % v),
+        ("attack",    "atk",   "Наростання",       2, lambda v: "%d мс" % v),
+        ("release",   "rel",   "Згасання",         5, lambda v: "%d мс" % v),
+        ("semitones", "st",    "Висота тону",      1,
+         lambda v: "заводська" if v == 0 else "%+d пів." % v),
+    ]
+
+    def _build_sound(self, p):
+        bs = ttk.LabelFrame(p, text="🔊 Налаштування звуку  ·  лише пристрій, в АКБ не пише",
+                            padding=8)
+        bs.pack(fill="x", pady=4)
+        ttk.Label(bs, text="Зберігається в пам'яті пристрою й переживає перезавантаження. Кожен п'єзо\n"
+                           "має свій резонанс: на одному звук м'який, на іншому ледь чутний. Крутіть\n"
+                           "повзунок і одразу тисніть «прослухати».",
+                  foreground="#b9bd86", justify="left").pack(anchor="w")
+
+        sw = ttk.Frame(bs); sw.pack(anchor="w", pady=(6, 2))
+        self.sndEn = tk.BooleanVar(value=True)
+        self.sndClk = tk.BooleanVar(value=True)
+        ttk.Checkbutton(sw, text="Звук увімкнено", variable=self.sndEn,
+                        command=self._snd_push).pack(side="left", padx=(0, 14))
+        ttk.Checkbutton(sw, text="Блiп при перегортанні меню", variable=self.sndClk,
+                        command=self._snd_push).pack(side="left")
+
+        grid = ttk.Frame(bs); grid.pack(fill="x", pady=2)
+        grid.columnconfigure(1, weight=1)
+        self.sndVar, self.sndScale, self.sndLbl = {}, {}, {}
+        for i, (key, _ck, title, step, fmt) in enumerate(self.SND_FIELDS):
+            ttk.Label(grid, text=title, width=18).grid(row=i, column=0, sticky="w", pady=1)
+            var = tk.IntVar(value=0)
+            # Повзунок Tk віддає float — округлюємо до кроку самі, інакше в
+            # команду поїхало б «tempo=137.4999», і пристрій прочитав би 137.
+            sc = tk.Scale(grid, from_=0, to=100, orient="horizontal", variable=var,
+                          resolution=step, showvalue=False, sliderlength=18, width=11,
+                          highlightthickness=0, bd=0, takefocus=1,
+                          # tk.Scale не тематизується через ttk.Style — фарбуємо руками,
+                          # інакше на темному тлі буде світло-сіра пляма.
+                          bg=MIL["bg"], fg=MIL["fg"], troughcolor=MIL["field"],
+                          activebackground=MIL["khaki"], relief="flat")
+            sc.grid(row=i, column=1, sticky="we", padx=8)
+            sc.configure(command=lambda _v, k=key: self._snd_show(k))
+            sc.bind("<ButtonRelease-1>", lambda _e: self._snd_push())
+            sc.bind("<KeyRelease>", lambda _e: self._snd_push())
+            lbl = ttk.Label(grid, text="—", width=11, anchor="e",
+                            font=fnt("Consolas", 10, "bold"))
+            lbl.grid(row=i, column=2, sticky="e")
+            self.sndVar[key], self.sndScale[key], self.sndLbl[key] = var, sc, lbl
+
+        self.lblSndHint = ttk.Label(
+            bs, foreground="#b9bd86", justify="left",
+            text="Швидкість розтягує і ноти, і перетікання разом, тож повільна фраза лишається злитою.\n"
+                 "Перетікання 0 % — ноти перемикаються стрибком, 200–300 % — довге ковзання. Висота\n"
+                 "тону зсуває всю мелодію: якщо п'єзо на заводських частотах тихий, підніміть її на\n"
+                 "кілька півтонів і знайдіть його резонанс на слух.")
+        self.lblSndHint.pack(anchor="w", pady=(6, 2))
+
+        self.frSndTest = ttk.Frame(bs); self.frSndTest.pack(fill="x", pady=2)
+        ttk.Button(bs, text="↩️ Заводські значення",
+                   command=self.sound_reset).pack(anchor="w", pady=(4, 0))
 
     def _build_hex(self):
         f = self.tabHex
@@ -1611,7 +1681,7 @@ class App:
             self.connected = True
             self.btnConn.config(text="⏏ Відключити")
             self.status("Підключено (" + r.get("port", "") + ")", True)
-            self.cmd("PING", 3.0, cb=lambda _: (self.load_templates(), self.refresh()))
+            self.cmd("PING", 3.0, cb=lambda _: (self.load_templates(), self.sound_load(), self.refresh()))
         else:
             self.status("Помилка порту: " + r.get("err", ""), False)
 
@@ -2103,6 +2173,79 @@ class App:
         if not messagebox.askyesno("Перезавантаження", "Перезавантажити ESP32? Порт відключиться."):
             return
         self.maybe_auth(lambda: self.cmd("REBOOT", 3.0, cb=lambda r: self._submit("close", cb=lambda _: self._set_disconnected())))
+
+    # ---- налаштування звуку ---------------------------------------------
+    def sound_load(self, *_):
+        if self.connected:
+            self.cmd("SOUND", 5.0, cb=self._apply_sound)
+
+    def _apply_sound(self, r):
+        if not r.get("ok") or "sound" not in r:
+            return
+        s, lim = r["sound"], r.get("limits", {})
+        self._sndQuiet = True                    # заповнення не має слати команду назад
+        try:
+            self.sndEn.set(bool(s.get("enabled", True)))
+            self.sndClk.set(bool(s.get("click", True)))
+            for key, _ck, _t, _st, _f in self.SND_FIELDS:
+                lo, hi = lim.get(key, (0, 255))
+                self.sndScale[key].configure(from_=lo, to=hi)
+                self.sndVar[key].set(int(s.get(key, lo)))
+                self._snd_show(key)
+        finally:
+            self._sndQuiet = False
+        # Кнопки «прослухати» будуємо з переліку пристрою: сигнали живуть у
+        # buzzer.h, і клієнт не має тримати їхню другу копію.
+        for w in self.frSndTest.winfo_children():
+            w.destroy()
+        # У два стовпці, а не в один ряд: у Tk немає перенесення, і в один ряд
+        # п'ять кнопок виїжджали б за край картки, обрізавши підписи.
+        for i, sig in enumerate(r.get("signals", [])):
+            ttk.Button(self.frSndTest,
+                       text="▶ %s (%d мс)" % (sig.get("title", sig.get("key", "?")), sig.get("ms", 0)),
+                       command=lambda k=sig.get("key"): self.sound_test(k)
+                       ).grid(row=i // 2, column=i % 2, sticky="we", padx=2, pady=2)
+        for c in range(2):
+            self.frSndTest.columnconfigure(c, weight=1)
+        if r.get("hasBuzzer") is False:
+            self.lblSndHint.config(
+                text="⚠️ У цій збірці буззер не підключено (BUZZER_PIN у settings.h не задано) —\n"
+                     "налаштування зберігаються, але звучати нема чому.")
+
+    def _snd_show(self, key):
+        for k, _ck, _t, _st, fmt in self.SND_FIELDS:
+            if k == key:
+                self.sndLbl[k].config(text=fmt(int(self.sndVar[k].get())))
+                return
+
+    # Повзунок шлють після відпускання, а не на кожен піксель: інакше кожен рух
+    # мишею — окрема команда й запис у SPIFFS, ресурс перезапису якої скінченний.
+    def _snd_push(self, test=None):
+        if getattr(self, "_sndQuiet", False) or not self.connected:
+            return
+        a = "SET en=%d clk=%d" % (1 if self.sndEn.get() else 0, 1 if self.sndClk.get() else 0)
+        for key, ck, _t, _st, _f in self.SND_FIELDS:
+            a += " %s=%d" % (ck, int(self.sndVar[key].get()))
+        if test:
+            a += " test=" + test
+        self.cmd("SOUND " + a, 6.0, cb=self._apply_sound)
+
+    # «Прослухати» несе й поточні значення повзунків: користувач має почути те,
+    # що бачить на екрані, а не те, що встигло долетіти минулою командою.
+    def sound_test(self, name):
+        if not self.need_conn():
+            return
+        self._snd_push(test=name)
+
+    def sound_reset(self):
+        if not self.need_conn():
+            return
+        def done(r):
+            self._apply_sound(r)
+            if r.get("ok"):
+                self.cmd("SOUND TEST ok", 4.0)
+                self.status("🔊 Повернуто заводські значення", True)
+        self.cmd("SOUND RESET", 6.0, cb=done)
 
     # ---- шаблони / файли -----------------------------------------------
     def load_templates(self, *_):

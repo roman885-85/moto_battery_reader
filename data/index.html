@@ -462,6 +462,22 @@
                   <span style="opacity:.7">мВ</span>
                 </span></div>
             <div class="note i" id="disRampNote"></div>
+            <!-- Графік УСТАВКИ СТРУМУ за напругою. Перемальовується щоразу, коли
+                 змінюють ціль: видно, що 300 мА припадають рівно на неї, і що
+                 при вищій цілі відрізок коротший, а нахил крутіший. -->
+            <svg id="disRampSvg" viewBox="0 0 300 84" preserveAspectRatio="none"
+                 style="width:100%;height:84px;background:var(--card2);border:1px solid var(--line);
+                        border-radius:8px;margin-top:6px">
+                <polyline id="disRampArea" fill="rgba(111,143,58,.20)" stroke="none" points=""/>
+                <polyline id="disRampLine" fill="none" stroke="#c8b04a" stroke-width="2"
+                          vector-effect="non-scaling-stroke" stroke-linejoin="round" points=""/>
+                <line id="disRampNow" x1="-9" x2="-9" y1="2" y2="70" stroke="#6f8f3a"
+                      stroke-width="1" vector-effect="non-scaling-stroke"/>
+                <text id="disRampL" x="4"   y="12" fill="#8b9166" font-size="9"></text>
+                <text id="disRampR" x="296" y="12" fill="#8b9166" font-size="9" text-anchor="end"></text>
+                <text id="disRampLo" x="4"   y="80" fill="#8b9166" font-size="9"></text>
+                <text id="disRampHi" x="296" y="80" fill="#8b9166" font-size="9" text-anchor="end"></text>
+            </svg>
             <input type="password" class="pw" id="pwDis" placeholder="🔑 Пароль адміністратора">
             <div class="btns">
                 <button class="btn btn-warn" onclick="disStart()">🪫 ПОЧАТИ РОЗРЯД</button>
@@ -988,7 +1004,9 @@ function wizRenderSteps(r){
         const d=document.createElement('div');
         d.className='step'+(s.done?' done':'')+(cur&&!r.awaitCharge?' cur':'');
         d.id='wstep'+s.idx;
-        d.innerHTML='<div class="sico">'+ico+'</div><div><div class="stit">'+esc(s.title)+'</div><div class="sdet">'+esc(s.detail)+'</div></div>';
+        // Кроки Майстра — теж запис, тож кажемо, у яку мікросхему він піде.
+    const chip=(s.chips&&s.chipsText)?' <span class="chipb">пише в '+esc(s.chipsText)+'</span>':'';
+    d.innerHTML='<div class="sico">'+ico+'</div><div><div class="stit">'+esc(s.title)+chip+'</div><div class="sdet">'+esc(s.detail)+'</div></div>';
         sc.appendChild(d);
     });
     const banner=$('wizStationBanner'), btn=$('wizNextBtn');
@@ -1254,6 +1272,7 @@ async function disPoll(){
         disPush(d.elapsedS,d.mv);
     }
     disSpark(d.targetMv);
+    disRamp();                       // рухаємо риску поточної напруги по графіку
 
     $('disMvBig').innerHTML=(d.mv/1000).toFixed(2)+'<small>В</small>';
     $('disMvSub').textContent='старт '+(d.startMv/1000).toFixed(2)+' В → ціль '+(d.targetMv/1000).toFixed(2)+' В';
@@ -1324,6 +1343,14 @@ function disTargetMv(){
     return t;
 }
 function disSetTarget(mv){ $('disTarget').value=mv; disRamp(); }
+// Та сама формула, що в discharge.h: 300 мА рівно на цілі, 1000 мА на верху.
+function disSetpointMa(mv, targetMv){
+    const c=disRampCfg;
+    if(targetMv>=c.rampHiMv) return c.maLo;
+    if(mv>=c.rampHiMv) return c.maHi;
+    if(mv<=targetMv)   return c.maLo;
+    return Math.round(c.maLo + (mv-targetMv)*(c.maHi-c.maLo)/(c.rampHiMv-targetMv));
+}
 function disRamp(){
     const t=disTargetMv(), c=disRampCfg;
     const n=$('disRampNote');
@@ -1334,6 +1361,28 @@ function disRamp(){
         const m=/([\d.]+)\s*В/.exec(b.textContent);
         b.classList.toggle('on', !!m && Math.round(parseFloat(m[1])*1000)===t);
     });
+    // --- перебудова графіка під нову ціль ---
+    const svg=$('disRampLine'); if(!svg) return;
+    // Вісь X — від цілі (ліворуч) до верху лінійки (праворуч), вісь Y — струм.
+    const x0=t, x1=Math.max(c.rampHiMv, t+1);
+    const X=mv=>4+((mv-x0)/(x1-x0))*292;
+    const Y=ma=>70-((ma-0)/(c.maHi||1))*62;
+    const pts=[];
+    for(let i=0;i<=60;i++){
+        const mv=x0+(x1-x0)*i/60;
+        pts.push(X(mv).toFixed(1)+','+Y(disSetpointMa(Math.round(mv),t)).toFixed(1));
+    }
+    svg.setAttribute('points',pts.join(' '));
+    $('disRampArea').setAttribute('points','4,70 '+pts.join(' ')+' 296,70');
+    $('disRampL').textContent=c.maLo+' мА';
+    $('disRampR').textContent=c.maHi+' мА';
+    $('disRampLo').textContent='ціль '+(t/1000).toFixed(2)+' В';
+    $('disRampHi').textContent=(c.rampHiMv/1000).toFixed(2)+' В';
+    // Поточна напруга — вертикальна риска, видно, де саме зараз їдемо.
+    const nowMv=disLast&&disLast.state==='run'?disLast.mv:0;
+    const nl=$('disRampNow');
+    if(nowMv>=x0&&nowMv<=x1){ const x=X(nowMv); nl.setAttribute('x1',x); nl.setAttribute('x2',x); }
+    else { nl.setAttribute('x1',-9); nl.setAttribute('x2',-9); }
 }
 async function disStart(){
     const pw=$('pwDis').value, t=disTargetMv();

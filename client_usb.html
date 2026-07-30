@@ -895,7 +895,9 @@ function wizRenderSteps(r){
     const d=document.createElement('div');
     d.className='step'+(s.done?' done':'')+(cur&&!r.awaitCharge?' cur':'');
     d.id='wstep'+s.idx;
-    d.innerHTML='<div class="sico">'+ico+'</div><div><div class="stit">'+wesc(s.title)+'</div><div class="sdet">'+wesc(s.detail)+'</div></div>';
+    // Кроки Майстра — теж запис, тож кажемо, у яку мікросхему він піде.
+    const chip=(s.chips&&s.chipsText)?' <span class="chipb">пише в '+wesc(s.chipsText)+'</span>':'';
+    d.innerHTML='<div class="sico">'+ico+'</div><div><div class="stit">'+wesc(s.title)+chip+'</div><div class="sdet">'+wesc(s.detail)+'</div></div>';
     sc.appendChild(d);
   });
   const banner=$('wizStationBanner'), btn=$('wizNextBtn');

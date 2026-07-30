@@ -34,8 +34,11 @@
 //   DISCHARGE [мВ]       -> почати керований розряд (типово до 7200 мВ)
 //   DISCHARGE STOP       -> зупинити розряд;  DISCHARGE ? -> стан розряду
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
-//   RESTORE <MODEL> [VERBATIM] -> відновити модельну частину еталона (без чужого
-//                          навченого хвоста); VERBATIM — байт-у-байт, ручний режим
+//   RESTORE <MODEL> [VERBATIM] [FIXES=..] [RATED=мАг] -> відновити модельну
+//                          частину еталона (без чужого навченого хвоста), з
+//                          правками під цей пакет; VERBATIM — байт-у-байт
+//   RESTOREPLAN <MODEL> [NOREAD] [FIXES=..] [RATED=мАг] -> що саме буде
+//                          виправлено в еталоні під цей пакет (нічого не пише)
 //   WIZARD               -> Майстер: зчитати + аналіз/проблеми/план (JSON)
 //   WIZSTEP <idx> [MODEL]-> Майстер: виконати крок плану (model для відновлення)
 //   WIZRESET             -> Майстер: скинути журнал продовження поточного АКБ
@@ -245,6 +248,121 @@ static void serSetCap(const String &arg) {
              : "{\"ok\":false,\"err\":\"write failed\"}");
 }
 
+// SOUND — налаштування звуку через USB. Формати:
+//   SOUND               поточні значення, межі й перелік сигналів
+//   SOUND SET tempo=150 glide=200 vol=180 en=1 clk=0 atk=30 rel=80 st=-2
+//   SOUND TEST ok       прослухати сигнал (нічого не змінює)
+//   SOUND RESET         повернути заводські
+// Межі затискає buzzSetCfg() — та сама функція, що й для вебу, тож USB не може
+// виставити те, чого не дозволяє веб, і навпаки.
+static String serSound(const String &argIn) {
+    String a = argIn; a.trim();
+    String head = a; int sp = a.indexOf(' ');
+    if (sp >= 0) head = a.substring(0, sp);
+    head.toUpperCase();
+    String rest = (sp < 0) ? String("") : a.substring(sp + 1);
+    rest.trim();
+
+    if (head == "TEST") {
+        rest.toLowerCase();
+        // Невідомий ключ і вимкнений звук — різні речі: перше помилка клієнта,
+        // друге штатна тиша, яку треба пояснити, а не видати за програвання.
+        if (!buzzFindSignal(rest.c_str()))
+            return String("{\"ok\":false,\"err\":\"невідомий сигнал '") + rest + "'\"}";
+        uint32_t ms = buzzPlayNamed(rest.c_str());
+        String r = String("{\"ok\":true,\"name\":\"") + rest + "\",\"ms\":" + (int)ms +
+                   ",\"played\":" + (ms ? "true" : "false");
+        if (!ms) r += ",\"note\":\"звук вимкнено в налаштуваннях\"";
+        return r + "}";
+    }
+    if (head == "" || head == "?" || head == "GET") {
+        String j = soundFullJson(); j.replace("\"status\":\"success\"", "\"ok\":true");
+        return j;
+    }
+    if (head != "SET" && head != "RESET")
+        return "{\"ok\":false,\"err\":\"очікується SET / TEST / RESET\"}";
+
+    BuzzCfg c = buzzGetCfg();
+    if (head == "RESET") {
+        BuzzCfg d = { true, true, BUZZER_VOLUME, 100, 100,
+                      BUZZ_ATTACK_MS, BUZZ_RELEASE_MS, 0 };
+        c = d;
+        rest = "";
+    }
+    String test;
+    // Розбираємо «ключ=значення», розділені пробілами. Невідомий ключ — це
+    // помилка, а не мовчазне ігнорування: інакше друкарська помилка виглядала б
+    // як «пристрій не слухається».
+    while (rest.length()) {
+        int s = rest.indexOf(' ');
+        String tok = (s < 0) ? rest : rest.substring(0, s);
+        rest = (s < 0) ? String("") : rest.substring(s + 1);
+        rest.trim();
+        int eq = tok.indexOf('=');
+        if (eq < 0) return String("{\"ok\":false,\"err\":\"очікується ключ=значення, а не '") + tok + "'\"}";
+        String k = tok.substring(0, eq), v = tok.substring(eq + 1);
+        k.trim(); k.toLowerCase(); v.trim();
+        long n = v.toInt();
+        bool b = !(v == "0" || v == "off" || v == "false" || v == "no");
+        if      (k == "en"    || k == "enabled")   c.enabled   = b;
+        else if (k == "clk"   || k == "click")     c.clickOn   = b;
+        else if (k == "vol"   || k == "volume")    c.volume    = (uint8_t)constrain(n, 0, 255);
+        else if (k == "tempo")                     c.tempoPct  = (uint16_t)constrain(n, 0, 1000);
+        else if (k == "glide")                     c.glidePct  = (uint16_t)constrain(n, 0, 1000);
+        else if (k == "atk"   || k == "attack")    c.attackMs  = (uint16_t)constrain(n, 0, 1000);
+        else if (k == "rel"   || k == "release")   c.releaseMs = (uint16_t)constrain(n, 0, 1000);
+        else if (k == "st"    || k == "semitones") c.semitones = (int8_t)constrain(n, -12, 12);
+        else if (k == "test")                      { v.toLowerCase(); test = v; }
+        else return String("{\"ok\":false,\"err\":\"невідомий ключ '") + k + "'\"}";
+    }
+    buzzSetCfg(c);
+    bool saved = soundCfgSave();
+    uint32_t ms = test.length() ? buzzPlayNamed(test.c_str()) : 0;
+
+    String j = soundFullJson();
+    j.replace("\"status\":\"success\"", "\"ok\":true");
+    j.remove(j.length() - 1);
+    j += ",\"saved\":"; j += saved ? "true" : "false";
+    j += ",\"testMs\":"; j += (int)ms; j += "}";
+    return j;
+}
+
+// Хвіст команд RESTORE / RESTOREPLAN: «<МОДЕЛЬ> [VERBATIM] [NOREAD] [FIXES=a,b]».
+// Одна функція на обидві команди — щоб вони не розійшлися в тому, що вважають
+// моделлю, а що прапорцем. Модель — перше слово, яке не є прапорцем; регістр
+// моделі й прапорців не має значення, а от ключі правок завжди малими.
+struct SerRestoreArgs { String model, fixes; bool verbatim, reread, haveFixes; long rated; };
+static SerRestoreArgs serParseRestore(const String &argIn) {
+    SerRestoreArgs a; a.verbatim = false; a.reread = true; a.haveFixes = false; a.rated = -1;
+    String rest = argIn; rest.trim();
+    while (rest.length()) {
+        int s = rest.indexOf(' ');
+        String tok = (s < 0) ? rest : rest.substring(0, s);
+        rest = (s < 0) ? String("") : rest.substring(s + 1);
+        rest.trim();
+        if (!tok.length()) continue;
+        String up = tok; up.toUpperCase();
+        if      (up == "VERBATIM")        a.verbatim = true;
+        else if (up == "NOREAD")          a.reread = false;
+        else if (up.startsWith("FIXES=")) { a.fixes = tok.substring(6); a.fixes.toLowerCase(); a.haveFixes = true; }
+        else if (up.startsWith("RATED="))  a.rated = up.substring(6).toInt();
+        else if (!a.model.length())       a.model = up;
+    }
+    return a;
+}
+
+// Ємність нових банок ставимо ДО маски: увімкнення правки ємності міняє й
+// паливомір, тож двома незалежними кроками ми показали б проміжне число.
+static void serApplyPlanArgs(RestorePlan &p, const SerRestoreArgs &a) {
+    if (a.rated >= 0) restorePlanSetRated(p, a.rated);
+    if (a.haveFixes) {
+        uint32_t m = restoreMaskFromKeys(a.fixes.c_str(), p);
+        int user = p.ratedUser;                  // маска не має стирати введене
+        restorePlanSetMask(p, m);
+        if (user > 0 && (m & (1UL << RPF_RATED))) restorePlanSetRated(p, user);
+    }
+}
+
 // Каталог операцій (operations.h) — щоб десктопний клієнт малював той самий
 // список у тому самому порядку, що екран і веб, без власних копій текстів.
 static String serBuildOps() {
@@ -356,22 +474,39 @@ static void serialExec(const String &line) {
                                   else { bool ok = performInitBattery(md.c_str(), mah);
                                          sResp(ok ? (String("{\"ok\":true,\"model\":\"") + md + "\"}")
                                                   : "{\"ok\":false,\"err\":\"збій запису\"}"); } }
-    // RESTORE <модель> [VERBATIM] — за замовчуванням навчений хвіст донора НЕ
-    // пишеться (лишається стертим). VERBATIM — ручний режим для аналізу.
-    else if (cmd == "RESTORE")  { String md = arg; md.trim(); md.toUpperCase();
-                                  bool verbatim = false;
-                                  int sp = md.indexOf(' ');
-                                  if (sp > 0) { verbatim = md.substring(sp + 1) == "VERBATIM"; md = md.substring(0, sp); md.trim(); }
+    // RESTOREPLAN <модель> [NOREAD] [FIXES=...] — що саме буде виправлено в
+    // еталоні під ЦЕЙ пакет. Нічого не пише. Типово перечитує чипи, щоб заряд
+    // був свіжий; NOREAD — перерахувати на вже прочитаних даних (клієнт смикає
+    // це на кожну галочку, і сіпати 1-Wire щоразу не варто).
+    else if (cmd == "RESTOREPLAN") { SerRestoreArgs a = serParseRestore(arg);
+                                  RestorePlan p;
+                                  if (!buildRestorePlanFor(a.model.c_str(), p, a.reread))
+                                      sResp("{\"ok\":false,\"err\":\"немає шаблону моделі\"}");
+                                  else { serApplyPlanArgs(p, a);
+                                         sResp(String("{\"ok\":true,\"plan\":") + restorePlanJson(p) + "}"); } }
+    // RESTORE <модель> [VERBATIM] [FIXES=charge,rsense,...] — за замовчуванням
+    // навчений хвіст донора НЕ пишеться, а числа, що належать донору (заряд,
+    // шунт, OFFSET АЦП), замінюються на реальні з цього пакета. VERBATIM —
+    // ручний режим «байт-у-байт» для аналізу, без будь-яких правок.
+    else if (cmd == "RESTORE")  { SerRestoreArgs a = serParseRestore(arg);
+                                  String md = a.model; bool verbatim = a.verbatim;
                                   if (findTemplate(md.c_str()) < 0) sResp("{\"ok\":false,\"err\":\"немає шаблону моделі\"}");
                                   else { bool o33 = false, o38 = false;
-                                         bool ok = performRestoreTemplate(md.c_str(), &o33, &o38, verbatim);
+                                         RestorePlan p; const RestorePlan *pp = nullptr;
+                                         if (!verbatim && buildRestorePlanFor(md.c_str(), p, true)) {
+                                             serApplyPlanArgs(p, a);
+                                             pp = &p;
+                                         }
+                                         bool ok = performRestoreTemplate(md.c_str(), &o33, &o38, verbatim, pp);
                                          String r = String("{\"ok\":") + (ok ? "true" : "false")
                                                   + ",\"ds2433\":" + (o33 ? "true" : "false")
                                                   + ",\"ds2438\":" + (o38 ? "true" : "false");
+                                         if (pp) r += ",\"plan\":" + restorePlanJson(*pp);
                                          r += ok ? (String(",\"model\":\"") + md + "\"}")
                                                  : String(",\"err\":\"збій запису\"}");
                                          sResp(r); } }
     else if (cmd == "OPS")      { sResp(serBuildOps()); }
+    else if (cmd == "SOUND")    { sResp(serSound(arg)); }
     // DISCHARGE [мВ] — почати розряд; DISCHARGE STOP — зупинити; DISCHARGE? — стан.
     else if (cmd == "DISCHARGE"){ String a2 = arg; a2.trim(); a2.toUpperCase();
                                   if (a2 == "STOP") { dischargeStop(DISR_USER); sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); }

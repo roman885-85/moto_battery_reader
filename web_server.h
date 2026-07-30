@@ -10,6 +10,7 @@
 #include "impres_format.h"     // структура прошивки IMPRES (єдине джерело правди)
 #include "impres_bms.h"        // штатний декодер Motorola (лічильники, знос, дати)
 #include "operations.h"        // єдиний каталог операцій для всіх поверхонь
+#include "restore_plan.h"      // правки еталона під конкретний пакет перед записом
 #include "discharge.h"         // керований розряд навантаженням (MOSFET)
 #include "leds.h"
 #include "display.h"
@@ -1773,8 +1774,11 @@ bool performInitBattery(const char *model, long mah) {
 // вміст, а ROM шукається по шині (Search/Match ROM), попереднє читання не треба.
 // Кожен чіп пишемо НЕЗАЛЕЖНО й повертаємо true, якщо записався хоча б DS2433
 // (ідентичність); фактичний стан кожного — в ok33/ok38 і Serial-лог.
+//
+// plan — правки під конкретний пакет (restore_plan.h). nullptr = типовий набір,
+// порахований тут же з того, що зараз у буферах.
 bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 = nullptr,
-                            bool verbatim = false) {
+                            bool verbatim = false, const RestorePlan *plan = nullptr) {
     if (ok33) *ok33 = false;
     if (ok38) *ok38 = false;
     int t = findTemplate(model);
@@ -1784,6 +1788,19 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
     uint8_t was38[DS2438_MEM_SIZE];
     bool had38 = hasDump2438;
     if (had38) memcpy(was38, batteryDump2438, DS2438_MEM_SIZE);
+
+    // ⚑ План складаємо ДО того, як шаблон затре буфери: після memcpy_P у
+    // batteryDump2438 лежить монітор ДОНОРА, і все, пораховане з нього, буде
+    // числами донора. Саме на цьому раніше й горіло: рівень заряду брався з
+    // напруги, зашитої в шаблоні, тож у розряджений пакет писалось «повний».
+    RestorePlan localPlan;
+    if (!plan && !verbatim) {
+        restorePlanBuild(localPlan, model,
+                         BATTERY_TEMPLATES[t].d33, BATTERY_TEMPLATES[t].d38,
+                         hasDump ? batteryDump : nullptr,
+                         had38 ? was38 : nullptr);
+        plan = &localPlan;
+    }
 
     memcpy_P(batteryDump, BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
     bool write38 = (BATTERY_TEMPLATES[t].d38 != nullptr);
@@ -1796,13 +1813,16 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
         int cleared = applyFreshTail(BATTERY_TEMPLATES[t].fresh);
         if (cleared < 0) cleared = impresEraseTail(batteryDump);
         impresFixHeader(batteryDump);
-        if (write38 || had38)
-            impresResetMonitor(batteryDump2438, batteryDump,
-                               impresIcaFromPercentRs(
-                                   impresPercentFromMv(impresVoltageMv(batteryDump2438)),
-                                   impresRatedMahFor(batteryDump, model),
-                                   impresBmsRsense(batteryDump2438)));
-        Serial.printf("Restore: donor learned tail cleared: %d B\n", cleared);
+        bool touch38 = write38 || had38;
+        if (touch38) impresResetMonitor(batteryDump2438, batteryDump, plan->icaUse);
+        // Правки — ПІСЛЯ скидання монітора: воно обнуляє наробіток і паливомір.
+        restorePlanApply(*plan, batteryDump, touch38 ? batteryDump2438 : nullptr);
+        char pl[96] = "";
+        for (int i = 0, k = 0; i < RPF_COUNT; i++)
+            if (plan->fx[i].on) k += snprintf(pl + k, sizeof(pl) - k, "%s%s",
+                                              k ? "," : "", RESTORE_FIX_DOC[i].key);
+        Serial.printf("Restore: donor learned tail cleared: %d B; fixes: %s; ICA=%u\n",
+                      cleared, pl[0] ? pl : "(немає)", plan->icaUse);
     }
 
     ledSet(LED_WRITE); displayShow("ВІДНОВЛ. ЕТАЛОН");
@@ -1823,7 +1843,92 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
     return ok;
 }
 
-// Веб-відновлення еталона (під паролем): model.
+// ---- План правок еталона під конкретний пакет ------------------------------
+// Скласти план для моделі з того, що зараз у буферах. refresh=true — спершу
+// перечитати чипи: напруга (а з нею й рівень заряду) міняється, і показувати
+// користувачеві заряд півгодинної давнини означало б давати йому підтвердити
+// не те число, яке запишеться.
+static bool buildRestorePlanFor(const char *model, RestorePlan &p, bool refresh) {
+    int t = findTemplate(model);
+    if (t < 0) return false;
+    if (refresh) { bool a, b; readAllChips(a, b); }
+    restorePlanBuild(p, model, BATTERY_TEMPLATES[t].d33, BATTERY_TEMPLATES[t].d38,
+                     hasDump ? batteryDump : nullptr,
+                     hasDump2438 ? batteryDump2438 : nullptr);
+    return true;
+}
+
+static String restorePlanJson(const RestorePlan &p) {
+    char a[24], b[24], c[24];
+    String j = "{\"model\":\""; j += p.model;
+    j += "\",\"tpl38\":";   j += p.haveTpl38 ? "true" : "false";
+    j += ",\"pack33\":";    j += p.havePack33 ? "true" : "false";
+    j += ",\"pack38\":";    j += p.havePack38 ? "true" : "false";
+    j += ",\"packMv\":";    j += (int)p.packMv;
+    j += ",\"tplMv\":";     j += (int)p.tplMv;
+    j += ",\"packPct\":";   j += p.packPct;
+    j += ",\"ratedMah\":";  j += p.ratedMah;      // ефективна — за нею паливомір
+    j += ",\"ratedTpl\":";  j += p.ratedTpl;
+    j += ",\"ratedPack\":"; j += p.ratedPack;
+    j += ",\"ratedUser\":"; j += p.ratedUser;
+    j += ",\"ratedStep\":"; j += IMPRES_RATED_STEP;
+    j += ",\"ratedMin\":";  j += IMPRES_RATED_MIN_MAH;
+    j += ",\"ratedMax\":";  j += IMPRES_RATED_MAX_MAH;
+    j += ",\"icaTpl\":";    j += (int)p.icaTpl;
+    j += ",\"icaPack\":";   j += (int)p.icaPack;
+    j += ",\"icaUse\":";    j += (int)p.icaUse;
+    j += ",\"fixes\":[";
+    for (int i = 0; i < RPF_COUNT; i++) {
+        if (i) j += ",";
+        restoreFixText(p, i, p.fx[i].tplVal,  a, sizeof(a));
+        restoreFixText(p, i, p.fx[i].packVal, b, sizeof(b));
+        restoreFixText(p, i, p.fx[i].useVal,  c, sizeof(c));
+        j += "{\"key\":\"";    j += RESTORE_FIX_DOC[i].key;
+        j += "\",\"title\":\""; j += RESTORE_FIX_DOC[i].title;
+        j += "\",\"detail\":\"";j += RESTORE_FIX_DOC[i].detail;
+        j += "\",\"chip\":";    j += (int)RESTORE_FIX_DOC[i].chip;
+        j += ",\"chipsText\":\""; j += opChipsText(RESTORE_FIX_DOC[i].chip);
+        j += "\",\"avail\":";   j += p.fx[i].avail ? "true" : "false";
+        j += ",\"on\":";        j += p.fx[i].on ? "true" : "false";
+        j += ",\"tpl\":\"";     j += a;
+        j += "\",\"pack\":\"";  j += b;
+        j += "\",\"use\":\"";   j += c;
+        j += "\"}";
+    }
+    j += "]}";
+    return j;
+}
+
+// GET /api/restore/plan?model=XXX[&fixes=a,b][&read=0]
+// Що саме буде виправлено в еталоні перед записом у ЦЕЙ пакет.
+// rated — ємність нових банок, вписана вручну. Ставимо ДО маски: увімкнення
+// правки ємності міняє й паливомір, і робити це двома незалежними кроками
+// означало б показати проміжне (неправильне) число.
+static void applyPlanArgs(RestorePlan &p) {
+    if (server.hasArg("rated")) restorePlanSetRated(p, server.arg("rated").toInt());
+    if (server.hasArg("fixes")) {
+        uint32_t m = restoreMaskFromKeys(server.arg("fixes").c_str(), p);
+        int user = p.ratedUser;                 // маска не має стирати введене
+        restorePlanSetMask(p, m);
+        if (user > 0 && (m & (1UL << RPF_RATED))) restorePlanSetRated(p, user);
+    }
+}
+
+void handleRestorePlan() {
+    String model = server.arg("model"); model.trim(); model.toUpperCase();
+    RestorePlan p;
+    bool refresh = !server.hasArg("read") || server.arg("read") != "0";
+    if (!buildRestorePlanFor(model.c_str(), p, refresh)) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Немає вшитого шаблону для цієї моделі\"}");
+        return;
+    }
+    applyPlanArgs(p);
+    server.send(200, "application/json",
+                String("{\"status\":\"success\",\"plan\":") + restorePlanJson(p) + "}");
+}
+
+// Веб-відновлення еталона (під паролем): model[, fixes][, verbatim].
 void handleRestore() {
     if (!requireAdmin()) return;
     String model = server.arg("model"); model.trim(); model.toUpperCase();
@@ -1834,9 +1939,24 @@ void handleRestore() {
     // verbatim=1 — ручний режим: записати шаблон байт-у-байт разом із навченим
     // хвостом донора. Для аналізу; для ремонту лишайте вимкненим.
     bool verbatim = server.hasArg("verbatim") && server.arg("verbatim") == "1";
-    bool ok = performRestoreTemplate(model.c_str(), &ok33, &ok38, verbatim);
+
+    // Правки під цей пакет. Клієнт надсилає рівно той набір, який показав
+    // користувачеві; без параметра діє типовий набір. Перечитуємо чипи, щоб
+    // заряд узявся з напруги ЗАРАЗ, а не з давнього читання.
+    RestorePlan p;
+    const RestorePlan *pp = nullptr;
+    if (!verbatim && buildRestorePlanFor(model.c_str(), p, true)) {
+        applyPlanArgs(p);
+        pp = &p;
+    }
+
+    bool ok = performRestoreTemplate(model.c_str(), &ok33, &ok38, verbatim, pp);
     String j = String("{\"status\":\"") + (ok ? "success" : "error") + "\",\"ds2433\":" +
-               (ok33 ? "true" : "false") + ",\"ds2438\":" + (ok38 ? "true" : "false") + ",\"message\":\"";
+               (ok33 ? "true" : "false") + ",\"ds2438\":" + (ok38 ? "true" : "false");
+    // Звітуємо ФАКТИЧНО застосовані правки: користувач має бачити, що саме
+    // потрапило в чип, а не лише те, що він попросив.
+    if (pp) j += ",\"plan\":" + restorePlanJson(*pp);
+    j += ",\"message\":\"";
     if (ok && ok38)      j += String("Відновлено еталон ") + model + " (обидві мікросхеми)";
     else if (ok)         j += "DS2433 відновлено; DS2438 не записано (відсутній/битий)";
     else                 j += "Збій запису (див. Serial-лог)";
@@ -1870,6 +1990,163 @@ void handleDischargeStop() {
 }
 void handleDischargeStatus() {
     server.send(200, "application/json", dischargeJson());
+}
+
+// ===========================================================================
+//  НАЛАШТУВАННЯ ЗВУКУ
+//
+//  Заводські значення в buzzer.h підібрані «в середньому», але реальний п'єзо
+//  має власний резонанс і власну гучність: те, що на одному екземплярі звучить
+//  м'яко, на іншому ледь чутно або, навпаки, різко. Тому все, що формує
+//  характер сигналу, править користувач і воно переживає перезавантаження.
+//
+//  Файл — один рядок «ключ=значення»: його можна прочитати очима й полагодити
+//  руками, на відміну від дампа структури.
+// ===========================================================================
+#define SOUND_CFG_PATH "/sound.cfg"
+
+static bool soundCfgSave() {
+    const BuzzCfg &c = buzzGetCfg();
+    File f = SPIFFS.open(SOUND_CFG_PATH, "w");
+    if (!f) { Serial.println("SOUND: cannot write " SOUND_CFG_PATH); return false; }
+    f.printf("v1 en=%d clk=%d vol=%u tempo=%u glide=%u atk=%u rel=%u st=%d\n",
+             c.enabled ? 1 : 0, c.clickOn ? 1 : 0, (unsigned)c.volume,
+             (unsigned)c.tempoPct, (unsigned)c.glidePct,
+             (unsigned)c.attackMs, (unsigned)c.releaseMs, (int)c.semitones);
+    f.close();
+    return true;
+}
+
+// Прочитати збережені налаштування. Відсутній або побитий файл — не помилка:
+// лишаються заводські значення, і пристрій просто звучить «як з коробки».
+static void soundCfgLoad() {
+    if (!SPIFFS.exists(SOUND_CFG_PATH)) { Serial.println("SOUND: defaults (no file)"); return; }
+    File f = SPIFFS.open(SOUND_CFG_PATH, "r");
+    if (!f) return;
+    String line = f.readStringUntil('\n');
+    f.close();
+    int en = 1, clk = 1, vol = BUZZER_VOLUME, tempo = 100, glide = 100;
+    int atk = BUZZ_ATTACK_MS, rel = BUZZ_RELEASE_MS, st = 0;
+    int n = sscanf(line.c_str(),
+                   "v1 en=%d clk=%d vol=%d tempo=%d glide=%d atk=%d rel=%d st=%d",
+                   &en, &clk, &vol, &tempo, &glide, &atk, &rel, &st);
+    if (n != 8) { Serial.printf("SOUND: bad cfg (%d fields), using defaults\n", n); return; }
+    BuzzCfg c;
+    c.enabled   = en != 0;
+    c.clickOn   = clk != 0;
+    c.volume    = (uint8_t)constrain(vol, 0, 255);
+    c.tempoPct  = (uint16_t)constrain(tempo, 0, 1000);
+    c.glidePct  = (uint16_t)constrain(glide, 0, 1000);
+    c.attackMs  = (uint16_t)constrain(atk, 0, 1000);
+    c.releaseMs = (uint16_t)constrain(rel, 0, 1000);
+    c.semitones = (int8_t)constrain(st, -12, 12);
+    buzzSetCfg(c);                       // затисне решту меж сам
+    const BuzzCfg &g = buzzGetCfg();
+    Serial.printf("SOUND: loaded en=%d vol=%u tempo=%u%% glide=%u%% st=%d\n",
+                  g.enabled ? 1 : 0, (unsigned)g.volume, (unsigned)g.tempoPct,
+                  (unsigned)g.glidePct, (int)g.semitones);
+}
+
+static String soundJson() {
+    const BuzzCfg &c = buzzGetCfg();
+    String j = "{\"enabled\":"; j += c.enabled ? "true" : "false";
+    j += ",\"click\":";        j += c.clickOn ? "true" : "false";
+    j += ",\"volume\":";       j += (int)c.volume;
+    j += ",\"tempo\":";        j += (int)c.tempoPct;
+    j += ",\"glide\":";        j += (int)c.glidePct;
+    j += ",\"attack\":";       j += (int)c.attackMs;
+    j += ",\"release\":";      j += (int)c.releaseMs;
+    j += ",\"semitones\":";    j += (int)c.semitones;
+    j += "}";
+    return j;
+}
+
+// Повна відповідь: значення + межі повзунків + перелік сигналів. Межі віддає
+// пристрій, щоб клієнт не тримав власну копію діапазонів і не розійшовся з
+// buzzCfgClamp() після наступної правки.
+static String soundFullJson() {
+    String j = "{\"status\":\"success\",\"sound\":" + soundJson();
+    j += ",\"limits\":{\"volume\":[0,255],\"tempo\":[25,400],\"glide\":[0,300],"
+         "\"attack\":[0,200],\"release\":[0,400],\"semitones\":[-12,12]}";
+    j += ",\"defaults\":{\"enabled\":true,\"click\":true,\"volume\":" + String((int)BUZZER_VOLUME) +
+         ",\"tempo\":100,\"glide\":100,\"attack\":" + String((int)BUZZ_ATTACK_MS) +
+         ",\"release\":" + String((int)BUZZ_RELEASE_MS) + ",\"semitones\":0}";
+#ifdef BUZZER_PIN
+    j += ",\"hasBuzzer\":true,\"pin\":" + String((int)BUZZER_PIN);
+#else
+    j += ",\"hasBuzzer\":false,\"pin\":-1";
+#endif
+    j += ",\"signals\":[";
+    for (int i = 0; i < BZ_SIGNAL_COUNT; i++) {
+        if (i) j += ",";
+        j += "{\"key\":\""; j += BZ_SIGNALS[i].key;
+        j += "\",\"title\":\""; j += BZ_SIGNALS[i].title;
+        j += "\",\"ms\":"; j += (int)buzzPhraseMs(BZ_SIGNALS[i].seq, BZ_SIGNALS[i].len);
+        j += "}";
+    }
+    j += "]}";
+    return j;
+}
+
+void handleSoundGet() { server.send(200, "application/json", soundFullJson()); }
+
+// POST /api/sound — приймає будь-яку підмножину полів: чого немає, те не
+// чіпаємо. Так повзунок гучності не скидає темп, і навпаки.
+//   test=<ключ>  — одразу прослухати сигнал уже з НОВИМИ значеннями;
+//   reset=1      — повернути заводські;
+//   save=0       — приміряти без запису в SPIFFS (для «живого» повзунка).
+void handleSoundSet() {
+    if (!requireAdmin()) return;
+    BuzzCfg c = buzzGetCfg();
+    if (server.hasArg("reset") && server.arg("reset") != "0") {
+        BuzzCfg d = { true, true, BUZZER_VOLUME, 100, 100,
+                      BUZZ_ATTACK_MS, BUZZ_RELEASE_MS, 0 };
+        c = d;
+    }
+    auto flag = [&](const char *k, bool cur) {
+        if (!server.hasArg(k)) return cur;
+        String v = server.arg(k);
+        return !(v == "0" || v == "false" || v == "off");
+    };
+    c.enabled = flag("enabled", c.enabled);
+    c.clickOn = flag("click",   c.clickOn);
+    if (server.hasArg("volume"))    c.volume    = (uint8_t)constrain(server.arg("volume").toInt(), 0, 255);
+    if (server.hasArg("tempo"))     c.tempoPct  = (uint16_t)constrain(server.arg("tempo").toInt(), 0, 1000);
+    if (server.hasArg("glide"))     c.glidePct  = (uint16_t)constrain(server.arg("glide").toInt(), 0, 1000);
+    if (server.hasArg("attack"))    c.attackMs  = (uint16_t)constrain(server.arg("attack").toInt(), 0, 1000);
+    if (server.hasArg("release"))   c.releaseMs = (uint16_t)constrain(server.arg("release").toInt(), 0, 1000);
+    if (server.hasArg("semitones")) c.semitones = (int8_t)constrain(server.arg("semitones").toInt(), -12, 12);
+    buzzSetCfg(c);                       // затиск меж — усередині
+
+    bool saved = true;
+    if (!server.hasArg("save") || server.arg("save") != "0") saved = soundCfgSave();
+
+    uint32_t testMs = 0;
+    if (server.hasArg("test")) testMs = buzzPlayNamed(server.arg("test").c_str());
+
+    String j = soundFullJson();
+    j.remove(j.length() - 1);            // прибрати '}' і дописати службові поля
+    j += ",\"saved\":"; j += saved ? "true" : "false";
+    j += ",\"testMs\":"; j += (int)testMs; j += "}";
+    server.send(200, "application/json", j);
+}
+
+// Окремий маршрут «просто прослухати»: нічого не міняє й не пише в SPIFFS.
+// Невідомий ключ і вимкнений звук — різні речі: у першому випадку клієнт помилився,
+// у другому все правильно, просто чути нема чого, і мовчання треба пояснити.
+void handleSoundTest() {
+    if (!requireAdmin()) return;
+    String name = server.hasArg("name") ? server.arg("name") : String("ok");
+    if (!buzzFindSignal(name.c_str())) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Невідомий сигнал\"}");
+        return;
+    }
+    uint32_t ms = buzzPlayNamed(name.c_str());
+    String j = String("{\"status\":\"success\",\"name\":\"") + name +
+               "\",\"ms\":" + (int)ms + ",\"played\":" + (ms ? "true" : "false");
+    if (!ms) j += ",\"message\":\"Звук вимкнено в налаштуваннях\"";
+    server.send(200, "application/json", j + "}");
 }
 
 void handleOps() {
@@ -2040,11 +2317,15 @@ void setupWebServer() {
     server.on("/api/reboot", HTTP_POST, handleReboot);           // перезавантаження ESP32
     server.on("/api/templates", HTTP_GET, handleTemplates);      // список вшитих моделей
     server.on("/api/ops", HTTP_GET, handleOps);                  // каталог операцій (operations.h)
+    server.on("/api/sound", HTTP_GET, handleSoundGet);           // налаштування звуку
+    server.on("/api/sound", HTTP_POST, handleSoundSet);          // змінити налаштування звуку
+    server.on("/api/sound/test", HTTP_POST, handleSoundTest);    // прослухати сигнал
     server.on("/api/discharge", HTTP_GET, handleDischargeStatus);        // стан розряду
     server.on("/api/discharge/start", HTTP_POST, handleDischargeStart);  // почати розряд
     server.on("/api/discharge/stop", HTTP_POST, handleDischargeStop);    // зупинити розряд
     server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
     server.on("/api/restore", HTTP_POST, handleRestore);         // відновлення еталона verbatim
+    server.on("/api/restore/plan", HTTP_GET, handleRestorePlan); // правки еталона під цей пакет
     server.on("/api/wizard", HTTP_GET, handleWizard);            // Майстер: аналіз+план
     server.on("/api/wizard/step", HTTP_POST, handleWizardStep);  // Майстер: виконати крок
     server.on("/api/wizard/reset", HTTP_POST, handleWizardReset);// Майстер: скинути журнал

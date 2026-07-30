@@ -1316,6 +1316,22 @@ class App:
                            "Навчений хвіст 0x18A–0x1FF лишається порожнім — його запише зарядна станція.\n"
                            "Працює й на порожній/битій мікросхемі.",
                   foreground="#b9bd86", justify="left").pack(anchor="w")
+        # ---- правки під ЦЕЙ пакет -------------------------------------
+        #  Еталон — побайтова копія ОДНОГО акумулятора, і разом із моделлю він
+        #  несе числа донора: його рівень заряду, його шунт, його калібрування
+        #  нуля АЦП. Показуємо їх поруч із реальними числами пакета, щоб
+        #  користувач вирішував, а не довіряв наосліп.
+        self.frRp = ttk.LabelFrame(b4r, text="🔎 Правки під ЦЕЙ пакет — перевірте перед записом", padding=6)
+        ttk.Label(self.frRp, foreground="#b9bd86", justify="left",
+                  text="Зніміть галочку, щоб лишити число еталона.").pack(anchor="w")
+        self.lblRpWarn = ttk.Label(self.frRp, foreground="#ffd9a8", justify="left", wraplength=640)
+        self.rpGrid = ttk.Frame(self.frRp); self.rpGrid.pack(fill="x", pady=(4, 2))
+        self.lblRpSum = ttk.Label(self.frRp, foreground="#b9bd86", justify="left", wraplength=640)
+        self.lblRpSum.pack(anchor="w", pady=(4, 0))
+        ttk.Button(self.frRp, text="🔄 Перечитати акумулятор",
+                   command=lambda: self.rp_load(True)).pack(anchor="w", pady=(4, 0))
+        self.rpVars, self.rpPlan = {}, None
+
         ttk.Button(b4r, text="🛠️ Відновити модельну частину (DS2433+DS2438)", command=self.restore_battery).pack(anchor="w", pady=2)
         ttk.Button(b4r, text="🧪 Байт-у-байт (ручний режим, для аналізу)", command=self.restore_battery_verbatim).pack(anchor="w", pady=2)
 
@@ -1338,8 +1354,78 @@ class App:
         ttk.Button(b6, text="🔥 ПОВНЕ стирання DS2433", command=self.wipe33).pack(anchor="w", pady=2)
         ttk.Button(b6, text="🔥 ПОВНЕ стирання DS2438", command=self.wipe38).pack(anchor="w", pady=2)
 
+        self._build_sound(p)
+
         b7 = ttk.LabelFrame(p, text="Пристрій", padding=8); b7.pack(fill="x", pady=4)
         ttk.Button(b7, text="🔁 Перезавантажити ESP32", command=self.reboot).pack(side="left", padx=3)
+
+    # ---- налаштування звуку ---------------------------------------------
+    #  Нічого не пише в акумулятор: це налаштування самого пристрою. Межі
+    #  повзунків приходять із прошивки (SOUND -> limits) — власна копія тут
+    #  розійшлася б із buzzCfgClamp() після наступної правки firmware.
+    SND_FIELDS = [
+        # (ключ у JSON, ключ команди, підпис, крок, як показати значення)
+        ("volume",    "vol",   "Гучність",         1, lambda v: "%d / 255" % v),
+        ("tempo",     "tempo", "Швидкість",        5, lambda v: "%d %%" % v),
+        ("glide",     "glide", "Перетікання нот",  5, lambda v: "вимкн." if v == 0 else "%d %%" % v),
+        ("attack",    "atk",   "Наростання",       2, lambda v: "%d мс" % v),
+        ("release",   "rel",   "Згасання",         5, lambda v: "%d мс" % v),
+        ("semitones", "st",    "Висота тону",      1,
+         lambda v: "заводська" if v == 0 else "%+d пів." % v),
+    ]
+
+    def _build_sound(self, p):
+        bs = ttk.LabelFrame(p, text="🔊 Налаштування звуку  ·  лише пристрій, в АКБ не пише",
+                            padding=8)
+        bs.pack(fill="x", pady=4)
+        ttk.Label(bs, text="Зберігається в пам'яті пристрою й переживає перезавантаження. Кожен п'єзо\n"
+                           "має свій резонанс: на одному звук м'який, на іншому ледь чутний. Крутіть\n"
+                           "повзунок і одразу тисніть «прослухати».",
+                  foreground="#b9bd86", justify="left").pack(anchor="w")
+
+        sw = ttk.Frame(bs); sw.pack(anchor="w", pady=(6, 2))
+        self.sndEn = tk.BooleanVar(value=True)
+        self.sndClk = tk.BooleanVar(value=True)
+        ttk.Checkbutton(sw, text="Звук увімкнено", variable=self.sndEn,
+                        command=self._snd_push).pack(side="left", padx=(0, 14))
+        ttk.Checkbutton(sw, text="Блiп при перегортанні меню", variable=self.sndClk,
+                        command=self._snd_push).pack(side="left")
+
+        grid = ttk.Frame(bs); grid.pack(fill="x", pady=2)
+        grid.columnconfigure(1, weight=1)
+        self.sndVar, self.sndScale, self.sndLbl = {}, {}, {}
+        for i, (key, _ck, title, step, fmt) in enumerate(self.SND_FIELDS):
+            ttk.Label(grid, text=title, width=18).grid(row=i, column=0, sticky="w", pady=1)
+            var = tk.IntVar(value=0)
+            # Повзунок Tk віддає float — округлюємо до кроку самі, інакше в
+            # команду поїхало б «tempo=137.4999», і пристрій прочитав би 137.
+            sc = tk.Scale(grid, from_=0, to=100, orient="horizontal", variable=var,
+                          resolution=step, showvalue=False, sliderlength=18, width=11,
+                          highlightthickness=0, bd=0, takefocus=1,
+                          # tk.Scale не тематизується через ttk.Style — фарбуємо руками,
+                          # інакше на темному тлі буде світло-сіра пляма.
+                          bg=MIL["bg"], fg=MIL["fg"], troughcolor=MIL["field"],
+                          activebackground=MIL["khaki"], relief="flat")
+            sc.grid(row=i, column=1, sticky="we", padx=8)
+            sc.configure(command=lambda _v, k=key: self._snd_show(k))
+            sc.bind("<ButtonRelease-1>", lambda _e: self._snd_push())
+            sc.bind("<KeyRelease>", lambda _e: self._snd_push())
+            lbl = ttk.Label(grid, text="—", width=11, anchor="e",
+                            font=fnt("Consolas", 10, "bold"))
+            lbl.grid(row=i, column=2, sticky="e")
+            self.sndVar[key], self.sndScale[key], self.sndLbl[key] = var, sc, lbl
+
+        self.lblSndHint = ttk.Label(
+            bs, foreground="#b9bd86", justify="left",
+            text="Швидкість розтягує і ноти, і перетікання разом, тож повільна фраза лишається злитою.\n"
+                 "Перетікання 0 % — ноти перемикаються стрибком, 200–300 % — довге ковзання. Висота\n"
+                 "тону зсуває всю мелодію: якщо п'єзо на заводських частотах тихий, підніміть її на\n"
+                 "кілька півтонів і знайдіть його резонанс на слух.")
+        self.lblSndHint.pack(anchor="w", pady=(6, 2))
+
+        self.frSndTest = ttk.Frame(bs); self.frSndTest.pack(fill="x", pady=2)
+        ttk.Button(bs, text="↩️ Заводські значення",
+                   command=self.sound_reset).pack(anchor="w", pady=(4, 0))
 
     def _build_hex(self):
         f = self.tabHex
@@ -1611,7 +1697,7 @@ class App:
             self.connected = True
             self.btnConn.config(text="⏏ Відключити")
             self.status("Підключено (" + r.get("port", "") + ")", True)
-            self.cmd("PING", 3.0, cb=lambda _: (self.load_templates(), self.refresh()))
+            self.cmd("PING", 3.0, cb=lambda _: (self.load_templates(), self.sound_load(), self.refresh()))
         else:
             self.status("Помилка порту: " + r.get("err", ""), False)
 
@@ -2005,15 +2091,145 @@ class App:
         def done(r):
             if isinstance(r, dict) and r.get("ok"):
                 both = r.get("ds2438")
-                self._after_write(r, f"✅ Еталон {model} записано" + (" (DS2433+DS2438)" if both else " (лише DS2433)"))
+                if r.get("plan"):
+                    self._render_plan(r["plan"])
+                n = len([f for f in r.get("plan", {}).get("fixes", []) if f.get("on")])
+                self._after_write(r, f"✅ Еталон {model} записано"
+                                     + (" (DS2433+DS2438)" if both else " (лише DS2433)")
+                                     + (f", правок під пакет: {n}" if n else ""))
             else:
                 self._after_write(r, "")
-        arg = f"RESTORE {model}" + (" VERBATIM" if verbatim else "")
+        arg = f"RESTORE {model}" + (" VERBATIM" if verbatim else self._rp_fixes_arg())
         self.maybe_auth(lambda: (self.status("Відновлення еталона..."),
                                  self.cmd(arg, 25.0, cb=done)))
 
     def restore_battery_verbatim(self):
         self.restore_battery(verbatim=True)
+
+    # ---- правки еталона під конкретний пакет -----------------------------
+    def _rp_rated(self):
+        """Вписана вручну ємність нових банок; порожньо/сміття -> 0."""
+        e = getattr(self, "eRpRated", None)
+        if e is None:
+            return 0
+        try:
+            return max(0, int(e.get().strip() or 0))
+        except (ValueError, tk.TclError):
+            return 0
+
+    def _rp_keys(self):
+        k = [key for key, v in self.rpVars.items() if v.get()]
+        # Вписана ємність — це вже згода її записати, галочки для неї може ще
+        # не бути (рядок був недоступним, поки поле стояло порожнім).
+        if self._rp_rated() and "rated" not in k:
+            k.append("rated")
+        return ",".join(k)
+
+    def _rp_args(self):
+        r = self._rp_rated()
+        return " FIXES=" + self._rp_keys() + (" RATED=%d" % r if r else "")
+
+    def _rp_fixes_arg(self):
+        if self.rpPlan is None:
+            return ""
+        return self._rp_args()
+
+    def rp_load(self, reread=False):
+        """Запитати план у пристрою. reread=False — порахувати на вже
+        прочитаних даних: клієнт смикає це на кожну галочку, і сіпати 1-Wire
+        щоразу не варто."""
+        model = self.cbRest.get()
+        if not model or not self.connected:
+            self.rpPlan = None
+            self.frRp.pack_forget()
+            return
+        arg = f"RESTOREPLAN {model}" + ("" if reread else " NOREAD")
+        self.cmd(arg, 20.0, cb=self._on_plan)
+
+    def _rp_recalc(self):
+        # Перерахунок робить ПРИСТРІЙ: паливомір залежить від того, який шунт
+        # опиниться в чипі, і рахувати це вдруге тут означало б завести другу
+        # формулу, яка одного дня розійдеться з прошивкою.
+        model = self.cbRest.get()
+        if not model or not self.connected:
+            return
+        self.cmd(f"RESTOREPLAN {model} NOREAD" + self._rp_args(), 20.0, cb=self._on_plan)
+
+    def _on_plan(self, r):
+        if isinstance(r, dict) and r.get("ok") and r.get("plan"):
+            self._render_plan(r["plan"])
+        else:
+            self.rpPlan = None
+            self.frRp.pack_forget()
+
+    def _render_plan(self, p):
+        self.rpPlan = p
+        for w in self.rpGrid.winfo_children():
+            w.destroy()
+        self.rpVars = {}
+        hdr = ("", "Що саме", "Еталон (донор)", "Цей пакет", "Буде записано")
+        for c, t in enumerate(hdr):
+            ttk.Label(self.rpGrid, text=t, foreground="#9a9c82").grid(row=0, column=c, sticky="w", padx=4, pady=(0, 3))
+        self.rpGrid.columnconfigure(1, weight=1)
+        mono = fnt("Consolas", 9)
+        for i, f in enumerate(p.get("fixes", []), start=1):
+            avail = bool(f.get("avail"))
+            if avail:
+                var = tk.BooleanVar(value=bool(f.get("on")))
+                self.rpVars[f["key"]] = var
+                ttk.Checkbutton(self.rpGrid, variable=var,
+                                command=self._rp_recalc).grid(row=i, column=0, sticky="w")
+            else:
+                ttk.Label(self.rpGrid, text="—", foreground="#6b6f58").grid(row=i, column=0, sticky="w")
+            title = f.get("title", "") + "  ·  пише в " + f.get("chipsText", "")
+            if not avail and f.get("key") != "rated":
+                title += "  (джерела немає)"
+            # wraplength — щоб довга назва переносилась, а не заповзала під
+            # стовпець значень і не обрізалась на вузькому вікні.
+            cell = ttk.Frame(self.rpGrid)
+            cell.grid(row=i, column=1, sticky="we", padx=4)
+            ttk.Label(cell, text=title, wraplength=int(round(330 * self.zoom)), justify="left",
+                      foreground="#e7e3d2" if avail else "#6b6f58").pack(anchor="w")
+            # Ємність — єдина правка, яку можна не лише взяти з пакета, а й
+            # вписати руками: після заміни банок нової ємності взяти нізвідки.
+            if f.get("key") == "rated":
+                sub = ttk.Frame(cell); sub.pack(anchor="w", pady=(2, 0))
+                ttk.Label(sub, text="нові банки, мА·год:", foreground="#b9bd86").pack(side="left")
+                self.eRpRated = ttk.Entry(sub, width=8)
+                self.eRpRated.pack(side="left", padx=4)
+                if p.get("ratedUser", 0) > 0:
+                    self.eRpRated.insert(0, str(p["ratedUser"]))
+                self.eRpRated.bind("<Return>", lambda _e: self._rp_recalc())
+                self.eRpRated.bind("<FocusOut>", lambda _e: self._rp_recalc())
+                ttk.Label(sub, text="(порожньо — лишити як є, крок %d)" % p.get("ratedStep", 25),
+                          foreground="#6b6f58").pack(side="left")
+            for c, key, col in ((2, "tpl", "#9a9c82"), (3, "pack", "#e7e3d2"), (4, "use", "#c8b04a")):
+                ttk.Label(self.rpGrid, text=f.get(key, "—"), font=mono,
+                          foreground=col if avail else "#6b6f58").grid(row=i, column=c, sticky="e", padx=4)
+        if p.get("pack38"):
+            self.lblRpSum.config(
+                text="Виміряно зараз: %.2f В → заряд %d %% (паливомір ICA %d, паспортна ємність %d мА·год%s).\n"
+                     "В еталоні зашито %.2f В — це стан ДОНОРА, не вашого пакета."
+                     % (p.get("packMv", 0) / 1000.0, p.get("packPct", -1), p.get("icaUse", 0),
+                        p.get("ratedMah", 0),
+                        " — вписана вручну" if p.get("ratedUser", 0) > 0 else "",
+                        p.get("tplMv", 0) / 1000.0))
+        else:
+            self.lblRpSum.config(text="Монітор DS2438 не прочитано, тож брати реальні значення нема звідки — "
+                                      "піде те, що в еталоні.")
+        w = ""
+        if not p.get("pack38"):
+            w = ("⚠️ DS2438 не читається. Якщо мікросхема жива — натисніть «Перечитати акумулятор»: "
+                 "без неї в пакет піде рівень заряду й шунт донора.")
+        elif not p.get("tpl38"):
+            w = ("ℹ️ Для цієї моделі еталона монітора немає — DS2438 пакета лишається своїм, "
+                 "правиться лише паливомір.")
+        if w:
+            self.lblRpWarn.config(text=w)
+            self.lblRpWarn.pack(anchor="w", pady=(2, 0), before=self.rpGrid)
+        else:
+            self.lblRpWarn.pack_forget()
+        self.frRp.pack(fill="x", pady=(6, 2))
 
     def set_mah(self):
         if not self.need_conn():
@@ -2104,6 +2320,79 @@ class App:
             return
         self.maybe_auth(lambda: self.cmd("REBOOT", 3.0, cb=lambda r: self._submit("close", cb=lambda _: self._set_disconnected())))
 
+    # ---- налаштування звуку ---------------------------------------------
+    def sound_load(self, *_):
+        if self.connected:
+            self.cmd("SOUND", 5.0, cb=self._apply_sound)
+
+    def _apply_sound(self, r):
+        if not r.get("ok") or "sound" not in r:
+            return
+        s, lim = r["sound"], r.get("limits", {})
+        self._sndQuiet = True                    # заповнення не має слати команду назад
+        try:
+            self.sndEn.set(bool(s.get("enabled", True)))
+            self.sndClk.set(bool(s.get("click", True)))
+            for key, _ck, _t, _st, _f in self.SND_FIELDS:
+                lo, hi = lim.get(key, (0, 255))
+                self.sndScale[key].configure(from_=lo, to=hi)
+                self.sndVar[key].set(int(s.get(key, lo)))
+                self._snd_show(key)
+        finally:
+            self._sndQuiet = False
+        # Кнопки «прослухати» будуємо з переліку пристрою: сигнали живуть у
+        # buzzer.h, і клієнт не має тримати їхню другу копію.
+        for w in self.frSndTest.winfo_children():
+            w.destroy()
+        # У два стовпці, а не в один ряд: у Tk немає перенесення, і в один ряд
+        # п'ять кнопок виїжджали б за край картки, обрізавши підписи.
+        for i, sig in enumerate(r.get("signals", [])):
+            ttk.Button(self.frSndTest,
+                       text="▶ %s (%d мс)" % (sig.get("title", sig.get("key", "?")), sig.get("ms", 0)),
+                       command=lambda k=sig.get("key"): self.sound_test(k)
+                       ).grid(row=i // 2, column=i % 2, sticky="we", padx=2, pady=2)
+        for c in range(2):
+            self.frSndTest.columnconfigure(c, weight=1)
+        if r.get("hasBuzzer") is False:
+            self.lblSndHint.config(
+                text="⚠️ У цій збірці буззер не підключено (BUZZER_PIN у settings.h не задано) —\n"
+                     "налаштування зберігаються, але звучати нема чому.")
+
+    def _snd_show(self, key):
+        for k, _ck, _t, _st, fmt in self.SND_FIELDS:
+            if k == key:
+                self.sndLbl[k].config(text=fmt(int(self.sndVar[k].get())))
+                return
+
+    # Повзунок шлють після відпускання, а не на кожен піксель: інакше кожен рух
+    # мишею — окрема команда й запис у SPIFFS, ресурс перезапису якої скінченний.
+    def _snd_push(self, test=None):
+        if getattr(self, "_sndQuiet", False) or not self.connected:
+            return
+        a = "SET en=%d clk=%d" % (1 if self.sndEn.get() else 0, 1 if self.sndClk.get() else 0)
+        for key, ck, _t, _st, _f in self.SND_FIELDS:
+            a += " %s=%d" % (ck, int(self.sndVar[key].get()))
+        if test:
+            a += " test=" + test
+        self.cmd("SOUND " + a, 6.0, cb=self._apply_sound)
+
+    # «Прослухати» несе й поточні значення повзунків: користувач має почути те,
+    # що бачить на екрані, а не те, що встигло долетіти минулою командою.
+    def sound_test(self, name):
+        if not self.need_conn():
+            return
+        self._snd_push(test=name)
+
+    def sound_reset(self):
+        if not self.need_conn():
+            return
+        def done(r):
+            self._apply_sound(r)
+            if r.get("ok"):
+                self.cmd("SOUND TEST ok", 4.0)
+                self.status("🔊 Повернуто заводські значення", True)
+        self.cmd("SOUND RESET", 6.0, cb=done)
+
     # ---- шаблони / файли -----------------------------------------------
     def load_templates(self, *_):
         self.cmd("TEMPLATES", 5.0, cb=self._apply_templates)
@@ -2114,6 +2403,13 @@ class App:
             cb["values"] = models
             if models and not cb.get():
                 cb.current(0)
+        # Зміна моделі — інший еталон, отже інші числа донора: план треба
+        # перебудувати, інакше галочки описували б попередню модель.
+        if not getattr(self, "_rpBound", False):
+            self._rpBound = True
+            self.cbRest.bind("<<ComboboxSelected>>", lambda _e: self.rp_load(False))
+        if models:
+            self.rp_load(False)
 
     def save_dump(self, getcmd, size, default):
         if not self.need_conn():

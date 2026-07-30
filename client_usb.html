@@ -8,6 +8,11 @@
     .chipb{display:inline-block;vertical-align:middle;margin-left:8px;padding:2px 8px;
            border-radius:999px;font-size:.62em;font-weight:700;
            background:#2a335c;color:#cfe3ff;border:1px solid #3d4a7d;white-space:nowrap}
+    /* .chipb каже «пише в таку-то мікросхему»; .nochip — протилежне, і плутати
+       ці два сенси не можна навіть кольором. */
+    .nochip{display:inline-block;vertical-align:middle;margin-left:8px;padding:2px 8px;
+           border-radius:999px;font-size:.62em;font-weight:700;
+           background:#1e3324;color:#bfe3c8;border:1px solid #3d6b4a;white-space:nowrap}
 
 :root{ /* Мілітарна тема НГУ: оливково-хакі поле + акцент «краповий» */
  --bg:#14160f;--card:#20241a;--line:#3b4230;--txt:#e7e3d2;--mut:#9a9c82;
@@ -43,6 +48,37 @@ header h1{font-size:1.05em;margin:0;color:var(--gold)}
 input,select,textarea{background:#171a10;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:8px}
 input,select{width:auto}.pw{width:100%;margin:6px 0}
 .bar{font-size:.8em;color:var(--mut)}
+/* ---- Правки еталона під конкретний пакет ---------------------------------
+   Три стовпці поруч — «еталон / цей пакет / буде записано»: різницю видно
+   оком, і не треба вірити на слово, що правка потрібна. */
+.rpwrap{overflow-x:auto;margin-top:8px}
+.rpt{width:100%;border-collapse:collapse;font-size:.85em;min-width:520px}
+.rpt th{color:var(--mut);font-weight:600;text-align:left;padding:6px 8px;
+        border-bottom:1px solid var(--line);white-space:nowrap}
+.rpt td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+.rpt tr:last-child td{border-bottom:none}
+.rpt .num{font-family:ui-monospace,monospace;white-space:nowrap}
+.rpt .use{font-family:ui-monospace,monospace;white-space:nowrap;font-weight:700;color:var(--khaki)}
+.rpt .dim{color:var(--mut)}
+.rpt .det{color:var(--mut);font-size:.9em;line-height:1.35;margin-top:3px}
+.rpt input[type=checkbox]{accent-color:var(--khaki);width:16px;height:16px;cursor:pointer;padding:0}
+.rpt tr.off .use{color:var(--mut);font-weight:400}
+.rpt tr.na{opacity:.55}
+/* ---- Налаштування звуку --------------------------------------------------
+   Підпис / повзунок / значення. Значення показуємо завжди: «десь посередині»
+   нічого не означає, а «150 %» можна запам'ятати й повторити. */
+.snd{display:grid;grid-template-columns:auto 1fr auto;gap:9px 12px;align-items:center;
+     margin-top:8px;font-size:.9em}
+.snd label{color:var(--mut);white-space:nowrap}
+.snd input[type=range]{width:100%;padding:0;accent-color:var(--khaki);cursor:pointer;border:none;background:none}
+.snd .sv{font-family:ui-monospace,monospace;font-weight:700;min-width:66px;text-align:right}
+.sndsw{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:4px}
+.sndsw label{display:flex;align-items:center;gap:6px;cursor:pointer}
+.sndsw input{accent-color:var(--khaki);width:16px;height:16px;cursor:pointer;padding:0}
+.sndtest{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.sndtest button{padding:8px 12px;border-radius:8px;border:1px solid var(--line);
+                background:#171a10;color:var(--txt);cursor:pointer;font-size:.85em}
+.sndtest button:hover{border-color:var(--khaki)}
 /* ---- Монітор розряду (той самий вигляд, що й у веб-версії пристрою) --------
    Розряд триває годинами, тож це панель процесу, а не рядок тексту: пульсуючий
    індикатор, смуга прогресу з «течією» (видно, що процес живий і між
@@ -409,6 +445,18 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         казала «невідомий акумулятор». Побайтовий режим — кнопкою нижче, для аналізу.</div>
       <div class="row"><span class="k">Модель</span><select id="restModel" style="min-width:150px"></select></div>
       <div class="note w">⚠️ Перезапише ОБИДВІ мікросхеми еталоном. Для 4409B — найнадійніший робочий результат.</div>
+
+      <div id="rpBox" style="display:none">
+        <div class="zone zi" style="margin:14px 0 6px">🔎 Правки під ЦЕЙ пакет — перевірте перед записом</div>
+        <div class="note i">Еталон несе не лише модель, а й числа <b>донора</b>, з якого знято копію: його
+          рівень заряду, його шунт, його калібрування нуля АЦП. Нижче — що буде замінено на реальні
+          значення цього акумулятора. Зніміть галочку, щоб лишити число еталона.</div>
+        <div id="rpWarn" class="note w" style="display:none"></div>
+        <div class="rpwrap"><table class="rpt" id="rpTable"></table></div>
+        <div class="note i" id="rpSum"></div>
+        <button class="btn b-inf" onclick="rpLoad(true)">🔄 Перечитати акумулятор</button>
+      </div>
+
       <button class="btn b-warn" onclick="restoreBattery(false)">🛠️ ВІДНОВИТИ ЕТАЛОН</button>
       <button class="btn" onclick="restoreBattery(true)">🧪 Байт-у-байт (ручний режим, для аналізу)</button>
     </div>
@@ -423,6 +471,48 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         <input type="number" id="initMah" min="1" max="6000" value="2500" style="width:110px;text-align:center"></div>
       <div class="note w">⚠️ Перезапише ОБИДВІ мікросхеми. Лише для порожнього/невідомого чипа. Вкажіть паспортну ємність вашої моделі.</div>
       <button class="btn b-warn" onclick="initBattery()">🆕 ЗАПИСАТИ НОВИЙ АКБ</button>
+    </div>
+
+<div class="card">
+      <h2>🔊 Налаштування звуку <span class="nochip">в АКБ не пише</span></h2>
+      <div class="note i">Нічого не пише в акумулятор — це налаштування самого пристрою; воно
+        зберігається в його пам'яті й переживає перезавантаження. Кожен п'єзо має свій резонанс:
+        на одному звук м'який, на іншому ледь чутний. Крутіть повзунок і одразу тисніть «прослухати».</div>
+      <div class="sndsw">
+        <label><input type="checkbox" id="sndEn" onchange="sndPush()"> Звук увімкнено</label>
+        <label><input type="checkbox" id="sndClk" onchange="sndPush()"> Блiп при перегортанні меню</label>
+      </div>
+      <div class="snd">
+        <label for="sndVol">Гучність</label>
+        <input type="range" id="sndVol" min="0" max="255" oninput="sndShow()" onchange="sndPush()">
+        <span class="sv" id="svVol">—</span>
+
+        <label for="sndTempo">Швидкість</label>
+        <input type="range" id="sndTempo" min="25" max="400" step="5" oninput="sndShow()" onchange="sndPush()">
+        <span class="sv" id="svTempo">—</span>
+
+        <label for="sndGlide">Перетікання нот</label>
+        <input type="range" id="sndGlide" min="0" max="300" step="5" oninput="sndShow()" onchange="sndPush()">
+        <span class="sv" id="svGlide">—</span>
+
+        <label for="sndAtk">Наростання</label>
+        <input type="range" id="sndAtk" min="0" max="200" step="2" oninput="sndShow()" onchange="sndPush()">
+        <span class="sv" id="svAtk">—</span>
+
+        <label for="sndRel">Згасання</label>
+        <input type="range" id="sndRel" min="0" max="400" step="5" oninput="sndShow()" onchange="sndPush()">
+        <span class="sv" id="svRel">—</span>
+
+        <label for="sndSt">Висота тону</label>
+        <input type="range" id="sndSt" min="-12" max="12" step="1" oninput="sndShow()" onchange="sndPush()">
+        <span class="sv" id="svSt">—</span>
+      </div>
+      <div class="note i" id="sndHint">Швидкість розтягує і ноти, і перетікання разом, тож повільна фраза
+        лишається злитою. Перетікання 0 % — ноти перемикаються стрибком, 200–300 % — довге ковзання.
+        Висота тону зсуває всю мелодію: якщо ваш п'єзо на заводських частотах тихий, підніміть її на
+        кілька півтонів і знайдіть його резонанс на слух.</div>
+      <div class="sndtest" id="sndSignals"></div>
+      <button class="btn b-warn" onclick="sndReset()">↩️ Заводські значення</button>
     </div>
 
 <div class="zone zd">🧪 Ручний режим / експерт — для аналізу та нештатних ситуацій</div>
@@ -516,7 +606,7 @@ async function connect(){
     log('> порт відкрито, очікування завантаження ESP32 (1.6 с)...');
     await new Promise(r=>setTimeout(r,1600));   // ESP32 перезавантажується при відкритті порту
     const p=await cmd('PING',3000);
-    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')'; await refresh(); await loadTemplates();
+    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')'; await refresh(); await loadTemplates(); await sndLoad();
                  await disTick(); }   // одразу підхопити розряд, якщо він уже йде
     else { $('st').textContent='Немає відповіді (перевірте порт/швидкість)'; }
   }catch(e){ log('! '+e.message); $('st').textContent='Помилка: '+e.message; disconnect(); }
@@ -843,6 +933,68 @@ async function setModel(){
   await refresh(); setBusy(false);
 }
 
+// ============ НАЛАШТУВАННЯ ЗВУКУ ============
+// Межі повзунків і перелік сигналів приходять із пристрою (SOUND): власна копія
+// тут розійшлася б із buzzCfgClamp() після наступної правки прошивки.
+let sndLimits=null, sndTimer=null, sndBusy=false;
+const SND_FIELDS=[
+  ['volume','sndVol','svVol',    v=>v+' / 255'],
+  ['tempo','sndTempo','svTempo', v=>v+' %'],
+  ['glide','sndGlide','svGlide', v=>v==0?'вимкн.':(v+' %')],
+  ['attack','sndAtk','svAtk',    v=>v+' мс'],
+  ['release','sndRel','svRel',   v=>v+' мс'],
+  ['semitones','sndSt','svSt',   v=>v==0?'заводська':((v>0?'+':'')+v+' пів.')],
+];
+const SND_KEY={volume:'vol',tempo:'tempo',glide:'glide',attack:'atk',release:'rel',semitones:'st'};
+function sndShow(){
+  SND_FIELDS.forEach(([k,id,vid,fmt])=>{const e=$(id); if(e) $(vid).textContent=fmt(+e.value);});
+}
+function sndFill(r){
+  if(!r||!r.sound)return;
+  sndLimits=r.limits||{};
+  $('sndEn').checked=!!r.sound.enabled; $('sndClk').checked=!!r.sound.click;
+  SND_FIELDS.forEach(([k,id])=>{
+    const e=$(id), lim=sndLimits[k];
+    if(lim){e.min=lim[0]; e.max=lim[1];}
+    e.value=r.sound[k];
+  });
+  sndShow();
+  const box=$('sndSignals');
+  if(box&&r.signals) box.innerHTML=r.signals.map(s=>
+    '<button onclick="sndTest(\''+s.key+'\')">▶ '+wesc(s.title)+' <span style="opacity:.6">'+s.ms+' мс</span></button>').join('');
+  if(r.hasBuzzer===false)
+    $('sndHint').innerHTML='⚠️ У цій збірці буззер не підключено (BUZZER_PIN у settings.h не задано) — '+
+      'налаштування зберігаються, але звучати нема чому.';
+}
+async function sndLoad(){
+  if(!connected)return;
+  sndFill(await cmd('SOUND',5000));
+}
+// Повзунок шлють із затримкою: інакше кожен піксель руху — окрема команда й
+// запис у SPIFFS, а її ресурс перезапису не безмежний.
+function sndPush(test){ clearTimeout(sndTimer); sndTimer=setTimeout(()=>sndSend(test),250); }
+async function sndSend(test){
+  if(!connected){toast('Підключіться');return;}
+  if(sndBusy)return;
+  sndBusy=true;
+  let a='SET en='+($('sndEn').checked?1:0)+' clk='+($('sndClk').checked?1:0);
+  SND_FIELDS.forEach(([k,id])=>a+=' '+SND_KEY[k]+'='+$(id).value);
+  if(test)a+=' test='+test;
+  const r=await cmd('SOUND '+a,6000);
+  if(r&&r.ok)sndFill(r); else toast('Звук: '+((r&&r.err)||'збій'));
+  sndBusy=false;
+}
+// «Прослухати» надсилає й поточні значення повзунків: користувач має почути те,
+// що бачить на екрані, а не те, що встигло долетіти минулою командою.
+function sndTest(name){ clearTimeout(sndTimer); sndSend(name); }
+async function sndReset(){
+  if(!connected){toast('Підключіться');return;}
+  clearTimeout(sndTimer);
+  const r=await cmd('SOUND RESET',6000);
+  if(r&&r.ok){ sndFill(r); await cmd('SOUND TEST ok',4000); toast('🔊 Повернуто заводські значення'); }
+  else toast('Звук: '+((r&&r.err)||'збій'));
+}
+
 // Список вшитих моделей для «Новий акумулятор» / «Відновити еталон»
 async function loadTemplates(){
   if(!connected)return;
@@ -853,6 +1005,11 @@ async function loadTemplates(){
     models.forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);});
     if(!models.length){const o=document.createElement('option');o.textContent='(немає шаблонів)';sel.appendChild(o);}
   }
+  // Зміна моделі — інший еталон, отже інші числа донора: план треба
+  // перебудувати, інакше галочки описували б попередню модель.
+  const rs=$('restModel');
+  if(rs&&!rs.dataset.rp){rs.dataset.rp='1';rs.addEventListener('change',()=>rpLoad(false));}
+  if(models.length)await rpLoad(false);
 }
 
 // ============ МАЙСТЕР ВІДНОВЛЕННЯ ============
@@ -1070,18 +1227,98 @@ async function disStop(){
   if(r&&r.ok){toast('⏹ Розряд зупинено');disShow(r.discharge);} else toast('Помилка','err');
 }
 
+// ============ ПРАВКИ ЕТАЛОНА ПІД ЦЕЙ ПАКЕТ ============
+// Еталон — побайтова копія ОДНОГО пакета, і разом із моделлю він несе числа
+// донора. Показуємо їх поруч із реальними числами цього акумулятора, щоб
+// користувач вирішував, а не довіряв наосліп.
+let rpPlan=null;
+function rpRender(){
+  const p=rpPlan;
+  if(!p){$('rpBox').style.display='none';return;}
+  $('rpBox').style.display='block';
+  let h='<tr><th></th><th>Що саме</th><th>Еталон (донор)</th><th>Цей пакет</th><th>Буде записано</th></tr>';
+  for(const f of p.fixes){
+    const cls=!f.avail?'na':(f.on?'':'off');
+    // Ємність — єдина правка, яку можна не лише взяти з пакета, а й вписати
+    // руками: після заміни банок нової ємності взяти її нізвідки.
+    const extra = f.key==='rated'
+      ? '<div class="det">Нові банки іншої ємності? Впишіть паспортну ємність — за нею '+
+        'перерахується й паливомір. Крок '+p.ratedStep+' мА·год, '+p.ratedMin+'–'+p.ratedMax+'.'+
+        '<br><input type="number" id="rpRated" min="'+p.ratedMin+'" max="'+p.ratedMax+
+        '" step="'+p.ratedStep+'" placeholder="лишити як є" value="'+(p.ratedUser>0?p.ratedUser:'')+
+        '" onchange="rpApply()" style="width:130px;margin-top:4px"></div>'
+      : '';
+    h+='<tr class="'+cls+'"><td>'+
+       (f.avail?'<input type="checkbox" data-k="'+f.key+'"'+(f.on?' checked':'')+' onchange="rpApply()">':'—')+
+       '</td><td><b>'+wesc(f.title)+'</b> <span class="chipb">пише в '+wesc(f.chipsText)+'</span>'+
+       '<div class="det">'+wesc(f.detail)+(f.avail||f.key==='rated'?'':' <b>Джерела немає</b> — мікросхема не читається або поле порожнє.')+'</div>'+
+       extra+'</td>'+
+       '<td class="num dim">'+wesc(f.tpl)+'</td><td class="num">'+wesc(f.pack)+'</td>'+
+       '<td class="use">'+wesc(f.use)+'</td></tr>';
+  }
+  $('rpTable').innerHTML=h;
+  $('rpSum').innerHTML=p.pack38
+    ? 'Виміряно зараз: <b>'+(p.packMv/1000).toFixed(2)+' В</b> → заряд <b>'+p.packPct+' %</b> (паливомір ICA '+
+      p.icaUse+', паспортна ємність '+p.ratedMah+' мА·год'+(p.ratedUser>0?' — <b>вписана вручну</b>':'')+
+      '). В еталоні зашито '+(p.tplMv/1000).toFixed(2)+' В — це стан <b>донора</b>, не вашого пакета.'
+    : 'Монітор DS2438 не прочитано, тож брати реальні значення нема звідки — піде те, що в еталоні.';
+  let w='';
+  if(!p.pack38) w='⚠️ DS2438 не читається. Якщо мікросхема жива — натисніть «Перечитати акумулятор»: '+
+                  'без неї в пакет піде рівень заряду й шунт донора.';
+  else if(!p.tpl38) w='ℹ️ Для цієї моделі еталона монітора немає — DS2438 пакета лишається своїм, '+
+                      'правиться лише паливомір.';
+  $('rpWarn').style.display=w?'block':'none'; $('rpWarn').innerHTML=w;
+}
+function rpKeys(){
+  const k=Array.from(document.querySelectorAll('#rpTable input[type=checkbox]'))
+               .filter(c=>c.checked).map(c=>c.dataset.k);
+  // Вписана ємність — це вже згода її записати, галочки для неї може ще не
+  // бути (рядок був недоступним, поки поле стояло порожнім).
+  if(rpRated()&&k.indexOf('rated')<0)k.push('rated');
+  return k.join(',');
+}
+function rpRated(){const e=$('rpRated');return e&&e.value?e.value:'';}
+function rpArgs(){return ' FIXES='+rpKeys()+(rpRated()?(' RATED='+rpRated()):'');}
+// Перерахунок робить ПРИСТРІЙ: паливомір залежить від того, який шунт опиниться
+// в чипі, і рахувати це вдруге тут означало б завести другу формулу, яка одного
+// дня розійдеться з прошивкою.
+async function rpApply(){
+  const model=$('restModel').value; if(!model||!connected)return;
+  const r=await cmd('RESTOREPLAN '+model+' NOREAD'+rpArgs(),15000);
+  if(r&&r.ok&&r.plan){rpPlan=r.plan;rpRender();}
+}
+async function rpLoad(reread){
+  const model=$('restModel').value;
+  if(!model||!connected){rpPlan=null;$('rpBox').style.display='none';return;}
+  const r=await cmd('RESTOREPLAN '+model+(reread?'':' NOREAD'),20000);
+  if(r&&r.ok&&r.plan){rpPlan=r.plan;rpRender();}
+  else {rpPlan=null;$('rpBox').style.display='none';}
+}
 async function restoreBattery(verbatim){
   if(!connected){toast('Підключіться');return;}
   const model=$('restModel').value;
   if(!model){toast('Оберіть модель');return;}
-  const q = verbatim
-    ? '🧪 РУЧНИЙ РЕЖИМ: записати еталон '+model+' БАЙТ-У-БАЙТ?\nРазом із навченою калібровкою донора — рація після цього зазвичай каже «невідомий акумулятор».\nДля аналізу, не для ремонту. Продовжити?'
-    : '🛠️ Відновити модельну частину еталона '+model+'?\nПерезапише ОБИДВІ мікросхеми; навчений хвіст 0x18A–0x1FF лишиться порожнім (його запише зарядна станція). Продовжити?';
+  let q;
+  if(verbatim){
+    q='🧪 РУЧНИЙ РЕЖИМ: записати еталон '+model+' БАЙТ-У-БАЙТ?\nРазом із навченою калібровкою донора — рація після цього зазвичай каже «невідомий акумулятор».\nДля аналізу, не для ремонту. Продовжити?';
+  }else{
+    const on=rpPlan?rpPlan.fixes.filter(f=>f.on):[];
+    q='🛠️ Відновити модельну частину еталона '+model+'?\n'+
+      (on.length?('Під цей пакет буде виправлено:\n'+on.map(f=>'  • '+f.title+': '+f.use).join('\n'))
+                :'Правок під пакет немає (нема з чого взяти реальні значення).')+
+      '\nПерезапише ОБИДВІ мікросхеми; навчений хвіст 0x18A–0x1FF лишиться порожнім. Продовжити?';
+  }
   if(!confirm(q))return;
   await ensureAuth();
   setBusy(true); toast('Відновлення еталона...');
-  const r=await cmd('RESTORE '+model+(verbatim?' VERBATIM':''),25000);
-  if(r.ok) toast('✅ Еталон '+model+' записано'+(r.ds2438?' (DS2433+DS2438)':' (лише DS2433)'));
+  const fx=(!verbatim&&rpPlan)?rpArgs():'';
+  const r=await cmd('RESTORE '+model+(verbatim?' VERBATIM':fx),25000);
+  if(r.ok){
+    if(r.plan){rpPlan=r.plan;rpRender();}
+    const on=r.plan?r.plan.fixes.filter(f=>f.on).length:0;
+    toast('✅ Еталон '+model+' записано'+(r.ds2438?' (DS2433+DS2438)':' (лише DS2433)')+
+          (on?', правок під пакет: '+on:''));
+  }
   else toast('Помилка: '+(r.err||''));
   await refresh(); setBusy(false);
 }

@@ -566,7 +566,7 @@
                 <input type="number" id="chgVal" min="0" max="100" placeholder="авто"
                        style="width:110px;text-align:center;font-size:1.1em;border-radius:8px;border:none;padding:6px"></div>
             <input type="password" class="pw" id="pwChg" placeholder="🔑 Пароль адміністратора">
-            <button class="btn btn-warn" style="width:100%" onclick="setChargeAuto()">⚡ ЗА НАПРУГОЮ (7.20 В = 0 %, 8.25 В = 100 %)</button>
+            <button class="btn btn-warn" id="btnChgAuto" style="width:100%" onclick="setChargeAuto()">⚡ ЗА НАПРУГОЮ</button>
             <button class="btn btn-warn" style="width:100%;margin-top:6px" onclick="setChargePct()">💾 ЗАПИСАТИ ЗАРЯД %</button>
         </div>
 
@@ -636,7 +636,12 @@
                 <div class="note i" id="rpSum"></div>
                 <div class="btns">
                     <button class="btn btn-info" onclick="rpLoad(true)">🔄 Перечитати акумулятор</button>
+                    <button class="btn btn-ok" onclick="rpWrite()">💾 ЗАПИСАТИ ЛИШЕ ПРАВКИ</button>
                 </div>
+                <div class="note i">«Записати лише правки» міняє в чипах <b>рівно обрані поля</b> й не
+                    чіпає ні ідентичність, ні навчену калібровку, ні лічильники CCA/DCA. Це те, що
+                    потрібно, коли пакет робочий, а збився лише паливомір, шунт чи дата. Повний
+                    «ВІДНОВИТИ ЕТАЛОН» нижче — коли треба перезаписати й модельну частину.</div>
             </div>
 
             <label style="display:block;margin:8px 0"><input type="checkbox" id="restVerbatim" onchange="rpToggle()">
@@ -953,6 +958,11 @@ async function refreshAll(){
             $('chargePct').textContent=pct!==null?pct+'%':'--%';
             $('chargeSub').textContent=(rmah!==null?('залишок '+rmah+' мА·год'):'')+
                 (pct!==null?(' · '+(d.chargeSrc==='ICA'?'ICA':(d.chargeSrc==='U!'?'за напругою (паливомір не калібр.)':'напруга'))):'');
+    // Шкалу «заряд за напругою» називає ПРИСТРІЙ. Раніше вона стояла літералом
+    // у підписі кнопки й після зміни BATTERY_EMPTY_MV лишалась брехати.
+    if(d.scaleTxt){
+        const b=$('btnChgAuto'); if(b)b.textContent='⚡ ЗА НАПРУГОЮ ('+d.scaleTxt+')';
+    }
             if(rmah!==null){$('mahVal').value=rmah;$('mahNow').textContent=rmah+' мА·год';}
             const fill=$('battFill');
             fill.style.width=(pct!==null?pct:0)+'%';
@@ -1738,6 +1748,28 @@ async function rpLoad(reread){
         else {rpPlan=null;$('rpBox').style.display='none';}
     }catch(e){rpPlan=null;$('rpBox').style.display='none';}
     if(reread)prog(false);
+}
+// Записати ЛИШЕ обрані правки, не чіпаючи еталон: коли ідентичність ціла, а
+// збився паливомір/шунт/дата, перезаписувати всю модельну частину немає за що.
+async function rpWrite(){
+    const model=$('restModel').value;
+    if(!model){toast('Оберіть модель','err');return}
+    if(!rpPlan){toast('Спершу перечитайте акумулятор','err');return}
+    const on=rpPlan.fixes.filter(f=>f.on);
+    if(!on.length){toast('Не обрано жодної правки','err');return}
+    if(!confirm('💾 Записати лише правки?\n\n'+on.map(f=>'  • '+f.title+': '+f.use).join('\n')+
+                '\n\nЕталон, навчена калібровка й лічильники НЕ чіпаються. Продовжити?'))return;
+    prog(true,'Запис правок...');
+    try{
+        const r=await postForm('/api/restore/fixes',
+                               {password:$('pwRest').value,model:model,fixes:rpKeys(),rated:rpRated()||'0'});
+        if(r.status==='success'){
+            if(r.plan){rpPlan=r.plan;rpRender();}
+            toast('✅ Правки записано ('+on.length+')','ok');
+            await refreshAll();
+        } else toast('Помилка: '+(r.message||''),'err');
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
 }
 async function restoreBattery(){
     const pw=$('pwRest').value;

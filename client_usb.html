@@ -441,7 +441,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="note i">Той самий регістр ICA, але у відсотках від паспортної ємності — коли
         точних мА·год немає. Станція згодом уточнить значення сама.</div>
       <div class="row"><span class="k">Заряд, % (0..100)</span><input type="number" id="chgv" min="0" max="100" placeholder="авто" style="width:110px;text-align:center"></div>
-      <button class="btn b-warn" onclick="setChargeAuto()">⚡ ЗА НАПРУГОЮ (7.20 В = 0 %, 8.25 В = 100 %)</button>
+      <button class="btn b-warn" id="btnChgAuto" onclick="setChargeAuto()">⚡ ЗА НАПРУГОЮ</button>
       <button class="btn b-warn" onclick="setChargePct()">💾 ЗАПИСАТИ ЗАРЯД %</button>
     </div>
 
@@ -494,6 +494,10 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         <div class="rpwrap"><table class="rpt" id="rpTable"></table></div>
         <div class="note i" id="rpSum"></div>
         <button class="btn b-inf" onclick="rpLoad(true)">🔄 Перечитати акумулятор</button>
+        <button class="btn b-ok" onclick="rpWrite()">💾 ЗАПИСАТИ ЛИШЕ ПРАВКИ</button>
+        <div class="note i">«Записати лише правки» міняє <b>рівно обрані поля</b> й не чіпає ні
+          ідентичність, ні навчену калібровку, ні лічильники CCA/DCA. Повне «ВІДНОВИТИ ЕТАЛОН»
+          нижче — коли треба перезаписати й модельну частину.</div>
       </div>
 
       <button class="btn b-warn" onclick="restoreBattery(false)">🛠️ ВІДНОВИТИ ЕТАЛОН</button>
@@ -742,6 +746,9 @@ async function refresh(){
   const rmah=(d.icaMah!==undefined)?d.icaMah:null;
   $('pct').textContent=pct!==null?(pct+'%'):'--%';
   $('csrc').textContent=(rmah!==null?('залишок '+rmah+' мА·год'):'')+(pct!==null?(' · '+(d.chargeSrc==='ICA'?'ICA':(d.chargeSrc==='U!'?'за напругою (паливомір не калібр.)':'напруга'))):'');
+  // Шкалу «заряд за напругою» називає ПРИСТРІЙ — інакше підпис кнопки лишався б
+  // брехати після зміни BATTERY_EMPTY_MV у прошивці.
+  if(d.scaleTxt){ const b=$('btnChgAuto'); if(b)b.textContent='⚡ ЗА НАПРУГОЮ ('+d.scaleTxt+')'; }
   if(rmah!==null)$('mahv').value=rmah;
   $('fill').style.width=(pct!==null?pct:0)+'%';
   $('fill').style.background=pct===null?'#555':(pct<20?'#e74c3c':pct<50?'#f39c12':'#2ecc71');
@@ -1394,6 +1401,23 @@ async function rpLoad(reread){
   const r=await cmd('RESTOREPLAN '+model+(reread?'':' NOREAD'),20000);
   if(r&&r.ok&&r.plan){rpPlan=r.plan;rpRender();}
   else {rpPlan=null;$('rpBox').style.display='none';}
+}
+// Записати ЛИШЕ обрані правки, не чіпаючи еталон.
+async function rpWrite(){
+  if(!connected){toast('Підключіться');return;}
+  const model=$('restModel').value;
+  if(!model){toast('Оберіть модель');return;}
+  if(!rpPlan){toast('Спершу перечитайте акумулятор');return;}
+  const on=rpPlan.fixes.filter(f=>f.on);
+  if(!on.length){toast('Не обрано жодної правки');return;}
+  if(!confirm('💾 Записати лише правки?\n'+on.map(f=>'  • '+f.title+': '+f.use).join('\n')+
+              '\nЕталон, навчена калібровка й лічильники НЕ чіпаються. Продовжити?'))return;
+  await ensureAuth();
+  setBusy(true); toast('Запис правок...');
+  const r=await cmd('FIXES '+model+rpArgs(),20000);
+  if(r&&r.ok){ if(r.plan){rpPlan=r.plan;rpRender();} toast('✅ Правки записано ('+on.length+')'); }
+  else toast('Помилка: '+((r&&r.err)||''));
+  await refresh(); setBusy(false);
 }
 async function restoreBattery(verbatim){
   if(!connected){toast('Підключіться');return;}

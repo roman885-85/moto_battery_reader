@@ -412,6 +412,11 @@ void handleDumpInfo2438() {
     json += ",\"ratedMah\":" + String(ratedMah);
     json += ",\"charge\":" + String(charge);
     json += ",\"chargeSrc\":\"" + String(csrc) + "\"";
+    // Шкала «заряд за напругою» — з пристрою, щоб клієнти не тримали власних
+    // копій чисел і не брехали в підписах після зміни BATTERY_EMPTY_MV.
+    json += ",\"emptyMv\":" + String(BATTERY_EMPTY_MV);
+    json += ",\"fullMv\":"  + String(BATTERY_FULL_MV);
+    json += ",\"scaleTxt\":\"" BATTERY_SCALE_TXT "\"";
     // ETM (DS2438[8..11], сек наробітку). Рація показує «дату першого користування»
     // як (свій поточний час − ETM) — перевірено діффом до/після калібрування.
     uint32_t etm = ((uint32_t)batteryDump2438[11] << 24) | ((uint32_t)batteryDump2438[10] << 16) |
@@ -1531,7 +1536,8 @@ void handleSetMah() {
     server.send(ok ? 200 : 500, "application/json", m);
 }
 
-// Рівень заряду з поточної напруги: 7.0 В = 0%, 8.4 В = 100% (лінійно).
+// Рівень заряду з поточної напруги — за шкалою BATTERY_EMPTY_MV..BATTERY_FULL_MV
+// (settings.h), лінійно.
 inline int chargePctFromVoltage() {
     // Спільна шкала з batteryPercent() і підготовкою до калібрування
     // (BATTERY_EMPTY_MV..BATTERY_FULL_MV з settings.h).
@@ -1552,7 +1558,7 @@ inline bool performSetChargePct(int pct) {
     if (ok) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
     return ok;
 }
-// Виставити рівень заряду (ICA): auto=1 — з напруги (7.20 В = 0 %..8.25 В = 100 %),
+// Виставити рівень заряду (ICA): auto=1 — з напруги (BATTERY_SCALE_TXT),
 // або вручну pct=0..100. Зарядка/рація потім самі уточнять це значення.
 void handleSetCharge() {
     if (!requireAdmin()) return;
@@ -1691,6 +1697,32 @@ static void keepMonitorCalibration(uint8_t *dst, const uint8_t *src) {
     if (off != 0x0000 && off != 0xFFFF) { dst[0x0D] = src[0x0D]; dst[0x0E] = src[0x0E]; }
 }
 
+// ── ЧИ ПРИДАТНИЙ ВЛАСНИЙ МОНІТОР ПАКЕТА ────────────────────────────────────
+//  Еталон DS2438 у templates.h — теж побайтова копія ОДНОГО пакета. Замінюючи
+//  ним монітор робочого акумулятора, ми віддаємо йому чужі заводські поля:
+//  крім шунта й OFFSET АЦП (їх повертає keepMonitorCalibration) у DS2438 є
+//  байти 0x10..0x17, 0x32..0x35 і 0x3A..0x3B, значення яких ми не розбирали, —
+//  і вони теж ставали донорськими. На реальній парі це 20 чужих байтів із 64.
+//
+//  Саме так виглядає скарга «нова рація не бачить АКБ, стара бачить, але заряд
+//  неадекватний»: ідентичність (DS2433) правильна, а монітор — від іншого
+//  екземпляра.
+//
+//  Тому шаблон монітора потрібен ЛИШЕ тоді, коли свого немає: чіп не читається,
+//  порожній (усе 0x00/0xFF) або без заводського шунта. У всіх інших випадках
+//  монітор пакета лишається СВОЇМ, а ми тільки обнуляємо лічильники й
+//  виставляємо паливомір — тобто робимо рівно те, що обіцяє операція.
+static bool monitorIsOwn(const uint8_t *d38) {
+    if (!d38) return false;
+    if (impresBmsRsense(d38) <= 0.0f) return false;      // немає заводського шунта
+    bool allZero = true, allFF = true;
+    for (int i = 0; i < DS2438_MEM_SIZE; i++) {
+        if (d38[i] != 0x00) allZero = false;
+        if (d38[i] != 0xFF) allFF = false;
+    }
+    return !allZero && !allFF;
+}
+
 // ------------------- Ініціалізація нового акумулятора -------------------
 // Порожній/стертий/невідомий чіп -> робочий АКБ обраної моделі. Вантажимо
 // вшитий genuine-еталон (DS2433 + DS2438), зануляємо всю історію/лічильники
@@ -1803,12 +1835,18 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
     }
 
     memcpy_P(batteryDump, BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
-    bool write38 = (BATTERY_TEMPLATES[t].d38 != nullptr);
+    // ⚑ Монітор пакета НЕ підмінюємо, поки він свій і живий (див. monitorIsOwn):
+    // еталон DS2438 приносить із собою 20 чужих байтів, і для рації це вже
+    // інший акумулятор. Шаблон монітора беремо лише на порожньому/битому чипі.
+    bool ownMon  = !verbatim && had38 && monitorIsOwn(was38);
+    bool write38 = (BATTERY_TEMPLATES[t].d38 != nullptr) && !ownMon;
     if (write38) {
         memcpy_P(batteryDump2438, BATTERY_TEMPLATES[t].d38, DS2438_MEM_SIZE);
         // verbatim — це ручний режим «байт-у-байт», там не втручаємось
         if (!verbatim && had38) keepMonitorCalibration(batteryDump2438, was38);
     }
+    if (ownMon) Serial.println("Restore: монітор пакета власний — лишаємо його, "
+                               "еталон DS2438 не пишемо");
     if (!verbatim) {
         int cleared = applyFreshTail(BATTERY_TEMPLATES[t].fresh);
         if (cleared < 0) cleared = impresEraseTail(batteryDump);
@@ -1926,6 +1964,68 @@ void handleRestorePlan() {
     applyPlanArgs(p);
     server.send(200, "application/json",
                 String("{\"status\":\"success\",\"plan\":") + restorePlanJson(p) + "}");
+}
+
+// ── ЗАСТОСУВАТИ ЛИШЕ ПРАВКИ, без перезапису еталона ────────────────────────
+//  Коли ідентичність пакета ціла, а збилися тільки паливомір / шунт / OFFSET /
+//  наробіток / паспортна ємність, переписувати весь еталон немає за що: це
+//  зайвий ризик і втрата навченої калібровки. Тут ми правимо РІВНО обрані поля
+//  в тому, що вже лежить у чипах, і нічого більше не чіпаємо — зокрема НЕ
+//  скидаємо лічильники CCA/DCA (їх обнуляє лише повне відновлення).
+bool performApplyFixes(const RestorePlan &p, bool *ok33 = nullptr, bool *ok38 = nullptr) {
+    if (ok33) *ok33 = false;
+    if (ok38) *ok38 = false;
+    if (!hasDump2438 && !hasDump) return false;
+
+    bool need38 = hasDump2438 && (p.fx[RPF_CHARGE].on || p.fx[RPF_RSENSE].on ||
+                                  p.fx[RPF_ADCOFF].on || p.fx[RPF_ETM].on);
+    bool need33 = hasDump && p.fx[RPF_RATED].on;
+    if (!need33 && !need38) return false;          // нічого не обрано
+
+    restorePlanApply(p, need33 ? batteryDump : nullptr,
+                        need38 ? batteryDump2438 : nullptr, /*onlyEnabled=*/true);
+
+    ledSet(LED_WRITE); displayShow("ЗАПИС ПРАВОК");
+    bool w33 = true, w38 = true;
+    if (need33) {
+        w33 = battery.writeBattery(batteryDump, DUMP_SIZE);
+        if (w33) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+    }
+    if (need38) {
+        w38 = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+        if (w38) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+    }
+    bool ok = w33 && w38;
+    if (ok33) *ok33 = w33;
+    if (ok38) *ok38 = w38;
+    displayShow(ok ? "ПРАВКИ OK" : "ПРАВКИ ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    Serial.printf("Fixes: DS2433=%s DS2438=%s\n",
+                  need33 ? (w33 ? "OK" : "FAIL") : "-", need38 ? (w38 ? "OK" : "FAIL") : "-");
+    return ok;
+}
+
+// POST /api/restore/fixes?model=…&fixes=…[&rated=…]
+void handleApplyFixes() {
+    if (!requireAdmin()) return;
+    String model = server.arg("model"); model.trim(); model.toUpperCase();
+    RestorePlan p;
+    if (!buildRestorePlanFor(model.c_str(), p, true)) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Немає вшитого шаблону для цієї моделі\"}");
+        return;
+    }
+    applyPlanArgs(p);
+    bool o33 = false, o38 = false;
+    bool ok = performApplyFixes(p, &o33, &o38);
+    String j = String("{\"status\":\"") + (ok ? "success" : "error") +
+               "\",\"ds2433\":" + (o33 ? "true" : "false") +
+               ",\"ds2438\":" + (o38 ? "true" : "false") +
+               ",\"plan\":" + restorePlanJson(p) + ",\"message\":\"";
+    if (ok) j += "Правки записано (еталон не чіпали)";
+    else    j += "Не обрано жодної правки або збій запису";
+    j += "\"}";
+    server.send(ok ? 200 : 500, "application/json", j);
 }
 
 // Веб-відновлення еталона (під паролем): model[, fixes][, verbatim].
@@ -2209,7 +2309,11 @@ void handleWizardStep() {
     if (!requireAdmin()) return;
     int idx = server.hasArg("idx") ? server.arg("idx").toInt() : -1;
     String model = server.arg("model");
-    server.send(200, "application/json", wizExecStep(idx, model));
+    // Майстер бере ТІ САМІ правки під пакет, що й «Відновити еталон»: інакше
+    // галочки в картці правок для нього нічого не значили б.
+    String wfx = server.hasArg("fixes") ? server.arg("fixes") : String();
+    long wrated = server.hasArg("rated") ? server.arg("rated").toInt() : -1;
+    server.send(200, "application/json", wizExecStep(idx, model, wfx, wrated));
 }
 // POST /api/wizard/reset — скинути журнал продовження ПОТОЧНОГО АКБ (під паролем).
 void handleWizardReset() {
@@ -2326,6 +2430,7 @@ void setupWebServer() {
     server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
     server.on("/api/restore", HTTP_POST, handleRestore);         // відновлення еталона verbatim
     server.on("/api/restore/plan", HTTP_GET, handleRestorePlan); // правки еталона під цей пакет
+    server.on("/api/restore/fixes", HTTP_POST, handleApplyFixes); // лише правки, без еталона
     server.on("/api/wizard", HTTP_GET, handleWizard);            // Майстер: аналіз+план
     server.on("/api/wizard/step", HTTP_POST, handleWizardStep);  // Майстер: виконати крок
     server.on("/api/wizard/reset", HTTP_POST, handleWizardReset);// Майстер: скинути журнал

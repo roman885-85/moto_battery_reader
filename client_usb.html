@@ -1125,7 +1125,8 @@ async function wizNext(){
   await ensureAuth();
   const stepEl=$('wstep'+idx); if(stepEl)stepEl.classList.add('run');
   setBusy(true); toast('Виконую крок…');
-  const res=await cmd('WIZSTEP '+idx+(model?(' '+model):''),25000);
+  // Майстер бере ТІ САМІ правки, що й картка «Відновити еталон».
+  const res=await cmd('WIZSTEP '+idx+(model?(' '+model):'')+(rpPlan?rpArgs():''),25000);
   setBusy(false);
   if(res){wizState=res; if(res.msg)toast((res.result?'✅ ':'❌ ')+res.msg); wizRender(res); wizJournalsLoad(); await refresh();}
 }
@@ -1349,17 +1350,13 @@ function rpRender(){
     const cls=!f.avail?'na':(f.on?'':'off');
     // Ємність — єдина правка, яку можна не лише взяти з пакета, а й вписати
     // руками: після заміни банок нової ємності взяти її нізвідки.
-    const extra = f.key==='rated'
-      ? '<div class="det">Нові банки іншої ємності? Впишіть паспортну ємність — за нею '+
-        'перерахується й паливомір. Крок '+p.ratedStep+' мА·год, '+p.ratedMin+'–'+p.ratedMax+'.'+
-        '<br><input type="number" id="rpRated" min="'+p.ratedMin+'" max="'+p.ratedMax+
-        '" step="'+p.ratedStep+'" placeholder="лишити як є" value="'+(p.ratedUser>0?p.ratedUser:'')+
-        '" onchange="rpApply()" style="width:130px;margin-top:4px"></div>'
-      : '';
+    let extra='';
+    if(f.key==='rated')  extra=rpRatedBox(p);
+    if(f.key==='rsense') extra=rpRsBox(p);
     h+='<tr class="'+cls+'"><td>'+
        (f.avail?'<input type="checkbox" data-k="'+f.key+'"'+(f.on?' checked':'')+' onchange="rpApply()">':'—')+
        '</td><td><b>'+wesc(f.title)+'</b> <span class="chipb">пише в '+wesc(f.chipsText)+'</span>'+
-       '<div class="det">'+wesc(f.detail)+(f.avail||f.key==='rated'?'':' <b>Джерела немає</b> — мікросхема не читається або поле порожнє.')+'</div>'+
+       '<div class="det">'+wesc(f.detail)+(f.avail||f.key==='rated'||f.key==='rsense'?'':' <b>Джерела немає</b> — мікросхема не читається або поле порожнє.')+'</div>'+
        extra+'</td>'+
        '<td class="num dim">'+wesc(f.tpl)+'</td><td class="num">'+wesc(f.pack)+'</td>'+
        '<td class="use">'+wesc(f.use)+'</td></tr>';
@@ -1377,16 +1374,52 @@ function rpRender(){
                       'правиться лише паливомір.';
   $('rpWarn').style.display=w?'block':'none'; $('rpWarn').innerHTML=w;
 }
+function rpRatedBox(p){
+  return '<div class="det">Нові банки іншої ємності? Впишіть паспортну ємність — за нею '+
+    'перерахується й паливомір. Крок '+p.ratedStep+' мА·год, '+p.ratedMin+'–'+p.ratedMax+'.'+
+    '<br><input type="number" id="rpRated" min="'+p.ratedMin+'" max="'+p.ratedMax+
+    '" step="'+p.ratedStep+'" placeholder="лишити як є" value="'+(p.ratedUser>0?p.ratedUser:'')+
+    '" onchange="rpApply()" style="width:130px;margin-top:4px"></div>';
+}
+// Шунт, як і ємність, можна не лише взяти з пакета: у «чистому» моніторі його
+// немає зовсім. Тоді або вписати опір руками, або взяти з еталона потрібної
+// моделі — плата в усіх екземплярів моделі однакова, тож це найточніше, що
+// можна зробити без міліомметра.
+function rpRsBox(p){
+  let o='<option value="">— вручну —</option>';
+  for(const m of (p.rsLib||[]))
+    o+='<option value="'+wesc(m.model)+'"'+(p.rsSrc===m.model?' selected':'')+'>'+
+       wesc(m.model)+' — '+(m.raw/100).toFixed(2)+' мОм</option>';
+  const own=p.rsPack?('свій шунт пакета: <b>'+(p.rsPack/100).toFixed(2)+' мОм</b>')
+                    :('<b>у пакеті шунта немає</b> (монітор чистий) — задайте його тут, '+
+                      'інакше струм і залишок не порахуються');
+  return '<div class="det">'+own+'<br>З бібліотеки еталонів: '+
+    '<select id="rpRsModel" onchange="rpRsPick()" style="margin-top:4px">'+o+'</select> '+
+    'або вручну, мОм: <input type="number" id="rpRs" min="'+(p.rsMin/100)+'" max="'+(p.rsMax/100)+
+    '" step="0.01" placeholder="лишити як є" value="'+(p.rsUser>0&&!p.rsSrc?(p.rsUser/100).toFixed(2):'')+
+    '" onchange="rpRsTyped()" style="width:130px;margin-top:4px"></div>';
+}
+// Вибір моделі й ручне число — одне й те саме поле «який шунт писати», тож
+// вони гасять одне одного: інакше на екрані модель, а піде число.
+function rpRsPick(){const e=$('rpRs');if(e)e.value='';rpApply();}
+function rpRsTyped(){const e=$('rpRsModel');if(e)e.value='';rpApply();}
+function rpRsModel(){const e=$('rpRsModel');return e&&e.value?e.value:'';}
+function rpRs(){const e=$('rpRs');return e&&e.value?Math.round(parseFloat(e.value)*100):'';}
 function rpKeys(){
   const k=Array.from(document.querySelectorAll('#rpTable input[type=checkbox]'))
                .filter(c=>c.checked).map(c=>c.dataset.k);
   // Вписана ємність — це вже згода її записати, галочки для неї може ще не
   // бути (рядок був недоступним, поки поле стояло порожнім).
   if(rpRated()&&k.indexOf('rated')<0)k.push('rated');
+  if((rpRs()||rpRsModel())&&k.indexOf('rsense')<0)k.push('rsense');
   return k.join(',');
 }
 function rpRated(){const e=$('rpRated');return e&&e.value?e.value:'';}
-function rpArgs(){return ' FIXES='+rpKeys()+(rpRated()?(' RATED='+rpRated()):'');}
+function rpArgs(){
+  // Модель із бібліотеки й ручне число взаємно виключні — так само, як у полях.
+  return ' FIXES='+rpKeys()+(rpRated()?(' RATED='+rpRated()):'')+
+         (rpRsModel()?(' RSMODEL='+rpRsModel()):(rpRs()?(' RSENSE='+rpRs()):''));
+}
 // Перерахунок робить ПРИСТРІЙ: паливомір залежить від того, який шунт опиниться
 // в чипі, і рахувати це вдруге тут означало б завести другу формулу, яка одного
 // дня розійдеться з прошивкою.

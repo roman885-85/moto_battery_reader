@@ -629,4 +629,21 @@ inline int findTemplate(const char *name) {
     return -1;
 }
 
+// ── Бібліотека шунтів ──────────────────────────────────────────────────────
+// Опір вимірювального шунта лежить у DS2438[56..57] як Ом × 100000 і є
+// властивістю МОДЕЛІ (плата в усіх екземплярів однакова). Коли монітор пакета
+// чистий і свого шунта в ньому немає, узяти його з еталона потрібної моделі —
+// найточніше, що взагалі можна зробити без вимірювання.
+// Повертає 0, якщо шаблону немає або в ньому немає монітора.
+inline uint16_t templateRsenseRaw(int i) {
+    if (i < 0 || i >= BATTERY_TEMPLATE_COUNT || !BATTERY_TEMPLATES[i].d38) return 0;
+    uint8_t b[2];
+    memcpy_P(b, BATTERY_TEMPLATES[i].d38 + 56, 2);
+    return (uint16_t)(b[0] | (b[1] << 8));
+}
+
+inline uint16_t templateRsenseRawByName(const char *name) {
+    return templateRsenseRaw(findTemplate(name));
+}
+
 #endif

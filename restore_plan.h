@@ -58,7 +58,9 @@ static const RestoreFixDoc RESTORE_FIX_DOC[RPF_COUNT] = {
     { "rsense", "Шунт вимірювача струму", "мОм", 2, true,
       "У різних моделей шунт відрізняється майже вдвічі (0.025 проти 0.046 Ом). "
       "Чужий шунт робить неправильними струм, залишок і знос одразу. Беремо той, "
-      "що записаний у моніторі САМОГО пакета." },
+      "що записаний у моніторі САМОГО пакета. Якщо свого немає (монітор чистий "
+      "або шунт занулено) — впишіть опір вручну чи візьміть його з еталона "
+      "потрібної моделі." },
     { "adcoff", "OFFSET АЦП струму", "", 2, true,
       "Заводське калібрування нуля вимірювача струму, індивідуальне для кожного "
       "екземпляра. Значення донора зсуне всі виміри струму цього пакета." },
@@ -92,7 +94,11 @@ struct RestorePlan {
     int      ratedPack;     // що каже сам пакет (DS2433[0x008]), 0 — не читається
     int      ratedUser;     // введена ВРУЧНУ після заміни банок, 0 — не вводили
     int      ratedMah;      // ЕФЕКТИВНА — саме за нею рахується паливомір
-    float    rsPack, rsTpl;
+    float    rsPack, rsTpl; // шунт пакета й еталона, Ом (0 — немає)
+    uint16_t rsRawPack, rsRawTpl;   // ті самі числа, як вони лежать у чипі
+    long     rsUser;        // вписаний ВРУЧНУ або взятий із бібліотеки, 0 — ні
+    char     rsSrc[16];     // звідки взято ручний шунт: модель або "" (вручну)
+    float    rsUse;         // ЕФЕКТИВНИЙ шунт — за ним рахується паливомір
     uint8_t  icaTpl, icaPack, icaUse;
     RestoreFix fx[RPF_COUNT];
 };
@@ -102,6 +108,11 @@ struct RestorePlan {
 #define RP_MV_MAX 9500
 // Наробіток більше 20 років — не дані, а сміття (або чужий монітор).
 #define RP_ETM_MAX (20UL * 365UL * 24UL * 3600UL)
+// Шунт у чипі — це Ом × 100000, тобто мОм × 100. Реальні IMPRES-шунти лежать
+// між 0.025 і 0.046 Ом; межі беремо ширші (1..200 мОм), щоб не заважати
+// нестандартним збіркам, але й не дати вписати нуль чи явне сміття.
+#define RP_RS_MIN_RAW 100L
+#define RP_RS_MAX_RAW 20000L
 
 inline uint16_t restoreRsRaw(const uint8_t *d38) {
     return d38 ? (uint16_t)(d38[56] | (d38[57] << 8)) : 0;
@@ -146,11 +157,15 @@ inline void restorePlanBuild(RestorePlan &p, const char *model,
     c.packVal = p.packPct;
 
     // --- шунт --------------------------------------------------------------
+    // Свій шунт є не завжди: у «чистому» моніторі 0x38..0x39 нулі. Тоді правку
+    // все одно показуємо — але значення для неї треба дати ззовні (вручну або
+    // з еталона іншої моделі), і робить це restorePlanSetRsense().
     RestoreFix &r = p.fx[RPF_RSENSE];
-    r.avail   = p.rsPack > 0.0f;
-    r.on      = r.avail && RESTORE_FIX_DOC[RPF_RSENSE].defOn;
-    r.tplVal  = restoreRsRaw(tpl38);
-    r.packVal = restoreRsRaw(pack38);
+    p.rsRawTpl  = restoreRsRaw(tpl38);
+    p.rsRawPack = restoreRsRaw(pack38);
+    p.rsUser    = 0;
+    p.rsSrc[0]  = '\0';
+    r.on        = (p.rsRawPack > 0) && RESTORE_FIX_DOC[RPF_RSENSE].defOn;
 
     // --- OFFSET АЦП ---------------------------------------------------------
     RestoreFix &a = p.fx[RPF_ADCOFF];
@@ -204,6 +219,16 @@ inline void restorePlanRecalc(RestorePlan &p) {
     // вписала б число й нічого б не сталося.
     if (p.ratedUser > 0) m.on = true;
 
+    // Шунт: своє значення пакета, або вписане вручну / взяте з еталона іншої
+    // моделі. Ручний ввід — свідома дія, тож правку вмикаємо одразу: інакше
+    // людина вписала б опір і нічого б не сталося.
+    RestoreFix &r38 = p.fx[RPF_RSENSE];
+    r38.avail   = (p.rsUser > 0) || (p.rsRawPack > 0);
+    r38.tplVal  = (long)p.rsRawTpl;
+    r38.packVal = p.rsUser > 0 ? p.rsUser : (long)p.rsRawPack;
+    if (!r38.avail) r38.on = false;
+    if (p.rsUser > 0) r38.on = true;
+
     // ⚑ ЕФЕКТИВНА паспортна ємність: саме за нею рахується паливомір. Якщо
     // після заміни поставили банки на 3000 замість 2150 — 77 % це вже інший
     // ICA, і рахувати його за старим числом означало б знову записати чуже.
@@ -212,8 +237,10 @@ inline void restorePlanRecalc(RestorePlan &p) {
     // Шунт беремо той, що РЕАЛЬНО опиниться в чипі: якщо правку шунта знято,
     // паливомір має рахуватись за шунтом еталона — інакше число записалось би
     // за одним шунтом, а читалось за іншим.
-    float rs = p.fx[RPF_RSENSE].on ? p.rsPack : p.rsTpl;
-    if (rs <= 0.0f) rs = (p.rsPack > 0.0f) ? p.rsPack : p.rsTpl;
+    long rsWant = p.rsUser > 0 ? p.rsUser : (long)p.rsRawPack;
+    float rs = (r38.on && rsWant > 0) ? rsWant / 100000.0f : p.rsTpl;
+    if (rs <= 0.0f) rs = (rsWant > 0) ? rsWant / 100000.0f : p.rsTpl;
+    p.rsUse = rs;
 
     p.icaUse = (p.fx[RPF_CHARGE].on && p.packPct >= 0)
                  ? impresIcaFromPercentRs(p.packPct, p.ratedMah, rs)
@@ -237,7 +264,29 @@ inline void restorePlanSetMask(RestorePlan &p, uint32_t mask) {
         p.fx[i].on = p.fx[i].avail && (mask & (1UL << i));
     // Ручна ємність — окреме поле, а не галочка: якщо її ввели, але «rated» у
     // масці немає, вважаємо, що користувач передумав писати ємність.
-    if (!(mask & (1UL << RPF_RATED))) p.ratedUser = 0;
+    if (!(mask & (1UL << RPF_RATED)))  p.ratedUser = 0;
+    if (!(mask & (1UL << RPF_RSENSE))) { p.rsUser = 0; p.rsSrc[0] = '\0'; }
+    // avail шунта залежить від rsUser, тож маску треба накласти ще раз — уже
+    // після того, як ручне значення прибрано.
+    p.fx[RPF_RSENSE].on = (mask & (1UL << RPF_RSENSE)) && (p.rsRawPack > 0);
+    restorePlanRecalc(p);
+}
+
+// Округлити шунт до того, що взагалі можна записати: у чипі це ціле Ом×100000.
+inline long restoreRsClamp(long raw) {
+    if (raw <= 0) return 0;
+    if (raw < RP_RS_MIN_RAW) return RP_RS_MIN_RAW;
+    if (raw > RP_RS_MAX_RAW) return RP_RS_MAX_RAW;
+    return raw;
+}
+
+// Задати шунт вручну або з бібліотеки еталонів. raw — Ом×100000 (== мОм×100),
+// 0 — прибрати ручне значення й повернутись до того, що в пакеті. src — звідки
+// взято (назва моделі), порожньо/nullptr — вписано руками.
+inline void restorePlanSetRsense(RestorePlan &p, long raw, const char *src = nullptr) {
+    p.rsUser = restoreRsClamp(raw);
+    if (p.rsUser > 0 && src && *src) snprintf(p.rsSrc, sizeof(p.rsSrc), "%s", src);
+    else                             p.rsSrc[0] = '\0';
     restorePlanRecalc(p);
 }
 

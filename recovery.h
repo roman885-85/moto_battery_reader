@@ -545,7 +545,12 @@ static String wizStart() {
 
 // Виконати крок операційного плану idx. model — для ACT_RESTORE, якщо модель
 // невідома. Повертає оновлений стан + результат кроку.
-static String wizExecStep(int idx, const String &model) {
+// fixes — набір правок під конкретний пакет для кроку «відновити еталон»
+// (той самий рядок, що й у /api/restore). Без нього крок бере ТИПОВИЙ набір, і
+// галочки, поставлені в картці правок, для Майстра нічого б не значили —
+// власник саме на це й наштовхнувся з наробітком.
+static String wizExecStep(int idx, const String &model, const String &fixes = String(),
+                          long ratedMah = -1) {
     BatteryDiag d; wizAnalyze(d);
     wizJournalLoad();
 
@@ -576,7 +581,18 @@ static String wizExecStep(int idx, const String &model) {
             if (!m.length()) { ok = false; msg = "Оберіть модель для відновлення"; break; }
             if (findTemplate(m.c_str()) < 0) { ok = false; msg = "Немає вшитого шаблону моделі"; break; }
             bool o33 = false, o38 = false;
-            ok = performRestoreTemplate(m.c_str(), &o33, &o38);
+            RestorePlan wp; const RestorePlan *wpp = nullptr;
+            if (buildRestorePlanFor(m.c_str(), wp, true)) {
+                if (ratedMah >= 0) restorePlanSetRated(wp, ratedMah);
+                if (fixes.length()) {
+                    uint32_t mk = restoreMaskFromKeys(fixes.c_str(), wp);
+                    int user = wp.ratedUser;
+                    restorePlanSetMask(wp, mk);
+                    if (user > 0 && (mk & (1UL << RPF_RATED))) restorePlanSetRated(wp, user);
+                }
+                wpp = &wp;
+            }
+            ok = performRestoreTemplate(m.c_str(), &o33, &o38, false, wpp);
             msg = ok ? (String("Еталон ") + m + " відновлено" + (o38 ? " (DS2433+DS2438)" : " (лише DS2433)"))
                      : "Збій запису еталона";
             if (ok) strncpy(g_wizJ.model, m.c_str(), sizeof(g_wizJ.model) - 1);

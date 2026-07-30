@@ -494,6 +494,10 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         <div class="rpwrap"><table class="rpt" id="rpTable"></table></div>
         <div class="note i" id="rpSum"></div>
         <button class="btn b-inf" onclick="rpLoad(true)">🔄 Перечитати акумулятор</button>
+        <button class="btn b-ok" onclick="rpWrite()">💾 ЗАПИСАТИ ЛИШЕ ПРАВКИ</button>
+        <div class="note i">«Записати лише правки» міняє <b>рівно обрані поля</b> й не чіпає ні
+          ідентичність, ні навчену калібровку, ні лічильники CCA/DCA. Повне «ВІДНОВИТИ ЕТАЛОН»
+          нижче — коли треба перезаписати й модельну частину.</div>
       </div>
 
       <button class="btn b-warn" onclick="restoreBattery(false)">🛠️ ВІДНОВИТИ ЕТАЛОН</button>
@@ -1397,6 +1401,23 @@ async function rpLoad(reread){
   const r=await cmd('RESTOREPLAN '+model+(reread?'':' NOREAD'),20000);
   if(r&&r.ok&&r.plan){rpPlan=r.plan;rpRender();}
   else {rpPlan=null;$('rpBox').style.display='none';}
+}
+// Записати ЛИШЕ обрані правки, не чіпаючи еталон.
+async function rpWrite(){
+  if(!connected){toast('Підключіться');return;}
+  const model=$('restModel').value;
+  if(!model){toast('Оберіть модель');return;}
+  if(!rpPlan){toast('Спершу перечитайте акумулятор');return;}
+  const on=rpPlan.fixes.filter(f=>f.on);
+  if(!on.length){toast('Не обрано жодної правки');return;}
+  if(!confirm('💾 Записати лише правки?\n'+on.map(f=>'  • '+f.title+': '+f.use).join('\n')+
+              '\nЕталон, навчена калібровка й лічильники НЕ чіпаються. Продовжити?'))return;
+  await ensureAuth();
+  setBusy(true); toast('Запис правок...');
+  const r=await cmd('FIXES '+model+rpArgs(),20000);
+  if(r&&r.ok){ if(r.plan){rpPlan=r.plan;rpRender();} toast('✅ Правки записано ('+on.length+')'); }
+  else toast('Помилка: '+((r&&r.err)||''));
+  await refresh(); setBusy(false);
 }
 async function restoreBattery(verbatim){
   if(!connected){toast('Підключіться');return;}

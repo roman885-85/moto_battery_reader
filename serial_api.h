@@ -39,6 +39,8 @@
 //                          правками під цей пакет; VERBATIM — байт-у-байт
 //   RESTOREPLAN <MODEL> [NOREAD] [FIXES=..] [RATED=мАг] -> що саме буде
 //                          виправлено в еталоні під цей пакет (нічого не пише)
+//   FIXES <MODEL> [FIXES=..] [RATED=мАг] -> записати ЛИШЕ правки до того, що вже
+//                          в чипах; еталон і навчена калібровка не чіпаються
 //   WIZARD               -> Майстер: зчитати + аналіз/проблеми/план (JSON)
 //   WIZSTEP <idx> [MODEL]-> Майстер: виконати крок плану (model для відновлення)
 //   WIZRESET             -> Майстер: скинути журнал продовження поточного АКБ
@@ -510,6 +512,21 @@ static void serialExec(const String &line) {
                                          r += ok ? (String(",\"model\":\"") + md + "\"}")
                                                  : String(",\"err\":\"збій запису\"}");
                                          sResp(r); } }
+    // FIXES <модель> [FIXES=…] [RATED=…] — застосувати ЛИШЕ правки до того, що
+    // вже в чипах, без перезапису еталона (ідентичність не чіпається).
+    else if (cmd == "FIXES")    { SerRestoreArgs a = serParseRestore(arg);
+                                  RestorePlan p;
+                                  if (!buildRestorePlanFor(a.model.c_str(), p, true))
+                                      sResp("{\"ok\":false,\"err\":\"немає шаблону моделі\"}");
+                                  else { serApplyPlanArgs(p, a);
+                                         bool o33 = false, o38 = false;
+                                         bool ok = performApplyFixes(p, &o33, &o38);
+                                         String r = String("{\"ok\":") + (ok ? "true" : "false")
+                                                  + ",\"ds2433\":" + (o33 ? "true" : "false")
+                                                  + ",\"ds2438\":" + (o38 ? "true" : "false")
+                                                  + ",\"plan\":" + restorePlanJson(p);
+                                         if (!ok) r += ",\"err\":\"не обрано правок або збій запису\"";
+                                         sResp(r + "}"); } }
     else if (cmd == "OPS")      { sResp(serBuildOps()); }
     else if (cmd == "SOUND")    { sResp(serSound(arg)); }
     // DISCHARGE [мВ] — почати розряд; DISCHARGE STOP — зупинити; DISCHARGE? — стан.
@@ -520,11 +537,13 @@ static void serialExec(const String &line) {
                                          if (e) { String r = "{\"ok\":false,\"err\":\""; r += e; r += "\"}"; sResp(r); }
                                          else sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); } }
     else if (cmd == "WIZARD")   { sResp(wizStart()); }
+    // WIZSTEP <idx> [MODEL] [FIXES=…] [RATED=…]
     else if (cmd == "WIZSTEP")  { int s2 = arg.indexOf(' ');
                                   String si = (s2 < 0) ? arg : arg.substring(0, s2);
-                                  String md = (s2 < 0) ? String("") : arg.substring(s2 + 1);
-                                  si.trim(); md.trim();
-                                  sResp(wizExecStep(si.toInt(), md)); }
+                                  String rest = (s2 < 0) ? String("") : arg.substring(s2 + 1);
+                                  si.trim();
+                                  SerRestoreArgs wa = serParseRestore(rest);
+                                  sResp(wizExecStep(si.toInt(), wa.model, wa.fixes, wa.rated)); }
     else if (cmd == "WIZRESET") { wizJournalClear(); sResp("{\"ok\":true}"); }
     else if (cmd == "WIZLIST")  { sResp(wizJournalListJson()); }
     else if (cmd == "WIZDEL")   { String s = arg; s.trim(); s.toUpperCase();

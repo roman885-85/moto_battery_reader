@@ -1332,8 +1332,15 @@ class App:
         self.rpGrid = ttk.Frame(self.frRp); self.rpGrid.pack(fill="x", pady=(4, 2))
         self.lblRpSum = ttk.Label(self.frRp, foreground="#b9bd86", justify="left", wraplength=640)
         self.lblRpSum.pack(anchor="w", pady=(4, 0))
-        ttk.Button(self.frRp, text="🔄 Перечитати акумулятор",
-                   command=lambda: self.rp_load(True)).pack(anchor="w", pady=(4, 0))
+        rpb = ttk.Frame(self.frRp); rpb.pack(anchor="w", pady=(4, 0))
+        ttk.Button(rpb, text="🔄 Перечитати акумулятор",
+                   command=lambda: self.rp_load(True)).pack(side="left", padx=(0, 6))
+        ttk.Button(rpb, text="💾 Записати лише правки",
+                   command=self.rp_write).pack(side="left")
+        ttk.Label(self.frRp, foreground="#b9bd86", justify="left", wraplength=640,
+                  text="«Записати лише правки» міняє рівно обрані поля й не чіпає ні ідентичність,\n"
+                       "ні навчену калібровку, ні лічильники CCA/DCA. Повне «Відновити модельну\n"
+                       "частину» — коли треба перезаписати й еталон.").pack(anchor="w", pady=(2, 0))
         self.rpVars, self.rpPlan = {}, None
 
         ttk.Button(b4r, text="🛠️ Відновити модельну частину (DS2433+DS2438)", command=self.restore_battery).pack(anchor="w", pady=2)
@@ -2143,6 +2150,31 @@ class App:
         if self.rpPlan is None:
             return ""
         return self._rp_args()
+
+    def rp_write(self):
+        """Записати ЛИШЕ обрані правки, не чіпаючи еталон."""
+        if not self.need_conn():
+            return
+        model = self.cbRest.get()
+        if not model or self.rpPlan is None:
+            messagebox.showwarning("Правки", "Спершу перечитайте акумулятор"); return
+        on = [f for f in self.rpPlan.get("fixes", []) if f.get("on")]
+        if not on:
+            messagebox.showwarning("Правки", "Не обрано жодної правки"); return
+        q = ("Записати лише правки?\n"
+             + "\n".join("  • %s: %s" % (f.get("title"), f.get("use")) for f in on)
+             + "\n\nЕталон, навчена калібровка й лічильники НЕ чіпаються.")
+        if not messagebox.askyesno("Записати правки", q):
+            return
+        def done(r):
+            if isinstance(r, dict) and r.get("ok"):
+                if r.get("plan"):
+                    self._render_plan(r["plan"])
+                self._after_write(r, "✅ Правки записано (%d)" % len(on))
+            else:
+                self._after_write(r, "")
+        self.maybe_auth(lambda: (self.status("Запис правок..."),
+                                 self.cmd("FIXES " + model + self._rp_args(), 20.0, cb=done)))
 
     def rp_load(self, reread=False):
         """Запитати план у пристрою. reread=False — порахувати на вже

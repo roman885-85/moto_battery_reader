@@ -275,7 +275,13 @@ inline uint32_t restoreMaskFromKeys(const char *s, const RestorePlan &p) {
 // Застосувати план до буферів, у які ВЖЕ завантажено еталон. d38 може бути
 // nullptr (для моделі немає еталона монітора — тоді монітор пакета не чіпаємо
 // зовсім, і правки монітора просто нікуди не пишуться).
-inline void restorePlanApply(const RestorePlan &p, uint8_t *d33, uint8_t *d38) {
+//
+// onlyEnabled = true — режим «застосувати ЛИШЕ правки» до того, що вже в чипах,
+// без перезапису еталона. Тоді вимкнені правки не чіпаються взагалі: інакше
+// наробіток пакета обнулився б просто тому, що галочку не поставили, — а тут
+// нікому його відновлювати, бо еталон не пишеться.
+inline void restorePlanApply(const RestorePlan &p, uint8_t *d33, uint8_t *d38,
+                             bool onlyEnabled = false) {
     if (d38) {
         if (p.fx[RPF_RSENSE].on) {
             d38[56] = (uint8_t)(p.fx[RPF_RSENSE].useVal & 0xFF);
@@ -286,12 +292,14 @@ inline void restorePlanApply(const RestorePlan &p, uint8_t *d33, uint8_t *d38) {
             d38[0x0E] = (uint8_t)((p.fx[RPF_ADCOFF].useVal >> 8) & 0xFF);
         }
         // Наробіток пишемо ПІСЛЯ impresResetMonitor() — той його обнуляє.
-        uint32_t etm = (uint32_t)(p.fx[RPF_ETM].on ? p.fx[RPF_ETM].useVal : 0);
-        d38[8]  = (uint8_t)(etm & 0xFF);
-        d38[9]  = (uint8_t)((etm >> 8) & 0xFF);
-        d38[10] = (uint8_t)((etm >> 16) & 0xFF);
-        d38[11] = (uint8_t)((etm >> 24) & 0xFF);
-        d38[0x0C] = p.icaUse;
+        if (p.fx[RPF_ETM].on || !onlyEnabled) {
+            uint32_t etm = (uint32_t)(p.fx[RPF_ETM].on ? p.fx[RPF_ETM].useVal : 0);
+            d38[8]  = (uint8_t)(etm & 0xFF);
+            d38[9]  = (uint8_t)((etm >> 8) & 0xFF);
+            d38[10] = (uint8_t)((etm >> 16) & 0xFF);
+            d38[11] = (uint8_t)((etm >> 24) & 0xFF);
+        }
+        if (p.fx[RPF_CHARGE].on || !onlyEnabled) d38[0x0C] = p.icaUse;
     }
     if (d33 && p.fx[RPF_RATED].on) {
         d33[IMPRES_RATED_BYTE] = (uint8_t)(p.fx[RPF_RATED].useVal / IMPRES_RATED_STEP);

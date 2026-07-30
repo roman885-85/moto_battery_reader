@@ -67,8 +67,9 @@ static const RestoreFixDoc RESTORE_FIX_DOC[RPF_COUNT] = {
       "Увімкнено — збережеться реальний вік цього пакета." },
     { "rated",  "Паспортна ємність", "мА·год", 1, false,
       "Ємність, яку пакет носить у собі (DS2433, 0x008). Зазвичай збігається з "
-      "еталоном моделі; розбіжність означає інший підваріант — або що в пакет "
-      "уже вписували ємність вручну." },
+      "еталоном моделі; розбіжність означає інший підваріант. Якщо після заміни "
+      "ви поставили банки іншої ємності — впишіть її вручну: за нею ж "
+      "перерахується й паливомір." },
 };
 
 struct RestoreFix {
@@ -86,7 +87,10 @@ struct RestorePlan {
     uint16_t packMv;        // виміряна напруга пакета, мВ
     int      packPct;       // з неї — заряд, %
     uint16_t tplMv;         // напруга, зашита в еталоні (для показу «чиє це число»)
-    int      ratedMah;      // за яким рахували паливомір
+    int      ratedTpl;      // паспортна за еталоном/таблицею моделі
+    int      ratedPack;     // що каже сам пакет (DS2433[0x008]), 0 — не читається
+    int      ratedUser;     // введена ВРУЧНУ після заміни банок, 0 — не вводили
+    int      ratedMah;      // ЕФЕКТИВНА — саме за нею рахується паливомір
     float    rsPack, rsTpl;
     uint8_t  icaTpl, icaPack, icaUse;
     RestoreFix fx[RPF_COUNT];
@@ -105,6 +109,8 @@ inline uint16_t restoreAdcOff(const uint8_t *d38) {
     return d38 ? (uint16_t)(d38[0x0D] | (d38[0x0E] << 8)) : 0;
 }
 
+inline void restorePlanRecalc(RestorePlan &p);   // визначена нижче
+
 // Скласти план. tpl33/tpl38 — еталон моделі (tpl38 може бути nullptr), pack33/
 // pack38 — те, що зараз у пакеті (теж може бути nullptr, якщо чіп не читається).
 inline void restorePlanBuild(RestorePlan &p, const char *model,
@@ -117,9 +123,12 @@ inline void restorePlanBuild(RestorePlan &p, const char *model,
     p.havePack33 = pack33 != nullptr;
     p.havePack38 = pack38 != nullptr;
 
-    // Паспортна ємність — за якою рахуємо паливомір. Спершу з еталона (це
-    // властивість моделі), інакше з таблиці.
-    p.ratedMah = impresRatedMahFor(tpl33, p.model);
+    // Паспортна ємність за еталоном — властивість моделі; далі її може
+    // перекрити те, що носить сам пакет, або введена вручну після заміни банок.
+    p.ratedTpl = impresRatedMahFor(tpl33, p.model);
+    p.ratedPack = impresRatedFromDump(pack33);
+    p.ratedUser = 0;
+    p.ratedMah = p.ratedTpl;
 
     p.rsTpl  = tpl38  ? impresBmsRsense(tpl38)  : 0.0f;
     p.rsPack = pack38 ? impresBmsRsense(pack38) : 0.0f;
@@ -130,23 +139,10 @@ inline void restorePlanBuild(RestorePlan &p, const char *model,
     RestoreFix &c = p.fx[RPF_CHARGE];
     p.icaTpl  = tpl38  ? tpl38[0x0C]  : 0;
     p.icaPack = pack38 ? pack38[0x0C] : 0;
-    c.avail = pack38 && p.packMv >= RP_MV_MIN && p.packMv <= RP_MV_MAX;
-    if (c.avail) {
-        p.packPct = impresPercentFromMv(p.packMv);
-        // Шунт беремо той, що реально опиниться в чипі: якщо правку шунта
-        // ввімкнено — пакетний, інакше — еталонний. Інакше паливомір
-        // порахували б за одним шунтом, а читали за іншим.
-        float rs = (p.rsPack > 0.0f) ? p.rsPack : p.rsTpl;
-        p.icaUse = impresIcaFromPercentRs(p.packPct, p.ratedMah, rs);
-    } else {
-        p.packPct = -1;
-        p.icaUse  = p.icaTpl;
-    }
-    c.on = c.avail && RESTORE_FIX_DOC[RPF_CHARGE].defOn;
-    c.tplVal  = tpl38 ? impresPercentFromIca(p.icaTpl, p.ratedMah,
-                            p.rsTpl > 0.0f ? p.rsTpl : DS2438_RSENSE_OHM) : -1;
+    c.avail  = pack38 && p.packMv >= RP_MV_MIN && p.packMv <= RP_MV_MAX;
+    p.packPct = c.avail ? impresPercentFromMv(p.packMv) : -1;
+    c.on      = c.avail && RESTORE_FIX_DOC[RPF_CHARGE].defOn;
     c.packVal = p.packPct;
-    c.useVal  = c.on ? p.packPct : c.tplVal;
 
     // --- шунт --------------------------------------------------------------
     RestoreFix &r = p.fx[RPF_RSENSE];
@@ -154,7 +150,6 @@ inline void restorePlanBuild(RestorePlan &p, const char *model,
     r.on      = r.avail && RESTORE_FIX_DOC[RPF_RSENSE].defOn;
     r.tplVal  = restoreRsRaw(tpl38);
     r.packVal = restoreRsRaw(pack38);
-    r.useVal  = r.on ? r.packVal : r.tplVal;
 
     // --- OFFSET АЦП ---------------------------------------------------------
     RestoreFix &a = p.fx[RPF_ADCOFF];
@@ -163,7 +158,6 @@ inline void restorePlanBuild(RestorePlan &p, const char *model,
     a.on      = a.avail && RESTORE_FIX_DOC[RPF_ADCOFF].defOn;
     a.tplVal  = restoreAdcOff(tpl38);
     a.packVal = off;
-    a.useVal  = a.on ? a.packVal : a.tplVal;
 
     // --- наробіток ----------------------------------------------------------
     RestoreFix &e = p.fx[RPF_ETM];
@@ -172,19 +166,67 @@ inline void restorePlanBuild(RestorePlan &p, const char *model,
     e.on      = e.avail && RESTORE_FIX_DOC[RPF_ETM].defOn;
     e.tplVal  = 0;                       // без правки наробіток обнуляється
     e.packVal = (long)etm;
-    e.useVal  = e.on ? e.packVal : 0;
 
     // --- паспортна ємність ---------------------------------------------------
     RestoreFix &m = p.fx[RPF_RATED];
-    int packRated = impresRatedFromDump(pack33);
-    int tplRated  = impresRatedFromDump(tpl33);
-    // Пропонуємо лише коли пакет каже щось СВОЄ й інше: збіг нічого не міняє,
-    // а показувати правку-пустушку означає привчати не читати список.
-    m.avail   = packRated > 0 && tplRated > 0 && packRated != tplRated;
-    m.on      = m.avail && RESTORE_FIX_DOC[RPF_RATED].defOn;
-    m.tplVal  = tplRated;
-    m.packVal = packRated;
-    m.useVal  = m.on ? m.packVal : m.tplVal;
+    m.tplVal  = p.ratedTpl;
+    m.packVal = p.ratedPack;
+    m.on      = false;                   // вмикається лише свідомо (див. нижче)
+
+    restorePlanRecalc(p);
+}
+
+// Округлити введену ємність до того, що взагалі можна записати: байт 0x008 —
+// це мА·год / 25, тож проміжні значення однаково не збережуться. Нуль означає
+// «не вводили».
+inline int restoreRatedClamp(long mah) {
+    if (mah <= 0) return 0;
+    long v = ((mah + IMPRES_RATED_STEP / 2) / IMPRES_RATED_STEP) * IMPRES_RATED_STEP;
+    if (v < IMPRES_RATED_MIN_MAH) v = IMPRES_RATED_MIN_MAH;
+    if (v > IMPRES_RATED_MAX_MAH) v = IMPRES_RATED_MAX_MAH;
+    return (int)v;
+}
+
+// Перерахувати все, що залежить від увімкнених правок. Викликається після
+// кожної зміни: паливомір залежить і від шунта, і від паспортної ємності, тож
+// рахувати його «десь один раз» не можна.
+inline void restorePlanRecalc(RestorePlan &p) {
+    RestoreFix &m = p.fx[RPF_RATED];
+    // Правку ємності пропонуємо, коли є що запропонувати: або пакет каже своє
+    // й інше, або власник вписав ємність нових банок. Збіг нічого не міняє, а
+    // правка-пустушка привчає не читати список.
+    long want = p.ratedUser > 0 ? p.ratedUser : p.ratedPack;
+    m.avail   = (p.ratedUser > 0) || (p.ratedPack > 0 && p.ratedTpl > 0 && p.ratedPack != p.ratedTpl);
+    m.packVal = want;
+    if (!m.avail) m.on = false;
+    // Введена вручну ємність — це свідома дія, вмикаємо одразу: інакше людина
+    // вписала б число й нічого б не сталося.
+    if (p.ratedUser > 0) m.on = true;
+
+    // ⚑ ЕФЕКТИВНА паспортна ємність: саме за нею рахується паливомір. Якщо
+    // після заміни поставили банки на 3000 замість 2150 — 77 % це вже інший
+    // ICA, і рахувати його за старим числом означало б знову записати чуже.
+    p.ratedMah = (m.on && want > 0) ? (int)want : p.ratedTpl;
+
+    // Шунт беремо той, що РЕАЛЬНО опиниться в чипі: якщо правку шунта знято,
+    // паливомір має рахуватись за шунтом еталона — інакше число записалось би
+    // за одним шунтом, а читалось за іншим.
+    float rs = p.fx[RPF_RSENSE].on ? p.rsPack : p.rsTpl;
+    if (rs <= 0.0f) rs = (p.rsPack > 0.0f) ? p.rsPack : p.rsTpl;
+
+    p.icaUse = (p.fx[RPF_CHARGE].on && p.packPct >= 0)
+                 ? impresIcaFromPercentRs(p.packPct, p.ratedMah, rs)
+                 : p.icaTpl;
+
+    // Що каже еталон про заряд — показуємо за ЙОГО ж шунтом і ємністю моделі.
+    p.fx[RPF_CHARGE].tplVal = p.haveTpl38
+        ? impresPercentFromIca(p.icaTpl, p.ratedTpl,
+                               p.rsTpl > 0.0f ? p.rsTpl : DS2438_RSENSE_OHM)
+        : -1;
+
+    for (int i = 0; i < RPF_COUNT; i++)
+        p.fx[i].useVal = p.fx[i].on ? p.fx[i].packVal
+                                    : (i == RPF_ETM ? 0 : p.fx[i].tplVal);
 }
 
 // Увімкнути/вимкнути правки маскою бітів (біт i = RPF_i). Недоступну правку
@@ -192,16 +234,16 @@ inline void restorePlanBuild(RestorePlan &p, const char *model,
 inline void restorePlanSetMask(RestorePlan &p, uint32_t mask) {
     for (int i = 0; i < RPF_COUNT; i++)
         p.fx[i].on = p.fx[i].avail && (mask & (1UL << i));
-    // Заряд рахується за шунтом, який реально опиниться в чипі.
-    float rs = p.fx[RPF_RSENSE].on ? p.rsPack : p.rsTpl;
-    if (rs <= 0.0f) rs = (p.rsPack > 0.0f) ? p.rsPack : p.rsTpl;
-    if (p.fx[RPF_CHARGE].on && p.packPct >= 0)
-        p.icaUse = impresIcaFromPercentRs(p.packPct, p.ratedMah, rs);
-    else
-        p.icaUse = p.icaTpl;
-    for (int i = 0; i < RPF_COUNT; i++)
-        p.fx[i].useVal = p.fx[i].on ? p.fx[i].packVal
-                                    : (i == RPF_ETM ? 0 : p.fx[i].tplVal);
+    // Ручна ємність — окреме поле, а не галочка: якщо її ввели, але «rated» у
+    // масці немає, вважаємо, що користувач передумав писати ємність.
+    if (!(mask & (1UL << RPF_RATED))) p.ratedUser = 0;
+    restorePlanRecalc(p);
+}
+
+// Вписати ємність нових банок вручну (0 — прибрати, лишити як є).
+inline void restorePlanSetRated(RestorePlan &p, long mah) {
+    p.ratedUser = restoreRatedClamp(mah);
+    restorePlanRecalc(p);
 }
 
 inline uint32_t restorePlanMask(const RestorePlan &p) {

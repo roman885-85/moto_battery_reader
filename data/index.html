@@ -1666,10 +1666,22 @@ function rpRender(){
     let h='<tr><th></th><th>Що саме</th><th>Еталон (донор)</th><th>Цей пакет</th><th>Буде записано</th></tr>';
     for(const f of p.fixes){
         const cls=!f.avail?'na':(f.on?'':'off');
+        // Ємність — єдина правка, яку можна не лише взяти з пакета, а й вписати
+        // руками: після заміни банок нової ємності взяти її нізвідки.
+        const extra = f.key==='rated'
+            ? '<div class="det">Нові банки іншої ємності? Впишіть паспортну ємність — '+
+              'за нею перерахується й паливомір. Крок '+p.ratedStep+' мА·год, '+
+              p.ratedMin+'–'+p.ratedMax+'.<br><input type="number" id="rpRated" min="'+p.ratedMin+
+              '" max="'+p.ratedMax+'" step="'+p.ratedStep+'" placeholder="лишити як є" value="'+
+              (p.ratedUser>0?p.ratedUser:'')+'" onchange="rpApply()" '+
+              'style="width:130px;padding:5px;border-radius:6px;border:1px solid var(--line);'+
+              'background:var(--card2);color:var(--text);margin-top:4px"></div>'
+            : '';
         h+='<tr class="'+cls+'"><td>'+
            (f.avail?'<input type="checkbox" data-k="'+f.key+'"'+(f.on?' checked':'')+' onchange="rpApply()">':'—')+
            '</td><td><b>'+esc(f.title)+'</b> <span class="chipb">пише в '+esc(f.chipsText)+'</span>'+
-           '<div class="det">'+esc(f.detail)+(f.avail?'':' <b>Джерела немає</b> — мікросхема не читається або поле порожнє.')+'</div></td>'+
+           '<div class="det">'+esc(f.detail)+(f.avail||f.key==='rated'?'':' <b>Джерела немає</b> — мікросхема не читається або поле порожнє.')+'</div>'+
+           extra+'</td>'+
            '<td class="num dim">'+esc(f.tpl)+'</td><td class="num">'+esc(f.pack)+'</td>'+
            '<td class="use">'+esc(f.use)+'</td></tr>';
     }
@@ -1677,7 +1689,9 @@ function rpRender(){
     const v=(p.packMv/1000).toFixed(2), tv=(p.tplMv/1000).toFixed(2);
     $('rpSum').innerHTML=p.pack38
         ? 'Виміряно зараз: <b>'+v+' В</b> → заряд <b>'+p.packPct+' %</b> (паливомір ICA '+p.icaUse+
-          ', паспортна ємність '+p.ratedMah+' мА·год). В еталоні зашито '+tv+' В — це стан <b>донора</b>, не вашого пакета.'
+          ', паспортна ємність '+p.ratedMah+' мА·год'+
+          (p.ratedUser>0?' — <b>вписана вручну</b>':'')+
+          '). В еталоні зашито '+tv+' В — це стан <b>донора</b>, не вашого пакета.'
         : 'Монітор DS2438 не прочитано, тож брати реальні значення нема звідки — піде те, що в еталоні.';
     let w='';
     if(!p.pack38) w='⚠️ DS2438 не читається. Якщо мікросхема жива — натисніть «Перечитати акумулятор»: '+
@@ -1688,9 +1702,14 @@ function rpRender(){
     rpToggle();
 }
 function rpKeys(){
-    return Array.from(document.querySelectorAll('#rpTable input[type=checkbox]'))
-                .filter(c=>c.checked).map(c=>c.dataset.k).join(',');
+    const k=Array.from(document.querySelectorAll('#rpTable input[type=checkbox]'))
+                 .filter(c=>c.checked).map(c=>c.dataset.k);
+    // Вписана ємність — це вже згода її записати, галочки для неї може ще не
+    // бути (рядок був недоступним, поки поле стояло порожнім).
+    if(rpRated()&&k.indexOf('rated')<0)k.push('rated');
+    return k.join(',');
 }
+function rpRated(){const e=$('rpRated');return e&&e.value?e.value:'';}
 // Перерахунок робить ПРИСТРІЙ: паливомір залежить від того, який шунт
 // опиниться в чипі, і рахувати це вдруге в браузері означало б завести другу
 // формулу, яка одного дня розійдеться з прошивкою.
@@ -1698,7 +1717,8 @@ async function rpApply(){
     const model=$('restModel').value; if(!model)return;
     try{
         const r=await(await fetch('/api/restore/plan?read=0&model='+encodeURIComponent(model)+
-                                  '&fixes='+encodeURIComponent(rpKeys()))).json();
+                                  '&fixes='+encodeURIComponent(rpKeys())+
+                                  '&rated='+encodeURIComponent(rpRated()||'0'))).json();
         if(r.status==='success'){rpPlan=r.plan;rpRender();}
     }catch(e){}
 }
@@ -1734,7 +1754,7 @@ async function restoreBattery(){
     prog(true,'Відновлення еталона...');
     try{
         const body={password:pw,model:model,verbatim:verb?'1':'0'};
-        if(!verb&&rpPlan)body.fixes=rpKeys();
+        if(!verb&&rpPlan){body.fixes=rpKeys();body.rated=rpRated()||'0';}
         const r=await postForm('/api/restore',body);
         if(r.status==='success'){
             if(r.plan){rpPlan=r.plan;rpRender();}

@@ -1239,18 +1239,28 @@ function rpRender(){
   let h='<tr><th></th><th>Що саме</th><th>Еталон (донор)</th><th>Цей пакет</th><th>Буде записано</th></tr>';
   for(const f of p.fixes){
     const cls=!f.avail?'na':(f.on?'':'off');
+    // Ємність — єдина правка, яку можна не лише взяти з пакета, а й вписати
+    // руками: після заміни банок нової ємності взяти її нізвідки.
+    const extra = f.key==='rated'
+      ? '<div class="det">Нові банки іншої ємності? Впишіть паспортну ємність — за нею '+
+        'перерахується й паливомір. Крок '+p.ratedStep+' мА·год, '+p.ratedMin+'–'+p.ratedMax+'.'+
+        '<br><input type="number" id="rpRated" min="'+p.ratedMin+'" max="'+p.ratedMax+
+        '" step="'+p.ratedStep+'" placeholder="лишити як є" value="'+(p.ratedUser>0?p.ratedUser:'')+
+        '" onchange="rpApply()" style="width:130px;margin-top:4px"></div>'
+      : '';
     h+='<tr class="'+cls+'"><td>'+
        (f.avail?'<input type="checkbox" data-k="'+f.key+'"'+(f.on?' checked':'')+' onchange="rpApply()">':'—')+
        '</td><td><b>'+wesc(f.title)+'</b> <span class="chipb">пише в '+wesc(f.chipsText)+'</span>'+
-       '<div class="det">'+wesc(f.detail)+(f.avail?'':' <b>Джерела немає</b> — мікросхема не читається або поле порожнє.')+'</div></td>'+
+       '<div class="det">'+wesc(f.detail)+(f.avail||f.key==='rated'?'':' <b>Джерела немає</b> — мікросхема не читається або поле порожнє.')+'</div>'+
+       extra+'</td>'+
        '<td class="num dim">'+wesc(f.tpl)+'</td><td class="num">'+wesc(f.pack)+'</td>'+
        '<td class="use">'+wesc(f.use)+'</td></tr>';
   }
   $('rpTable').innerHTML=h;
   $('rpSum').innerHTML=p.pack38
     ? 'Виміряно зараз: <b>'+(p.packMv/1000).toFixed(2)+' В</b> → заряд <b>'+p.packPct+' %</b> (паливомір ICA '+
-      p.icaUse+', паспортна ємність '+p.ratedMah+' мА·год). В еталоні зашито '+(p.tplMv/1000).toFixed(2)+
-      ' В — це стан <b>донора</b>, не вашого пакета.'
+      p.icaUse+', паспортна ємність '+p.ratedMah+' мА·год'+(p.ratedUser>0?' — <b>вписана вручну</b>':'')+
+      '). В еталоні зашито '+(p.tplMv/1000).toFixed(2)+' В — це стан <b>донора</b>, не вашого пакета.'
     : 'Монітор DS2438 не прочитано, тож брати реальні значення нема звідки — піде те, що в еталоні.';
   let w='';
   if(!p.pack38) w='⚠️ DS2438 не читається. Якщо мікросхема жива — натисніть «Перечитати акумулятор»: '+
@@ -1260,15 +1270,21 @@ function rpRender(){
   $('rpWarn').style.display=w?'block':'none'; $('rpWarn').innerHTML=w;
 }
 function rpKeys(){
-  return Array.from(document.querySelectorAll('#rpTable input[type=checkbox]'))
-              .filter(c=>c.checked).map(c=>c.dataset.k).join(',');
+  const k=Array.from(document.querySelectorAll('#rpTable input[type=checkbox]'))
+               .filter(c=>c.checked).map(c=>c.dataset.k);
+  // Вписана ємність — це вже згода її записати, галочки для неї може ще не
+  // бути (рядок був недоступним, поки поле стояло порожнім).
+  if(rpRated()&&k.indexOf('rated')<0)k.push('rated');
+  return k.join(',');
 }
+function rpRated(){const e=$('rpRated');return e&&e.value?e.value:'';}
+function rpArgs(){return ' FIXES='+rpKeys()+(rpRated()?(' RATED='+rpRated()):'');}
 // Перерахунок робить ПРИСТРІЙ: паливомір залежить від того, який шунт опиниться
 // в чипі, і рахувати це вдруге тут означало б завести другу формулу, яка одного
 // дня розійдеться з прошивкою.
 async function rpApply(){
   const model=$('restModel').value; if(!model||!connected)return;
-  const r=await cmd('RESTOREPLAN '+model+' NOREAD FIXES='+rpKeys(),15000);
+  const r=await cmd('RESTOREPLAN '+model+' NOREAD'+rpArgs(),15000);
   if(r&&r.ok&&r.plan){rpPlan=r.plan;rpRender();}
 }
 async function rpLoad(reread){
@@ -1295,7 +1311,7 @@ async function restoreBattery(verbatim){
   if(!confirm(q))return;
   await ensureAuth();
   setBusy(true); toast('Відновлення еталона...');
-  const fx=(!verbatim&&rpPlan)?(' FIXES='+rpKeys()):'';
+  const fx=(!verbatim&&rpPlan)?rpArgs():'';
   const r=await cmd('RESTORE '+model+(verbatim?' VERBATIM':fx),25000);
   if(r.ok){
     if(r.plan){rpPlan=r.plan;rpRender();}

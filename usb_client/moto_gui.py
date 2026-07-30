@@ -2107,10 +2107,32 @@ class App:
         self.restore_battery(verbatim=True)
 
     # ---- правки еталона під конкретний пакет -----------------------------
+    def _rp_rated(self):
+        """Вписана вручну ємність нових банок; порожньо/сміття -> 0."""
+        e = getattr(self, "eRpRated", None)
+        if e is None:
+            return 0
+        try:
+            return max(0, int(e.get().strip() or 0))
+        except (ValueError, tk.TclError):
+            return 0
+
+    def _rp_keys(self):
+        k = [key for key, v in self.rpVars.items() if v.get()]
+        # Вписана ємність — це вже згода її записати, галочки для неї може ще
+        # не бути (рядок був недоступним, поки поле стояло порожнім).
+        if self._rp_rated() and "rated" not in k:
+            k.append("rated")
+        return ",".join(k)
+
+    def _rp_args(self):
+        r = self._rp_rated()
+        return " FIXES=" + self._rp_keys() + (" RATED=%d" % r if r else "")
+
     def _rp_fixes_arg(self):
         if self.rpPlan is None:
             return ""
-        return " FIXES=" + ",".join(k for k, v in self.rpVars.items() if v.get())
+        return self._rp_args()
 
     def rp_load(self, reread=False):
         """Запитати план у пристрою. reread=False — порахувати на вже
@@ -2131,8 +2153,7 @@ class App:
         model = self.cbRest.get()
         if not model or not self.connected:
             return
-        keys = ",".join(k for k, v in self.rpVars.items() if v.get())
-        self.cmd(f"RESTOREPLAN {model} NOREAD FIXES={keys}", 20.0, cb=self._on_plan)
+        self.cmd(f"RESTOREPLAN {model} NOREAD" + self._rp_args(), 20.0, cb=self._on_plan)
 
     def _on_plan(self, r):
         if isinstance(r, dict) and r.get("ok") and r.get("plan"):
@@ -2161,22 +2182,38 @@ class App:
             else:
                 ttk.Label(self.rpGrid, text="—", foreground="#6b6f58").grid(row=i, column=0, sticky="w")
             title = f.get("title", "") + "  ·  пише в " + f.get("chipsText", "")
-            if not avail:
+            if not avail and f.get("key") != "rated":
                 title += "  (джерела немає)"
             # wraplength — щоб довга назва переносилась, а не заповзала під
             # стовпець значень і не обрізалась на вузькому вікні.
-            ttk.Label(self.rpGrid, text=title, wraplength=int(round(330 * self.zoom)),
-                      justify="left",
-                      foreground="#e7e3d2" if avail else "#6b6f58").grid(row=i, column=1, sticky="w", padx=4)
+            cell = ttk.Frame(self.rpGrid)
+            cell.grid(row=i, column=1, sticky="we", padx=4)
+            ttk.Label(cell, text=title, wraplength=int(round(330 * self.zoom)), justify="left",
+                      foreground="#e7e3d2" if avail else "#6b6f58").pack(anchor="w")
+            # Ємність — єдина правка, яку можна не лише взяти з пакета, а й
+            # вписати руками: після заміни банок нової ємності взяти нізвідки.
+            if f.get("key") == "rated":
+                sub = ttk.Frame(cell); sub.pack(anchor="w", pady=(2, 0))
+                ttk.Label(sub, text="нові банки, мА·год:", foreground="#b9bd86").pack(side="left")
+                self.eRpRated = ttk.Entry(sub, width=8)
+                self.eRpRated.pack(side="left", padx=4)
+                if p.get("ratedUser", 0) > 0:
+                    self.eRpRated.insert(0, str(p["ratedUser"]))
+                self.eRpRated.bind("<Return>", lambda _e: self._rp_recalc())
+                self.eRpRated.bind("<FocusOut>", lambda _e: self._rp_recalc())
+                ttk.Label(sub, text="(порожньо — лишити як є, крок %d)" % p.get("ratedStep", 25),
+                          foreground="#6b6f58").pack(side="left")
             for c, key, col in ((2, "tpl", "#9a9c82"), (3, "pack", "#e7e3d2"), (4, "use", "#c8b04a")):
                 ttk.Label(self.rpGrid, text=f.get(key, "—"), font=mono,
                           foreground=col if avail else "#6b6f58").grid(row=i, column=c, sticky="e", padx=4)
         if p.get("pack38"):
             self.lblRpSum.config(
-                text="Виміряно зараз: %.2f В → заряд %d %% (паливомір ICA %d, паспортна ємність %d мА·год).\n"
+                text="Виміряно зараз: %.2f В → заряд %d %% (паливомір ICA %d, паспортна ємність %d мА·год%s).\n"
                      "В еталоні зашито %.2f В — це стан ДОНОРА, не вашого пакета."
                      % (p.get("packMv", 0) / 1000.0, p.get("packPct", -1), p.get("icaUse", 0),
-                        p.get("ratedMah", 0), p.get("tplMv", 0) / 1000.0))
+                        p.get("ratedMah", 0),
+                        " — вписана вручну" if p.get("ratedUser", 0) > 0 else "",
+                        p.get("tplMv", 0) / 1000.0))
         else:
             self.lblRpSum.config(text="Монітор DS2438 не прочитано, тож брати реальні значення нема звідки — "
                                       "піде те, що в еталоні.")

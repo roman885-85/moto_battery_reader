@@ -1867,7 +1867,13 @@ static String restorePlanJson(const RestorePlan &p) {
     j += ",\"packMv\":";    j += (int)p.packMv;
     j += ",\"tplMv\":";     j += (int)p.tplMv;
     j += ",\"packPct\":";   j += p.packPct;
-    j += ",\"ratedMah\":";  j += p.ratedMah;
+    j += ",\"ratedMah\":";  j += p.ratedMah;      // ефективна — за нею паливомір
+    j += ",\"ratedTpl\":";  j += p.ratedTpl;
+    j += ",\"ratedPack\":"; j += p.ratedPack;
+    j += ",\"ratedUser\":"; j += p.ratedUser;
+    j += ",\"ratedStep\":"; j += IMPRES_RATED_STEP;
+    j += ",\"ratedMin\":";  j += IMPRES_RATED_MIN_MAH;
+    j += ",\"ratedMax\":";  j += IMPRES_RATED_MAX_MAH;
     j += ",\"icaTpl\":";    j += (int)p.icaTpl;
     j += ",\"icaPack\":";   j += (int)p.icaPack;
     j += ",\"icaUse\":";    j += (int)p.icaUse;
@@ -1895,6 +1901,19 @@ static String restorePlanJson(const RestorePlan &p) {
 
 // GET /api/restore/plan?model=XXX[&fixes=a,b][&read=0]
 // Що саме буде виправлено в еталоні перед записом у ЦЕЙ пакет.
+// rated — ємність нових банок, вписана вручну. Ставимо ДО маски: увімкнення
+// правки ємності міняє й паливомір, і робити це двома незалежними кроками
+// означало б показати проміжне (неправильне) число.
+static void applyPlanArgs(RestorePlan &p) {
+    if (server.hasArg("rated")) restorePlanSetRated(p, server.arg("rated").toInt());
+    if (server.hasArg("fixes")) {
+        uint32_t m = restoreMaskFromKeys(server.arg("fixes").c_str(), p);
+        int user = p.ratedUser;                 // маска не має стирати введене
+        restorePlanSetMask(p, m);
+        if (user > 0 && (m & (1UL << RPF_RATED))) restorePlanSetRated(p, user);
+    }
+}
+
 void handleRestorePlan() {
     String model = server.arg("model"); model.trim(); model.toUpperCase();
     RestorePlan p;
@@ -1904,8 +1923,7 @@ void handleRestorePlan() {
                     "{\"status\":\"error\",\"message\":\"Немає вшитого шаблону для цієї моделі\"}");
         return;
     }
-    if (server.hasArg("fixes"))
-        restorePlanSetMask(p, restoreMaskFromKeys(server.arg("fixes").c_str(), p));
+    applyPlanArgs(p);
     server.send(200, "application/json",
                 String("{\"status\":\"success\",\"plan\":") + restorePlanJson(p) + "}");
 }
@@ -1928,8 +1946,7 @@ void handleRestore() {
     RestorePlan p;
     const RestorePlan *pp = nullptr;
     if (!verbatim && buildRestorePlanFor(model.c_str(), p, true)) {
-        if (server.hasArg("fixes"))
-            restorePlanSetMask(p, restoreMaskFromKeys(server.arg("fixes").c_str(), p));
+        applyPlanArgs(p);
         pp = &p;
     }
 

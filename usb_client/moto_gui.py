@@ -1128,14 +1128,17 @@ class App:
         # чипа DS2433 — саме тому раніше ці поля здавалися відсутніми.
         bbox = ttk.LabelFrame(f, text="Штатні лічильники Motorola", padding=8)
         bbox.pack(fill="x", pady=(8, 0))
-        self.bCyc = self._kv(bbox, "Циклів заряду (IMPRES):", 0)
-        self.bCycN = self._kv(bbox, "Циклів не-IMPRES:", 1)
-        self.bPot = self._kv(bbox, "Реальна ємність:", 2)
-        self.bHealth = self._kv(bbox, "Знос / здоров'я:", 3)
-        self.bCal = self._kv(bbox, "Калібрувань пройдено:", 4)
-        self.bMfg = self._kv(bbox, "Дата виготовлення:", 5)
-        self.bUse = self._kv(bbox, "Перше користування:", 6)
-        self.bKey = self._kv(bbox, "Ключ:", 7)
+        self.bWarn = ttk.Label(bbox, text="", foreground="#c0392b", wraplength=560, justify="left")
+        self.bWarn.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        self.bWarn.grid_remove()
+        self.bCyc = self._kv(bbox, "Циклів заряду (IMPRES):", 1)
+        self.bCycN = self._kv(bbox, "Циклів не-IMPRES:", 2)
+        self.bPot = self._kv(bbox, "Реальна ємність:", 3)
+        self.bHealth = self._kv(bbox, "Знос / здоров'я:", 4)
+        self.bCal = self._kv(bbox, "Калібрувань пройдено:", 5)
+        self.bMfg = self._kv(bbox, "Дата виготовлення:", 6)
+        self.bUse = self._kv(bbox, "Перше користування:", 7)
+        self.bKey = self._kv(bbox, "Ключ:", 8)
         ttk.Label(f, text="Дамп DS2433 (512 Б):").pack(anchor="w", pady=(8, 0))
         self.tx33 = scrolledtext.ScrolledText(f, height=6, font=fnt("Consolas", 8),
                                               bg=MIL["field"], fg="#b9bd86", insertbackground=MIL["khaki"],
@@ -1606,17 +1609,52 @@ class App:
         self.dCCA.config(text=(f"{d.get('ccaCycles')} ц (≈{d.get('ccaMah')} мА·год)") if d.get("ccaMah") is not None else "—")
         self.dDCA.config(text=(f"{d.get('dcaCycles')} ц (≈{d.get('dcaMah')} мА·год)") if d.get("dcaMah") is not None else "—")
         rs = d.get("rsense")
+        self._rs_from_chip = bool(d.get("rsenseChip"))
         self.dRs.config(text=(f"{rs * 1000:.2f} мОм " +
                               ("(з чипа)" if d.get("rsenseChip") else "(з налаштувань — у чипі поля немає)"))
                         if isinstance(rs, (int, float)) else "—")
         self.dSerial33.config(text=d.get("serial33") or "—")
         self._render_bms(d.get("bms"))
+        b = d.get("bms") or {}
+        # Справжня дата з чипа має пріоритет над оцінкою «сьогодні − ETM».
+        if b.get("firstUseDate"):
+            self.dFirst.config(text=b["firstUseDate"] + " (з чипа)", foreground="")
+        self._warn_foreign_2438(b, etm if isinstance(etm, int) else 0)
         if isinstance(cap, int) and cap >= 0:
             self._set_entry(self.eCap, str(cap))
         if d.get("icaMah") is not None:
             self._set_entry(self.eMah, str(d.get("icaMah")))
         self._set_text(self.tx33, d.get("hex33", ""))
         self._set_text(self.tx38, d.get("hex38", ""))
+
+    # Пакет не міг ПРАЦЮВАТИ довше, ніж він ІСНУЄ. Якщо напрацювання ETM більше
+    # за вік від дати виготовлення — DS2438 не від цього АКБ (типово: монітор не
+    # перечитали після зміни пакета). Це не дрібниця: шунт у DS2438 свій у
+    # кожного пакета, тож із чужого монітора струм, залишок і знос будуть хибні.
+    # Допуск 180 діб: на 31 рідній парі з dumps/ ETM перевищував вік щонайбільше
+    # на 44 доби — лічильник стартує до того, як у чип запишуть дату.
+    ETM_AGE_SLACK_D = 180
+
+    def _warn_foreign_2438(self, b, etm_sec):
+        import datetime
+        mfg = b.get("mfgDate")
+        if not mfg or not etm_sec:
+            self.bWarn.grid_remove(); return
+        try:
+            age = (datetime.date.today() - datetime.date(*map(int, mfg.split("-")))).days
+        except ValueError:
+            self.bWarn.grid_remove(); return
+        etm_d = etm_sec // 86400
+        if etm_d > age + self.ETM_AGE_SLACK_D:
+            self.bWarn.config(text=("⚠️ Напрацювання ETM (%d діб) більше за вік пакета "
+                                    "(%d діб від %s). DS2438 майже напевно не від цього АКБ — "
+                                    "перечитайте монітор. Доти струм, залишок і знос неправильні."
+                                    % (etm_d, age, mfg)))
+            self.bWarn.grid()
+        else:
+            self.bWarn.grid_remove()
+
+    _rs_from_chip = False        # чи взято шунт із чипа (впливає на точність зносу)
 
     def _render_bms(self, b):
         """Штатні поля Motorola з відповіді INFO."""
@@ -1633,7 +1671,10 @@ class App:
             pot = b.get("potentialMah", 0); first = b.get("firstUseMah") or 0
             self.bPot.config(text=f"{pot} мА·год" + (f" (на початку {first})" if first else ""))
             h = b.get("health", 0)
-            self.bHealth.config(text=f"{h} %",
+            # Знос рахується через шунт. Якщо шунт не з чипа — це лише оцінка:
+            # у різних моделей він відрізняється майже вдвічі.
+            note = "" if self._rs_from_chip else "  (оцінка: шунт не з чипа)"
+            self.bHealth.config(text=f"{h} %{note}",
                                 foreground="#7ea24a" if h >= 80 else ("" if h >= 60 else "#c0392b"))
             self.bCal.config(text=str(b.get("calCycles", "—")))
             self.bMfg.config(text=b.get("mfgDate") or "—")

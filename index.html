@@ -323,6 +323,7 @@
                 (перевірено на 53 еталонних пакетах). Лічильник циклів лежить у гістограмі
                 й ключа не потребує; знос, дати й лічильник калібрувань <b>зашифровані</b>
                 ключем із ROM-ID чипа DS2433.</div>
+            <div class="note w" id="warn2438" style="display:none"></div>
             <div class="row"><span class="k">Циклів заряду (IMPRES)</span><span class="v" id="bCyc">—</span></div>
             <div class="row"><span class="k">Циклів не-IMPRES</span><span class="v" id="bCycN">—</span></div>
             <div class="row"><span class="k">Реальна ємність</span><span class="v" id="bPot">—</span></div>
@@ -686,6 +687,29 @@ async function readDump(){
     prog(false);
 }
 
+// Пакет не міг ПРАЦЮВАТИ довше, ніж він ІСНУЄ: якщо напрацювання ETM більше за
+// вік від дати виготовлення, DS2438 майже напевно не від цього пакета (типово —
+// монітор не перечитали після зміни АКБ). Це не дрібниця: шунт у DS2438 свій у
+// кожного пакета, тож із чужого монітора і струм, і знос вийдуть неправильні.
+// Допуск 180 діб: на 31 рідній парі з dumps/ ETM перевищував вік щонайбільше
+// на 44 доби (лічильник стартує до того, як у чип запишуть дату).
+const ETM_AGE_SLACK_D = 180;
+function warnForeign2438(d, etmSec){
+    const w = $('warn2438'); if(!w) return;
+    const mfg = d.bms && d.bms.mfgDate;
+    if(!mfg){ w.style.display='none'; return; }
+    const ageD = Math.floor((Date.now() - new Date(mfg).getTime())/86400000);
+    const etmD = Math.floor(etmSec/86400);
+    if(etmD > ageD + ETM_AGE_SLACK_D){
+        w.style.display='';
+        w.textContent='⚠️ Напрацювання ETM ('+etmD+' діб) більше за вік пакета ('+ageD+
+            ' діб від '+mfg+'). DS2438 майже напевно не від цього АКБ — перечитайте монітор. '+
+            'Доти струм, залишок і знос рахуються за чужим шунтом і будуть неправильні.';
+    } else {
+        w.style.display='none';
+    }
+}
+
 // Штатні поля Motorola із /api/info2438 → картка «Штатні лічильники».
 // Цикли показуємо завжди (ключа не потребують); решта — лише коли ключ відомий.
 function renderBms(b){
@@ -696,7 +720,10 @@ function renderBms(b){
     set('bCycN', b.nonImpresCycles!==undefined?String(b.nonImpresCycles):'—');
     if(b.haveKey){
         set('bPot', b.potentialMah+' мА·год'+(b.firstUseMah?(' (на початку '+b.firstUseMah+')'):''));
-        set('bHealth', b.health+' %', b.health>=80?'#22c55e':(b.health>=60?'':'#ef4444'));
+        // Знос рахується через шунт. Якщо шунт узято не з чипа, число —
+        // лише оцінка: у різних моделей шунт відрізняється майже вдвічі.
+        set('bHealth', b.health+' %'+(window.__rsChip?'':' (оцінка: шунт не з чипа)'),
+            b.health>=80?'#22c55e':(b.health>=60?'':'#ef4444'));
         set('bCal', String(b.calCycles));
         set('bMfg', b.mfgDate||'—');
         set('bUse', b.firstUseDate||'— (пакет ще не вмикався)');
@@ -790,6 +817,7 @@ async function refreshAll(){
             if(d.ccaCycles!==undefined)$('ovCycles').textContent=d.ccaCycles+' зар. / '+d.dcaCycles+' розр. (ємн. '+d.ratedMah+' мА·год)';
             $('dSerial').textContent=d.serial||'—';
             $('dSerial33').textContent=d.serial33||'—';
+            window.__rsChip=!!d.rsenseChip;
             if(d.rsense!==undefined)$('dRs').textContent=(d.rsense*1000).toFixed(2)+' мОм'+
                 (d.rsenseChip?' (з чипа)':' (з налаштувань — у чипі поля немає)');
             renderBms(d.bms);
@@ -814,6 +842,13 @@ async function refreshAll(){
                     if($('etmNow'))$('etmNow').textContent=first.toLocaleDateString()+' ('+y+' р '+dd+' дн)';
                 }
                 if($('etmDate')&&!$('etmDate').value)$('etmDate').value=first.toISOString().slice(0,10);
+                // Оцінка «сьогодні − ETM» лишається лише запасним варіантом:
+                // якщо блок дат прочитався, показуємо СПРАВЖНЮ дату з чипа.
+                if(d.bms&&d.bms.firstUseDate){
+                    $('dFirst').textContent=d.bms.firstUseDate+' (з чипа)';
+                    $('dFirst').style.color='';
+                }
+                warnForeign2438(d, etm);
             }
             $('dHex38').textContent=d.hex||d.preview||'—';
         }

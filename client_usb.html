@@ -227,6 +227,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="note i">Той самий алгоритм, що й у фірмового ПЗ Motorola (звірено на 53
         еталонних пакетах). Цикли лежать у гістограмі й ключа не потребують; знос, дати
         й калібрування <b>зашифровані</b> ключем із ROM-ID чипа DS2433.</div>
+      <div class="note w" id="warn2438" style="display:none"></div>
       <div class="row"><span class="k">Циклів заряду (IMPRES)</span><span class="v" id="bCyc">—</span></div>
       <div class="row"><span class="k">Циклів не-IMPRES</span><span class="v" id="bCycN">—</span></div>
       <div class="row"><span class="k">Реальна ємність</span><span class="v" id="bPot">—</span></div>
@@ -639,16 +640,39 @@ async function refresh(){
       $('dFirst').textContent=first.toLocaleDateString();
     }
     if($('etmDate')&&!$('etmDate').value)$('etmDate').value=first.toISOString().slice(0,10);
+    // Справжня дата з чипа має пріоритет над оцінкою «сьогодні − ETM».
+    if(d.bms&&d.bms.firstUseDate){$('dFirst').textContent=d.bms.firstUseDate+' (з чипа)';$('dFirst').style.color='';}
+    warnForeign2438(d, etm);
   }
   $('dICA').textContent=mah(d.icaMah,d.ica);
   $('dCCA').textContent=cyc(d.ccaCycles,d.ccaMah,d.cca);
   $('dDCA').textContent=cyc(d.dcaCycles,d.dcaMah,d.dca);
   $('dSer33').textContent=d.serial33||'—';
+  window.__rsChip=!!d.rsenseChip;
   if(d.rsense!==undefined)$('dRs').textContent=(d.rsense*1000).toFixed(2)+' мОм'+
     (d.rsenseChip?' (з чипа)':' (з налаштувань — у чипі поля немає)');
   renderBms(d.bms);
   if(d.hex38)$('h38').textContent=d.hex38;
   if(d.hex33)$('h33').textContent=d.hex33;
+}
+
+// Пакет не міг ПРАЦЮВАТИ довше, ніж він ІСНУЄ: ETM більший за вік від дати
+// виготовлення означає, що DS2438 не від цього АКБ (типово — монітор не
+// перечитали). Шунт у DS2438 свій у кожного пакета, тож із чужого монітора
+// струм, залишок і знос виходять неправильні. Допуск 180 діб: на 31 рідній
+// парі з dumps/ перевищення сягало щонайбільше 44 діб.
+const ETM_AGE_SLACK_D = 180;
+function warnForeign2438(d, etmSec){
+  const w=$('warn2438'); if(!w) return;
+  const mfg=d.bms&&d.bms.mfgDate;
+  if(!mfg){w.style.display='none';return;}
+  const ageD=Math.floor((Date.now()-new Date(mfg).getTime())/86400000);
+  const etmD=Math.floor(etmSec/86400);
+  if(etmD>ageD+ETM_AGE_SLACK_D){
+    w.style.display='';
+    w.textContent='⚠️ Напрацювання ETM ('+etmD+' діб) більше за вік пакета ('+ageD+' діб від '+mfg+
+      '). DS2438 майже напевно не від цього АКБ — перечитайте монітор. Доти струм, залишок і знос неправильні.';
+  } else w.style.display='none';
 }
 
 // Штатні поля Motorola із INFO. Цикли показуємо завжди; знос і дати — лише
@@ -660,7 +684,9 @@ function renderBms(b){
   set('bCycN', b.nonImpresCycles!==undefined?String(b.nonImpresCycles):'—');
   if(b.haveKey){
     set('bPot', b.potentialMah+' мА·год'+(b.firstUseMah?(' (на початку '+b.firstUseMah+')'):''));
-    set('bHealth', b.health+' %', b.health>=80?'#22c55e':(b.health>=60?'':'#ef4444'));
+    // Без шунта з чипа знос — лише оцінка: у різних моделей шунт удвічі різний.
+    set('bHealth', b.health+' %'+(window.__rsChip?'':' (оцінка: шунт не з чипа)'),
+        b.health>=80?'#22c55e':(b.health>=60?'':'#ef4444'));
     set('bCal', String(b.calCycles));
     set('bMfg', b.mfgDate||'—');
     set('bUse', b.firstUseDate||'— (пакет ще не вмикався)');

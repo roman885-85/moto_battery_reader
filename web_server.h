@@ -10,6 +10,7 @@
 #include "impres_format.h"     // структура прошивки IMPRES (єдине джерело правди)
 #include "impres_bms.h"        // штатний декодер Motorola (лічильники, знос, дати)
 #include "operations.h"        // єдиний каталог операцій для всіх поверхонь
+#include "restore_plan.h"      // правки еталона під конкретний пакет перед записом
 #include "discharge.h"         // керований розряд навантаженням (MOSFET)
 #include "leds.h"
 #include "display.h"
@@ -1773,8 +1774,11 @@ bool performInitBattery(const char *model, long mah) {
 // вміст, а ROM шукається по шині (Search/Match ROM), попереднє читання не треба.
 // Кожен чіп пишемо НЕЗАЛЕЖНО й повертаємо true, якщо записався хоча б DS2433
 // (ідентичність); фактичний стан кожного — в ok33/ok38 і Serial-лог.
+//
+// plan — правки під конкретний пакет (restore_plan.h). nullptr = типовий набір,
+// порахований тут же з того, що зараз у буферах.
 bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 = nullptr,
-                            bool verbatim = false) {
+                            bool verbatim = false, const RestorePlan *plan = nullptr) {
     if (ok33) *ok33 = false;
     if (ok38) *ok38 = false;
     int t = findTemplate(model);
@@ -1784,6 +1788,19 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
     uint8_t was38[DS2438_MEM_SIZE];
     bool had38 = hasDump2438;
     if (had38) memcpy(was38, batteryDump2438, DS2438_MEM_SIZE);
+
+    // ⚑ План складаємо ДО того, як шаблон затре буфери: після memcpy_P у
+    // batteryDump2438 лежить монітор ДОНОРА, і все, пораховане з нього, буде
+    // числами донора. Саме на цьому раніше й горіло: рівень заряду брався з
+    // напруги, зашитої в шаблоні, тож у розряджений пакет писалось «повний».
+    RestorePlan localPlan;
+    if (!plan && !verbatim) {
+        restorePlanBuild(localPlan, model,
+                         BATTERY_TEMPLATES[t].d33, BATTERY_TEMPLATES[t].d38,
+                         hasDump ? batteryDump : nullptr,
+                         had38 ? was38 : nullptr);
+        plan = &localPlan;
+    }
 
     memcpy_P(batteryDump, BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
     bool write38 = (BATTERY_TEMPLATES[t].d38 != nullptr);
@@ -1796,13 +1813,16 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
         int cleared = applyFreshTail(BATTERY_TEMPLATES[t].fresh);
         if (cleared < 0) cleared = impresEraseTail(batteryDump);
         impresFixHeader(batteryDump);
-        if (write38 || had38)
-            impresResetMonitor(batteryDump2438, batteryDump,
-                               impresIcaFromPercentRs(
-                                   impresPercentFromMv(impresVoltageMv(batteryDump2438)),
-                                   impresRatedMahFor(batteryDump, model),
-                                   impresBmsRsense(batteryDump2438)));
-        Serial.printf("Restore: donor learned tail cleared: %d B\n", cleared);
+        bool touch38 = write38 || had38;
+        if (touch38) impresResetMonitor(batteryDump2438, batteryDump, plan->icaUse);
+        // Правки — ПІСЛЯ скидання монітора: воно обнуляє наробіток і паливомір.
+        restorePlanApply(*plan, batteryDump, touch38 ? batteryDump2438 : nullptr);
+        char pl[96] = "";
+        for (int i = 0, k = 0; i < RPF_COUNT; i++)
+            if (plan->fx[i].on) k += snprintf(pl + k, sizeof(pl) - k, "%s%s",
+                                              k ? "," : "", RESTORE_FIX_DOC[i].key);
+        Serial.printf("Restore: donor learned tail cleared: %d B; fixes: %s; ICA=%u\n",
+                      cleared, pl[0] ? pl : "(немає)", plan->icaUse);
     }
 
     ledSet(LED_WRITE); displayShow("ВІДНОВЛ. ЕТАЛОН");
@@ -1823,7 +1843,74 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
     return ok;
 }
 
-// Веб-відновлення еталона (під паролем): model.
+// ---- План правок еталона під конкретний пакет ------------------------------
+// Скласти план для моделі з того, що зараз у буферах. refresh=true — спершу
+// перечитати чипи: напруга (а з нею й рівень заряду) міняється, і показувати
+// користувачеві заряд півгодинної давнини означало б давати йому підтвердити
+// не те число, яке запишеться.
+static bool buildRestorePlanFor(const char *model, RestorePlan &p, bool refresh) {
+    int t = findTemplate(model);
+    if (t < 0) return false;
+    if (refresh) { bool a, b; readAllChips(a, b); }
+    restorePlanBuild(p, model, BATTERY_TEMPLATES[t].d33, BATTERY_TEMPLATES[t].d38,
+                     hasDump ? batteryDump : nullptr,
+                     hasDump2438 ? batteryDump2438 : nullptr);
+    return true;
+}
+
+static String restorePlanJson(const RestorePlan &p) {
+    char a[24], b[24], c[24];
+    String j = "{\"model\":\""; j += p.model;
+    j += "\",\"tpl38\":";   j += p.haveTpl38 ? "true" : "false";
+    j += ",\"pack33\":";    j += p.havePack33 ? "true" : "false";
+    j += ",\"pack38\":";    j += p.havePack38 ? "true" : "false";
+    j += ",\"packMv\":";    j += (int)p.packMv;
+    j += ",\"tplMv\":";     j += (int)p.tplMv;
+    j += ",\"packPct\":";   j += p.packPct;
+    j += ",\"ratedMah\":";  j += p.ratedMah;
+    j += ",\"icaTpl\":";    j += (int)p.icaTpl;
+    j += ",\"icaPack\":";   j += (int)p.icaPack;
+    j += ",\"icaUse\":";    j += (int)p.icaUse;
+    j += ",\"fixes\":[";
+    for (int i = 0; i < RPF_COUNT; i++) {
+        if (i) j += ",";
+        restoreFixText(p, i, p.fx[i].tplVal,  a, sizeof(a));
+        restoreFixText(p, i, p.fx[i].packVal, b, sizeof(b));
+        restoreFixText(p, i, p.fx[i].useVal,  c, sizeof(c));
+        j += "{\"key\":\"";    j += RESTORE_FIX_DOC[i].key;
+        j += "\",\"title\":\""; j += RESTORE_FIX_DOC[i].title;
+        j += "\",\"detail\":\"";j += RESTORE_FIX_DOC[i].detail;
+        j += "\",\"chip\":";    j += (int)RESTORE_FIX_DOC[i].chip;
+        j += ",\"chipsText\":\""; j += opChipsText(RESTORE_FIX_DOC[i].chip);
+        j += "\",\"avail\":";   j += p.fx[i].avail ? "true" : "false";
+        j += ",\"on\":";        j += p.fx[i].on ? "true" : "false";
+        j += ",\"tpl\":\"";     j += a;
+        j += "\",\"pack\":\"";  j += b;
+        j += "\",\"use\":\"";   j += c;
+        j += "\"}";
+    }
+    j += "]}";
+    return j;
+}
+
+// GET /api/restore/plan?model=XXX[&fixes=a,b][&read=0]
+// Що саме буде виправлено в еталоні перед записом у ЦЕЙ пакет.
+void handleRestorePlan() {
+    String model = server.arg("model"); model.trim(); model.toUpperCase();
+    RestorePlan p;
+    bool refresh = !server.hasArg("read") || server.arg("read") != "0";
+    if (!buildRestorePlanFor(model.c_str(), p, refresh)) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Немає вшитого шаблону для цієї моделі\"}");
+        return;
+    }
+    if (server.hasArg("fixes"))
+        restorePlanSetMask(p, restoreMaskFromKeys(server.arg("fixes").c_str(), p));
+    server.send(200, "application/json",
+                String("{\"status\":\"success\",\"plan\":") + restorePlanJson(p) + "}");
+}
+
+// Веб-відновлення еталона (під паролем): model[, fixes][, verbatim].
 void handleRestore() {
     if (!requireAdmin()) return;
     String model = server.arg("model"); model.trim(); model.toUpperCase();
@@ -1834,9 +1921,25 @@ void handleRestore() {
     // verbatim=1 — ручний режим: записати шаблон байт-у-байт разом із навченим
     // хвостом донора. Для аналізу; для ремонту лишайте вимкненим.
     bool verbatim = server.hasArg("verbatim") && server.arg("verbatim") == "1";
-    bool ok = performRestoreTemplate(model.c_str(), &ok33, &ok38, verbatim);
+
+    // Правки під цей пакет. Клієнт надсилає рівно той набір, який показав
+    // користувачеві; без параметра діє типовий набір. Перечитуємо чипи, щоб
+    // заряд узявся з напруги ЗАРАЗ, а не з давнього читання.
+    RestorePlan p;
+    const RestorePlan *pp = nullptr;
+    if (!verbatim && buildRestorePlanFor(model.c_str(), p, true)) {
+        if (server.hasArg("fixes"))
+            restorePlanSetMask(p, restoreMaskFromKeys(server.arg("fixes").c_str(), p));
+        pp = &p;
+    }
+
+    bool ok = performRestoreTemplate(model.c_str(), &ok33, &ok38, verbatim, pp);
     String j = String("{\"status\":\"") + (ok ? "success" : "error") + "\",\"ds2433\":" +
-               (ok33 ? "true" : "false") + ",\"ds2438\":" + (ok38 ? "true" : "false") + ",\"message\":\"";
+               (ok33 ? "true" : "false") + ",\"ds2438\":" + (ok38 ? "true" : "false");
+    // Звітуємо ФАКТИЧНО застосовані правки: користувач має бачити, що саме
+    // потрапило в чип, а не лише те, що він попросив.
+    if (pp) j += ",\"plan\":" + restorePlanJson(*pp);
+    j += ",\"message\":\"";
     if (ok && ok38)      j += String("Відновлено еталон ") + model + " (обидві мікросхеми)";
     else if (ok)         j += "DS2433 відновлено; DS2438 не записано (відсутній/битий)";
     else                 j += "Збій запису (див. Serial-лог)";
@@ -2205,6 +2308,7 @@ void setupWebServer() {
     server.on("/api/discharge/stop", HTTP_POST, handleDischargeStop);    // зупинити розряд
     server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
     server.on("/api/restore", HTTP_POST, handleRestore);         // відновлення еталона verbatim
+    server.on("/api/restore/plan", HTTP_GET, handleRestorePlan); // правки еталона під цей пакет
     server.on("/api/wizard", HTTP_GET, handleWizard);            // Майстер: аналіз+план
     server.on("/api/wizard/step", HTTP_POST, handleWizardStep);  // Майстер: виконати крок
     server.on("/api/wizard/reset", HTTP_POST, handleWizardReset);// Майстер: скинути журнал

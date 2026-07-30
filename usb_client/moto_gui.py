@@ -1316,6 +1316,22 @@ class App:
                            "Навчений хвіст 0x18A–0x1FF лишається порожнім — його запише зарядна станція.\n"
                            "Працює й на порожній/битій мікросхемі.",
                   foreground="#b9bd86", justify="left").pack(anchor="w")
+        # ---- правки під ЦЕЙ пакет -------------------------------------
+        #  Еталон — побайтова копія ОДНОГО акумулятора, і разом із моделлю він
+        #  несе числа донора: його рівень заряду, його шунт, його калібрування
+        #  нуля АЦП. Показуємо їх поруч із реальними числами пакета, щоб
+        #  користувач вирішував, а не довіряв наосліп.
+        self.frRp = ttk.LabelFrame(b4r, text="🔎 Правки під ЦЕЙ пакет — перевірте перед записом", padding=6)
+        ttk.Label(self.frRp, foreground="#b9bd86", justify="left",
+                  text="Зніміть галочку, щоб лишити число еталона.").pack(anchor="w")
+        self.lblRpWarn = ttk.Label(self.frRp, foreground="#ffd9a8", justify="left", wraplength=640)
+        self.rpGrid = ttk.Frame(self.frRp); self.rpGrid.pack(fill="x", pady=(4, 2))
+        self.lblRpSum = ttk.Label(self.frRp, foreground="#b9bd86", justify="left", wraplength=640)
+        self.lblRpSum.pack(anchor="w", pady=(4, 0))
+        ttk.Button(self.frRp, text="🔄 Перечитати акумулятор",
+                   command=lambda: self.rp_load(True)).pack(anchor="w", pady=(4, 0))
+        self.rpVars, self.rpPlan = {}, None
+
         ttk.Button(b4r, text="🛠️ Відновити модельну частину (DS2433+DS2438)", command=self.restore_battery).pack(anchor="w", pady=2)
         ttk.Button(b4r, text="🧪 Байт-у-байт (ручний режим, для аналізу)", command=self.restore_battery_verbatim).pack(anchor="w", pady=2)
 
@@ -2075,15 +2091,108 @@ class App:
         def done(r):
             if isinstance(r, dict) and r.get("ok"):
                 both = r.get("ds2438")
-                self._after_write(r, f"✅ Еталон {model} записано" + (" (DS2433+DS2438)" if both else " (лише DS2433)"))
+                if r.get("plan"):
+                    self._render_plan(r["plan"])
+                n = len([f for f in r.get("plan", {}).get("fixes", []) if f.get("on")])
+                self._after_write(r, f"✅ Еталон {model} записано"
+                                     + (" (DS2433+DS2438)" if both else " (лише DS2433)")
+                                     + (f", правок під пакет: {n}" if n else ""))
             else:
                 self._after_write(r, "")
-        arg = f"RESTORE {model}" + (" VERBATIM" if verbatim else "")
+        arg = f"RESTORE {model}" + (" VERBATIM" if verbatim else self._rp_fixes_arg())
         self.maybe_auth(lambda: (self.status("Відновлення еталона..."),
                                  self.cmd(arg, 25.0, cb=done)))
 
     def restore_battery_verbatim(self):
         self.restore_battery(verbatim=True)
+
+    # ---- правки еталона під конкретний пакет -----------------------------
+    def _rp_fixes_arg(self):
+        if self.rpPlan is None:
+            return ""
+        return " FIXES=" + ",".join(k for k, v in self.rpVars.items() if v.get())
+
+    def rp_load(self, reread=False):
+        """Запитати план у пристрою. reread=False — порахувати на вже
+        прочитаних даних: клієнт смикає це на кожну галочку, і сіпати 1-Wire
+        щоразу не варто."""
+        model = self.cbRest.get()
+        if not model or not self.connected:
+            self.rpPlan = None
+            self.frRp.pack_forget()
+            return
+        arg = f"RESTOREPLAN {model}" + ("" if reread else " NOREAD")
+        self.cmd(arg, 20.0, cb=self._on_plan)
+
+    def _rp_recalc(self):
+        # Перерахунок робить ПРИСТРІЙ: паливомір залежить від того, який шунт
+        # опиниться в чипі, і рахувати це вдруге тут означало б завести другу
+        # формулу, яка одного дня розійдеться з прошивкою.
+        model = self.cbRest.get()
+        if not model or not self.connected:
+            return
+        keys = ",".join(k for k, v in self.rpVars.items() if v.get())
+        self.cmd(f"RESTOREPLAN {model} NOREAD FIXES={keys}", 20.0, cb=self._on_plan)
+
+    def _on_plan(self, r):
+        if isinstance(r, dict) and r.get("ok") and r.get("plan"):
+            self._render_plan(r["plan"])
+        else:
+            self.rpPlan = None
+            self.frRp.pack_forget()
+
+    def _render_plan(self, p):
+        self.rpPlan = p
+        for w in self.rpGrid.winfo_children():
+            w.destroy()
+        self.rpVars = {}
+        hdr = ("", "Що саме", "Еталон (донор)", "Цей пакет", "Буде записано")
+        for c, t in enumerate(hdr):
+            ttk.Label(self.rpGrid, text=t, foreground="#9a9c82").grid(row=0, column=c, sticky="w", padx=4, pady=(0, 3))
+        self.rpGrid.columnconfigure(1, weight=1)
+        mono = fnt("Consolas", 9)
+        for i, f in enumerate(p.get("fixes", []), start=1):
+            avail = bool(f.get("avail"))
+            if avail:
+                var = tk.BooleanVar(value=bool(f.get("on")))
+                self.rpVars[f["key"]] = var
+                ttk.Checkbutton(self.rpGrid, variable=var,
+                                command=self._rp_recalc).grid(row=i, column=0, sticky="w")
+            else:
+                ttk.Label(self.rpGrid, text="—", foreground="#6b6f58").grid(row=i, column=0, sticky="w")
+            title = f.get("title", "") + "  ·  пише в " + f.get("chipsText", "")
+            if not avail:
+                title += "  (джерела немає)"
+            # wraplength — щоб довга назва переносилась, а не заповзала під
+            # стовпець значень і не обрізалась на вузькому вікні.
+            ttk.Label(self.rpGrid, text=title, wraplength=int(round(330 * self.zoom)),
+                      justify="left",
+                      foreground="#e7e3d2" if avail else "#6b6f58").grid(row=i, column=1, sticky="w", padx=4)
+            for c, key, col in ((2, "tpl", "#9a9c82"), (3, "pack", "#e7e3d2"), (4, "use", "#c8b04a")):
+                ttk.Label(self.rpGrid, text=f.get(key, "—"), font=mono,
+                          foreground=col if avail else "#6b6f58").grid(row=i, column=c, sticky="e", padx=4)
+        if p.get("pack38"):
+            self.lblRpSum.config(
+                text="Виміряно зараз: %.2f В → заряд %d %% (паливомір ICA %d, паспортна ємність %d мА·год).\n"
+                     "В еталоні зашито %.2f В — це стан ДОНОРА, не вашого пакета."
+                     % (p.get("packMv", 0) / 1000.0, p.get("packPct", -1), p.get("icaUse", 0),
+                        p.get("ratedMah", 0), p.get("tplMv", 0) / 1000.0))
+        else:
+            self.lblRpSum.config(text="Монітор DS2438 не прочитано, тож брати реальні значення нема звідки — "
+                                      "піде те, що в еталоні.")
+        w = ""
+        if not p.get("pack38"):
+            w = ("⚠️ DS2438 не читається. Якщо мікросхема жива — натисніть «Перечитати акумулятор»: "
+                 "без неї в пакет піде рівень заряду й шунт донора.")
+        elif not p.get("tpl38"):
+            w = ("ℹ️ Для цієї моделі еталона монітора немає — DS2438 пакета лишається своїм, "
+                 "правиться лише паливомір.")
+        if w:
+            self.lblRpWarn.config(text=w)
+            self.lblRpWarn.pack(anchor="w", pady=(2, 0), before=self.rpGrid)
+        else:
+            self.lblRpWarn.pack_forget()
+        self.frRp.pack(fill="x", pady=(6, 2))
 
     def set_mah(self):
         if not self.need_conn():
@@ -2257,6 +2366,13 @@ class App:
             cb["values"] = models
             if models and not cb.get():
                 cb.current(0)
+        # Зміна моделі — інший еталон, отже інші числа донора: план треба
+        # перебудувати, інакше галочки описували б попередню модель.
+        if not getattr(self, "_rpBound", False):
+            self._rpBound = True
+            self.cbRest.bind("<<ComboboxSelected>>", lambda _e: self.rp_load(False))
+        if models:
+            self.rp_load(False)
 
     def save_dump(self, getcmd, size, default):
         if not self.need_conn():

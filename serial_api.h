@@ -324,6 +324,29 @@ static String serSound(const String &argIn) {
     return j;
 }
 
+// Хвіст команд RESTORE / RESTOREPLAN: «<МОДЕЛЬ> [VERBATIM] [NOREAD] [FIXES=a,b]».
+// Одна функція на обидві команди — щоб вони не розійшлися в тому, що вважають
+// моделлю, а що прапорцем. Модель — перше слово, яке не є прапорцем; регістр
+// моделі й прапорців не має значення, а от ключі правок завжди малими.
+struct SerRestoreArgs { String model, fixes; bool verbatim, reread, haveFixes; };
+static SerRestoreArgs serParseRestore(const String &argIn) {
+    SerRestoreArgs a; a.verbatim = false; a.reread = true; a.haveFixes = false;
+    String rest = argIn; rest.trim();
+    while (rest.length()) {
+        int s = rest.indexOf(' ');
+        String tok = (s < 0) ? rest : rest.substring(0, s);
+        rest = (s < 0) ? String("") : rest.substring(s + 1);
+        rest.trim();
+        if (!tok.length()) continue;
+        String up = tok; up.toUpperCase();
+        if      (up == "VERBATIM")        a.verbatim = true;
+        else if (up == "NOREAD")          a.reread = false;
+        else if (up.startsWith("FIXES=")) { a.fixes = tok.substring(6); a.fixes.toLowerCase(); a.haveFixes = true; }
+        else if (!a.model.length())       a.model = up;
+    }
+    return a;
+}
+
 // Каталог операцій (operations.h) — щоб десктопний клієнт малював той самий
 // список у тому самому порядку, що екран і веб, без власних копій текстів.
 static String serBuildOps() {
@@ -435,18 +458,35 @@ static void serialExec(const String &line) {
                                   else { bool ok = performInitBattery(md.c_str(), mah);
                                          sResp(ok ? (String("{\"ok\":true,\"model\":\"") + md + "\"}")
                                                   : "{\"ok\":false,\"err\":\"збій запису\"}"); } }
-    // RESTORE <модель> [VERBATIM] — за замовчуванням навчений хвіст донора НЕ
-    // пишеться (лишається стертим). VERBATIM — ручний режим для аналізу.
-    else if (cmd == "RESTORE")  { String md = arg; md.trim(); md.toUpperCase();
-                                  bool verbatim = false;
-                                  int sp = md.indexOf(' ');
-                                  if (sp > 0) { verbatim = md.substring(sp + 1) == "VERBATIM"; md = md.substring(0, sp); md.trim(); }
+    // RESTOREPLAN <модель> [NOREAD] [FIXES=...] — що саме буде виправлено в
+    // еталоні під ЦЕЙ пакет. Нічого не пише. Типово перечитує чипи, щоб заряд
+    // був свіжий; NOREAD — перерахувати на вже прочитаних даних (клієнт смикає
+    // це на кожну галочку, і сіпати 1-Wire щоразу не варто).
+    else if (cmd == "RESTOREPLAN") { SerRestoreArgs a = serParseRestore(arg);
+                                  RestorePlan p;
+                                  if (!buildRestorePlanFor(a.model.c_str(), p, a.reread))
+                                      sResp("{\"ok\":false,\"err\":\"немає шаблону моделі\"}");
+                                  else { if (a.haveFixes) restorePlanSetMask(p, restoreMaskFromKeys(a.fixes.c_str(), p));
+                                         sResp(String("{\"ok\":true,\"plan\":") + restorePlanJson(p) + "}"); } }
+    // RESTORE <модель> [VERBATIM] [FIXES=charge,rsense,...] — за замовчуванням
+    // навчений хвіст донора НЕ пишеться, а числа, що належать донору (заряд,
+    // шунт, OFFSET АЦП), замінюються на реальні з цього пакета. VERBATIM —
+    // ручний режим «байт-у-байт» для аналізу, без будь-яких правок.
+    else if (cmd == "RESTORE")  { SerRestoreArgs a = serParseRestore(arg);
+                                  String md = a.model; bool verbatim = a.verbatim;
+                                  String fixes = a.fixes; bool haveFixes = a.haveFixes;
                                   if (findTemplate(md.c_str()) < 0) sResp("{\"ok\":false,\"err\":\"немає шаблону моделі\"}");
                                   else { bool o33 = false, o38 = false;
-                                         bool ok = performRestoreTemplate(md.c_str(), &o33, &o38, verbatim);
+                                         RestorePlan p; const RestorePlan *pp = nullptr;
+                                         if (!verbatim && buildRestorePlanFor(md.c_str(), p, true)) {
+                                             if (haveFixes) restorePlanSetMask(p, restoreMaskFromKeys(fixes.c_str(), p));
+                                             pp = &p;
+                                         }
+                                         bool ok = performRestoreTemplate(md.c_str(), &o33, &o38, verbatim, pp);
                                          String r = String("{\"ok\":") + (ok ? "true" : "false")
                                                   + ",\"ds2433\":" + (o33 ? "true" : "false")
                                                   + ",\"ds2438\":" + (o38 ? "true" : "false");
+                                         if (pp) r += ",\"plan\":" + restorePlanJson(*pp);
                                          r += ok ? (String(",\"model\":\"") + md + "\"}")
                                                  : String(",\"err\":\"збій запису\"}");
                                          sResp(r); } }

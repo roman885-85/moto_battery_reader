@@ -100,6 +100,22 @@
         .tgtb{background:var(--card2);color:var(--fg);border:1px solid var(--line);border-radius:8px;
               padding:5px 9px;margin-right:4px;cursor:pointer;font-size:.9em}
         .tgtb.on{background:var(--ua-blue);border-color:var(--ua-yellow);font-weight:700}
+        /* ---- Правки еталона під конкретний пакет ---------------------------
+           Три стовпці поруч — «еталон / цей пакет / буде записано»: різницю
+           видно оком, і не треба вірити на слово, що правка потрібна. */
+        .rpwrap{overflow-x:auto;margin-top:8px}
+        .rpt{width:100%;border-collapse:collapse;font-size:.85em;min-width:520px}
+        .rpt th{color:var(--muted);font-weight:600;text-align:left;padding:6px 8px;
+                border-bottom:1px solid var(--line);white-space:nowrap}
+        .rpt td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+        .rpt tr:last-child td{border-bottom:none}
+        .rpt .num{font-family:'Courier New',monospace;white-space:nowrap}
+        .rpt .use{font-family:'Courier New',monospace;white-space:nowrap;font-weight:700;color:var(--khaki)}
+        .rpt .dim{color:var(--muted)}
+        .rpt .det{color:var(--muted);font-size:.9em;line-height:1.35;margin-top:3px}
+        .rpt input[type=checkbox]{accent-color:var(--khaki);width:16px;height:16px;cursor:pointer}
+        .rpt tr.off .use{color:var(--muted);font-weight:400}
+        .rpt tr.na{opacity:.55}
         /* ---- Налаштування звуку -------------------------------------------
            Кожен рядок — підпис, повзунок і поточне значення. Значення показуємо
            обов'язково: «десь посередині» нічого не означає, а «150 %» можна
@@ -609,7 +625,21 @@
             <div class="row"><span class="k">Модель</span>
                 <select id="restModel" style="border-radius:8px;border:none;padding:6px;min-width:150px"></select></div>
             <div class="note w">⚠️ Перезапише <b>ОБИДВІ</b> мікросхеми. Після запису — калібрування на IMPRES-ЗП.</div>
-            <label style="display:block;margin:8px 0"><input type="checkbox" id="restVerbatim">
+
+            <div id="rpBox" style="display:none">
+                <div class="zone zi" style="margin:14px 0 6px">🔎 Правки під ЦЕЙ пакет — перевірте перед записом</div>
+                <div class="note i">Еталон несе не лише модель, а й числа <b>донора</b>, з якого знято копію:
+                    його рівень заряду, його шунт, його калібрування нуля АЦП. Нижче — що буде замінено на
+                    реальні значення цього акумулятора. Зніміть галочку, щоб лишити число еталона.</div>
+                <div id="rpWarn" class="note w" style="display:none"></div>
+                <div class="rpwrap"><table class="rpt" id="rpTable"></table></div>
+                <div class="note i" id="rpSum"></div>
+                <div class="btns">
+                    <button class="btn btn-info" onclick="rpLoad(true)">🔄 Перечитати акумулятор</button>
+                </div>
+            </div>
+
+            <label style="display:block;margin:8px 0"><input type="checkbox" id="restVerbatim" onchange="rpToggle()">
                 <b>Ручний режим:</b> записати байт-у-байт, разом із навченою калібровкою донора.
                 Для аналізу й експериментів; для ремонту НЕ вмикайте.</label>
             <input type="password" class="pw" id="pwRest" placeholder="🔑 Пароль адміністратора">
@@ -1613,18 +1643,104 @@ async function loadTemplates(){
             models.forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o)});
             if(!models.length){const o=document.createElement('option');o.textContent='(немає шаблонів)';sel.appendChild(o)}
         }
+        // Зміна моделі — інший еталон, отже інші числа донора: план треба
+        // перебудувати, інакше галочки описували б попередню модель.
+        const rs=$('restModel');
+        if(rs&&!rs.dataset.rp){rs.dataset.rp='1';rs.addEventListener('change',()=>rpLoad(false));}
+        if(models.length)rpLoad(false);
     }catch(e){}
 }
+// ============ ПРАВКИ ЕТАЛОНА ПІД ЦЕЙ ПАКЕТ ============
+// Еталон — побайтова копія ОДНОГО пакета, і разом із моделлю він несе числа
+// донора. Показуємо їх поруч із реальними числами цього акумулятора, щоб
+// користувач вирішував, а не довіряв наосліп.
+let rpPlan=null;
+function rpToggle(){
+    // у ручному режимі «байт-у-байт» правок немає за визначенням
+    const verb=$('restVerbatim')&&$('restVerbatim').checked;
+    $('rpBox').style.display=(verb||!rpPlan)?'none':'block';
+}
+function rpRender(){
+    const p=rpPlan;
+    if(!p){$('rpBox').style.display='none';return}
+    let h='<tr><th></th><th>Що саме</th><th>Еталон (донор)</th><th>Цей пакет</th><th>Буде записано</th></tr>';
+    for(const f of p.fixes){
+        const cls=!f.avail?'na':(f.on?'':'off');
+        h+='<tr class="'+cls+'"><td>'+
+           (f.avail?'<input type="checkbox" data-k="'+f.key+'"'+(f.on?' checked':'')+' onchange="rpApply()">':'—')+
+           '</td><td><b>'+esc(f.title)+'</b> <span class="chipb">пише в '+esc(f.chipsText)+'</span>'+
+           '<div class="det">'+esc(f.detail)+(f.avail?'':' <b>Джерела немає</b> — мікросхема не читається або поле порожнє.')+'</div></td>'+
+           '<td class="num dim">'+esc(f.tpl)+'</td><td class="num">'+esc(f.pack)+'</td>'+
+           '<td class="use">'+esc(f.use)+'</td></tr>';
+    }
+    $('rpTable').innerHTML=h;
+    const v=(p.packMv/1000).toFixed(2), tv=(p.tplMv/1000).toFixed(2);
+    $('rpSum').innerHTML=p.pack38
+        ? 'Виміряно зараз: <b>'+v+' В</b> → заряд <b>'+p.packPct+' %</b> (паливомір ICA '+p.icaUse+
+          ', паспортна ємність '+p.ratedMah+' мА·год). В еталоні зашито '+tv+' В — це стан <b>донора</b>, не вашого пакета.'
+        : 'Монітор DS2438 не прочитано, тож брати реальні значення нема звідки — піде те, що в еталоні.';
+    let w='';
+    if(!p.pack38) w='⚠️ DS2438 не читається. Якщо мікросхема жива — натисніть «Перечитати акумулятор»: '+
+                    'без неї в пакет піде рівень заряду й шунт донора.';
+    else if(!p.tpl38) w='ℹ️ Для цієї моделі еталона монітора немає — DS2438 пакета лишається своїм, '+
+                        'правиться лише паливомір.';
+    $('rpWarn').style.display=w?'block':'none'; $('rpWarn').innerHTML=w;
+    rpToggle();
+}
+function rpKeys(){
+    return Array.from(document.querySelectorAll('#rpTable input[type=checkbox]'))
+                .filter(c=>c.checked).map(c=>c.dataset.k).join(',');
+}
+// Перерахунок робить ПРИСТРІЙ: паливомір залежить від того, який шунт
+// опиниться в чипі, і рахувати це вдруге в браузері означало б завести другу
+// формулу, яка одного дня розійдеться з прошивкою.
+async function rpApply(){
+    const model=$('restModel').value; if(!model)return;
+    try{
+        const r=await(await fetch('/api/restore/plan?read=0&model='+encodeURIComponent(model)+
+                                  '&fixes='+encodeURIComponent(rpKeys()))).json();
+        if(r.status==='success'){rpPlan=r.plan;rpRender();}
+    }catch(e){}
+}
+async function rpLoad(reread){
+    const model=$('restModel').value;
+    if(!model){rpPlan=null;$('rpBox').style.display='none';return}
+    if(reread)prog(true,'Читання акумулятора...');
+    try{
+        const r=await(await fetch('/api/restore/plan?model='+encodeURIComponent(model)+
+                                  (reread?'':'&read=0'))).json();
+        if(r.status==='success'){rpPlan=r.plan;rpRender();}
+        else {rpPlan=null;$('rpBox').style.display='none';}
+    }catch(e){rpPlan=null;$('rpBox').style.display='none';}
+    if(reread)prog(false);
+}
 async function restoreBattery(){
-    const pw=$('pwRest').value; 
+    const pw=$('pwRest').value;
     const model=$('restModel').value;
     if(!model){toast('Оберіть модель','err');return}
-    if(!confirm('🛠️ Відновити еталон '+model+' БАЙТ-У-БАЙТ?\n\nПерезапише ОБИДВІ мікросхеми точною genuine-копією (з навченою калібровкою).\nПрацює й на порожньому/битому чипі. Продовжити?'))return;
+    const verb=$('restVerbatim')&&$('restVerbatim').checked;
+    let q;
+    if(verb){
+        q='🛠️ Відновити еталон '+model+' БАЙТ-У-БАЙТ?\n\nПерезапише ОБИДВІ мікросхеми точною копією донора,'+
+          '\nразом із його навченою калібровкою. Для аналізу, не для ремонту. Продовжити?';
+    }else{
+        const on=rpPlan?rpPlan.fixes.filter(f=>f.on):[];
+        q='🛠️ Відновити еталон '+model+'?\n\nМодельна частина — з еталона.\n'+
+          (on.length?('Під цей пакет буде виправлено:\n'+on.map(f=>'  • '+f.title+': '+f.use).join('\n'))
+                    :'Правок під пакет немає (нема з чого взяти реальні значення).')+
+          '\n\nПерезапише ОБИДВІ мікросхеми. Продовжити?';
+    }
+    if(!confirm(q))return;
     prog(true,'Відновлення еталона...');
     try{
-        const r=await postForm('/api/restore',{password:pw,model:model,verbatim:($('restVerbatim')&&$('restVerbatim').checked)?'1':'0'});
+        const body={password:pw,model:model,verbatim:verb?'1':'0'};
+        if(!verb&&rpPlan)body.fixes=rpKeys();
+        const r=await postForm('/api/restore',body);
         if(r.status==='success'){
-            toast('✅ Еталон '+model+' відновлено'+(r.ds2438?' (DS2433+DS2438)':' (лише DS2433, DS2438 не записано)'),'ok');
+            if(r.plan){rpPlan=r.plan;rpRender();}
+            const on=r.plan?r.plan.fixes.filter(f=>f.on).length:0;
+            toast('✅ Еталон '+model+' відновлено'+(r.ds2438?' (DS2433+DS2438)':' (лише DS2433)')+
+                  (on?', правок під пакет: '+on:''),'ok');
             await refreshAll();
         } else toast('Помилка: '+(r.message||''),'err');
     }catch(e){toast('Помилка: '+e.message,'err')}

@@ -298,7 +298,7 @@ inline int batteryRemainingMah() {
     if (!hasDump2438) return -1;
     char m[16] = "";
     if (hasDump) impresModelName(batteryDump, m, sizeof(m));
-    return impresIcaToMah(batteryDump2438[12], impresRatedMah(m));
+    return impresIcaToMah(batteryDump2438[12], impresRatedMahFor(hasDump ? batteryDump : nullptr, m));
 }
 
 // Знайти модель (part number) в дампі DS2433.
@@ -678,7 +678,7 @@ inline void drawPageHealth() {
     } else {
         char m[16] = "";
         if (hasDump) impresModelName(batteryDump, m, sizeof(m));
-        int rated = impresRatedMah(m);
+        int rated = impresRatedMahFor(hasDump ? batteryDump : nullptr, m);
         snprintf(buf, sizeof(buf), "Ємність: %d мА*год", rated);
         row(buf, C_TEXT, 30);
 
@@ -707,7 +707,7 @@ inline void drawPageHealth() {
         uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
         uint16_t dca = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
         char cyModel[16] = ""; if (hasDump) impresModelName(batteryDump, cyModel, sizeof(cyModel));
-        int  rated = impresRatedMah(cyModel);   // паспортна ємність ЗА МОДЕЛЛЮ
+        int  rated = impresRatedMahFor(hasDump ? batteryDump : nullptr, cyModel);  // з чипа, інакше з таблиці
         int chgCyc = (int)(cca * DS2438_MAH_PER_LSB / rated);
         int disCyc = (int)(dca * DS2438_MAH_PER_LSB / rated);
         snprintf(buf, sizeof(buf), "Циклів: зар.%d роз.%d", chgCyc, disCyc);

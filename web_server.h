@@ -378,7 +378,7 @@ void handleDumpInfo2438() {
     // моделях, крім однієї.
     char rmModel[16] = "";
     decodeModel(rmModel, sizeof(rmModel));
-    int ratedMah = impresRatedMah(rmModel);
+    int ratedMah = impresRatedMahFor(hasDump ? batteryDump : nullptr, rmModel);
     json += ",\"icaMah\":" + String(impresIcaToMah((uint8_t)ica, ratedMah));
     json += ",\"ccaMah\":" + String((int)(cca * DS2438_MAH_PER_LSB));
     json += ",\"dcaMah\":" + String((int)(dca * DS2438_MAH_PER_LSB));
@@ -1424,7 +1424,7 @@ void handleSetMah() {
     long mah = server.arg("mah").toInt();
     char smModel[16] = "";
     if (hasDump) impresModelName(batteryDump, smModel, sizeof(smModel));
-    long ica = impresIcaFromMah(mah, impresRatedMah(smModel));
+    long ica = impresIcaFromMah(mah, impresRatedMahFor(hasDump ? batteryDump : nullptr, smModel));
     batteryDump2438[12] = (uint8_t)ica;
     ledSet(LED_WRITE); displayShow("ЗАПИС ЄМН mAh");
     bool ok = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
@@ -1432,7 +1432,8 @@ void handleSetMah() {
     displayShow(ok ? "ЄМН mAh OK" : "ЄМН mAh ЗБІЙ");
     ledSet(ok ? LED_OK : LED_ERROR);
     String m = String("{\"status\":\"") + (ok ? "success" : "error") +
-               "\",\"ica\":" + ica + ",\"mah\":" + impresIcaToMah((uint8_t)ica, impresRatedMah(smModel)) + "}";
+               "\",\"ica\":" + ica + ",\"mah\":" +
+               impresIcaToMah((uint8_t)ica, impresRatedMahFor(hasDump ? batteryDump : nullptr, smModel)) + "}";
     server.send(ok ? 200 : 500, "application/json", m);
 }
 
@@ -1611,7 +1612,7 @@ bool performInitBattery(const char *model, long mah) {
 
     // Монітор — у стан «новий пакет» (конфіг/поріг/дзеркало зберігаються).
     // Введена ємність (поточний заряд) у мА·год -> регістр ICA DS2438.
-    long ica = impresIcaFromMah(mah, impresRatedMah(model));
+    long ica = impresIcaFromMah(mah, impresRatedMahFor(batteryDump, model));
     impresResetMonitor(batteryDump2438, batteryDump, (uint8_t)ica);
 
     ledSet(LED_WRITE); displayShow("НОВИЙ АКБ...");

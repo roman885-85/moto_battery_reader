@@ -418,14 +418,40 @@ inline void impresResetMonitor(uint8_t *d38, const uint8_t *d33, uint8_t ica) {
 // PMNN4488A і PMNN4493A — взагалі побайтово однаковий заголовок і різняться
 // лише рядком назви. Тому — таблиця, яку можна правити під свої пакети.
 struct ImpresRated { const char *model; int mah; };
+//  ⚑ Значення звірені з ДВОМА незалежними джерелами й виправлені:
+//    1) байт 0x008 самого чипа (див. impresRatedFromDump нижче) — те, що
+//       пакет носить із собою;
+//    2) таблиця batteryKITList із rick51231/node-dmr-lib (dev/BMS) — витягнута
+//       з фірмового ПЗ «IMPRES Battery Fleet Management».
+//  Три значення були хибні й псували перерахунок паливоміра в мА*год:
+//    PMNN4409B  2250 -> 2150   (чип 0x56, KIT 2150)
+//    PMNN4809A  2450 -> 2700   (чип 0x6C, KIT 2700)
+//    APLI4810C  2450 -> 3100   (чип 0x7C, KIT PMNN4810 = 3100) — похибка 27 %
 static const ImpresRated IMPRES_RATED[] = {
     { "PMNN4409A", 2150 },
-    { "PMNN4409B", 2250 },
+    { "PMNN4409B", 2150 },
     { "PT4409A",   2150 },   // копія 4409A
-    { "PMNN4488A", 3000 },   // спільний заголовок із 4493A
-    { "PMNN4493A", 3000 },
-    { "PMNN4809A", 2450 },
-    { "APLI4810C", 2450 },
+    { "PMNN4488A", 3000 },   // чип каже 2950; KIT — 3000 (кругле паспортне)
+    { "PMNN4493A", 3000 },   // те саме
+    { "PMNN4809A", 2700 },
+    { "APLI4810C", 3100 },
+    // Далі — з KIT-таблиці Motorola, шаблонів у нас поки немає, але ємність
+    // знадобиться, щойно такий пакет прочитають.
+    { "PMNN4403A", 2150 },
+    { "PMNN4407A", 1500 },
+    { "PMNN4417A", 1500 },
+    { "PMNN4418A", 2150 },
+    { "PMNN4448A", 2800 },
+    { "PMNN4491A", 2100 },
+    { "PMNN4499A", 3000 },
+    { "PMNN4502A", 3000 },
+    { "PMNN4525A", 1950 },
+    { "PMNN4543A", 2450 },
+    { "PMNN4544A", 2450 },
+    { "PMNN4548A", 2450 },
+    { "PMNN4807A", 2050 },
+    { "PMNN4808A", 2300 },
+    { "PMNN4810A", 3100 },
 };
 static const int IMPRES_RATED_N = (int)(sizeof(IMPRES_RATED) / sizeof(IMPRES_RATED[0]));
 #ifndef IMPRES_RATED_DEFAULT
@@ -437,6 +463,36 @@ inline int impresRatedMah(const char *model) {
         for (int i = 0; i < IMPRES_RATED_N; i++)
             if (strcmp(IMPRES_RATED[i].model, model) == 0) return IMPRES_RATED[i].mah;
     return IMPRES_RATED_DEFAULT;
+}
+
+// ---- паспортна ємність ІЗ САМОГО ЧИПА ---------------------------------------
+//  Байт 0x008 DS2433 = ємність / 25. Знайдено так: у протоколі BMS
+//  (rick51231/node-dmr-lib, dev/BMS/README.md) розширений пакет несе
+//  «Rated capacity mAh, Formula = value*25»; пошук байта з такою властивістю в
+//  наших 49 дампах дав рівно один зсув, сталий усередині кожної моделі, — 0x008.
+//
+//  Звірка (чип*25 проти KIT-таблиці Motorola):
+//    PMNN4409A/B  0x56 -> 2150 = 2150 ✔
+//    PMNN4809A    0x6C -> 2700 = 2700 ✔
+//    APLI4810C    0x7C -> 3100 = 3100 ✔ (а в нашій таблиці стояло 2450!)
+//    PMNN4488A/93A 0x76 -> 2950, KIT 3000 — чип точніший за кругле паспортне.
+//
+//  Це надійніше за таблицю: працює й для моделей, яких у ній немає взагалі.
+//  0 — якщо дампа немає або значення неправдоподібне.
+#define IMPRES_RATED_BYTE     0x008
+#define IMPRES_RATED_STEP     25
+#define IMPRES_RATED_MIN_MAH  1000
+#define IMPRES_RATED_MAX_MAH  6000
+inline int impresRatedFromDump(const uint8_t *d33) {
+    if (!d33) return 0;
+    int mah = (int)d33[IMPRES_RATED_BYTE] * IMPRES_RATED_STEP;
+    return (mah >= IMPRES_RATED_MIN_MAH && mah <= IMPRES_RATED_MAX_MAH) ? mah : 0;
+}
+
+// Паспортна ємність: спершу з чипа, потім із таблиці за моделлю.
+inline int impresRatedMahFor(const uint8_t *d33, const char *model) {
+    int m = impresRatedFromDump(d33);
+    return m ? m : impresRatedMah(model);
 }
 
 // Заряд, % за напругою (7.00 В = 0 %, 8.40 В = 100 %) — запит власника:

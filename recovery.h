@@ -98,9 +98,26 @@ struct BatteryDiag {
     int      tail;          // IMPRES_TAIL_BLANK / _VALID / _BROKEN
 };
 
-// ---- Метадані дії (заголовок/опис/зовнішній) ------------------------------
-static void wizActionMeta(uint8_t a, const char **title, const char **detail, bool *external) {
+// ---- Метадані дії (заголовок/опис/зовнішній/куди пише) --------------------
+//  chips — у яку мікросхему піде запис (OPC_* із operations.h). Кроки Майстра —
+//  це теж пункти запису, і плутанина між DS2433 (ідентичність) і DS2438
+//  (монітор із заводським калібруванням вимірювача струму) коштує дорого, тож
+//  кожен крок каже це прямо, як і решта операцій.
+static void wizActionMeta(uint8_t a, const char **title, const char **detail,
+                          bool *external, uint8_t *chips = nullptr) {
     *external = false;
+    if (chips) {
+        switch (a) {
+            case ACT_RESTORE:        *chips = OPC_33;   break;  // + DS2438, якщо є еталон
+            case ACT_REPAIR:
+            case ACT_RECAL:
+            case ACT_RECAL_DEEP:
+            case ACT_CLEAN:          *chips = OPC_BOTH; break;
+            case ACT_RESET:
+            case ACT_SETCHARGE_AUTO: *chips = OPC_38;   break;
+            default:                 *chips = OPC_NONE; break;  // читання/зовнішні
+        }
+    }
     switch (a) {
         case ACT_READ:    *title = "Зчитати чіпи";
                           *detail = "Перевірте контакти АКБ і повторіть зчитування 1-Wire."; break;
@@ -496,11 +513,14 @@ static String wizStatusJson(const char *resultMsg = nullptr, bool resultOk = tru
 
     o += ",\"steps\":[";
     for (int i = 0; i < nActs; i++) {
-        const char *ttl, *det; bool ext; wizActionMeta(acts[i], &ttl, &det, &ext);
+        const char *ttl, *det; bool ext; uint8_t ch;
+        wizActionMeta(acts[i], &ttl, &det, &ext, &ch);
         if (i) o += ",";
         o += "{\"idx\":" + String(i);
         o += ",\"action\":\""; o += wizActionName(acts[i]); o += "\"";
         o += ",\"external\":" + String(ext ? "true" : "false");
+        o += ",\"chips\":" + String((int)ch);
+        o += ",\"chipsText\":\""; o += opChipsText(ch); o += "\"";
         o += ",\"done\":" + String(i < doneN ? "true" : "false");
         o += ",\"title\":\"";  jsonEsc(o, ttl); o += "\"";
         o += ",\"detail\":\""; jsonEsc(o, det); o += "\"}";

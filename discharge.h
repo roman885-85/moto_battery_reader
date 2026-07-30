@@ -198,6 +198,28 @@ inline void dischargeInit() {
     g_dis.reason = DISR_NONE;
 }
 
+// ── ЦІЛЬ РОЗРЯДУ, обрана НА ПРИСТРОЇ ───────────────────────────────────────
+//  У вебі й в exe ціль набирають у полі, а на самому пристрої поля немає — тож
+//  тут вона перемикається по колу з готового набору окремим пунктом меню.
+//  Значення живе до перезавантаження; типове — DISCHARGE_TARGET_MV.
+static const uint16_t DISCHARGE_TARGET_PRESETS[] = { 7800, 7600, 7400, 7200, 7000 };
+#define DISCHARGE_TARGET_PRESET_N \
+    ((int)(sizeof(DISCHARGE_TARGET_PRESETS) / sizeof(DISCHARGE_TARGET_PRESETS[0])))
+
+static uint16_t g_disTargetMv = DISCHARGE_TARGET_MV;
+
+inline uint16_t dischargeTargetMv() { return g_disTargetMv; }
+
+// Наступне значення по колу. Повертає нову ціль.
+inline uint16_t dischargeCycleTarget() {
+    int i = 0;
+    for (; i < DISCHARGE_TARGET_PRESET_N; i++)
+        if (DISCHARGE_TARGET_PRESETS[i] == g_disTargetMv) break;
+    i = (i + 1) % DISCHARGE_TARGET_PRESET_N;       // не знайшли -> станемо на перший
+    g_disTargetMv = DISCHARGE_TARGET_PRESETS[i];
+    return g_disTargetMv;
+}
+
 inline bool dischargeAvailable() {
 #ifdef LOAD_PIN
     return true;

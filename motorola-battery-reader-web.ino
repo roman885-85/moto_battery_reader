@@ -195,9 +195,15 @@ void loop() {
                                             if (p >= 0) performSetChargePct(p); }
         else if (act == OP_RESET)         performReset();
         else if (act == OP_CLEAN)         performFactoryClean();
-        else if (act == OP_DISCHARGE)     { const char *e = dischargeStart(0);
+        // Розряд із меню пристрою — до цілі, обраної сусіднім пунктом.
+        else if (act == OP_DISCHARGE)     { const char *e = dischargeStart(dischargeTargetMv());
                                             if (e) { Serial.println(e); displayShow("РОЗРЯД: ЗБІЙ");
                                                      ledSet(LED_ERROR); } }
+        // «Ціль розряду» нічого не пише — лише перемикає напругу по колу.
+        else if (act == OP_DISCHARGE_TGT) { char m[24];
+                                            snprintf(m, sizeof(m), "ЦІЛЬ %.2f В",
+                                                     dischargeCycleTarget() / 1000.0);
+                                            displayShow(m); ledSet(LED_IDLE); }
         // «Модель <X>» — модельна частина еталона, БЕЗ навченого хвоста донора.
         else if (tm >= 0)                 performRestoreTemplate(BATTERY_TEMPLATES[tm].name);
         // «Новий <X>» — порожній чіп -> робочий АКБ; заряд 50 % ємності моделі.

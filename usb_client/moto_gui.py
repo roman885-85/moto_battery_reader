@@ -1107,7 +1107,11 @@ class App:
             row = ttk.Frame(self.wizStepsFrame); row.pack(fill="x", pady=1)
             ttk.Label(row, text=ico, foreground=col).pack(side="left", anchor="n")
             box = ttk.Frame(row); box.pack(side="left", fill="x", expand=True)
-            ttk.Label(box, text=s.get("title", ""), font=fnt("Segoe UI", 9, "bold" if cur else "normal"),
+            # Крок Майстра — теж запис: кажемо, у яку мікросхему він піде.
+            ttl = s.get("title", "")
+            if s.get("chips") and s.get("chipsText"):
+                ttl += "   ·  пише в " + s["chipsText"]
+            ttk.Label(box, text=ttl, font=fnt("Segoe UI", 9, "bold" if cur else "normal"),
                       foreground=col).pack(anchor="w")
             ttk.Label(box, text=s.get("detail", ""), foreground="#9a9c82",
                       wraplength=440, justify="left").pack(anchor="w")
@@ -1250,6 +1254,11 @@ class App:
         self.eDisTarget.bind("<KeyRelease>", lambda e: self._dis_ramp_note())
         self.lblDisRamp = ttk.Label(b2d, text="", foreground="#b9bd86", justify="left")
         self.lblDisRamp.pack(anchor="w", pady=(2, 0))
+        # Графік уставки струму за напругою — перемальовується щоразу, коли
+        # змінюють ціль: видно, що 300 мА припадають рівно на неї.
+        self.cvDisRamp = tk.Canvas(b2d, width=420, height=96, highlightthickness=1,
+                                   highlightbackground=MIL["line"], bg=MIL["field"])
+        self.cvDisRamp.pack(anchor="w", pady=(4, 0))
         self._dis_ramp_note()
 
         df = ttk.Frame(b2d); df.pack(anchor="w", pady=3)
@@ -1735,6 +1744,7 @@ class App:
             self.bWarn.grid_remove()
 
     _rs_from_chip = False        # чи взято шунт із чипа (впливає на точність зносу)
+    _disNowMv = 0                # поточна напруга — риска на графіку лінійки
 
     def _render_bms(self, b):
         """Штатні поля Motorola з відповіді INFO."""
@@ -1852,6 +1862,9 @@ class App:
                 if d.get(k) is not None:
                     self.disRamp[k] = d[k]
             self._dis_ramp_note()
+        if isinstance(d, dict) and d.get("state") == "run":
+            self._disNowMv = d.get("mv", 0)
+            self._dis_ramp_draw(self._dis_target_mv())
         self.monDis.update_state(d)
 
     def _dis_tick(self):
@@ -1893,6 +1906,18 @@ class App:
             mv = self.disRamp["tgtDefMv"]
         return max(self.disRamp["tgtMinMv"], min(self.disRamp["tgtMaxMv"], mv))
 
+    def _dis_setpoint_ma(self, mv, target):
+        """Та сама формула, що в discharge.h."""
+        c = self.disRamp
+        if target >= c["rampHiMv"]:
+            return c["maLo"]
+        if mv >= c["rampHiMv"]:
+            return c["maHi"]
+        if mv <= target:
+            return c["maLo"]
+        return int(round(c["maLo"] + (mv - target) * (c["maHi"] - c["maLo"])
+                         / (c["rampHiMv"] - target)))
+
     def _dis_ramp_note(self, *_):
         if not hasattr(self, "lblDisRamp"):
             return
@@ -1901,6 +1926,37 @@ class App:
             text="Струм веде за напругою: %d мА на %.2f В → %d мА рівно на цілі %.2f В.\n"
                  "Малий струм у кінці дає чесніший вимір ємності й щадить банки."
                  % (c["maHi"], c["rampHiMv"] / 1000.0, c["maLo"], mv / 1000.0))
+        self._dis_ramp_draw(mv)
+
+    def _dis_ramp_draw(self, target):
+        cv = getattr(self, "cvDisRamp", None)
+        if cv is None:
+            return
+        cv.delete("all")
+        c = self.disRamp
+        W, H = int(cv["width"]), int(cv["height"])
+        x0, x1 = target, max(c["rampHiMv"], target + 1)
+        X = lambda mv: 6 + (mv - x0) / (x1 - x0) * (W - 12)
+        Y = lambda ma: H - 22 - ma / max(1, c["maHi"]) * (H - 40)
+        pts = []
+        for i in range(61):
+            mv = x0 + (x1 - x0) * i / 60.0
+            pts += [X(mv), Y(self._dis_setpoint_ma(int(round(mv)), target))]
+        cv.create_polygon([6, H - 22] + pts + [W - 6, H - 22],
+                          fill="#2a3320", outline="")
+        cv.create_line(*pts, fill=MIL["khaki"], width=2)
+        f = fnt("Segoe UI", 7)
+        cv.create_text(8, 9, text="%d мА" % c["maHi"], anchor="w", fill="#8b9166", font=f)
+        cv.create_text(8, H - 8, text="ціль %.2f В" % (target / 1000.0),
+                       anchor="w", fill="#8b9166", font=f)
+        cv.create_text(W - 8, H - 8, text="%.2f В" % (c["rampHiMv"] / 1000.0),
+                       anchor="e", fill="#8b9166", font=f)
+        cv.create_text(W - 8, 9, text="%d мА" % c["maLo"], anchor="e", fill="#8b9166", font=f)
+        # поточна напруга під час розряду — вертикальна риска
+        mv = getattr(self, "_disNowMv", 0)
+        if x0 <= mv <= x1:
+            x = X(mv)
+            cv.create_line(x, 4, x, H - 20, fill="#6f8f3a")
 
     def discharge_start(self):
         if not self.need_conn():

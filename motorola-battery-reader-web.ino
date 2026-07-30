@@ -37,6 +37,18 @@ void setup() {
     // (client_usb.html / moto_gui.py / moto_bridge.py), тож типового 256-байтного
     // UART-буфера достатньо і жодного втручання в ініціалізацію не потрібно.
     Serial.begin(115200);
+
+    // ⚑ ПЕРШЕ, ЩО РОБИМО — ГАСИМО СИЛОВИЙ КЛЮЧ І ENABLE.
+    // Якщо пристрій перезавантажився сторожем посеред розряду (див.
+    // dischargeWatchdog у discharge.h), пакет усе ще підключений до резистора.
+    // Поки не виконано жодного рядка ініціалізації, піни — входи, і затвор
+    // тримає лише підтяжка. Опускаємо обидва явно й одразу, до дисплея, Wi-Fi
+    // і всього іншого, що може зайняти секунди або впасти.
+#ifdef LOAD_PIN
+    pinMode(LOAD_PIN, OUTPUT);   digitalWrite(LOAD_PIN, LOW);
+#endif
+    pinMode(PULLUP_PIN, OUTPUT); digitalWrite(PULLUP_PIN, LOW);
+
     Serial.println("\n\nMotorola Battery Reader Web Server (AP Mode)");
     Serial.println("==============================================");
 

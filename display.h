@@ -438,8 +438,15 @@ inline int batteryPercent(const char **src) {
 
     uint8_t config = batteryDump2438[0];        // стр.0 байт0 = Status/Config
     if (config & 0x01) {                         // IAD=1 -> ICA підтримується
-        int ica = (int)batteryDump2438[12] * 100 / ICA_FULL_SCALE;  // стр.1 байт4 = ICA
-        if (ica > 100) ica = 100;
+        // Шкала ICA АПАРАТНА: одиниця = 0.4882 мВ·год / Rsense, а не «255 =
+        // повний пакет». Тому відсоток рахуємо через мА·год і паспортну
+        // ємність — інакше повний пакет показувався б як ~79 % (2150 мА·год
+        // при шунті 0.0459 Ом — це 202 одиниці, а не 255).
+        char pm[16] = "";
+        if (hasDump) impresModelName(batteryDump, pm, sizeof(pm));
+        int ica = impresPercentFromIca(batteryDump2438[12],
+                                       impresRatedMahFor(hasDump ? batteryDump : nullptr, pm),
+                                       impresBmsRsense(batteryDump2438));
         // Паливомір «завис»/не відкалібрований: ICA каже майже порожньо, а напруга
         // — суттєво більше (напр. після заміни банок/стирання, до калібрування на
         // ЗП). Тоді показуємо реальний рівень за НАПРУГОЮ, а джерело позначаємо "U!"
@@ -574,7 +581,9 @@ inline int batteryRemainingMah() {
     if (!hasDump2438) return -1;
     char m[16] = "";
     if (hasDump) impresModelName(batteryDump, m, sizeof(m));
-    return impresIcaToMah(batteryDump2438[12], impresRatedMahFor(hasDump ? batteryDump : nullptr, m));
+    return impresIcaToMahRs(batteryDump2438[12],
+                            impresRatedMahFor(hasDump ? batteryDump : nullptr, m),
+                            impresBmsRsense(batteryDump2438));
 }
 
 inline void drawPageMain() {
@@ -873,10 +882,15 @@ inline void drawPageActions() {
     // Назви/описи/небезпека — з operations.h (той самий каталог, що в кольоровому
     // екрані, вебі й USB-клієнті). Локального списку дій більше немає.
     int sel = g_actionSel, total = numActions();
-    const char *name, *l1, *l2; uint8_t danger; char nbuf[26];
-    opInfo(sel, &name, &l1, &l2, &danger, nbuf, sizeof(nbuf));
+    const char *name, *l1, *l2; uint8_t danger, chips; char nbuf[26];
+    opInfo(sel, &name, &l1, &l2, &danger, nbuf, sizeof(nbuf), &chips);
 
-    char t[20]; snprintf(t, sizeof(t), "Дія  %d/%d", sel + 1, total);
+    // У шапці — не лише номер дії, а й КУДИ вона пише. Плутанина між DS2433
+    // (ідентичність) і DS2438 (монітор) коштує дорого, тож це видно завжди.
+    char t[26];
+    if (chips == OPC_NONE) snprintf(t, sizeof(t), "Дія  %d/%d", sel + 1, total);
+    else                   snprintf(t, sizeof(t), "Дія %d/%d -> %s", sel + 1, total,
+                                    opChipsShort(chips));
     drawHeader(t);
 
     // Назва обраної операції — крупним шрифтом.

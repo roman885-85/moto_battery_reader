@@ -4,14 +4,16 @@
 //  discharge.h — КЕРОВАНИЙ РОЗРЯД пакета через MOSFET + резистор.
 //
 //  Навіщо (коротко; докладно — docs/FIRMWARE_ANALYSIS.md):
-//    1. ЗП не бере АКБ на калібрування, поки бачить його зарядженим — світить
-//       зеленим і тримає. Розряд до ~7.2 В знімає цю невизначеність.
-//       Це підтверджує спостереження власника (dumps/12-eksperymentalnyi):
-//       «после небольшой разрядки на рации, на зарядке… переходит в режим
-//       калибровки».
-//    2. Дає РЕАЛЬНУ ємність нових банок — приймальний контроль після перепайки.
-//       Прошивка здоров'я не зберігає (рація рахує сама), тож це єдиний спосіб
-//       дізнатись, скільки насправді тримає пакет.
+//    1. ПРИЙМАЛЬНИЙ КОНТРОЛЬ ПІСЛЯ ПЕРЕПАЙКИ — головне призначення. Розряд
+//       відомим струмом дає РЕАЛЬНУ ємність нових банок: скільки пакет віддав
+//       від повного заряду до заданої напруги. Без цього перевірити якість
+//       перепайки нічим — прошивка ємності не зберігає, її міряє станція.
+//    2. Допоміжне: зняти невизначеність, коли станція вперлась. Фірмова ЗП
+//       бере на калібрування навіть ПОВНІСТЮ ЗАРЯДЖЕНИЙ пакет, якщо він
+//       оригінальний (перевірено власником), тож розряд для калібрування НЕ
+//       обов'язковий. Але якщо станція все ж не переходить у цикл — часткова
+//       розрядка це підштовхує (dumps/12-eksperymentalnyi: «после небольшой
+//       разрядки на рации, на зарядке… переходит в режим калибровки»).
 //
 //  Схема, потужність і ОБОВ'ЯЗКОВИЙ підтягувальний резистор затвора — у
 //  settings.h (блок «РОЗРЯДНА НАВАНТАГА»).
@@ -41,6 +43,9 @@
 #include "settings.h"
 #include "leds.h"
 #include "impres_format.h"
+#if defined(ARDUINO_ARCH_ESP32) && !defined(DISCHARGE_NO_WDT)
+  #include <esp_task_wdt.h>
+#endif
 
 // Стан машини розряду.
 enum {
@@ -60,6 +65,7 @@ enum {
     DISR_TIMEOUT,     // стеля тривалості
     DISR_NOREAD,      // монітор не читається
     DISR_NOSTART,     // не вдалося стартувати (умови не виконані)
+    DISR_STALL,       // головний цикл застряг — сторож зупинив розряд
 };
 
 struct DischargeState {
@@ -136,13 +142,20 @@ inline void loadDuty(uint8_t pct) {
 inline void loadOff()  { loadDuty(0); }
 inline void loadFull() { loadDuty(100); }        // на час виміру піка
 
-// Уставка струму за напругою: лінійка DISCHARGE_RAMP_LO_MV..HI_MV, поза нею —
-// межі (не екстраполюємо: за лінійкою поведінка банок уже інша).
-inline uint16_t dischargeSetpointMa(uint16_t mv) {
+// Уставка струму за напругою: лінійка від ЦІЛІ (там DISCHARGE_MA_LO) до
+// DISCHARGE_RAMP_HI_MV (там DISCHARGE_MA_HI). Поза лінійкою — межі, не
+// екстраполюємо: за нею поведінка банок уже інша.
+//
+// Ціль — параметр, а не константа: користувач обирає, до якої напруги
+// розряджати, і лінійка перебудовується так, щоб малий струм припадав саме на
+// кінець ЙОГО розряду.
+inline uint16_t dischargeSetpointMa(uint16_t mv, uint16_t targetMv) {
+    if (!targetMv) targetMv = DISCHARGE_TARGET_MV;
+    if (targetMv >= DISCHARGE_RAMP_HI_MV) return DISCHARGE_MA_LO;   // вироджена лінійка
     if (mv >= DISCHARGE_RAMP_HI_MV) return DISCHARGE_MA_HI;
-    if (mv <= DISCHARGE_RAMP_LO_MV) return DISCHARGE_MA_LO;
-    long span = (long)DISCHARGE_RAMP_HI_MV - DISCHARGE_RAMP_LO_MV;
-    long d    = (long)mv - DISCHARGE_RAMP_LO_MV;
+    if (mv <= targetMv)             return DISCHARGE_MA_LO;
+    long span = (long)DISCHARGE_RAMP_HI_MV - targetMv;
+    long d    = (long)mv - targetMv;
     return (uint16_t)(DISCHARGE_MA_LO +
                       (d * ((long)DISCHARGE_MA_HI - DISCHARGE_MA_LO)) / span);
 }
@@ -216,8 +229,44 @@ inline bool dischargeConsumeReleaseEnable() {
     bool r = g_disReleaseEnable; g_disReleaseEnable = false; return r;
 }
 
+// ── АПАРАТНИЙ СТОРОЖ ───────────────────────────────────────────────────────
+//  Програмний сторож ловить «цикл живий, але надовго застряг». Якщо ж цикл не
+//  крутиться взагалі, зупинити розряд зсередини нікому. Тоді спрацьовує Task
+//  WDT: ESP32 перезавантажується, після скидання піни стають входами, затвор
+//  притягується до землі підтяжкою, enable падає — пакет від'єднується сам.
+//
+//  Вмикаємо його ЛИШЕ на час розряду. Постійно тримати не можна: запис DS2433,
+//  форматування SPIFFS і перше підняття Wi-Fi законно тривають довше.
+inline void dischargeWatchdog(bool on) {
+#if defined(ARDUINO_ARCH_ESP32) && !defined(DISCHARGE_NO_WDT)
+    if (on) {
+  #if ESP_ARDUINO_VERSION_MAJOR >= 3
+        esp_task_wdt_config_t cfg = { DISCHARGE_WDT_SEC * 1000U, (uint32_t)(1 << portNUM_PROCESSORS) - 1, true };
+        esp_task_wdt_init(&cfg);
+  #else
+        esp_task_wdt_init(DISCHARGE_WDT_SEC, true);
+  #endif
+        esp_task_wdt_add(NULL);
+    } else {
+        esp_task_wdt_delete(NULL);
+        esp_task_wdt_deinit();
+    }
+#else
+    (void)on;
+#endif
+}
+
+// Погодувати сторожа. Викликається з опитування і з пауз очікування — тобто
+// звідусіль, де цикл ще живий.
+inline void dischargeWatchdogFeed() {
+#if defined(ARDUINO_ARCH_ESP32) && !defined(DISCHARGE_NO_WDT)
+    if (g_dis.state == DIS_RUN) esp_task_wdt_reset();
+#endif
+}
+
 inline void dischargeStop(uint8_t reason) {
     loadOff();
+    dischargeWatchdog(false);
     g_dis.dutyPct = 0;                     // ключ закритий — не показувати стару шпаруватість
     g_disReleaseEnable = true;             // зняти утримання enable (див. loop)
     dischargeMarkDirty(2);                 // режим змінився -> перемалювати повністю
@@ -239,6 +288,7 @@ inline const char *dischargeReasonText(uint8_t r) {
         case DISR_TIMEOUT:  return "АВАРІЯ: перевищено час";
         case DISR_NOREAD:   return "АВАРІЯ: монітор не читається";
         case DISR_NOSTART:  return "старт неможливий";
+        case DISR_STALL:    return "АВАРІЯ: цикл завис — ключ і enable знято";
         default:            return "";
     }
 }

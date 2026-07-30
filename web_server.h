@@ -398,7 +398,7 @@ void handleDumpInfo2438() {
     char rmModel[16] = "";
     decodeModel(rmModel, sizeof(rmModel));
     int ratedMah = impresRatedMahFor(hasDump ? batteryDump : nullptr, rmModel);
-    json += ",\"icaMah\":" + String(impresIcaToMah((uint8_t)ica, ratedMah));
+    json += ",\"icaMah\":" + String(impresIcaToMahRs((uint8_t)ica, ratedMah, rs));
     // Ціна розряду CCA/DCA — 15.625 мВ·год, а НЕ 0.4882 як у ICA (даташит
     // DS2438). Раніше тут стояла константа ICA, і накопичений заряд виходив
     // у 32 рази меншим за дійсний.
@@ -953,8 +953,11 @@ bool performRecalPrepare(bool deep) {
         // Паливомір ставимо за фактичною напругою — щоб ЗП стартувала з
         // осмисленого рівня, а не з нуля на зарядженому пакеті.
         int pct = impresPercentFromMv(impresVoltageMv(batteryDump2438));
+        char rcM[16] = ""; decodeModel(rcM, sizeof(rcM));
         impresResetMonitor(batteryDump2438, hasDump ? batteryDump : nullptr,
-                           impresIcaFromPercent(pct));
+                           impresIcaFromPercentRs(pct,
+                               impresRatedMahFor(hasDump ? batteryDump : nullptr, rcM),
+                               impresBmsRsense(batteryDump2438)));
         Serial.printf("monitor reset, ICA from %d%% (U=%u mV)\n",
                       pct, (unsigned)impresVoltageMv(batteryDump2438));
         bool o38 = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
@@ -982,7 +985,7 @@ inline bool performRecalPrepare() { return performRecalPrepare(false); }
 // операцію просто посеред циклу вимірювання.
 static void dischargeSettle(unsigned long ms) {
     unsigned long t0 = millis();
-    while (millis() - t0 < ms) { ledTask(); delay(1); }
+    while (millis() - t0 < ms) { ledTask(); dischargeWatchdogFeed(); delay(1); }
 }
 
 // Зняти показання монітора під навантаженням. true — читання вдалось.
@@ -1011,7 +1014,10 @@ const char *dischargeStart(uint16_t targetMv) {
     if (dischargeRunning())    return "Розряд уже виконується";
     if (!targetMv) targetMv = DISCHARGE_TARGET_MV;
 
-    // Ціль не нижче аварійної межі — інакше розряд гарантовано впреться в аварію.
+    // Ціль обирає користувач, тож затискаємо її в межі, де розряд узагалі має
+    // сенс: нижче — гарантована аварійна відсічка, вище — пакет і так там.
+    if (targetMv < DISCHARGE_TARGET_MIN_MV) return "Цільова напруга нижча за допустиму (6.80 В)";
+    if (targetMv > DISCHARGE_TARGET_MAX_MV) return "Цільова напруга вища за допустиму (8.00 В)";
     if (targetMv < DISCHARGE_HARD_MIN_MV + 200) return "Цільова напруга нижча за аварійну межу";
 
     uint16_t mv; int16_t ma, t;
@@ -1039,13 +1045,16 @@ const char *dischargeStart(uint16_t targetMv) {
     // пакет між читаннями неактивний: струм тече тільки в моменти опитування, і
     // розряд фактично не йде (саме це й спостерігалось).
     battery.holdEnable(true);
+    // Шунт саме цього пакета — від нього залежить і струм, і облік мА·год.
+    g_dis.rsense = impresBmsRsense(batteryDump2438);
+    dischargeWatchdog(true);            // сторож — лише на час розряду
 
     // Початкова шпаруватість — З РОЗРАХУНКУ, не 100 %. Інакше перші 5 секунд
     // (до першого виміру піка) пакет тягнув би повні 1.4..1.7 А, тобто рівно те,
     // від чого ми йдемо. Оцінка піка за законом Ома завищена, тож розрахована
     // шпаруватість свідомо занижена — стартуємо м'якше, ніж треба, а перший
     // вимір це виправить.
-    g_dis.setMa   = dischargeSetpointMa(mv);
+    g_dis.setMa   = dischargeSetpointMa(mv, g_dis.targetMv);
     g_dis.peakMa  = (uint16_t)dischargeExpectedMa(mv);
     g_dis.dutyPct = dischargeDutyFor(g_dis.peakMa, g_dis.setMa);
     loadDuty(g_dis.dutyPct);
@@ -1071,10 +1080,23 @@ inline void dischargeTask() {
         Serial.println("=== Discharge ABORT: timeout ===");
         return;
     }
+    dischargeWatchdogFeed();          // цикл живий — сторож спокійний
     if (now - g_dis.lastPollMs < DISCHARGE_POLL_MS) return;
 
     unsigned long dtMs = now - g_dis.lastPollMs;
     g_dis.lastPollMs = now;
+
+    // ── СТОРОЖ (програмна половина) ────────────────────────────────────────
+    //  Ми тут, отже цикл живий. Але якщо від попереднього опитування минуло
+    //  надто багато, десь була довга затримка, під час якої ключ лишався
+    //  відкритим БЕЗ НАГЛЯДУ. Це стан, коли розряд треба припинити, а не
+    //  «надолужити»: скільки пакет віддав за цей час, ми не бачили, і скільки
+    //  ще протримається — теж. Ключ і enable знімає dischargeStop().
+    if (dtMs > DISCHARGE_STALL_MS) {
+        dischargeStop(DISR_STALL);
+        Serial.printf("=== Discharge ABORT: main loop stalled for %lu ms ===\n", dtMs);
+        return;
+    }
     g_dis.elapsedS   = (now - g_dis.startMs) / 1000UL;
 
     // Інтеграл ємності за інтервал, що ЩОЙНО минув. Рахуємо ДО оновлення стану:
@@ -1130,7 +1152,7 @@ inline void dischargeTask() {
     if (peak < (uint16_t)(est / 4)) peak = (uint16_t)est;
 
     g_dis.peakMa  = peak;
-    g_dis.setMa   = dischargeSetpointMa(mv);
+    g_dis.setMa   = dischargeSetpointMa(mv, g_dis.targetMv);
     g_dis.dutyPct = dischargeDutyFor(peak, g_dis.setMa);
     loadDuty(g_dis.dutyPct);
 
@@ -1204,6 +1226,13 @@ static String dischargeJson() {
     j += ",\"bandLoMa\":" + String((uint32_t)g_dis.setMa * DISCHARGE_BAND_LO_PCT / 100u);
     j += ",\"bandHiMa\":" + String((uint32_t)g_dis.setMa * DISCHARGE_BAND_HI_PCT / 100u);
     j += ",\"pwm\":"      + String(dischargePwmOk() ? "true" : "false");
+    // Межі лінійки струму — щоб інтерфейси описували її, а не зашивали числа.
+    j += ",\"rampHiMv\":" + String(DISCHARGE_RAMP_HI_MV);
+    j += ",\"maHi\":"     + String(DISCHARGE_MA_HI);
+    j += ",\"maLo\":"     + String(DISCHARGE_MA_LO);
+    j += ",\"tgtMinMv\":" + String(DISCHARGE_TARGET_MIN_MV);
+    j += ",\"tgtMaxMv\":" + String(DISCHARGE_TARGET_MAX_MV);
+    j += ",\"tgtDefMv\":" + String(DISCHARGE_TARGET_MV);
     j += "}";
     return j;
 }
@@ -1486,7 +1515,8 @@ void handleSetMah() {
     long mah = server.arg("mah").toInt();
     char smModel[16] = "";
     if (hasDump) impresModelName(batteryDump, smModel, sizeof(smModel));
-    long ica = impresIcaFromMah(mah, impresRatedMahFor(hasDump ? batteryDump : nullptr, smModel));
+    long ica = impresIcaFromMahRs(mah, impresRatedMahFor(hasDump ? batteryDump : nullptr, smModel),
+                                  impresBmsRsense(batteryDump2438));
     batteryDump2438[12] = (uint8_t)ica;
     ledSet(LED_WRITE); displayShow("ЗАПИС ЄМН mAh");
     bool ok = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
@@ -1495,7 +1525,8 @@ void handleSetMah() {
     ledSet(ok ? LED_OK : LED_ERROR);
     String m = String("{\"status\":\"") + (ok ? "success" : "error") +
                "\",\"ica\":" + ica + ",\"mah\":" +
-               impresIcaToMah((uint8_t)ica, impresRatedMahFor(hasDump ? batteryDump : nullptr, smModel)) + "}";
+               impresIcaToMahRs((uint8_t)ica, impresRatedMahFor(hasDump ? batteryDump : nullptr, smModel),
+                                impresBmsRsense(batteryDump2438)) + "}";
     server.send(ok ? 200 : 500, "application/json", m);
 }
 
@@ -1509,14 +1540,18 @@ inline int chargePctFromVoltage() {
 inline bool performSetChargePct(int pct) {
     if (!hasDump2438) return false;
     if (pct < 0) pct = 0; if (pct > 100) pct = 100;
-    int ica = pct * ICA_FULL_SCALE / 100;
-    if (ica > 255) ica = 255;
-    batteryDump2438[12] = (uint8_t)ica;
+    // Апаратна шкала паливоміра (див. impres_format.h): 100 % — це не 255, а
+    // стільки одиниць, скільки важить повний пакет за його ж шунтом.
+    char cm[16] = ""; decodeModel(cm, sizeof(cm));
+    uint8_t ica = impresIcaFromPercentRs(pct,
+                      impresRatedMahFor(hasDump ? batteryDump : nullptr, cm),
+                      impresBmsRsense(batteryDump2438));
+    batteryDump2438[12] = ica;
     bool ok = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
     if (ok) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
     return ok;
 }
-// Виставити рівень заряду (ICA): auto=1 — з напруги (7.0В=0%..8.4В=100%),
+// Виставити рівень заряду (ICA): auto=1 — з напруги (7.20 В = 0 %..8.25 В = 100 %),
 // або вручну pct=0..100. Зарядка/рація потім самі уточнять це значення.
 void handleSetCharge() {
     if (!requireAdmin()) return;
@@ -1703,7 +1738,8 @@ bool performInitBattery(const char *model, long mah) {
 
     // Монітор — у стан «новий пакет» (конфіг/поріг/дзеркало зберігаються).
     // Введена ємність (поточний заряд) у мА·год -> регістр ICA DS2438.
-    long ica = impresIcaFromMah(mah, impresRatedMahFor(batteryDump, model));
+    long ica = impresIcaFromMahRs(mah, impresRatedMahFor(batteryDump, model),
+                                  impresBmsRsense(batteryDump2438));
     impresResetMonitor(batteryDump2438, batteryDump, (uint8_t)ica);
 
     ledSet(LED_WRITE); displayShow("НОВИЙ АКБ...");
@@ -1762,7 +1798,10 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
         impresFixHeader(batteryDump);
         if (write38 || had38)
             impresResetMonitor(batteryDump2438, batteryDump,
-                               impresIcaFromPercent(impresPercentFromMv(impresVoltageMv(batteryDump2438))));
+                               impresIcaFromPercentRs(
+                                   impresPercentFromMv(impresVoltageMv(batteryDump2438)),
+                                   impresRatedMahFor(batteryDump, model),
+                                   impresBmsRsense(batteryDump2438)));
         Serial.printf("Restore: donor learned tail cleared: %d B\n", cleared);
     }
 
@@ -1836,28 +1875,35 @@ void handleDischargeStatus() {
 void handleOps() {
     String j = "{\"status\":\"success\",\"ops\":[";
     bool first = true;
+    // chips — у яку мікросхему піде запис. Поверхні показують це поруч із
+    // назвою операції: переплутати DS2433 (ідентичність) із DS2438 (монітор)
+    // коштує або моделі, або заводського калібрування вимірювача струму.
     auto add = [&](const char *key, const char *title, const char *detail,
-                   int danger, const char *model) {
+                   int danger, const char *model, uint8_t chips) {
         if (!first) j += ",";
         first = false;
         j += "{\"key\":\""; j += key; j += "\",\"title\":\""; j += title;
         j += "\",\"detail\":\""; j += detail;
         j += "\",\"danger\":" + String(danger);
+        j += ",\"chips\":" + String((int)chips);
+        j += ",\"chipsText\":\""; j += opChipsText(chips); j += "\"";
         j += ",\"model\":\""; j += (model ? model : ""); j += "\"}";
     };
     for (int i = 0; i < OP_BASE_COUNT; i++)
-        add(OP_DOC[i].key, OP_DOC[i].title, OP_DOC[i].detail, OP_TEXT[i].danger, nullptr);
+        add(OP_DOC[i].key, OP_DOC[i].title, OP_DOC[i].detail, OP_TEXT[i].danger,
+            nullptr, OP_DOC[i].chips);
     for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++)
         add("model", "Записати модельну частину еталона",
             "Ідентичність, розрядна крива, COPYRIGHT, заводська таблиця й запис моделі. Навчений калібрувальний хвіст НЕ переноситься — інакше пакет отримав би чужу калібровку.",
-            OPD_WRITE, BATTERY_TEMPLATES[t].name);
+            OPD_WRITE, BATTERY_TEMPLATES[t].name,
+            BATTERY_TEMPLATES[t].d38 ? OPC_BOTH : OPC_33);
     for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++)
         add("new", "Новий АКБ з порожнього чипа",
             "Записує модельну частину еталона й приводить монітор у стан нового пакета. Навчена калібровка лишається порожньою — її запише зарядна станція під час калібрування.",
-            OPD_WIPE, BATTERY_TEMPLATES[t].name);
+            OPD_WIPE, BATTERY_TEMPLATES[t].name, OPC_BOTH);
     for (int e = 0; e < OP_EXPERT_COUNT; e++)
         add(OP_DOC_EXPERT[e].key, OP_DOC_EXPERT[e].title, OP_DOC_EXPERT[e].detail,
-            OP_TEXT_EXPERT[e].danger, nullptr);
+            OP_TEXT_EXPERT[e].danger, nullptr, OP_DOC_EXPERT[e].chips);
     j += "]}";
     server.send(200, "application/json", j);
 }

@@ -122,7 +122,7 @@ static String serBuildInfo() {
         // константа BATTERY_RATED_MAH: через неї цикли й мА·год розходилися
         // з показаннями станції на всіх моделях, крім однієї.
         int ratedMah = impresRatedMahFor(hasDump ? batteryDump : nullptr, modelBuf);
-        j += ",\"icaMah\":" + String(impresIcaToMah(ica, ratedMah));
+        j += ",\"icaMah\":" + String(impresIcaToMahRs(ica, ratedMah, rs));
         // Ціна розряду CCA/DCA — 15.625 мВ·год (даташит), а не 0.4882 як в ICA.
         j += ",\"ccaMah\":" + String(bms.ccaMah);
         j += ",\"dcaMah\":" + String(bms.dcaMah);
@@ -200,7 +200,8 @@ static void serSetMah(const String &arg) {
     long mah = arg.toInt();
     char smModel[16] = "";
     if (hasDump) impresModelName(batteryDump, smModel, sizeof(smModel));
-    long ica = impresIcaFromMah(mah, impresRatedMahFor(hasDump ? batteryDump : nullptr, smModel));
+    long ica = impresIcaFromMahRs(mah, impresRatedMahFor(hasDump ? batteryDump : nullptr, smModel),
+                                  impresBmsRsense(batteryDump2438));
     if (ica < 0) ica = 0; if (ica > 255) ica = 255;
     batteryDump2438[12] = (uint8_t)ica;
     ledSet(LED_WRITE); displayShow("USB ЄМН mAh");
@@ -210,7 +211,7 @@ static void serSetMah(const String &arg) {
     sResp(ok ? (String("{\"ok\":true,\"ica\":") + ica + "}") : "{\"ok\":false,\"err\":\"write failed\"}");
 }
 
-// Рівень заряду: arg=="auto" — з напруги (7.0В=0%..8.4В=100%); інакше pct 0..100.
+// Рівень заряду: arg=="auto" — з напруги (7.20 В = 0 %..8.25 В = 100 %); інакше pct 0..100.
 static void serSetCharge(const String &arg) {
     if (!hasDump2438) { sResp("{\"ok\":false,\"err\":\"read first\"}"); return; }
     int pct;
@@ -249,26 +250,34 @@ static void serSetCap(const String &arg) {
 static String serBuildOps() {
     String j = "{\"ok\":true,\"ops\":[";
     bool first = true;
+    // chips — у яку мікросхему піде запис (див. operations.h). Клієнт показує
+    // це поруч із назвою: переплутати DS2433 (ідентичність) із DS2438
+    // (монітор) коштує або моделі, або калібрування вимірювача струму.
     auto add = [&](const char *key, const char *title, const char *detail,
-                   int danger, const char *model) {
+                   int danger, const char *model, uint8_t chips) {
         if (!first) j += ",";
         first = false;
         j += "{\"key\":\""; j += key; j += "\",\"title\":\""; j += title;
         j += "\",\"detail\":\""; j += detail;
         j += "\",\"danger\":" + String(danger);
+        j += ",\"chips\":" + String((int)chips);
+        j += ",\"chipsText\":\""; j += opChipsText(chips); j += "\"";
         j += ",\"model\":\""; j += (model ? model : ""); j += "\"}";
     };
     for (int i = 0; i < OP_BASE_COUNT; i++)
-        add(OP_DOC[i].key, OP_DOC[i].title, OP_DOC[i].detail, OP_TEXT[i].danger, nullptr);
+        add(OP_DOC[i].key, OP_DOC[i].title, OP_DOC[i].detail, OP_TEXT[i].danger,
+            nullptr, OP_DOC[i].chips);
     for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++)
         add("model", "Записати модельну частину еталона",
-            "Без навченого хвоста донора.", OPD_WRITE, BATTERY_TEMPLATES[t].name);
+            "Без навченого хвоста донора.", OPD_WRITE, BATTERY_TEMPLATES[t].name,
+            BATTERY_TEMPLATES[t].d38 ? OPC_BOTH : OPC_33);
     for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++)
         add("new", "Новий АКБ з порожнього чипа",
-            "Модельна частина + монітор у стані нового пакета.", OPD_WIPE, BATTERY_TEMPLATES[t].name);
+            "Модельна частина + монітор у стані нового пакета.", OPD_WIPE,
+            BATTERY_TEMPLATES[t].name, OPC_BOTH);
     for (int e = 0; e < OP_EXPERT_COUNT; e++)
         add(OP_DOC_EXPERT[e].key, OP_DOC_EXPERT[e].title, OP_DOC_EXPERT[e].detail,
-            OP_TEXT_EXPERT[e].danger, nullptr);
+            OP_TEXT_EXPERT[e].danger, nullptr, OP_DOC_EXPERT[e].chips);
     j += "]}";
     return j;
 }

@@ -91,7 +91,14 @@
         .hxd{flex:1;min-width:0;font-family:monospace;font-size:1em;line-height:1.4;color:#e7ecf3;background:transparent;border:none;padding:0 2px;resize:none;white-space:pre;overflow-y:scroll}
         .hxa{flex:none;width:150px;padding-left:8px;color:#b9bd86;white-space:pre;overflow:hidden;border-left:1px solid #2a323f}
         .hxae{font-family:monospace;font-size:1em;line-height:1.4;background:transparent;border:none;border-left:1px solid #2a323f;resize:none;overflow:hidden;caret-color:#b9bd86}
-        .hex{font-family:'Courier New',monospace;font-size:.82em;color:#9fe3c0;word-break:break-all;
+        .chipb{display:inline-block;vertical-align:middle;margin-left:8px;padding:2px 8px;
+               border-radius:999px;font-size:.62em;font-weight:700;letter-spacing:.02em;
+               background:#2a335c;color:#cfe3ff;border:1px solid #3d4a7d;white-space:nowrap}
+        .tgtb{background:var(--card2);color:var(--fg);border:1px solid var(--line);border-radius:8px;
+              padding:5px 9px;margin-right:4px;cursor:pointer;font-size:.9em}
+        .tgtb.on{background:var(--ua-blue);border-color:var(--ua-yellow);font-weight:700}
+        .hex{font-family:'Courier New',monospace;font-size:.82em;color:#9fe3c0;
+             white-space:pre;overflow-x:auto;
              background:var(--card2);padding:10px;border-radius:8px;border:1px solid var(--line)}
         #toast{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:9;padding:12px 20px;
                border-radius:10px;display:none;font-weight:600;box-shadow:0 6px 20px rgba(0,0,0,.5)}
@@ -362,7 +369,7 @@
 <div class="zone zi">🩹 Крок 2 — РЕМОНТ. Після заміни елементів починайте звідси</div>
 
 <div class="card" style="border-color:var(--warn)">
-            <h2>🔧 Ремонт після заміни елементів (підготовка до калібрування)</h2>
+            <h2>🔧 Ремонт після заміни елементів (підготовка до калібрування) <span class="chipb">пише в DS2433 + DS2438</span></h2>
             <div class="note i">Для АКБ, яку рація бачить <b>«невідома»</b> / не переходить у калібрування після заміни
                 банок. У DS2433 стирається <b>навчений калібрувальний хвіст 0x18A–0x1FF</b> — виміряні параметри СТАРИХ
                 (або донорських) банок, які суперечать новому пакету. Ідентичність, розрядна крива, copyright, заводська
@@ -385,7 +392,7 @@
         </div>
 
 <div class="card">
-            <h2>🛠 Ремонт цілісності</h2>
+            <h2>🛠 Ремонт цілісності <span class="chipb">пише в DS2433 + DS2438</span></h2>
             <div class="note i">Перераховує контрольні суми (заголовок Σ≡0x41, записи Σ≡0x5A) і відновлює
                 дзеркало калібрування з уцілілого DS2438. Використовуйте, якщо рація «не бачить» АКБ, а чіп
                 читається. Стан: заголовок <b id="intHdr">—</b>, дзеркало <b id="intMir">—</b>,
@@ -397,12 +404,8 @@
 <div class="zone zi">🔌 Крок 3 — калібрування на IMPRES-ЗП (обов’язково, прошивкою не замінюється)</div>
 
 <div class="card" style="border-color:var(--warn)">
-            <h2>🪫 Розряд перед калібруванням</h2>
-            <div class="note i">Зарядна станція <b>не бере АКБ на калібрування, поки бачить його зарядженим</b> —
-                світить зеленим і просто тримає. Керований розряд до <b>7.20 В</b> знімає цю невизначеність:
-                пакет свідомо не повний, і станція йде в повний цикл. Заразом рахується <b>реальна ємність</b>
-                нових банок — струм іде через вимірювальний резистор DS2438 усередині пакета, тож мА·год
-                рахуються за фактом.</div>
+            <h2>🪫 Розряд перед калібруванням <span class="chipb">пише в DS2438</span></h2>
+            <div class="note i">Розряд — це <b>приймальний контроль після перепайки</b>: він міряє реальну ємність нових банок. Для калібрування він <b>не обов'язковий</b> — фірмова станція бере в цикл навіть повністю заряджений пакет, якщо він оригінальний. Але якщо станція вперлась і не переходить у калібрування, часткова розрядка це підштовхує.</div>
             <div class="note w">⚠️ Розряд — єдина операція, що може <b>фізично</b> зашкодити банкам. Аварійна
                 зупинка спрацьовує за напругою нижче 6.00 В, перегрівом (45 °C), стелею часу й втратою зв'язку
                 з монітором. Резистор нагрівається — на 5 Ом це ~14 Вт.</div>
@@ -447,9 +450,18 @@
                 </div>
                 <div class="dmwarn" id="disWarn"></div>
             </div>
-            <div class="row" style="margin-top:10px"><span class="k">Цільова напруга, мВ</span>
-                <input type="number" id="disTarget" value="7200" min="6200" max="8300"
-                       style="border-radius:8px;border:none;padding:6px;width:110px"></div>
+            <div class="row" style="margin-top:10px"><span class="k">Розряджати до</span>
+                <span>
+                  <button type="button" class="tgtb" onclick="disSetTarget(7800)">7.80 В</button>
+                  <button type="button" class="tgtb" onclick="disSetTarget(7600)">7.60 В</button>
+                  <button type="button" class="tgtb" onclick="disSetTarget(7400)">7.40 В</button>
+                  <button type="button" class="tgtb" onclick="disSetTarget(7200)">7.20 В</button>
+                  <button type="button" class="tgtb" onclick="disSetTarget(7000)">7.00 В</button>
+                  <input type="number" id="disTarget" value="7200" min="6800" max="8000" step="50"
+                         oninput="this.dataset.touched=1;disRamp()" style="border-radius:8px;border:none;padding:6px;width:90px">
+                  <span style="opacity:.7">мВ</span>
+                </span></div>
+            <div class="note i" id="disRampNote"></div>
             <input type="password" class="pw" id="pwDis" placeholder="🔑 Пароль адміністратора">
             <div class="btns">
                 <button class="btn btn-warn" onclick="disStart()">🪫 ПОЧАТИ РОЗРЯД</button>
@@ -470,7 +482,7 @@
 <div class="zone zi">🧰 Обслуговування — безпечно для ідентичності</div>
 
 <div class="card">
-            <h2>♻️ Скидання для рекалібрування</h2>
+            <h2>♻️ Скидання для рекалібрування <span class="chipb">пише в DS2438</span></h2>
             <div class="note i">Обнуляє лічильники DS2438: напрацювання ETM, заряд CCA, розряд DCA.
                 Навчену калібровку, модель та ідентичність не чіпає. Після скидання рація показуватиме
                 неправильну «дату першого користування», доки АКБ не пройде цикл на IMPRES-ЗП: рація
@@ -480,22 +492,34 @@
         </div>
 
 <div class="card">
-            <h2>🔋 Заряд у мА·год</h2>
-            <div class="note i">Записує рівень заряду (регістр ICA DS2438). Поточне: <b id="mahNow">—</b>.</div>
+            <h2>🔋 Ємність — внести залишок у мА·год <span class="chipb">пише в DS2438</span></h2>
+            <div class="note i">Окрема операція: записує <b>залишок ємності</b> в паливомір
+                (регістр ICA DS2438) у мА·год — саме так, як його рахує сама Motorola:
+                одиниця ICA = 0.4882 мВ·год / шунт цього пакета. Поточне: <b id="mahNow">—</b>.</div>
             <div class="row"><span class="k">мА·год</span>
                 <input type="number" id="mahVal" min="0" max="5000" value="0"
                        style="width:110px;text-align:center;font-size:1.1em;border-radius:8px;border:none;padding:6px"></div>
             <input type="password" class="pw" id="pwMah" placeholder="🔑 Пароль адміністратора">
             <button class="btn btn-warn" style="width:100%" onclick="setMah()">💾 ЗАПИСАТИ мА·год</button>
-            <div class="row" style="margin-top:8px"><span class="k">Заряд, % (0..100)</span>
+            <div class="note w">Це <b>залишок заряду</b>, а не паспортна ємність і не знос.
+                Паспортна лежить у DS2433 (<code>0x008</code>) і тут не змінюється; знос рахує рація
+                з поля <code>CTS</code>.</div>
+        </div>
+
+<div class="card">
+            <h2>⚡ Рівень заряду у відсотках <span class="chipb">пише в DS2438</span></h2>
+            <div class="note i">Той самий регістр ICA, але задається у відсотках від паспортної
+                ємності. Зручно, коли точних мА·год немає. Зарядна станція згодом уточнить значення сама.</div>
+            <div class="row"><span class="k">Заряд, % (0..100)</span>
                 <input type="number" id="chgVal" min="0" max="100" placeholder="авто"
                        style="width:110px;text-align:center;font-size:1.1em;border-radius:8px;border:none;padding:6px"></div>
-            <button class="btn btn-warn" style="width:100%" onclick="setChargeAuto()">⚡ ЗАРЯД ПО НАПРУЗІ (авто: 7В=0%, 8.4В=100%)</button>
+            <input type="password" class="pw" id="pwChg" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="setChargeAuto()">⚡ ЗА НАПРУГОЮ (7.20 В = 0 %, 8.25 В = 100 %)</button>
             <button class="btn btn-warn" style="width:100%;margin-top:6px" onclick="setChargePct()">💾 ЗАПИСАТИ ЗАРЯД %</button>
         </div>
 
 <div class="card">
-            <h2>📅 Дата першого використання</h2>
+            <h2>📅 Дата першого використання <span class="chipb">пише в DS2438</span></h2>
             <div class="note i">Рація показує «перше користування» = <b>її поточний час − ETM</b> (лічильник наробітку
                 DS2438). Дата <b>не зберігається</b> у батареї — обчислюється рацією; на «оригінальність» НЕ впливає.
                 Щоб змінити дату, пишемо ETM = (сьогодні − обрана дата). Поточне: <b id="etmNow">—</b>.</div>
@@ -508,7 +532,7 @@
         </div>
 
 <div class="card">
-            <h2>🧹 Очистити (крім критичних)</h2>
+            <h2>🧹 Очистити (крім критичних) <span class="chipb">пише в DS2433 + DS2438</span></h2>
             <div class="note w">⚠️ Стирає ВСІ дані використання/історії/статистики (лічильники, знос,
                 таблиці 0x16). <b>Зберігає:</b> модель, серійний/ID, криву калібрування, автентифікацію,
                 дзеркало. Батарея лишається робочою, але «як нова, без історії».</div>
@@ -519,7 +543,7 @@
 <div class="zone zi">🪪 Ідентичність — модель і відновлення порожнього чипа</div>
 
 <div class="card">
-            <h2>🪪 Модель та серійний (ручний запис)</h2>
+            <h2>🪪 Модель та серійний (ручний запис) <span class="chipb">пише в DS2433</span></h2>
             <div class="note i">Модель (part number) записується у DS2433: поле запису 0x0B + заголовок,
                 з перерахунком контрольних сум. Поточна: <b id="mdNow">—</b>.</div>
             <div class="note w">ℹ️ Змінює модель лише на батареї, де вже <b>є</b> запис моделі. На порожньому/
@@ -537,7 +561,7 @@
         </div>
 
 <div class="card" style="border-color:var(--ok)">
-            <h2>🛠️ Відновити еталон (ремонт з нуля)</h2>
+            <h2>🛠️ Відновити еталон (ремонт з нуля) <span class="chipb">пише в DS2433 + DS2438</span></h2>
             <div class="note i">Записує <b>модельну частину</b> еталона: ідентичність <code>0x000–0x065</code>,
                 розрядну криву, <code>COPYRIGHT</code>, заводську таблицю й запис моделі. Ця частина побайтово
                 однакова в усіх екземплярів моделі, тому переносити її безпечно. Навчений калібрувальний хвіст
@@ -557,7 +581,7 @@
         </div>
 
 <div class="card" style="border-color:var(--ok)">
-            <h2>🆕 Новий акумулятор (ініціалізація порожнього чипа)</h2>
+            <h2>🆕 Новий акумулятор (ініціалізація порожнього чипа) <span class="chipb">пише в DS2433 + DS2438</span></h2>
             <div class="note i">Для <b>порожнього / стертого / невідомого</b> чипа: записує повний еталон обраної
                 моделі (DS2433 + DS2438 — ідентичність, калібрування, автентифікація), обнуляє історію/лічильники,
                 ставить здоров'я 100%, а вказану ємність пише як поточний заряд (ICA). Прошивка прив'язана до
@@ -575,7 +599,7 @@
 <div class="zone zd">🧪 Ручний режим / експерт — для аналізу та нештатних ситуацій</div>
 
 <div class="card">
-            <h2>🩺 Знос / здоров'я (%)</h2>
+            <h2>🩺 Знос / здоров'я (%) <span class="chipb">пише в DS2433</span></h2>
             <div class="note i">Показник ємності/зносу 0–100 % (100 % = «як нова»). Поточне: <b id="capNow">—</b>.</div>
             <div class="note w">⚠️ Цей байт лежить у <b>заводській таблиці моделі</b> (<code>0x129</code>) —
                 у всіх екземплярів однієї моделі вона побайтово однакова, тому показань рації правка тут
@@ -589,7 +613,7 @@
         </div>
 
 <div class="card">
-            <h2>✏️ Редактор байтів (експертний)</h2>
+            <h2>✏️ Редактор байтів (експертний) <span class="chipb">пише в обрану в редакторі</span></h2>
             <div class="note w">⚠️ Пряме редагування. «Автовиправлення» перераховує суму заголовка DS2433 і
                 тримає дзеркало узгодженим. Невірні дані можуть зробити АКБ невизначеною.</div>
             <div class="row"><span class="k">Мікросхема</span>
@@ -614,7 +638,7 @@
         </div>
 
 <div class="card">
-            <h2>📤 Відновлення / запис DS2433</h2>
+            <h2>📤 Відновлення / запис DS2433 <span class="chipb">пише в DS2433</span></h2>
             <div class="note w">⚠️ Записує <b>завідомо справний</b> дамп (512 Б) тієї ж моделі — так оживляють
                 стерту/пошкоджену АКБ. Невірний файл або чужа модель зроблять АКБ невизначеною.</div>
             <form enctype="multipart/form-data"><div class="file">
@@ -626,7 +650,7 @@
         </div>
 
 <div class="card">
-            <h2>🔬 Запис DS2438 (монітор)</h2>
+            <h2>🔬 Запис DS2438 (монітор) <span class="chipb">пише в DS2438</span></h2>
             <div class="note w">⚠️ Записує дамп монітора (64 Б). Зазвичай не потрібно окремо.</div>
             <form enctype="multipart/form-data"><div class="file">
                 <label for="fu38">📁 Файл .bin (64 байти)</label>
@@ -639,7 +663,7 @@
 <div class="zone zd">⛔ НЕБЕЗПЕЧНА ЗОНА — незворотні операції. Спочатку зробіть копію!</div>
 
 <div class="card" style="border-color:#e74c3c">
-            <h2>🔥 ПОВНЕ стирання DS2433 (крайній випадок)</h2>
+            <h2>🔥 ПОВНЕ стирання DS2433 (крайній випадок) <span class="chipb">пише в DS2433</span></h2>
             <div class="note w">🛑 Стирає <b>ВЕСЬ</b> чіп DS2433 у 0xFF, разом з моделлю, серійним/ID та
                 калібруванням! Після цього АКБ <b>НЕ ПРАЦЮЄ</b>, доки не запишете еталонний дамп тієї ж
                 моделі («Відновлення DS2433» вище). Робіть лише коли чіп остаточно «зіпсований» і ремонт
@@ -741,6 +765,22 @@ function renderBms(b){
     }
 }
 
+// Дамп у вигляді нормального hex-дампа: адреса + 16 байт у рядку + ASCII.
+// Раніше віддавали один довгий рядок із word-break — браузер переносив його
+// там, де влізе, і стовпці «пливли»: на 512 байтах це видно одразу.
+function hexDump(s){
+    const b=(s||'').trim().split(/\s+/).filter(x=>/^[0-9A-Fa-f]{2}$/.test(x));
+    if(!b.length) return '—';
+    const out=[];
+    for(let i=0;i<b.length;i+=16){
+        const row=b.slice(i,i+16);
+        const hex=row.join(' ').padEnd(16*3-1,' ');
+        const asc=row.map(h=>{const v=parseInt(h,16);return v>=32&&v<127?String.fromCharCode(v):'.';}).join('');
+        out.push(i.toString(16).toUpperCase().padStart(3,'0')+': '+hex+'  '+asc);
+    }
+    return out.join('\n');
+}
+
 async function refreshAll(){
     disPoll();
     // DS2433 info
@@ -789,7 +829,7 @@ async function refreshAll(){
                     ?'<span class="badge-pill pill-ok">OK</span>'
                     :'<span class="badge-pill pill-bad">РИЗИК ('+d.authReason+')</span>';
             }
-            $('dHex33').textContent=d.hex||d.preview||'—';
+            $('dHex33').textContent=hexDump(d.hex||d.preview);
         }
     }catch(e){}
     // DS2438 info
@@ -850,7 +890,7 @@ async function refreshAll(){
                 }
                 warnForeign2438(d, etm);
             }
-            $('dHex38').textContent=d.hex||d.preview||'—';
+            $('dHex38').textContent=hexDump(d.hex||d.preview);
         }
     }catch(e){}
 }
@@ -1060,7 +1100,7 @@ async function setMah(){
 }
 
 async function setChargeAuto(){
-    const pw=$('pwMah').value; 
+    const pw=$('pwChg').value; 
     prog(true,'Заряд по напрузі...');
     try{
         const r=await postForm('/api/setcharge',{password:pw,auto:'1'});
@@ -1070,7 +1110,7 @@ async function setChargeAuto(){
     prog(false);
 }
 async function setChargePct(){
-    const pw=$('pwMah').value; 
+    const pw=$('pwChg').value; 
     const pct=parseInt($('chgVal').value); if(isNaN(pct)||pct<0||pct>100){toast('Вкажіть 0..100','err');return}
     prog(true,'Запис заряду...');
     try{
@@ -1195,6 +1235,12 @@ async function disPoll(){
     const mon=$('disMon');
     if(!d.available){ mon.className='dm'; $('disState').textContent='не налаштовано (LOAD_PIN у settings.h)';
                       disSchedule(20000); return; }
+    // Межі лінійки і цілі — з пристрою: він їх і застосовує, тож інтерфейс не
+    // має права мати власну думку.
+    if(d.rampHiMv){ disRampCfg=d; if($('disTarget')){
+        $('disTarget').min=d.tgtMinMv; $('disTarget').max=d.tgtMaxMv;
+        if(!$('disTarget').dataset.touched && d.tgtDefMv) $('disTarget').value=d.tgtDefMv;
+        disRamp(); } }
     const run=d.state==='run';
     mon.className='dm '+d.state;
     const st={idle:'очікування',run:'ІДЕ РОЗРЯД',
@@ -1269,9 +1315,32 @@ setInterval(()=>{
     if(!disLast||disLast.state!=='run')return;
     $('disEl').textContent=disFmtT(disLast.elapsedS+Math.floor((Date.now()-disLastAt)/1000));
 },1000);
+// Лінійка струму будується ПІД ОБРАНУ ціль: 300 мА припадають рівно на неї.
+// Межі беремо з пристрою (він же їх і застосовує), поки не опитали — типові.
+let disRampCfg={rampHiMv:8250,maHi:1000,maLo:300,tgtMinMv:6800,tgtMaxMv:8000};
+function disTargetMv(){
+    let t=parseInt($('disTarget').value)||disRampCfg.tgtDefMv||7200;
+    t=Math.max(disRampCfg.tgtMinMv,Math.min(disRampCfg.tgtMaxMv,t));
+    return t;
+}
+function disSetTarget(mv){ $('disTarget').value=mv; disRamp(); }
+function disRamp(){
+    const t=disTargetMv(), c=disRampCfg;
+    const n=$('disRampNote');
+    if(n)n.innerHTML='Струм веде за напругою: <b>'+c.maHi+' мА</b> на '+(c.rampHiMv/1000).toFixed(2)+
+        ' В → <b>'+c.maLo+' мА</b> рівно на цілі '+(t/1000).toFixed(2)+' В. '+
+        'Малий струм у кінці дає чесніший вимір ємності й щадить банки.';
+    document.querySelectorAll('.tgtb').forEach(b=>{
+        const m=/([\d.]+)\s*В/.exec(b.textContent);
+        b.classList.toggle('on', !!m && Math.round(parseFloat(m[1])*1000)===t);
+    });
+}
 async function disStart(){
-    const pw=$('pwDis').value, t=parseInt($('disTarget').value)||7200;
-    if(!confirm('🪫 Почати розряд до '+(t/1000).toFixed(2)+' В?\n\nСтрум обмежується ШІМом: 1000 мА на повному заряді, далі лінійно до 300 мА на 7.20 В.\nНавантаження буде увімкнено; резистор нагріється. Не залишайте пристрій без нагляду.\nЗупинити можна кнопкою «ЗУПИНИТИ» або довгим натисканням на пристрої.'))return;
+    const pw=$('pwDis').value, t=disTargetMv();
+    const c=disRampCfg;
+    if(!confirm('🪫 Почати розряд до '+(t/1000).toFixed(2)+' В?\n\nСтрум обмежується ШІМом: '+c.maHi+
+                ' мА на '+(c.rampHiMv/1000).toFixed(2)+' В, далі лінійно до '+c.maLo+' мА на '+
+                (t/1000).toFixed(2)+' В.\nНавантаження буде увімкнено; резистор нагріється. Не залишайте пристрій без нагляду.\nЗупинити можна кнопкою «ЗУПИНИТИ» або довгим натисканням на пристрої.'))return;
     prog(true,'Запуск розряду...');
     try{
         const r=await postForm('/api/discharge/start',{password:pw,target:t});

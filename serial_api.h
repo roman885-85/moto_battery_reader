@@ -87,6 +87,10 @@ static String serBuildInfo() {
         j += ",\"authReason\":\"" + String(reason) + "\"";
         j += ",\"headerOk\":" + String(headerChecksumOk(batteryDump) ? "true" : "false");
         j += ",\"mirrorOk\":" + String((hasDump2438 ? mirrorOk(batteryDump, batteryDump2438) : true) ? "true" : "false");
+        j += ",\"profileOk\":" + String(impresProfileOk(batteryDump) ? "true" : "false");
+        j += ",\"copyright\":\"" + String(!impresHasCopyright(batteryDump) ? "none"
+                                        : impresRecordOk(batteryDump, IMPRES_COPYRIGHT) ? "ok"
+                                        : "broken") + "\"";
         j += ",\"hex33\":\"" + serHex(batteryDump, DUMP_SIZE) + "\"";
     }
     if (hasDump2438) {

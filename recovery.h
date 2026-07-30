@@ -134,7 +134,7 @@ static void wizActionMeta(uint8_t a, const char **title, const char **detail,
         case ACT_CLEAN:   *title = "Очистка історії";
                           *detail = "Стерти історію/статистику, лишити ідентичність і калібрування."; break;
         case ACT_SETCHARGE_AUTO: *title = "Заряд із напруги";
-                          *detail = "Виставити паливомір за поточною напругою (7.20 В = 0 %, 8.25 В = 100 %)."; break;
+                          *detail = "Виставити паливомір за поточною напругою (" BATTERY_SCALE_TXT ")."; break;
         case ACT_CHARGE_STATION: *title = "Калібрування на ЗП"; *external = true;
                           *detail = "Поставте АКБ на IMPRES-зарядну станцію на повний цикл (заряд/розряд/заряд). Майстер продовжить після повернення."; break;
         case ACT_VERIFY:  *title = "Перевірка результату";

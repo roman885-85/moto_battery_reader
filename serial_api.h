@@ -135,6 +135,11 @@ static String serBuildInfo() {
         j += ",\"rsenseChip\":" + String(bms.rsenseFromChip ? 1 : 0);
         j += ",\"ratedMah\":" + String(ratedMah);
         j += ",\"charge\":" + String(charge) + ",\"chargeSrc\":\"" + String(csrc) + "\"";
+        // Шкала «заряд за напругою» — з пристрою, щоб клієнти не тримали
+        // власних копій чисел і не брехали в підписах після її зміни.
+        j += ",\"emptyMv\":" + String(BATTERY_EMPTY_MV);
+        j += ",\"fullMv\":"  + String(BATTERY_FULL_MV);
+        j += ",\"scaleTxt\":\"" BATTERY_SCALE_TXT "\"";
         j += ",\"serial\":\"" + serial + "\"";
         if (hasSN2433) {
             char b[3]; String s33 = "";
@@ -214,7 +219,7 @@ static void serSetMah(const String &arg) {
     sResp(ok ? (String("{\"ok\":true,\"ica\":") + ica + "}") : "{\"ok\":false,\"err\":\"write failed\"}");
 }
 
-// Рівень заряду: arg=="auto" — з напруги (7.20 В = 0 %..8.25 В = 100 %); інакше pct 0..100.
+// Рівень заряду: arg=="auto" — з напруги (шкала BATTERY_SCALE_TXT); інакше pct 0..100.
 static void serSetCharge(const String &arg) {
     if (!hasDump2438) { sResp("{\"ok\":false,\"err\":\"read first\"}"); return; }
     int pct;

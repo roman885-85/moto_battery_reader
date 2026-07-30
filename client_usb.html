@@ -441,7 +441,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="note i">Той самий регістр ICA, але у відсотках від паспортної ємності — коли
         точних мА·год немає. Станція згодом уточнить значення сама.</div>
       <div class="row"><span class="k">Заряд, % (0..100)</span><input type="number" id="chgv" min="0" max="100" placeholder="авто" style="width:110px;text-align:center"></div>
-      <button class="btn b-warn" onclick="setChargeAuto()">⚡ ЗА НАПРУГОЮ (7.20 В = 0 %, 8.25 В = 100 %)</button>
+      <button class="btn b-warn" id="btnChgAuto" onclick="setChargeAuto()">⚡ ЗА НАПРУГОЮ</button>
       <button class="btn b-warn" onclick="setChargePct()">💾 ЗАПИСАТИ ЗАРЯД %</button>
     </div>
 
@@ -742,6 +742,9 @@ async function refresh(){
   const rmah=(d.icaMah!==undefined)?d.icaMah:null;
   $('pct').textContent=pct!==null?(pct+'%'):'--%';
   $('csrc').textContent=(rmah!==null?('залишок '+rmah+' мА·год'):'')+(pct!==null?(' · '+(d.chargeSrc==='ICA'?'ICA':(d.chargeSrc==='U!'?'за напругою (паливомір не калібр.)':'напруга'))):'');
+  // Шкалу «заряд за напругою» називає ПРИСТРІЙ — інакше підпис кнопки лишався б
+  // брехати після зміни BATTERY_EMPTY_MV у прошивці.
+  if(d.scaleTxt){ const b=$('btnChgAuto'); if(b)b.textContent='⚡ ЗА НАПРУГОЮ ('+d.scaleTxt+')'; }
   if(rmah!==null)$('mahv').value=rmah;
   $('fill').style.width=(pct!==null?pct:0)+'%';
   $('fill').style.background=pct===null?'#555':(pct<20?'#e74c3c':pct<50?'#f39c12':'#2ecc71');

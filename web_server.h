@@ -412,6 +412,11 @@ void handleDumpInfo2438() {
     json += ",\"ratedMah\":" + String(ratedMah);
     json += ",\"charge\":" + String(charge);
     json += ",\"chargeSrc\":\"" + String(csrc) + "\"";
+    // Шкала «заряд за напругою» — з пристрою, щоб клієнти не тримали власних
+    // копій чисел і не брехали в підписах після зміни BATTERY_EMPTY_MV.
+    json += ",\"emptyMv\":" + String(BATTERY_EMPTY_MV);
+    json += ",\"fullMv\":"  + String(BATTERY_FULL_MV);
+    json += ",\"scaleTxt\":\"" BATTERY_SCALE_TXT "\"";
     // ETM (DS2438[8..11], сек наробітку). Рація показує «дату першого користування»
     // як (свій поточний час − ETM) — перевірено діффом до/після калібрування.
     uint32_t etm = ((uint32_t)batteryDump2438[11] << 24) | ((uint32_t)batteryDump2438[10] << 16) |
@@ -1531,7 +1536,8 @@ void handleSetMah() {
     server.send(ok ? 200 : 500, "application/json", m);
 }
 
-// Рівень заряду з поточної напруги: 7.0 В = 0%, 8.4 В = 100% (лінійно).
+// Рівень заряду з поточної напруги — за шкалою BATTERY_EMPTY_MV..BATTERY_FULL_MV
+// (settings.h), лінійно.
 inline int chargePctFromVoltage() {
     // Спільна шкала з batteryPercent() і підготовкою до калібрування
     // (BATTERY_EMPTY_MV..BATTERY_FULL_MV з settings.h).
@@ -1552,7 +1558,7 @@ inline bool performSetChargePct(int pct) {
     if (ok) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
     return ok;
 }
-// Виставити рівень заряду (ICA): auto=1 — з напруги (7.20 В = 0 %..8.25 В = 100 %),
+// Виставити рівень заряду (ICA): auto=1 — з напруги (BATTERY_SCALE_TXT),
 // або вручну pct=0..100. Зарядка/рація потім самі уточнять це значення.
 void handleSetCharge() {
     if (!requireAdmin()) return;

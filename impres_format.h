@@ -496,12 +496,13 @@ inline int impresRatedMahFor(const uint8_t *d33, const char *model) {
     return m ? m : impresRatedMah(model);
 }
 
-// Заряд, % за напругою (7.20 В = 0 %, 8.25 В = 100 %) — межі уточнені власником
+// Заряд, % за напругою (межі — BATTERY_EMPTY_MV/BATTERY_FULL_MV у settings.h,
+// уточнені власником на реальних пакетах)
 // на реальних пакетах:
 // показання паливоміра після ремонту не відповідають реальному стану, а ЗП
 // потім сама їх уточнить.
 #ifndef IMPRES_EMPTY_MV
-  #define IMPRES_EMPTY_MV 7200
+  #define IMPRES_EMPTY_MV 6850
 #endif
 #ifndef IMPRES_FULL_MV
   #define IMPRES_FULL_MV  8250

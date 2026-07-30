@@ -1298,8 +1298,12 @@ class App:
                   foreground="#b9bd86", justify="left").pack(anchor="w")
         self.eChg = self._row(b5p, "Заряд, %:", lambda fr: self._entry(fr, 10, ""))
         cf = ttk.Frame(b5p); cf.pack(anchor="w", pady=2)
-        ttk.Button(cf, text="⚡ За напругою (7.20 В = 0 %, 8.25 В = 100 %)",
-                   command=self.set_charge_auto).pack(side="left", padx=2)
+        # Підпис зі шкалою ставить ПРИСТРІЙ (поле scaleTxt у відповіді INFO):
+        # тримати тут власну копію чисел означає рано чи пізно почати брехати —
+        # саме так у діалозі нижче до останнього висіли 7.0/8.4 В.
+        self.btnChgAuto = ttk.Button(cf, text="⚡ За напругою",
+                                     command=self.set_charge_auto)
+        self.btnChgAuto.pack(side="left", padx=2)
         ttk.Button(cf, text="💾 Записати заряд %", command=self.set_charge_pct).pack(side="left", padx=2)
 
         b5c = ttk.LabelFrame(p, text="Дата першого використання (рація рахує як «час − ETM»)  ·  пише в DS2438", padding=8); b5c.pack(fill="x", pady=4)
@@ -1729,6 +1733,12 @@ class App:
         if not d.get("ok"):
             return
         self.info = d
+        # Шкалу «заряд за напругою» називає ПРИСТРІЙ — підпис кнопки й текст
+        # діалогу беремо звідти, щоб вони не розійшлися з прошивкою.
+        if d.get("scaleTxt"):
+            self.scaleTxt = d["scaleTxt"]
+            if hasattr(self, "btnChgAuto"):
+                self.btnChgAuto.config(text="⚡ За напругою (%s)" % d["scaleTxt"])
         ch = d.get("charge")
         _src = d.get("chargeSrc", "")
         _srclbl = {"ICA": "ICA", "volt": "напруга", "U!": "за напругою (паливомір не калібр.)"}.get(_src, _src)
@@ -2245,7 +2255,9 @@ class App:
     def set_charge_auto(self):
         if not self.need_conn():
             return
-        if not messagebox.askyesno("Заряд", "Виставити рівень заряду з поточної напруги?\n(7.0 В = 0%, 8.4 В = 100%; зарядка потім уточнить)"):
+        scale = getattr(self, "scaleTxt", "") or "шкала пристрою"
+        if not messagebox.askyesno("Заряд", "Виставити рівень заряду з поточної напруги?\n"
+                                            "(%s; зарядка потім уточнить)" % scale):
             return
         self.maybe_auth(lambda: self.cmd("SETCHG auto", 15.0,
             cb=lambda r: self._after_write(r, f"✅ Заряд {r.get('pct','?')}% (ICA {r.get('ica','?')})")))

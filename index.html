@@ -566,7 +566,7 @@
                 <input type="number" id="chgVal" min="0" max="100" placeholder="авто"
                        style="width:110px;text-align:center;font-size:1.1em;border-radius:8px;border:none;padding:6px"></div>
             <input type="password" class="pw" id="pwChg" placeholder="🔑 Пароль адміністратора">
-            <button class="btn btn-warn" style="width:100%" onclick="setChargeAuto()">⚡ ЗА НАПРУГОЮ (7.20 В = 0 %, 8.25 В = 100 %)</button>
+            <button class="btn btn-warn" id="btnChgAuto" style="width:100%" onclick="setChargeAuto()">⚡ ЗА НАПРУГОЮ</button>
             <button class="btn btn-warn" style="width:100%;margin-top:6px" onclick="setChargePct()">💾 ЗАПИСАТИ ЗАРЯД %</button>
         </div>
 
@@ -953,6 +953,11 @@ async function refreshAll(){
             $('chargePct').textContent=pct!==null?pct+'%':'--%';
             $('chargeSub').textContent=(rmah!==null?('залишок '+rmah+' мА·год'):'')+
                 (pct!==null?(' · '+(d.chargeSrc==='ICA'?'ICA':(d.chargeSrc==='U!'?'за напругою (паливомір не калібр.)':'напруга'))):'');
+    // Шкалу «заряд за напругою» називає ПРИСТРІЙ. Раніше вона стояла літералом
+    // у підписі кнопки й після зміни BATTERY_EMPTY_MV лишалась брехати.
+    if(d.scaleTxt){
+        const b=$('btnChgAuto'); if(b)b.textContent='⚡ ЗА НАПРУГОЮ ('+d.scaleTxt+')';
+    }
             if(rmah!==null){$('mahVal').value=rmah;$('mahNow').textContent=rmah+' мА·год';}
             const fill=$('battFill');
             fill.style.width=(pct!==null?pct:0)+'%';

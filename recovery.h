@@ -42,6 +42,7 @@ enum {
     ISS_HEALTH_LOW   = 1u << 8,  // здоров'я/ємність нижче порогу
     ISS_TAIL_FOREIGN = 1u << 9,  // ⚑ навчена калібровка ЧУЖОГО пакета (див. нижче)
     ISS_TAIL_ERASED  = 1u << 10, // ⛔ хвіст стерто у 0xFF — ЗП не зможе відкалібрувати
+    ISS_NEVER_CALIB  = 1u << 11, // пакет жодного разу не калібрувався (CTS = 0)
 };
 
 // ---- Дії Майстра ----------------------------------------------------------
@@ -81,6 +82,8 @@ static const RecoveryRule RECOVERY_RULES[] = {
     { ISS_NEEDS_CALIB,  1, "Потрібне калібрування ємності",                   "Підготовка + калібрування на IMPRES-ЗП" },
     { ISS_HEALTH_LOW,   1, "Низьке показане здоров'я/ємність",                "Скидання зносу або калібрування на ЗП" },
     { ISS_NO_2438,      1, "DS2438 (монітор) відсутній/не читається",         "Перевірте чіп; відновлення DS2433 можливе окремо" },
+    { ISS_NEVER_CALIB,  1, "Пакет жодного разу не калібрувався (потенційна ємність = 0)",
+                           "Повний цикл на IMPRES-ЗП — саме він виміряє банки" },
 };
 static const int RECOVERY_RULE_COUNT = sizeof(RECOVERY_RULES) / sizeof(RECOVERY_RULES[0]);
 
@@ -114,7 +117,7 @@ static void wizActionMeta(uint8_t a, const char **title, const char **detail, bo
         case ACT_CLEAN:   *title = "Очистка історії";
                           *detail = "Стерти історію/статистику, лишити ідентичність і калібрування."; break;
         case ACT_SETCHARGE_AUTO: *title = "Заряд із напруги";
-                          *detail = "Виставити паливомір за поточною напругою (7.0В=0%, 8.4В=100%)."; break;
+                          *detail = "Виставити паливомір за поточною напругою (7.20 В = 0 %, 8.25 В = 100 %)."; break;
         case ACT_CHARGE_STATION: *title = "Калібрування на ЗП"; *external = true;
                           *detail = "Поставте АКБ на IMPRES-зарядну станцію на повний цикл (заряд/розряд/заряд). Майстер продовжить після повернення."; break;
         case ACT_VERIFY:  *title = "Перевірка результату";
@@ -167,6 +170,12 @@ static int wizDetectFormat() {
 }
 
 // ------------------------------------------------------------------ АНАЛІЗ
+// Поріг «низьке здоров'я», %. 40 % — це вже пакет, який рація показує як
+// зношений; нижче ремонт прошивки не допоможе, потрібні банки.
+#ifndef WIZ_HEALTH_LOW_PCT
+  #define WIZ_HEALTH_LOW_PCT 40
+#endif
+
 static void wizAnalyze(BatteryDiag &d) {
     memset(&d, 0, sizeof(d));
     d.capPct = -1;
@@ -188,8 +197,23 @@ static void wizAnalyze(BatteryDiag &d) {
 
         d.fmt = wizDetectFormat();
 
-        int cap = -1, wear = -1;
-        if (decodeCapacity(&cap, &wear)) { d.capPct = cap; if (cap < 40) d.issues |= ISS_HEALTH_LOW; }
+        // ⚑ ЗДОРОВ'Я. Раніше тут стояв decodeCapacity(), який ПРИНЦИПОВО
+        // повертає false (байт заводської таблиці — стала моделі, а не знос).
+        // Через це ISS_HEALTH_LOW не спрацьовував ЖОДНОГО разу, а разом із ним
+        // мовчав і ISS_NEEDS_CALIB: із трьох його умов лишалась фактично одна
+        // (ICA == 0). Саме тому частина сценаріїв Майстра «не бачила» проблему.
+        //
+        // Тепер знос беремо там, де він насправді лежить: поле CTS блока
+        // калібрування, розшифроване ключем із ROM-ID чипа (impres_bms.h).
+        // Перевірено проти показань рації: 34 / 97 / 99 / 100 %.
+        const ImpresBms &wb = impresBmsOf(batteryDump,
+                                          hasDump2438 ? batteryDump2438 : nullptr,
+                                          hasSN2433 ? chipSN2433 : nullptr,
+                                          DS2438_RSENSE_OHM);
+        if (wb.ok && wb.haveKey && wb.potentialMah > 0) {
+            d.capPct = wb.health;
+            if (wb.health < WIZ_HEALTH_LOW_PCT) d.issues |= ISS_HEALTH_LOW;
+        }
     }
 
     if (hasDump && hasDump2438) {
@@ -225,10 +249,22 @@ static void wizAnalyze(BatteryDiag &d) {
     const char *reason = "";
     d.genuine = batteryGenuine(&reason);
 
+    // CTS == 0 означає «потенційну ємність ще не міряли» — пакет новий або
+    // після скидання. Це не поломка, але й не робочий стан: поки станція не
+    // проведе цикл, рація не знає ємності.
+    if (hasDump) {
+        const ImpresBms &cb = impresBmsOf(batteryDump,
+                                          hasDump2438 ? batteryDump2438 : nullptr,
+                                          hasSN2433 ? chipSN2433 : nullptr,
+                                          DS2438_RSENSE_OHM);
+        if (cb.ok && cb.haveKey && cb.cts == 0) d.issues |= ISS_NEVER_CALIB;
+    }
+
     bool structOk = d.hdrOk && !(d.issues & (ISS_BLANK33 | ISS_NO_MODEL));
     if (structOk && hasDump2438) {
         uint8_t ica = batteryDump2438[12];
-        if ((d.issues & ISS_CCA_OVERFLOW) || ica == 0 || (d.issues & ISS_HEALTH_LOW))
+        if ((d.issues & ISS_CCA_OVERFLOW) || ica == 0 ||
+            (d.issues & (ISS_HEALTH_LOW | ISS_NEVER_CALIB)))
             d.issues |= ISS_NEEDS_CALIB;
     }
 }

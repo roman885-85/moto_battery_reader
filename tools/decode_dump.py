@@ -116,9 +116,11 @@ def cca(e):  return int.from_bytes(e[60:62], 'little')
 def dca(e):  return int.from_bytes(e[62:64], 'little')
 
 
-RATED = {'PMNN4409A': 2150, 'PMNN4409B': 2250, 'PT4409A': 2150,
-         'PMNN4488A': 3000, 'PMNN4493A': 3000,
-         'PMNN4809A': 2450, 'APLI4810C': 2450}
+# Запасна таблиця — лише коли байт 0x008 чипа нечитабельний. Значення звірені
+# з самим чипом і з KIT-таблицею фірмового ПЗ (див. impres_format.h).
+RATED = {'PMNN4409A': 2150, 'PMNN4409B': 2150, 'PT4409A': 2150,
+         'PMNN4488A': 3000, 'PMNN4493A': 3000, 'PMNN4807A': 2050,
+         'PMNN4809A': 2700, 'APLI4810C': 3100, 'APLI4811C': 3100}
 
 
 def grab_template(name):
@@ -207,8 +209,177 @@ def decode(d33, d38):
             print("     дані майже напевно НЕ від цього пакета (записаний чужий еталон")
             print("     або замінені елементи). Це і є причина «невідомого акумулятора».")
 
-    print("\nПримітка: «строк служби, %» і «дата першого користування» у прошивці НЕ")
-    print("зберігаються — рація рахує їх сама (див. docs/FIRMWARE_ANALYSIS.md).")
+    print_bms(d33, d38)
+
+
+# ---------------------------------------------------------------------------
+#  Штатний декодер Motorola (те саме, що impres_bms.h у прошивці).
+#  Джерело алгоритму — rick51231/node-dmr-lib, src/Protocols/BMS/BatteryData.js;
+#  звірено з 53 знімками екрана фірмового ПЗ (dev/BMS/images + print.md).
+#  Докладно — docs/FIRMWARE_ANALYSIS.md, розділ 4a.
+# ---------------------------------------------------------------------------
+BMS_COUNT_AT = 0x41          # DS2433[0x41] — кількість блоків
+V_DATE, V_CYCLE, V_RECOND, V_ADDED, V_NONSMART, V_KIT = 70, 78, 80, 84, 90, 96
+
+
+def bms_vector(d33, v):
+    n = d33[BMS_COUNT_AT]
+    if n in (0, 0xFF) or v > 2 * n + 65:
+        return None
+    a = (d33[v] << 8) | d33[v + 1]
+    return a if a < 512 else None
+
+
+def bms_block_ok(d33, a):
+    if a is None:
+        return False
+    ln = d33[a]
+    return 0 < ln <= 32 and a + ln <= 512 and (sum(d33[a:a + ln]) & 0xFF) == 0x5A
+
+
+def bms_rsense(d38):
+    """Шунт цього пакета, Ом. DS2438[56..57] LE / 100000."""
+    if not d38:
+        return None
+    raw = d38[56] | (d38[57] << 8)
+    return raw / 100000.0 if 500 <= raw <= 10000 else None
+
+
+def dec_int(v, ln, key):
+    is8 = (ln == 1)
+    for _ in range(key & 15):
+        v = ((v >> 1) | (0x80 if is8 else 0x8000)) if (v & 1) else (v >> 1)
+    return (v - 0xD8) & (0xFF if is8 else 0xFFFF)
+
+
+def dec_date(v, key1, key2):
+    k = (key2 >> 4) ^ (key1 & 0x0F)
+    while True:
+        k -= 1
+        v = ((v >> 1) | 0x8000) if (v & 1) else (v >> 1)
+        if k <= 0:
+            break
+    t = v + 10048
+    return ((t >> 9) + 1980, (t >> 5) & 0x0F, t & 0x1F)
+
+
+def bms_cycles(d33, a):
+    """Цикли заряду з гістограми — саме це число показує фірмове ПЗ. Ключ не потрібен."""
+    if not bms_block_ok(d33, a):
+        return None
+    h = [(d33[a + 1 + i * 2] << 8) | d33[a + 2 + i * 2] for i in range(10)]
+    rest = sum(h) - h[0]
+    h0 = h[0] - rest if h[0] >= rest else h[0]
+    return rest + h0
+
+
+def bms_decode(d33, d38, key1, key2, rated, rs):
+    """Розшифровані поля за конкретним ключем."""
+    a = {v: bms_vector(d33, v) for v in (V_DATE, V_CYCLE, V_RECOND)}
+    if None in a.values():
+        return None
+    be = lambda o: (d33[o] << 8) | d33[o + 1]
+    r = {}
+    r['cycles_enc'] = dec_int(be(a[V_CYCLE] + 1), 2, key1)
+    r['reverts'] = dec_int(be(a[V_CYCLE] + 3), 2, key1)
+    r['day_last_charge'] = dec_int(be(a[V_CYCLE] + 5), 2, key1)
+    r['top_off'] = dec_int(be(a[V_CYCLE] + 7), 2, key1)
+    r['cal_cycles'] = dec_int(be(a[V_RECOND] + 1), 2, key1)
+    r['day_last_recond'] = dec_int(be(a[V_RECOND] + 3), 2, key1)
+    r['cts'] = dec_int(d33[a[V_RECOND] + 6], 1, key1)
+    r['potential'] = round(0.48828125 * r['cts'] / rs) if rs else 0
+    r['first_use_mah'] = round(0.48828125 * dec_int(d33[a[V_RECOND] + 5], 1, key1) / rs) if rs else 0
+    r['health'] = min(100, round(100.0 * r['potential'] / rated)) if rated else 0
+    r['mfg'] = dec_date(be(a[V_DATE] + 1), key1, key2)
+    r['day_initial_use'] = dec_int(be(a[V_DATE] + 3), 2, key1)
+    r['first_use'] = None
+    if r['day_initial_use'] > 0:
+        try:
+            import datetime
+            r['first_use'] = (datetime.date(*r['mfg']) +
+                              datetime.timedelta(days=r['day_initial_use']))
+        except ValueError:
+            pass
+    return r
+
+
+def bms_find_key(d33, d38, rated, rs, hist):
+    """Ключ лежить у ROM-ID чипа (key1=ROM[1], key2=ROM[6]), якого в дампі немає.
+    Але значення мають лише нижній нібл key1 і верхній нібл key2 — перебираємо.
+    Відсіюємо перевірками, які самі ключа не потребують."""
+    if hist is None or not rs:
+        return []
+    etm_days = (int.from_bytes(d38[8:12], 'little') / 86400.0) if d38 else 0
+    lim = max(etm_days, 1) * 1.1 + 60
+    out = []
+    for k1 in range(16):
+        r = bms_decode(d33, d38, k1, 0x50, rated, rs)
+        if r is None:
+            return []
+        if r['cycles_enc'] > hist or r['reverts'] > r['cycles_enc'] or r['cal_cycles'] > r['cycles_enc']:
+            continue
+        if r['day_last_charge'] > lim or r['day_last_recond'] > lim:
+            continue
+        if r['day_initial_use'] > r['day_last_charge']:
+            continue
+        if rated and r['cts'] > 0 and not (0.2 * rated <= r['potential'] <= 1.25 * rated):
+            continue
+        # верхній нібл key2 впливає лише на дату — беремо той, що дає осмислену
+        for k2n in [5] + [x for x in range(16) if x != 5]:
+            y, m, dd = dec_date(((d33[bms_vector(d33, V_DATE) + 1] << 8) |
+                                 d33[bms_vector(d33, V_DATE) + 2]), k1, k2n << 4)
+            if 2005 <= y <= 2035 and 1 <= m <= 12 and 1 <= dd <= 31:
+                r = bms_decode(d33, d38, k1, k2n << 4, rated, rs)
+                break
+        out.append((k1, r))
+    return out
+
+
+def print_bms(d33, d38):
+    a_kit = bms_vector(d33, V_KIT)
+    if a_kit is None:
+        print("\nШтатні поля Motorola: таблиця векторів порожня (чип стертий).")
+        return
+    print("\n" + "=" * 72)
+    print("ШТАТНІ ПОЛЯ MOTOROLA (розділ 4a документа)")
+    print("=" * 72)
+    kit = ''.join(chr(c) for c in d33[a_kit + 1:a_kit + d33[a_kit] - 1] if 32 <= c < 127)
+    rs = bms_rsense(d38)
+    rated = d33[0x008] * 25
+    print("  Модель (KIT)        : %s" % (kit or "—"))
+    print("  Паспортна ємність   : %d мА·год  (DS2433[0x008] * 25)" % rated)
+    print("  Шунт вимірювача     : %s" %
+          ("%.5f Ом (з чипа, DS2438[56..57])" % rs if rs else "у чипі немає — беремо 0.025 Ом"))
+    rs_use = rs or 0.025
+    hist = bms_cycles(d33, bms_vector(d33, V_ADDED))
+    print("  Циклів заряду       : %s   (з гістограми, ключ НЕ потрібен)" %
+          (hist if hist is not None else "— блок побитий"))
+    a_ns = bms_vector(d33, V_NONSMART)
+    if bms_block_ok(d33, a_ns):
+        print("  Циклів не-IMPRES    : %d" % ((d33[a_ns + 7] << 8) | d33[a_ns + 8]))
+    if d38:
+        c = int.from_bytes(d38[60:62], 'little')
+        d = int.from_bytes(d38[62:64], 'little')
+        print("  CCA / DCA у мА·год  : %d / %d   (крок 15.625 мВ·год, а не 0.4882!)" %
+              (round(15.625 * c / rs_use), round(15.625 * d / rs_use)))
+
+    cands = bms_find_key(d33, d38, rated, rs_use, hist)
+    if not cands:
+        print("\n  Ключ не визначено — зашифровані поля (знос, дати, калібрування)")
+        print("  прочитати не вдалось. На пристрої ключ береться з ROM-ID DS2433.")
+        return
+    if len(cands) > 1:
+        print("\n  ⚠️ Ключ неоднозначний (%d варіанти) — показано всі." % len(cands))
+    for k1, r in cands:
+        print("\n  --- ключ key1&0xF = %d %s" % (k1, "" if len(cands) == 1 else "(варіант)"))
+        print("      Знос / здоров'я     : %d %%   (потенційна %d мА·год, CTS=%d)" %
+              (r['health'], r['potential'], r['cts']))
+        print("      Ємність на початку  : %d мА·год" % r['first_use_mah'])
+        print("      Внутр. лічильник ц. : %d   (реверти %d, калібрувань %d, дозарядок %d)" %
+              (r['cycles_enc'], r['reverts'], r['cal_cycles'], r['top_off']))
+        print("      Дата виготовлення   : %04d-%02d-%02d" % r['mfg'])
+        print("      Перше користування  : %s" %
+              (r['first_use'].isoformat() if r['first_use'] else "— (пакет ще не вмикався)"))
 
 
 # ---------------------------------------------------------------- survey

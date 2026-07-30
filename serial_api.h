@@ -97,7 +97,14 @@ static String serBuildInfo() {
         uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
         int16_t traw = ((int16_t)((batteryDump2438[2] << 8) | batteryDump2438[1])) >> 3;
         int16_t cur = (int16_t)((batteryDump2438[6] << 8) | batteryDump2438[5]);
-        float i_mA = (float)cur / (4096.0f * DS2438_RSENSE_OHM) * 1000.0f;
+        // Шунт — із чипа (DS2438[56..57]); константа лишається лише запасним
+        // варіантом. Див. impres_bms.h: у родини 4409 він удвічі більший.
+        const ImpresBms &bms = impresBmsOf(hasDump ? batteryDump : nullptr,
+                                           batteryDump2438,
+                                           hasSN2433 ? chipSN2433 : nullptr,
+                                           DS2438_RSENSE_OHM);
+        float rs = bms.rsense > 0.0f ? bms.rsense : DS2438_RSENSE_OHM;
+        float i_mA = (float)cur / (4096.0f * rs) * 1000.0f;
         uint8_t ica = batteryDump2438[12];
         uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
         uint16_t dca = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
@@ -115,14 +122,47 @@ static String serBuildInfo() {
         // константа BATTERY_RATED_MAH: через неї цикли й мА·год розходилися
         // з показаннями станції на всіх моделях, крім однієї.
         int ratedMah = impresRatedMahFor(hasDump ? batteryDump : nullptr, modelBuf);
-        j += ",\"icaMah\":" + String(impresIcaToMah(ica, ratedMah));
-        j += ",\"ccaMah\":" + String((int)(cca * DS2438_MAH_PER_LSB));
-        j += ",\"dcaMah\":" + String((int)(dca * DS2438_MAH_PER_LSB));
-        j += ",\"ccaCycles\":" + String((int)(cca * DS2438_MAH_PER_LSB / ratedMah));
-        j += ",\"dcaCycles\":" + String((int)(dca * DS2438_MAH_PER_LSB / ratedMah));
+        j += ",\"icaMah\":" + String(impresIcaToMahRs(ica, ratedMah, rs));
+        // Ціна розряду CCA/DCA — 15.625 мВ·год (даташит), а не 0.4882 як в ICA.
+        j += ",\"ccaMah\":" + String(bms.ccaMah);
+        j += ",\"dcaMah\":" + String(bms.dcaMah);
+        j += ",\"ccaCycles\":" + String((int)(bms.ccaMah / ratedMah));
+        j += ",\"dcaCycles\":" + String((int)(bms.dcaMah / ratedMah));
+        j += ",\"rsense\":" + String(rs, 5);
+        j += ",\"rsenseChip\":" + String(bms.rsenseFromChip ? 1 : 0);
         j += ",\"ratedMah\":" + String(ratedMah);
         j += ",\"charge\":" + String(charge) + ",\"chargeSrc\":\"" + String(csrc) + "\"";
         j += ",\"serial\":\"" + serial + "\"";
+        if (hasSN2433) {
+            char b[3]; String s33 = "";
+            for (int i = 0; i < 8; i++) { sprintf(b, "%02X", chipSN2433[i]); s33 += b; }
+            j += ",\"serial33\":\"" + s33 + "\"";
+        }
+        // Штатні поля Motorola: цикли — без ключа, решта — після дешифрування.
+        if (bms.ok) {
+            j += ",\"bms\":{\"kit\":\"" + String(bms.kit) + "\"";
+            j += ",\"cycles\":" + String(bms.cycles);
+            j += ",\"nonImpresCycles\":" + String(bms.nonImpresCycles);
+            j += ",\"haveKey\":" + String(bms.haveKey ? 1 : 0);
+            j += ",\"keyGuessed\":" + String(bms.keyGuessed ? 1 : 0);
+            if (bms.haveKey) {
+                j += ",\"health\":" + String(bms.health);
+                j += ",\"potentialMah\":" + String(bms.potentialMah);
+                j += ",\"firstUseMah\":" + String(bms.firstUseMah);
+                j += ",\"cyclesEnc\":" + String(bms.cyclesEnc);
+                j += ",\"calCycles\":" + String(bms.calCycles);
+                j += ",\"reverts\":" + String(bms.reverts);
+                j += ",\"topOffCycles\":" + String(bms.topOffCycles);
+                char d[12];
+                snprintf(d, sizeof(d), "%04d-%02d-%02d", bms.mfgY, bms.mfgM, bms.mfgD);
+                j += ",\"mfgDate\":\"" + String(d) + "\"";
+                if (bms.useY) {
+                    snprintf(d, sizeof(d), "%04d-%02d-%02d", bms.useY, bms.useM, bms.useD);
+                    j += ",\"firstUseDate\":\"" + String(d) + "\"";
+                }
+            }
+            j += "}";
+        }
         j += ",\"hex38\":\"" + serHex(batteryDump2438, DS2438_MEM_SIZE) + "\"";
     }
     j += "}";
@@ -160,7 +200,8 @@ static void serSetMah(const String &arg) {
     long mah = arg.toInt();
     char smModel[16] = "";
     if (hasDump) impresModelName(batteryDump, smModel, sizeof(smModel));
-    long ica = impresIcaFromMah(mah, impresRatedMahFor(hasDump ? batteryDump : nullptr, smModel));
+    long ica = impresIcaFromMahRs(mah, impresRatedMahFor(hasDump ? batteryDump : nullptr, smModel),
+                                  impresBmsRsense(batteryDump2438));
     if (ica < 0) ica = 0; if (ica > 255) ica = 255;
     batteryDump2438[12] = (uint8_t)ica;
     ledSet(LED_WRITE); displayShow("USB ЄМН mAh");
@@ -170,7 +211,7 @@ static void serSetMah(const String &arg) {
     sResp(ok ? (String("{\"ok\":true,\"ica\":") + ica + "}") : "{\"ok\":false,\"err\":\"write failed\"}");
 }
 
-// Рівень заряду: arg=="auto" — з напруги (7.0В=0%..8.4В=100%); інакше pct 0..100.
+// Рівень заряду: arg=="auto" — з напруги (7.20 В = 0 %..8.25 В = 100 %); інакше pct 0..100.
 static void serSetCharge(const String &arg) {
     if (!hasDump2438) { sResp("{\"ok\":false,\"err\":\"read first\"}"); return; }
     int pct;
@@ -209,26 +250,34 @@ static void serSetCap(const String &arg) {
 static String serBuildOps() {
     String j = "{\"ok\":true,\"ops\":[";
     bool first = true;
+    // chips — у яку мікросхему піде запис (див. operations.h). Клієнт показує
+    // це поруч із назвою: переплутати DS2433 (ідентичність) із DS2438
+    // (монітор) коштує або моделі, або калібрування вимірювача струму.
     auto add = [&](const char *key, const char *title, const char *detail,
-                   int danger, const char *model) {
+                   int danger, const char *model, uint8_t chips) {
         if (!first) j += ",";
         first = false;
         j += "{\"key\":\""; j += key; j += "\",\"title\":\""; j += title;
         j += "\",\"detail\":\""; j += detail;
         j += "\",\"danger\":" + String(danger);
+        j += ",\"chips\":" + String((int)chips);
+        j += ",\"chipsText\":\""; j += opChipsText(chips); j += "\"";
         j += ",\"model\":\""; j += (model ? model : ""); j += "\"}";
     };
     for (int i = 0; i < OP_BASE_COUNT; i++)
-        add(OP_DOC[i].key, OP_DOC[i].title, OP_DOC[i].detail, OP_TEXT[i].danger, nullptr);
+        add(OP_DOC[i].key, OP_DOC[i].title, OP_DOC[i].detail, OP_TEXT[i].danger,
+            nullptr, OP_DOC[i].chips);
     for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++)
         add("model", "Записати модельну частину еталона",
-            "Без навченого хвоста донора.", OPD_WRITE, BATTERY_TEMPLATES[t].name);
+            "Без навченого хвоста донора.", OPD_WRITE, BATTERY_TEMPLATES[t].name,
+            BATTERY_TEMPLATES[t].d38 ? OPC_BOTH : OPC_33);
     for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++)
         add("new", "Новий АКБ з порожнього чипа",
-            "Модельна частина + монітор у стані нового пакета.", OPD_WIPE, BATTERY_TEMPLATES[t].name);
+            "Модельна частина + монітор у стані нового пакета.", OPD_WIPE,
+            BATTERY_TEMPLATES[t].name, OPC_BOTH);
     for (int e = 0; e < OP_EXPERT_COUNT; e++)
         add(OP_DOC_EXPERT[e].key, OP_DOC_EXPERT[e].title, OP_DOC_EXPERT[e].detail,
-            OP_TEXT_EXPERT[e].danger, nullptr);
+            OP_TEXT_EXPERT[e].danger, nullptr, OP_DOC_EXPERT[e].chips);
     j += "]}";
     return j;
 }

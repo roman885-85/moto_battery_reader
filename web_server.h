@@ -8,6 +8,7 @@
 #include "battery_reader.h"
 #include "settings.h"
 #include "impres_format.h"     // структура прошивки IMPRES (єдине джерело правди)
+#include "impres_bms.h"        // штатний декодер Motorola (лічильники, знос, дати)
 #include "operations.h"        // єдиний каталог операцій для всіх поверхонь
 #include "discharge.h"         // керований розряд навантаженням (MOSFET)
 #include "leds.h"
@@ -22,6 +23,8 @@ extern uint8_t batteryDump2438[DS2438_MEM_SIZE];
 extern bool hasDump2438;
 extern uint8_t chipSN2438[8];
 extern bool hasSN2438;
+extern uint8_t chipSN2433[8];
+extern bool hasSN2433;
 
 // Збереження дампа в SPIFFS (перезапис файлу).
 static void saveDump(const char *path, const uint8_t *data, size_t size) {
@@ -158,10 +161,15 @@ bool readAllChips(bool &ok2433, bool &ok2438) {
         saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
     }
 
-    // Серійний номер чипа (лазерний ROM-ID DS2438)
+    // Серійні номери чипів (лазерні ROM-ID). ROM DS2433 — це ще й ключ до
+    // зашифрованих лічильників і дат у прошивці АКБ (див. impres_bms.h).
     if (battery.hasRom2438()) {
         memcpy(chipSN2438, battery.rom2438(), 8);
         hasSN2438 = true;
+    }
+    if (battery.hasRom2433()) {
+        memcpy(chipSN2433, battery.rom2433(), 8);
+        hasSN2433 = true;
     }
 
     char st[40];
@@ -350,7 +358,18 @@ void handleDumpInfo2438() {
 
     int16_t current = (int16_t)((batteryDump2438[6] << 8) | batteryDump2438[5]); // сире значення
 
-    float    i_mA = (float)current / (4096.0f * DS2438_RSENSE_OHM) * 1000.0f;
+    // ⚑ Шунт беремо З ЧИПА (DS2438[56..57]), а не з константи. У пакетів
+    // PMNN4409A/B він ~45.2..46.1 мОм, у 4488A/4493A/4809A ~24.9..25.6 мОм —
+    // тобто єдина константа 0.025 Ом занижувала опір і завищувала струм і
+    // мА·год майже вдвічі на всій родині 4409. Перевірено проти показань
+    // фірмового ПЗ Motorola (див. impres_bms.h).
+    const ImpresBms &bms = impresBmsOf(hasDump ? batteryDump : nullptr,
+                                       batteryDump2438,
+                                       hasSN2433 ? chipSN2433 : nullptr,
+                                       DS2438_RSENSE_OHM);
+    float rs = bms.rsense > 0.0f ? bms.rsense : DS2438_RSENSE_OHM;
+
+    float    i_mA = (float)current / (4096.0f * rs) * 1000.0f;
     uint8_t  ica  = batteryDump2438[12];
     uint16_t cca  = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
     uint16_t dca  = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
@@ -379,11 +398,16 @@ void handleDumpInfo2438() {
     char rmModel[16] = "";
     decodeModel(rmModel, sizeof(rmModel));
     int ratedMah = impresRatedMahFor(hasDump ? batteryDump : nullptr, rmModel);
-    json += ",\"icaMah\":" + String(impresIcaToMah((uint8_t)ica, ratedMah));
-    json += ",\"ccaMah\":" + String((int)(cca * DS2438_MAH_PER_LSB));
-    json += ",\"dcaMah\":" + String((int)(dca * DS2438_MAH_PER_LSB));
-    json += ",\"ccaCycles\":" + String((int)(cca * DS2438_MAH_PER_LSB / ratedMah));
-    json += ",\"dcaCycles\":" + String((int)(dca * DS2438_MAH_PER_LSB / ratedMah));
+    json += ",\"icaMah\":" + String(impresIcaToMahRs((uint8_t)ica, ratedMah, rs));
+    // Ціна розряду CCA/DCA — 15.625 мВ·год, а НЕ 0.4882 як у ICA (даташит
+    // DS2438). Раніше тут стояла константа ICA, і накопичений заряд виходив
+    // у 32 рази меншим за дійсний.
+    json += ",\"ccaMah\":" + String(bms.ccaMah);
+    json += ",\"dcaMah\":" + String(bms.dcaMah);
+    json += ",\"ccaCycles\":" + String((int)(bms.ccaMah / ratedMah));
+    json += ",\"dcaCycles\":" + String((int)(bms.dcaMah / ratedMah));
+    json += ",\"rsense\":" + String(rs, 5);
+    json += ",\"rsenseChip\":" + String(bms.rsenseFromChip ? 1 : 0);
     json += ",\"ratedMah\":" + String(ratedMah);
     json += ",\"charge\":" + String(charge);
     json += ",\"chargeSrc\":\"" + String(csrc) + "\"";
@@ -393,6 +417,39 @@ void handleDumpInfo2438() {
                    ((uint32_t)batteryDump2438[9] << 8) | batteryDump2438[8];
     json += ",\"etmSec\":" + String(etm);
     json += ",\"serial\":\"" + serial + "\"";
+    if (hasSN2433) {
+        char b[3]; String s33 = "";
+        for (int i = 0; i < 8; i++) { sprintf(b, "%02X", chipSN2433[i]); s33 += b; }
+        json += ",\"serial33\":\"" + s33 + "\"";
+    }
+    // ── штатні поля Motorola (impres_bms.h) ────────────────────────────────
+    //  cycles     — цикли заряду IMPRES; рахуються з гістограми і ключа НЕ
+    //               потребують: саме це число показує фірмове ПЗ.
+    //  решта      — зашифровані; ключ або з ROM DS2433, або підібраний.
+    if (bms.ok) {
+        json += ",\"bms\":{\"kit\":\"" + String(bms.kit) + "\"";
+        json += ",\"cycles\":" + String(bms.cycles);
+        json += ",\"nonImpresCycles\":" + String(bms.nonImpresCycles);
+        json += ",\"haveKey\":" + String(bms.haveKey ? 1 : 0);
+        json += ",\"keyGuessed\":" + String(bms.keyGuessed ? 1 : 0);
+        if (bms.haveKey) {
+            json += ",\"health\":" + String(bms.health);
+            json += ",\"potentialMah\":" + String(bms.potentialMah);
+            json += ",\"firstUseMah\":" + String(bms.firstUseMah);
+            json += ",\"cyclesEnc\":" + String(bms.cyclesEnc);
+            json += ",\"calCycles\":" + String(bms.calCycles);
+            json += ",\"reverts\":" + String(bms.reverts);
+            json += ",\"topOffCycles\":" + String(bms.topOffCycles);
+            char d[12];
+            snprintf(d, sizeof(d), "%04d-%02d-%02d", bms.mfgY, bms.mfgM, bms.mfgD);
+            json += ",\"mfgDate\":\"" + String(d) + "\"";
+            if (bms.useY) {
+                snprintf(d, sizeof(d), "%04d-%02d-%02d", bms.useY, bms.useM, bms.useD);
+                json += ",\"firstUseDate\":\"" + String(d) + "\"";
+            }
+        }
+        json += "}";
+    }
     json += ",\"preview\":\"" + hexPreview(batteryDump2438, 16) + "\"";
     json += ",\"hex\":\"" + hexPreview(batteryDump2438, 64) + "\"";
     json += "}";
@@ -896,8 +953,11 @@ bool performRecalPrepare(bool deep) {
         // Паливомір ставимо за фактичною напругою — щоб ЗП стартувала з
         // осмисленого рівня, а не з нуля на зарядженому пакеті.
         int pct = impresPercentFromMv(impresVoltageMv(batteryDump2438));
+        char rcM[16] = ""; decodeModel(rcM, sizeof(rcM));
         impresResetMonitor(batteryDump2438, hasDump ? batteryDump : nullptr,
-                           impresIcaFromPercent(pct));
+                           impresIcaFromPercentRs(pct,
+                               impresRatedMahFor(hasDump ? batteryDump : nullptr, rcM),
+                               impresBmsRsense(batteryDump2438)));
         Serial.printf("monitor reset, ICA from %d%% (U=%u mV)\n",
                       pct, (unsigned)impresVoltageMv(batteryDump2438));
         bool o38 = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
@@ -925,7 +985,7 @@ inline bool performRecalPrepare() { return performRecalPrepare(false); }
 // операцію просто посеред циклу вимірювання.
 static void dischargeSettle(unsigned long ms) {
     unsigned long t0 = millis();
-    while (millis() - t0 < ms) { ledTask(); delay(1); }
+    while (millis() - t0 < ms) { ledTask(); dischargeWatchdogFeed(); delay(1); }
 }
 
 // Зняти показання монітора під навантаженням. true — читання вдалось.
@@ -936,8 +996,13 @@ static bool dischargeSample(uint16_t *mv, int16_t *ma, int16_t *tC10) {
     hasDump2438 = true;
     *mv = impresVoltageMv(buf);
     // Струм зі знаком; при розряді від'ємний. Формула та сама, що в /api/info2438.
+    // ⚑ Шунт — із самого чипа (DS2438[56..57]). Це не косметика: уставка ШІМ
+    // тримає САМЕ виміряний струм, і з чужою константою (0.025 Ом на пакеті,
+    // де шунт 0.046 Ом) реальний струм був би вдвічі меншим за задану уставку.
     int16_t raw = (int16_t)((buf[6] << 8) | buf[5]);
-    *ma  = (int16_t)((float)raw / (4096.0f * DS2438_RSENSE_OHM) * 1000.0f);
+    float rs = impresBmsRsense(buf);
+    if (rs <= 0.0f) rs = DS2438_RSENSE_OHM;
+    *ma  = (int16_t)((float)raw / (4096.0f * rs) * 1000.0f);
     *tC10 = (int16_t)((((int16_t)((buf[2] << 8) | buf[1])) >> 3) * 0.3125f);  // 0.03125*10
     return true;
 }
@@ -949,7 +1014,10 @@ const char *dischargeStart(uint16_t targetMv) {
     if (dischargeRunning())    return "Розряд уже виконується";
     if (!targetMv) targetMv = DISCHARGE_TARGET_MV;
 
-    // Ціль не нижче аварійної межі — інакше розряд гарантовано впреться в аварію.
+    // Ціль обирає користувач, тож затискаємо її в межі, де розряд узагалі має
+    // сенс: нижче — гарантована аварійна відсічка, вище — пакет і так там.
+    if (targetMv < DISCHARGE_TARGET_MIN_MV) return "Цільова напруга нижча за допустиму (6.80 В)";
+    if (targetMv > DISCHARGE_TARGET_MAX_MV) return "Цільова напруга вища за допустиму (8.00 В)";
     if (targetMv < DISCHARGE_HARD_MIN_MV + 200) return "Цільова напруга нижча за аварійну межу";
 
     uint16_t mv; int16_t ma, t;
@@ -977,13 +1045,16 @@ const char *dischargeStart(uint16_t targetMv) {
     // пакет між читаннями неактивний: струм тече тільки в моменти опитування, і
     // розряд фактично не йде (саме це й спостерігалось).
     battery.holdEnable(true);
+    // Шунт саме цього пакета — від нього залежить і струм, і облік мА·год.
+    g_dis.rsense = impresBmsRsense(batteryDump2438);
+    dischargeWatchdog(true);            // сторож — лише на час розряду
 
     // Початкова шпаруватість — З РОЗРАХУНКУ, не 100 %. Інакше перші 5 секунд
     // (до першого виміру піка) пакет тягнув би повні 1.4..1.7 А, тобто рівно те,
     // від чого ми йдемо. Оцінка піка за законом Ома завищена, тож розрахована
     // шпаруватість свідомо занижена — стартуємо м'якше, ніж треба, а перший
     // вимір це виправить.
-    g_dis.setMa   = dischargeSetpointMa(mv);
+    g_dis.setMa   = dischargeSetpointMa(mv, g_dis.targetMv);
     g_dis.peakMa  = (uint16_t)dischargeExpectedMa(mv);
     g_dis.dutyPct = dischargeDutyFor(g_dis.peakMa, g_dis.setMa);
     loadDuty(g_dis.dutyPct);
@@ -1009,10 +1080,23 @@ inline void dischargeTask() {
         Serial.println("=== Discharge ABORT: timeout ===");
         return;
     }
+    dischargeWatchdogFeed();          // цикл живий — сторож спокійний
     if (now - g_dis.lastPollMs < DISCHARGE_POLL_MS) return;
 
     unsigned long dtMs = now - g_dis.lastPollMs;
     g_dis.lastPollMs = now;
+
+    // ── СТОРОЖ (програмна половина) ────────────────────────────────────────
+    //  Ми тут, отже цикл живий. Але якщо від попереднього опитування минуло
+    //  надто багато, десь була довга затримка, під час якої ключ лишався
+    //  відкритим БЕЗ НАГЛЯДУ. Це стан, коли розряд треба припинити, а не
+    //  «надолужити»: скільки пакет віддав за цей час, ми не бачили, і скільки
+    //  ще протримається — теж. Ключ і enable знімає dischargeStop().
+    if (dtMs > DISCHARGE_STALL_MS) {
+        dischargeStop(DISR_STALL);
+        Serial.printf("=== Discharge ABORT: main loop stalled for %lu ms ===\n", dtMs);
+        return;
+    }
     g_dis.elapsedS   = (now - g_dis.startMs) / 1000UL;
 
     // Інтеграл ємності за інтервал, що ЩОЙНО минув. Рахуємо ДО оновлення стану:
@@ -1068,7 +1152,7 @@ inline void dischargeTask() {
     if (peak < (uint16_t)(est / 4)) peak = (uint16_t)est;
 
     g_dis.peakMa  = peak;
-    g_dis.setMa   = dischargeSetpointMa(mv);
+    g_dis.setMa   = dischargeSetpointMa(mv, g_dis.targetMv);
     g_dis.dutyPct = dischargeDutyFor(peak, g_dis.setMa);
     loadDuty(g_dis.dutyPct);
 
@@ -1142,6 +1226,13 @@ static String dischargeJson() {
     j += ",\"bandLoMa\":" + String((uint32_t)g_dis.setMa * DISCHARGE_BAND_LO_PCT / 100u);
     j += ",\"bandHiMa\":" + String((uint32_t)g_dis.setMa * DISCHARGE_BAND_HI_PCT / 100u);
     j += ",\"pwm\":"      + String(dischargePwmOk() ? "true" : "false");
+    // Межі лінійки струму — щоб інтерфейси описували її, а не зашивали числа.
+    j += ",\"rampHiMv\":" + String(DISCHARGE_RAMP_HI_MV);
+    j += ",\"maHi\":"     + String(DISCHARGE_MA_HI);
+    j += ",\"maLo\":"     + String(DISCHARGE_MA_LO);
+    j += ",\"tgtMinMv\":" + String(DISCHARGE_TARGET_MIN_MV);
+    j += ",\"tgtMaxMv\":" + String(DISCHARGE_TARGET_MAX_MV);
+    j += ",\"tgtDefMv\":" + String(DISCHARGE_TARGET_MV);
     j += "}";
     return j;
 }
@@ -1424,7 +1515,8 @@ void handleSetMah() {
     long mah = server.arg("mah").toInt();
     char smModel[16] = "";
     if (hasDump) impresModelName(batteryDump, smModel, sizeof(smModel));
-    long ica = impresIcaFromMah(mah, impresRatedMahFor(hasDump ? batteryDump : nullptr, smModel));
+    long ica = impresIcaFromMahRs(mah, impresRatedMahFor(hasDump ? batteryDump : nullptr, smModel),
+                                  impresBmsRsense(batteryDump2438));
     batteryDump2438[12] = (uint8_t)ica;
     ledSet(LED_WRITE); displayShow("ЗАПИС ЄМН mAh");
     bool ok = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
@@ -1433,7 +1525,8 @@ void handleSetMah() {
     ledSet(ok ? LED_OK : LED_ERROR);
     String m = String("{\"status\":\"") + (ok ? "success" : "error") +
                "\",\"ica\":" + ica + ",\"mah\":" +
-               impresIcaToMah((uint8_t)ica, impresRatedMahFor(hasDump ? batteryDump : nullptr, smModel)) + "}";
+               impresIcaToMahRs((uint8_t)ica, impresRatedMahFor(hasDump ? batteryDump : nullptr, smModel),
+                                impresBmsRsense(batteryDump2438)) + "}";
     server.send(ok ? 200 : 500, "application/json", m);
 }
 
@@ -1447,14 +1540,18 @@ inline int chargePctFromVoltage() {
 inline bool performSetChargePct(int pct) {
     if (!hasDump2438) return false;
     if (pct < 0) pct = 0; if (pct > 100) pct = 100;
-    int ica = pct * ICA_FULL_SCALE / 100;
-    if (ica > 255) ica = 255;
-    batteryDump2438[12] = (uint8_t)ica;
+    // Апаратна шкала паливоміра (див. impres_format.h): 100 % — це не 255, а
+    // стільки одиниць, скільки важить повний пакет за його ж шунтом.
+    char cm[16] = ""; decodeModel(cm, sizeof(cm));
+    uint8_t ica = impresIcaFromPercentRs(pct,
+                      impresRatedMahFor(hasDump ? batteryDump : nullptr, cm),
+                      impresBmsRsense(batteryDump2438));
+    batteryDump2438[12] = ica;
     bool ok = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
     if (ok) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
     return ok;
 }
-// Виставити рівень заряду (ICA): auto=1 — з напруги (7.0В=0%..8.4В=100%),
+// Виставити рівень заряду (ICA): auto=1 — з напруги (7.20 В = 0 %..8.25 В = 100 %),
 // або вручну pct=0..100. Зарядка/рація потім самі уточнять це значення.
 void handleSetCharge() {
     if (!requireAdmin()) return;
@@ -1576,6 +1673,23 @@ void handleRecalPrepare() {
            : "{\"status\":\"error\",\"message\":\"Помилка запису\"}");
 }
 
+// ── ПЕРЕНЕСЕННЯ АПАРАТНОГО КАЛІБРУВАННЯ МОНІТОРА ───────────────────────────
+//  Два поля DS2438 налаштовані на ЗАВОДІ під конкретний екземпляр і в шаблоні
+//  належать ІНШОМУ пакету:
+//    0x0D..0x0E — OFFSET АЦП струму;
+//    0x38..0x39 — вимірювальний резистор (шунт), значення/100000 = Ом.
+//  Шунт у різних моделей відрізняється майже вдвічі (0.025 проти 0.046 Ом), тож
+//  чужий шунт робить неправильними струм, залишок і знос — рівно та пастка, що
+//  зловилась на APLI4811C (dumps/14-r7-4807a-4811c/README.md).
+//  Тому: якщо в самому пакеті ці поля правдоподібні — лишаємо ЙОГО значення.
+//  dst — те, що збираємось писати; src — те, що зараз у чипі (або nullptr).
+static void keepMonitorCalibration(uint8_t *dst, const uint8_t *src) {
+    if (!dst || !src) return;
+    if (impresBmsRsense(src) > 0.0f) { dst[56] = src[56]; dst[57] = src[57]; }
+    uint16_t off = (uint16_t)((src[0x0E] << 8) | src[0x0D]);
+    if (off != 0x0000 && off != 0xFFFF) { dst[0x0D] = src[0x0D]; dst[0x0E] = src[0x0E]; }
+}
+
 // ------------------- Ініціалізація нового акумулятора -------------------
 // Порожній/стертий/невідомий чіп -> робочий АКБ обраної моделі. Вантажимо
 // вшитий genuine-еталон (DS2433 + DS2438), зануляємо всю історію/лічильники
@@ -1587,8 +1701,20 @@ bool performInitBattery(const char *model, long mah) {
     if (t < 0) { displayShow("НЕМА ШАБЛОНУ"); return false; }
 
     Serial.printf("\n=== Init new battery: %s, %ld mAh ===\n", model, mah);
-    memcpy_P(batteryDump,     BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
-    memcpy_P(batteryDump2438, BATTERY_TEMPLATES[t].d38, DS2438_MEM_SIZE);
+    // Шунт і OFFSET АЦП цього пакета — до того, як затремо буфер шаблоном.
+    uint8_t was38[DS2438_MEM_SIZE];
+    bool had38 = hasDump2438;
+    if (had38) memcpy(was38, batteryDump2438, DS2438_MEM_SIZE);
+
+    memcpy_P(batteryDump, BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
+    // Для частини моделей еталона монітора немає (d38 = nullptr): тоді монітор
+    // пакета не підмінюємо, а лише зануляємо лічильники нижче.
+    if (BATTERY_TEMPLATES[t].d38) {
+        memcpy_P(batteryDump2438, BATTERY_TEMPLATES[t].d38, DS2438_MEM_SIZE);
+        if (had38) keepMonitorCalibration(batteryDump2438, was38);
+    } else if (!had38) {
+        memset(batteryDump2438, 0, DS2438_MEM_SIZE);   // чистий монітор із нуля
+    }
     hasDump = true; hasDump2438 = true;
 
     // ⚑ КЛЮЧОВЕ. Шаблон у templates.h — це побайтова копія ОДНОГО реального
@@ -1612,7 +1738,8 @@ bool performInitBattery(const char *model, long mah) {
 
     // Монітор — у стан «новий пакет» (конфіг/поріг/дзеркало зберігаються).
     // Введена ємність (поточний заряд) у мА·год -> регістр ICA DS2438.
-    long ica = impresIcaFromMah(mah, impresRatedMahFor(batteryDump, model));
+    long ica = impresIcaFromMahRs(mah, impresRatedMahFor(batteryDump, model),
+                                  impresBmsRsense(batteryDump2438));
     impresResetMonitor(batteryDump2438, batteryDump, (uint8_t)ica);
 
     ledSet(LED_WRITE); displayShow("НОВИЙ АКБ...");
@@ -1654,22 +1781,37 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
     if (t < 0) { displayShow("НЕМА ШАБЛОНУ"); return false; }
 
     Serial.printf("\n=== Restore %s: %s ===\n", verbatim ? "VERBATIM" : "model-part", model);
-    memcpy_P(batteryDump,     BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
-    memcpy_P(batteryDump2438, BATTERY_TEMPLATES[t].d38, DS2438_MEM_SIZE);
+    uint8_t was38[DS2438_MEM_SIZE];
+    bool had38 = hasDump2438;
+    if (had38) memcpy(was38, batteryDump2438, DS2438_MEM_SIZE);
+
+    memcpy_P(batteryDump, BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
+    bool write38 = (BATTERY_TEMPLATES[t].d38 != nullptr);
+    if (write38) {
+        memcpy_P(batteryDump2438, BATTERY_TEMPLATES[t].d38, DS2438_MEM_SIZE);
+        // verbatim — це ручний режим «байт-у-байт», там не втручаємось
+        if (!verbatim && had38) keepMonitorCalibration(batteryDump2438, was38);
+    }
     if (!verbatim) {
         int cleared = applyFreshTail(BATTERY_TEMPLATES[t].fresh);
         if (cleared < 0) cleared = impresEraseTail(batteryDump);
         impresFixHeader(batteryDump);
-        impresResetMonitor(batteryDump2438, batteryDump,
-                           impresIcaFromPercent(impresPercentFromMv(impresVoltageMv(batteryDump2438))));
+        if (write38 || had38)
+            impresResetMonitor(batteryDump2438, batteryDump,
+                               impresIcaFromPercentRs(
+                                   impresPercentFromMv(impresVoltageMv(batteryDump2438)),
+                                   impresRatedMahFor(batteryDump, model),
+                                   impresBmsRsense(batteryDump2438)));
         Serial.printf("Restore: donor learned tail cleared: %d B\n", cleared);
     }
 
     ledSet(LED_WRITE); displayShow("ВІДНОВЛ. ЕТАЛОН");
     bool w33 = battery.writeBattery(batteryDump, DUMP_SIZE);
     if (w33) { hasDump = true; saveDump("/dump.bin", batteryDump, DUMP_SIZE); }
-    bool w38 = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
-    if (w38) { hasDump2438 = true; saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE); }
+    // Монітор пишемо лише якщо є що писати: коли еталона DS2438 для моделі
+    // немає, чіпати монітор пакета не можна — у ньому його власний шунт.
+    bool w38 = (write38 || had38) ? battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE) : true;
+    if (w38 && (write38 || had38)) { hasDump2438 = true; saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE); }
 
     if (ok33) *ok33 = w33;
     if (ok38) *ok38 = w38;
@@ -1733,28 +1875,35 @@ void handleDischargeStatus() {
 void handleOps() {
     String j = "{\"status\":\"success\",\"ops\":[";
     bool first = true;
+    // chips — у яку мікросхему піде запис. Поверхні показують це поруч із
+    // назвою операції: переплутати DS2433 (ідентичність) із DS2438 (монітор)
+    // коштує або моделі, або заводського калібрування вимірювача струму.
     auto add = [&](const char *key, const char *title, const char *detail,
-                   int danger, const char *model) {
+                   int danger, const char *model, uint8_t chips) {
         if (!first) j += ",";
         first = false;
         j += "{\"key\":\""; j += key; j += "\",\"title\":\""; j += title;
         j += "\",\"detail\":\""; j += detail;
         j += "\",\"danger\":" + String(danger);
+        j += ",\"chips\":" + String((int)chips);
+        j += ",\"chipsText\":\""; j += opChipsText(chips); j += "\"";
         j += ",\"model\":\""; j += (model ? model : ""); j += "\"}";
     };
     for (int i = 0; i < OP_BASE_COUNT; i++)
-        add(OP_DOC[i].key, OP_DOC[i].title, OP_DOC[i].detail, OP_TEXT[i].danger, nullptr);
+        add(OP_DOC[i].key, OP_DOC[i].title, OP_DOC[i].detail, OP_TEXT[i].danger,
+            nullptr, OP_DOC[i].chips);
     for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++)
         add("model", "Записати модельну частину еталона",
             "Ідентичність, розрядна крива, COPYRIGHT, заводська таблиця й запис моделі. Навчений калібрувальний хвіст НЕ переноситься — інакше пакет отримав би чужу калібровку.",
-            OPD_WRITE, BATTERY_TEMPLATES[t].name);
+            OPD_WRITE, BATTERY_TEMPLATES[t].name,
+            BATTERY_TEMPLATES[t].d38 ? OPC_BOTH : OPC_33);
     for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++)
         add("new", "Новий АКБ з порожнього чипа",
             "Записує модельну частину еталона й приводить монітор у стан нового пакета. Навчена калібровка лишається порожньою — її запише зарядна станція під час калібрування.",
-            OPD_WIPE, BATTERY_TEMPLATES[t].name);
+            OPD_WIPE, BATTERY_TEMPLATES[t].name, OPC_BOTH);
     for (int e = 0; e < OP_EXPERT_COUNT; e++)
         add(OP_DOC_EXPERT[e].key, OP_DOC_EXPERT[e].title, OP_DOC_EXPERT[e].detail,
-            OP_TEXT_EXPERT[e].danger, nullptr);
+            OP_TEXT_EXPERT[e].danger, nullptr, OP_DOC_EXPERT[e].chips);
     j += "]}";
     server.send(200, "application/json", j);
 }

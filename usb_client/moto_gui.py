@@ -659,16 +659,64 @@ class App:
         self.status("Скопійовано байт: %d" % len(data))
         return "break"
 
-    def hx_paste(self):
+    @staticmethod
+    def clipboard_text(root):
+        """Текст із буфера обміну.
+
+        Простий clipboard_get() не завжди спрацьовує: у Windows текст із
+        зовнішньої програми лежить у CF_UNICODETEXT, і Tk, попросивши STRING,
+        отримує TclError. Тому пробуємо кілька форм по черзі.
+        """
+        for kind in (None, "STRING", "UTF8_STRING"):
+            try:
+                return root.clipboard_get() if kind is None else root.clipboard_get(type=kind)
+            except tk.TclError:
+                continue
         try:
-            raw = self.root.clipboard_get()
+            return root.selection_get(selection="CLIPBOARD")
         except tk.TclError:
+            return ""
+
+    @staticmethod
+    def hex_from_text(raw):
+        """Байти з довільного hex-тексту.
+
+        ⚠️ Головна пастка — АДРЕСНИЙ СТОВПЕЦЬ. Копію дампа беруть із нашого ж
+        перегляду («000: 8D F8 …  ....») або з будь-якого hex-редактора, і
+        адреса — теж шістнадцяткова. Якщо просто вибрати з рядка всі hex-цифри,
+        адреса підмішається в дані: байти поїдуть, а кількість цифр стане
+        непарною — рівно та відмова «вставити не можу», яку видно на практиці.
+        Тому спершу знімаємо з кожного рядка адресу (цифри до «:» чи «|») і
+        ASCII-колонку (усе після двох пробілів у хвості).
+        """
+        out = []
+        for line in (raw or "").replace("\r", "\n").split("\n"):
+            # адреса з роздільником: «000:», «0x1F0:», «0100|»
+            line = re.sub(r"^\s*(0[xX])?[0-9A-Fa-f]{2,8}\s*[:|]\s*", "", line)
+            # адреса без роздільника, як у hexdump -C: «00000010  8D 8E …».
+            # Вимагаємо ЩОНАЙМЕНШЕ 4 цифри й два пробіли — інакше під це
+            # правило потрапив би звичайний байт, за яким стоїть подвійний
+            # пробіл, і перший байт вставки мовчки зникав би.
+            line = re.sub(r"^\s*[0-9A-Fa-f]{4,8}\s\s+", "", line)
+            # ASCII-колонка праворуч. Відрізаємо її по двох і більше пробілах,
+            # але ЛИШЕ якщо в хвості є символ, якого в hex-даних бути не може.
+            # Інакше під це правило потрапляв би звичайний подвійний пробіл між
+            # байтами («8D  8E 8F»), і все після нього мовчки зникало б.
+            parts = re.split(r"\s{2,}", line.strip(), maxsplit=1)
+            if len(parts) == 2 and re.search(r"[^0-9A-Fa-f\s]", parts[1]):
+                line = parts[0]
+            out.append(re.sub(r"0[xX]|[^0-9a-fA-F]", "", line))
+        return "".join(out)
+
+    def hx_paste(self):
+        raw = self.clipboard_text(self.root)
+        if not raw:
             self.status("Буфер обміну порожній"); return "break"
         if not self.edBytes:
             messagebox.showwarning("Вставка", "Спочатку натисніть «↻ Завантажити»."); return "break"
         # Приймаємо будь-яку розумну форму: «01 A5 FF», «0x01,0xA5», «01A5FF»,
-        # з переносами рядків і табуляціями.
-        digits = re.sub(r"0[xX]|[^0-9a-fA-F]", "", raw)
+        # рядки з адресним стовпцем і ASCII-колонкою, переноси й табуляції.
+        digits = self.hex_from_text(raw)
         if not digits:
             messagebox.showwarning("Вставка", "У буфері немає шістнадцяткових даних."); return "break"
         if len(digits) % 2:
@@ -1119,12 +1167,32 @@ class App:
         self.dICA = self._kv(box, "Залишок ICA:", 5)
         self.dCCA = self._kv(box, "Заряджено CCA:", 6)
         self.dDCA = self._kv(box, "Розряджено DCA:", 7)
+        self.dRs = self._kv(box, "Шунт вимірювача:", 10)
+        self.dSerial33 = self._kv(box, "Серійний DS2433:", 11)
+
+        # Штатні поля Motorola. Читаються тим самим алгоритмом, що й фірмове ПЗ
+        # (звірено на 53 еталонних пакетах). Цикли лежать у гістограмі й ключа
+        # не потребують; знос, дати й калібрування зашифровані ключем із ROM-ID
+        # чипа DS2433 — саме тому раніше ці поля здавалися відсутніми.
+        bbox = ttk.LabelFrame(f, text="Штатні лічильники Motorola", padding=8)
+        bbox.pack(fill="x", pady=(8, 0))
+        self.bWarn = ttk.Label(bbox, text="", foreground="#c0392b", wraplength=560, justify="left")
+        self.bWarn.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        self.bWarn.grid_remove()
+        self.bCyc = self._kv(bbox, "Циклів заряду (IMPRES):", 1)
+        self.bCycN = self._kv(bbox, "Циклів не-IMPRES:", 2)
+        self.bPot = self._kv(bbox, "Реальна ємність:", 3)
+        self.bHealth = self._kv(bbox, "Знос / здоров'я:", 4)
+        self.bCal = self._kv(bbox, "Калібрувань пройдено:", 5)
+        self.bMfg = self._kv(bbox, "Дата виготовлення:", 6)
+        self.bUse = self._kv(bbox, "Перше користування:", 7)
+        self.bKey = self._kv(bbox, "Ключ:", 8)
         ttk.Label(f, text="Дамп DS2433 (512 Б):").pack(anchor="w", pady=(8, 0))
-        self.tx33 = scrolledtext.ScrolledText(f, height=6, font=fnt("Consolas", 8),
+        self.tx33 = scrolledtext.ScrolledText(f, height=6, font=fnt("Consolas", 8), wrap="none",
                                               bg=MIL["field"], fg="#b9bd86", insertbackground=MIL["khaki"],
                                               relief="flat", bd=0); self.tx33.pack(fill="both", expand=True)
         ttk.Label(f, text="Дамп DS2438 (64 Б):").pack(anchor="w", pady=(6, 0))
-        self.tx38 = scrolledtext.ScrolledText(f, height=3, font=fnt("Consolas", 8),
+        self.tx38 = scrolledtext.ScrolledText(f, height=3, font=fnt("Consolas", 8), wrap="none",
                                               bg=MIL["field"], fg="#b9bd86", insertbackground=MIL["khaki"],
                                               relief="flat", bd=0); self.tx38.pack(fill="x")
 
@@ -1144,7 +1212,7 @@ class App:
         ttk.Button(b1, text="⬇ Копія DS2433", command=lambda: self.save_dump("GET33", 512, "ds2433.bin")).pack(side="left", padx=3)
         ttk.Button(b1, text="⬇ Копія DS2438", command=lambda: self.save_dump("GET38", 64, "ds2438.bin")).pack(side="left", padx=3)
 
-        b2b = ttk.LabelFrame(p, text="Крок 2 — РЕМОНТ. Після заміни елементів починайте звідси", padding=8); b2b.pack(fill="x", pady=4)
+        b2b = ttk.LabelFrame(p, text="Крок 2 — РЕМОНТ. Після заміни елементів починайте звідси  ·  пише в DS2433 + DS2438", padding=8); b2b.pack(fill="x", pady=4)
         ttk.Label(b2b, text="Для АКБ, яку рація бачить «невідома» / не бере на калібрування після заміни банок.\n"
                             "У DS2433 СКИДАЄТЬСЯ навчений хвіст 0x18A–0x1FF: скелет записів і сталі моделі\n"
                             "лишаються, виміряні параметри старих/донорських банок обнуляються, суми правильні.\n"
@@ -1159,15 +1227,33 @@ class App:
         ttk.Button(b2b, text="🛠 Ремонт цілісності (контрольні суми + дзеркало)",
                    command=lambda: self.simple_op("REPAIR", "Відновити цілісність і записати?")).pack(anchor="w", pady=3)
 
-        b2d = ttk.LabelFrame(p, text="Розряд перед калібруванням (навантаження MOSFET)", padding=8); b2d.pack(fill="x", pady=4)
-        ttk.Label(b2d, text="Станція не бере АКБ на калібрування, поки бачить його зарядженим. Розряд до 7.2 В\n"
-                            "змушує її піти в повний цикл; заразом рахується реальна ємність нових банок.\n"
-                            "Струм обмежується ШІМом і веде за напругою: 1000 мА на 8.40 В → 300 мА на 7.20 В.\n"
-                            "Аварійна зупинка: < 6.00 В, перегрів 45 °C, стеля часу, втрата зв'язку з монітором.\n"
-                            "Резистор гріється — не лишайте без нагляду.",
+        b2d = ttk.LabelFrame(p, text="Розряд перед калібруванням (навантаження MOSFET)  ·  пише в DS2438", padding=8); b2d.pack(fill="x", pady=4)
+        ttk.Label(b2d, text="Розряд — це приймальний контроль після перепайки: він міряє реальну ємність нових\n"
+                            "банок. Для калібрування він НЕ обов'язковий — фірмова станція бере в цикл навіть\n"
+                            "повністю заряджений пакет, якщо він оригінальний. Але якщо станція вперлась і не\n"
+                            "переходить у калібрування, часткова розрядка це підштовхує.\n"
+                            "Аварійна зупинка: < 6.00 В, перегрів 45 °C, стеля часу, втрата зв'язку з монітором,\n"
+                            "зависання головного циклу. Резистор гріється — не лишайте без нагляду.",
                   foreground="#b9bd86", justify="left").pack(anchor="w")
+        # Ціль розряду обирає користувач; лінійка струму будується під неї —
+        # 300 мА припадають рівно на обрану напругу, а не завжди на 7.20 В.
+        tf = ttk.Frame(b2d); tf.pack(anchor="w", pady=(4, 0))
+        ttk.Label(tf, text="Розряджати до:").pack(side="left")
+        self.disTarget = tk.IntVar(value=7200)
+        for mv in (7800, 7600, 7400, 7200, 7000):
+            ttk.Radiobutton(tf, text="%.2f В" % (mv / 1000.0), value=mv,
+                            variable=self.disTarget,
+                            command=self._dis_ramp_note).pack(side="left", padx=2)
+        ttk.Label(tf, text="або, мВ:").pack(side="left", padx=(8, 2))
+        self.eDisTarget = ttk.Entry(tf, width=6)
+        self.eDisTarget.pack(side="left")
+        self.eDisTarget.bind("<KeyRelease>", lambda e: self._dis_ramp_note())
+        self.lblDisRamp = ttk.Label(b2d, text="", foreground="#b9bd86", justify="left")
+        self.lblDisRamp.pack(anchor="w", pady=(2, 0))
+        self._dis_ramp_note()
+
         df = ttk.Frame(b2d); df.pack(anchor="w", pady=3)
-        ttk.Button(df, text="🪫 Почати розряд (7.2 В)", command=self.discharge_start).pack(side="left", padx=2)
+        ttk.Button(df, text="🪫 Почати розряд", command=self.discharge_start).pack(side="left", padx=2)
         ttk.Button(df, text="⏹ Зупинити", command=self.discharge_stop).pack(side="left", padx=2)
         ttk.Button(df, text="🔄 Оновити зараз", command=self.discharge_status).pack(side="left", padx=2)
         # Стан тягнеться сам (див. _dis_tick) — кнопка лишилась тільки щоб не
@@ -1181,27 +1267,41 @@ class App:
                             "Прошивкою цей крок не замінюється.",
                   foreground="#b9bd86", justify="left").pack(anchor="w")
 
-        b2 = ttk.LabelFrame(p, text="Обслуговування (безпечно для ідентичності)", padding=8); b2.pack(fill="x", pady=4)
+        b2 = ttk.LabelFrame(p, text="Обслуговування (безпечно для ідентичності)  ·  пише в DS2433 + DS2438", padding=8); b2.pack(fill="x", pady=4)
         ttk.Button(b2, text="♻️ Скидання лічильників", command=lambda: self.simple_op("RESET", "Обнулити лічильники DS2438 (ETM/CCA/DCA)?\nНавчену калібровку й ідентичність не чіпає.")).pack(side="left", padx=3)
         ttk.Button(b2, text="🧹 Очистити дані (лишити ID/калібр.)", command=lambda: self.simple_op("CLEAN", "Стерти дані використання, лишивши ID/калібрування?")).pack(side="left", padx=3)
 
-        b5 = ttk.LabelFrame(p, text="Заряд", padding=8); b5.pack(fill="x", pady=4)
-        self.eMah = self._row(b5, "Заряд, мА·год:", lambda fr: self._entry(fr, 10, "0"))
+        # Ємність і відсоток — ДВІ окремі операції. Пишуть вони в один і той
+        # самий регістр ICA, але це різні задачі: точний залишок у мА·год
+        # (як його рахує Motorola) і груба оцінка у відсотках.
+        b5 = ttk.LabelFrame(p, text="🔋 Ємність — внести залишок у мА·год  ·  пише в DS2438",
+                            padding=8); b5.pack(fill="x", pady=4)
+        ttk.Label(b5, text="Залишок ЗАРЯДУ в паливомірі (регістр ICA), одиниця = 0.4882 мВ·год / шунт\n"
+                           "цього пакета. Це не паспортна ємність (вона в DS2433, 0x008) і не знос.",
+                  foreground="#b9bd86", justify="left").pack(anchor="w")
+        self.eMah = self._row(b5, "Залишок, мА·год:", lambda fr: self._entry(fr, 10, "0"))
         ttk.Button(b5, text="💾 Записати мА·год", command=self.set_mah).pack(anchor="w", pady=2)
-        self.eChg = self._row(b5, "Заряд, %:", lambda fr: self._entry(fr, 10, ""))
-        cf = ttk.Frame(b5); cf.pack(anchor="w", pady=2)
-        ttk.Button(cf, text="⚡ Заряд по напрузі (авто)", command=self.set_charge_auto).pack(side="left", padx=2)
+
+        b5p = ttk.LabelFrame(p, text="⚡ Рівень заряду у відсотках  ·  пише в DS2438",
+                             padding=8); b5p.pack(fill="x", pady=4)
+        ttk.Label(b5p, text="Той самий регістр ICA, але у відсотках від паспортної ємності —\n"
+                            "коли точних мА·год немає. Станція згодом уточнить значення сама.",
+                  foreground="#b9bd86", justify="left").pack(anchor="w")
+        self.eChg = self._row(b5p, "Заряд, %:", lambda fr: self._entry(fr, 10, ""))
+        cf = ttk.Frame(b5p); cf.pack(anchor="w", pady=2)
+        ttk.Button(cf, text="⚡ За напругою (7.20 В = 0 %, 8.25 В = 100 %)",
+                   command=self.set_charge_auto).pack(side="left", padx=2)
         ttk.Button(cf, text="💾 Записати заряд %", command=self.set_charge_pct).pack(side="left", padx=2)
 
-        b5c = ttk.LabelFrame(p, text="Дата першого використання (рація рахує як «час − ETM»)", padding=8); b5c.pack(fill="x", pady=4)
+        b5c = ttk.LabelFrame(p, text="Дата першого використання (рація рахує як «час − ETM»)  ·  пише в DS2438", padding=8); b5c.pack(fill="x", pady=4)
         self.eEtmDate = self._row(b5c, "Дата (YYYY-MM-DD):", lambda fr: self._entry(fr, 12))
         ttk.Button(b5c, text="📅 Записати дату (ETM)", command=self.set_etm).pack(anchor="w", pady=2)
 
-        b3 = ttk.LabelFrame(p, text="Ідентичність — модель", padding=8); b3.pack(fill="x", pady=4)
+        b3 = ttk.LabelFrame(p, text="Ідентичність — модель  ·  пише в DS2433", padding=8); b3.pack(fill="x", pady=4)
         self.eModel = self._row(b3, "Модель (3–9, A–Z0–9):", lambda fr: self._entry(fr, 12))
         ttk.Button(b3, text="💾 Записати модель", command=self.set_model).pack(anchor="w", pady=2)
 
-        b4r = ttk.LabelFrame(p, text="🛠️ Відновити модельну частину еталона", padding=8); b4r.pack(fill="x", pady=4)
+        b4r = ttk.LabelFrame(p, text="🛠️ Відновити модельну частину еталона  ·  пише в DS2433 (+ DS2438, якщо є еталон монітора)", padding=8); b4r.pack(fill="x", pady=4)
         self.cbRest = self._row(b4r, "Модель-еталон:", lambda fr: self._combo(fr, 18))
         ttk.Label(b4r, text="Пише ідентичність 0x000–0x065, криву, COPYRIGHT, заводську таблицю й запис моделі.\n"
                            "Навчений хвіст 0x18A–0x1FF лишається порожнім — його запише зарядна станція.\n"
@@ -1210,19 +1310,19 @@ class App:
         ttk.Button(b4r, text="🛠️ Відновити модельну частину (DS2433+DS2438)", command=self.restore_battery).pack(anchor="w", pady=2)
         ttk.Button(b4r, text="🧪 Байт-у-байт (ручний режим, для аналізу)", command=self.restore_battery_verbatim).pack(anchor="w", pady=2)
 
-        b4 = ttk.LabelFrame(p, text="🆕 Новий акумулятор (порожній чип)", padding=8); b4.pack(fill="x", pady=4)
+        b4 = ttk.LabelFrame(p, text="🆕 Новий акумулятор (порожній чип)  ·  пише в DS2433 + DS2438", padding=8); b4.pack(fill="x", pady=4)
         self.cbInit = self._row(b4, "Модель-еталон:", lambda fr: self._combo(fr, 18))
         self.eInitMah = self._row(b4, "Заряд, мА·год:", lambda fr: self._entry(fr, 10, "1000"))
         ttk.Button(b4, text="🆕 Записати новий АКБ (DS2433+DS2438)", command=self.init_battery).pack(anchor="w", pady=2)
 
-        b8 = ttk.LabelFrame(p, text="🧪 Ручний режим / експерт", padding=8); b8.pack(fill="x", pady=4)
+        b8 = ttk.LabelFrame(p, text="🧪 Ручний режим / експерт  ·  пише в ту мікросхему, яку обрано в редакторі", padding=8); b8.pack(fill="x", pady=4)
         ttk.Label(b8, text="Строк служби в прошивці НЕ зберігається — рація рахує його сама. Поле нижче править\n"
                            "байт у ЗАВОДСЬКІЙ таблиці моделі (0x129) і показань станції не змінить.",
                   foreground="#b9bd86", justify="left").pack(anchor="w")
         self.eCap = self._row(b8, "Байт заводської таблиці, %:", lambda fr: self._entry(fr, 10, "100"))
         ttk.Button(b8, text="💾 Записати %", command=self.set_cap).pack(anchor="w", pady=2)
 
-        b6 = ttk.LabelFrame(p, text="⛔ Небезпечна зона (незворотно!)", padding=8); b6.pack(fill="x", pady=4)
+        b6 = ttk.LabelFrame(p, text="⛔ Небезпечна зона (незворотно!)  ·  стирає обрану мікросхему повністю", padding=8); b6.pack(fill="x", pady=4)
         rf = ttk.Frame(b6); rf.pack(fill="x", pady=2)
         ttk.Button(rf, text="📤 Записати DS2433 з .bin (512 Б)", command=lambda: self.write_file(512, "WRITE33")).pack(side="left", padx=3)
         ttk.Button(rf, text="🔬 DS2438 з .bin (64 Б)", command=lambda: self.write_file(64, "WRITE38")).pack(side="left", padx=3)
@@ -1545,14 +1645,14 @@ class App:
         self.dT.config(text=(f"{t:.1f} °C" if isinstance(t, (int, float)) else "—"))
         m = d.get("model") or "—"
         self.ovModel.config(text=m); self.dModel.config(text=m)
-        # Прочерк тут читався як «даних ще немає, зчитайте ще раз», хоча насправді
-        # строк служби в прошивці НЕ зберігається — його рахує рація з навчених
-        # даних. Кажемо це прямо, щоб не штовхати шукати неіснуючу дію.
+        # Ємність/знос і цикли беруться зі штатних полів Motorola — їх нижче
+        # проставить _render_bms(). Тут лише запасний варіант на випадок, коли
+        # блоки прошивки побиті й декодер нічого не дав.
         cap = d.get("capacity"); wear = d.get("wear")
         self.ovCap.config(text=(f"{cap}% / знос {wear}%" if isinstance(cap, int) and cap >= 0
-                                else "рахує рація (у прошивці не зберігається)"))
+                                else "— (див. «Штатні лічильники»)"))
         if d.get("ccaCycles") is not None:
-            self.ovCyc.config(text=f"{d['ccaCycles']} зар. / {d['dcaCycles']} розр.")
+            self.ovCyc.config(text=f"{d['ccaCycles']} зар. / {d['dcaCycles']} розр. (за CCA/DCA)")
         if "genuine" in d:
             self.ovAuth.config(text=("OK" if d["genuine"] else "РИЗИК (" + str(d.get("authReason", "")) + ")"))
         if "headerOk" in d:
@@ -1588,18 +1688,113 @@ class App:
         self.dICA.config(text=(f"≈{d.get('icaMah')} мА·год (raw {d.get('ica')})") if d.get("icaMah") is not None else "—")
         self.dCCA.config(text=(f"{d.get('ccaCycles')} ц (≈{d.get('ccaMah')} мА·год)") if d.get("ccaMah") is not None else "—")
         self.dDCA.config(text=(f"{d.get('dcaCycles')} ц (≈{d.get('dcaMah')} мА·год)") if d.get("dcaMah") is not None else "—")
+        rs = d.get("rsense")
+        self._rs_from_chip = bool(d.get("rsenseChip"))
+        self.dRs.config(text=(f"{rs * 1000:.2f} мОм " +
+                              ("(з чипа)" if d.get("rsenseChip") else "(з налаштувань — у чипі поля немає)"))
+                        if isinstance(rs, (int, float)) else "—")
+        self.dSerial33.config(text=d.get("serial33") or "—")
+        self._render_bms(d.get("bms"))
+        b = d.get("bms") or {}
+        # Справжня дата з чипа має пріоритет над оцінкою «сьогодні − ETM».
+        if b.get("firstUseDate"):
+            self.dFirst.config(text=b["firstUseDate"] + " (з чипа)", foreground="")
+        self._warn_foreign_2438(b, etm if isinstance(etm, int) else 0)
         if isinstance(cap, int) and cap >= 0:
             self._set_entry(self.eCap, str(cap))
         if d.get("icaMah") is not None:
             self._set_entry(self.eMah, str(d.get("icaMah")))
-        self._set_text(self.tx33, d.get("hex33", ""))
-        self._set_text(self.tx38, d.get("hex38", ""))
+        self._set_text(self.tx33, self._hex_dump(d.get("hex33", "")))
+        self._set_text(self.tx38, self._hex_dump(d.get("hex38", "")))
+
+    # Пакет не міг ПРАЦЮВАТИ довше, ніж він ІСНУЄ. Якщо напрацювання ETM більше
+    # за вік від дати виготовлення — DS2438 не від цього АКБ (типово: монітор не
+    # перечитали після зміни пакета). Це не дрібниця: шунт у DS2438 свій у
+    # кожного пакета, тож із чужого монітора струм, залишок і знос будуть хибні.
+    # Допуск 180 діб: на 31 рідній парі з dumps/ ETM перевищував вік щонайбільше
+    # на 44 доби — лічильник стартує до того, як у чип запишуть дату.
+    ETM_AGE_SLACK_D = 180
+
+    def _warn_foreign_2438(self, b, etm_sec):
+        import datetime
+        mfg = b.get("mfgDate")
+        if not mfg or not etm_sec:
+            self.bWarn.grid_remove(); return
+        try:
+            age = (datetime.date.today() - datetime.date(*map(int, mfg.split("-")))).days
+        except ValueError:
+            self.bWarn.grid_remove(); return
+        etm_d = etm_sec // 86400
+        if etm_d > age + self.ETM_AGE_SLACK_D:
+            self.bWarn.config(text=("⚠️ Напрацювання ETM (%d діб) більше за вік пакета "
+                                    "(%d діб від %s). DS2438 майже напевно не від цього АКБ — "
+                                    "перечитайте монітор. Доти струм, залишок і знос неправильні."
+                                    % (etm_d, age, mfg)))
+            self.bWarn.grid()
+        else:
+            self.bWarn.grid_remove()
+
+    _rs_from_chip = False        # чи взято шунт із чипа (впливає на точність зносу)
+
+    def _render_bms(self, b):
+        """Штатні поля Motorola з відповіді INFO."""
+        empty = [self.bCyc, self.bCycN, self.bPot, self.bHealth,
+                 self.bCal, self.bMfg, self.bUse, self.bKey]
+        if not b:
+            for w in empty:
+                w.config(text="—", foreground="")
+            return
+        cyc = b.get("cycles", -1)
+        self.bCyc.config(text=str(cyc) if cyc >= 0 else "— (блок гістограми побитий)")
+        self.bCycN.config(text=str(b.get("nonImpresCycles", "—")))
+        if b.get("haveKey"):
+            pot = b.get("potentialMah", 0); first = b.get("firstUseMah") or 0
+            self.bPot.config(text=f"{pot} мА·год" + (f" (на початку {first})" if first else ""))
+            h = b.get("health", 0)
+            # Знос рахується через шунт. Якщо шунт не з чипа — це лише оцінка:
+            # у різних моделей він відрізняється майже вдвічі.
+            note = "" if self._rs_from_chip else "  (оцінка: шунт не з чипа)"
+            self.bHealth.config(text=f"{h} %{note}",
+                                foreground="#7ea24a" if h >= 80 else ("" if h >= 60 else "#c0392b"))
+            self.bCal.config(text=str(b.get("calCycles", "—")))
+            self.bMfg.config(text=b.get("mfgDate") or "—")
+            self.bUse.config(text=b.get("firstUseDate") or "— (пакет ще не вмикався)")
+            self.bKey.config(text="підібрано перебором (ROM чипа недоступний)"
+                             if b.get("keyGuessed") else "з ROM-ID чипа DS2433")
+            self.ovCap.config(text=f"{pot} мА·год / знос {h}%")
+            self.ovCyc.config(text=f"{cyc} зар. IMPRES" +
+                              (f" / +{b['nonImpresCycles']} звич. ЗП" if b.get("nonImpresCycles") else ""))
+        else:
+            for w in (self.bPot, self.bHealth, self.bCal, self.bMfg, self.bUse):
+                w.config(text="—", foreground="")
+            self.bKey.config(text="не визначено — зчитайте АКБ пристроєм (потрібен ROM-ID DS2433)")
+            if cyc >= 0:
+                self.ovCyc.config(text=f"{cyc} зар. IMPRES")
 
     def _set_entry(self, e, val):
         e.delete(0, "end"); e.insert(0, val)
 
     def _set_text(self, t, s):
         t.delete("1.0", "end"); t.insert("1.0", s)
+
+    @staticmethod
+    def _hex_dump(s):
+        """Дамп у вигляді адреса + 16 байт + ASCII.
+
+        Пристрій віддає один довгий рядок «8D F8 01 …». У Text він переноситься
+        там, де влізе по ширині вікна, тож стовпці «пливуть» — на 512 байтах це
+        видно одразу. Розкладаємо самі, по 16 байт у рядку.
+        """
+        b = [x for x in (s or "").split() if len(x) == 2]
+        if not b:
+            return ""
+        rows = []
+        for i in range(0, len(b), 16):
+            row = b[i:i + 16]
+            hx = " ".join(row).ljust(16 * 3 - 1)
+            asc = "".join(chr(v) if 32 <= v < 127 else "." for v in (int(x, 16) for x in row))
+            rows.append("%03X: %s  %s" % (i, hx, asc))
+        return "\n".join(rows)
 
     # ---- операції запису -----------------------------------------------
     def simple_op(self, command, confirm, timeout=15.0):
@@ -1650,6 +1845,13 @@ class App:
         # знімаємо ознаку «запит у польоті».
         self._disBusy = False
         d = (r or {}).get("discharge") if isinstance(r, dict) else None
+        # Межі лінійки і цілі — з пристрою: він їх і застосовує, тож клієнт не
+        # має права мати власну думку.
+        if isinstance(d, dict) and d.get("rampHiMv"):
+            for k in ("rampHiMv", "maHi", "maLo", "tgtMinMv", "tgtMaxMv", "tgtDefMv"):
+                if d.get(k) is not None:
+                    self.disRamp[k] = d[k]
+            self._dis_ramp_note()
         self.monDis.update_state(d)
 
     def _dis_tick(self):
@@ -1677,14 +1879,39 @@ class App:
         self._disBusy = True
         self.cmd("DISCHARGE ?", 8.0, cb=self._dis_show)
 
+    # Межі лінійки приходять від пристрою (див. dischargeJson); поки не
+    # опитали — типові з settings.h.
+    disRamp = {"rampHiMv": 8250, "maHi": 1000, "maLo": 300,
+               "tgtMinMv": 6800, "tgtMaxMv": 8000, "tgtDefMv": 7200}
+
+    def _dis_target_mv(self):
+        """Ціль: поле «або, мВ» має пріоритет над кнопками; затиснута в межі."""
+        raw = (self.eDisTarget.get() or "").strip() if hasattr(self, "eDisTarget") else ""
+        try:
+            mv = int(raw) if raw else int(self.disTarget.get())
+        except (ValueError, tk.TclError):
+            mv = self.disRamp["tgtDefMv"]
+        return max(self.disRamp["tgtMinMv"], min(self.disRamp["tgtMaxMv"], mv))
+
+    def _dis_ramp_note(self, *_):
+        if not hasattr(self, "lblDisRamp"):
+            return
+        mv, c = self._dis_target_mv(), self.disRamp
+        self.lblDisRamp.config(
+            text="Струм веде за напругою: %d мА на %.2f В → %d мА рівно на цілі %.2f В.\n"
+                 "Малий струм у кінці дає чесніший вимір ємності й щадить банки."
+                 % (c["maHi"], c["rampHiMv"] / 1000.0, c["maLo"], mv / 1000.0))
+
     def discharge_start(self):
         if not self.need_conn():
             return
+        mv, c = self._dis_target_mv(), self.disRamp
         if not messagebox.askyesno("Розряд",
-                "Почати розряд до 7.2 В?\n\n"
-                "Струм обмежується ШІМом: 1000 мА на повному заряді, лінійно до 300 мА на 7.20 В.\n"
+                "Почати розряд до %.2f В?\n\n"
+                "Струм обмежується ШІМом: %d мА на %.2f В, лінійно до %d мА на %.2f В.\n"
                 "Навантаження буде увімкнено, резистор нагріється.\n"
-                "Не лишайте пристрій без нагляду."):
+                "Не лишайте пристрій без нагляду."
+                % (mv / 1000.0, c["maHi"], c["rampHiMv"] / 1000.0, c["maLo"], mv / 1000.0)):
             return
         def done(r):
             if isinstance(r, dict) and r.get("ok"):
@@ -1692,7 +1919,7 @@ class App:
             else:
                 self._disBusy = False
                 self.status("Помилка: " + str((r or {}).get("err", "")))
-        self.maybe_auth(lambda: self.cmd("DISCHARGE 7200", 15.0, cb=done))
+        self.maybe_auth(lambda: self.cmd("DISCHARGE %d" % mv, 15.0, cb=done))
 
     def discharge_stop(self):
         if not self.need_conn():

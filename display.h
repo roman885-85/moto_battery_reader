@@ -3,6 +3,7 @@
 
 #include "settings.h"
 #include "impres_format.h"
+#include "impres_bms.h"   // штатний декодер Motorola (цикли, знос, дати)
 #include "battery_reader.h"
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — для дій «Новий АКБ» у меню
 #include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
@@ -15,6 +16,8 @@ extern uint8_t batteryDump[DUMP_SIZE];
 extern uint8_t batteryDump2438[DS2438_MEM_SIZE];
 extern uint8_t chipSN2438[8];
 extern bool hasSN2438;
+extern uint8_t chipSN2433[8];
+extern bool hasSN2433;
 
 // Сторінки меню (перегортаються кнопкою):
 //   0 - головна (заряд + статус)
@@ -435,8 +438,15 @@ inline int batteryPercent(const char **src) {
 
     uint8_t config = batteryDump2438[0];        // стр.0 байт0 = Status/Config
     if (config & 0x01) {                         // IAD=1 -> ICA підтримується
-        int ica = (int)batteryDump2438[12] * 100 / ICA_FULL_SCALE;  // стр.1 байт4 = ICA
-        if (ica > 100) ica = 100;
+        // Шкала ICA АПАРАТНА: одиниця = 0.4882 мВ·год / Rsense, а не «255 =
+        // повний пакет». Тому відсоток рахуємо через мА·год і паспортну
+        // ємність — інакше повний пакет показувався б як ~79 % (2150 мА·год
+        // при шунті 0.0459 Ом — це 202 одиниці, а не 255).
+        char pm[16] = "";
+        if (hasDump) impresModelName(batteryDump, pm, sizeof(pm));
+        int ica = impresPercentFromIca(batteryDump2438[12],
+                                       impresRatedMahFor(hasDump ? batteryDump : nullptr, pm),
+                                       impresBmsRsense(batteryDump2438));
         // Паливомір «завис»/не відкалібрований: ICA каже майже порожньо, а напруга
         // — суттєво більше (напр. після заміни банок/стирання, до калібрування на
         // ЗП). Тоді показуємо реальний рівень за НАПРУГОЮ, а джерело позначаємо "U!"
@@ -571,7 +581,9 @@ inline int batteryRemainingMah() {
     if (!hasDump2438) return -1;
     char m[16] = "";
     if (hasDump) impresModelName(batteryDump, m, sizeof(m));
-    return impresIcaToMah(batteryDump2438[12], impresRatedMahFor(hasDump ? batteryDump : nullptr, m));
+    return impresIcaToMahRs(batteryDump2438[12],
+                            impresRatedMahFor(hasDump ? batteryDump : nullptr, m),
+                            impresBmsRsense(batteryDump2438));
 }
 
 inline void drawPageMain() {
@@ -755,20 +767,24 @@ inline void drawPageHealth() {
         }
     }
 
-    if (hasDump2438) {
-        uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
-        uint16_t dca = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
-        // Цикли: сумарний заряд (розряд) / паспортна ємність (settings.h).
-        char cyModel[16] = ""; if (hasDump) impresModelName(batteryDump, cyModel, sizeof(cyModel));
-        int  rated = impresRatedMahFor(hasDump ? batteryDump : nullptr, cyModel);  // з чипа, інакше з таблиці
-        int chgCyc = (int)(cca * DS2438_MAH_PER_LSB / rated);
-        int disCyc = (int)(dca * DS2438_MAH_PER_LSB / rated);
-        snprintf(buf, sizeof(buf), "Циклів: зар.%d роз.%d", chgCyc, disCyc);
+    // ── штатні поля Motorola (impres_bms.h) ────────────────────────────────
+    //  Раніше тут стояло «Знос: рахує рація», а цикли оцінювались із CCA.
+    //  Насправді і знос, і справжній лічильник циклів лежать у самому чипі:
+    //  цикли — у гістограмі (без ключа), знос — у зашифрованому CTS.
+    const ImpresBms &bms = impresBmsOf(hasDump ? batteryDump : nullptr,
+                                       hasDump2438 ? batteryDump2438 : nullptr,
+                                       hasSN2433 ? chipSN2433 : nullptr,
+                                       DS2438_RSENSE_OHM);
+    if (bms.ok && bms.cycles >= 0) {
+        snprintf(buf, sizeof(buf), "Циклів: %d", bms.cycles);
         row(buf);
     }
-
-    // Знос — останнім: він нічого не вимірює, лише пояснює, чому числа немає.
-    if (hasDump || hasDump2438) row("Знос: рахує рація");
+    if (bms.ok && bms.haveKey) {
+        snprintf(buf, sizeof(buf), "Знос: %d%% (%d мА*год)", bms.health, bms.potentialMah);
+        row(buf);
+    } else if (hasDump || hasDump2438) {
+        row("Знос: нема ключа");
+    }
 
     drawFooter();
 }
@@ -866,10 +882,15 @@ inline void drawPageActions() {
     // Назви/описи/небезпека — з operations.h (той самий каталог, що в кольоровому
     // екрані, вебі й USB-клієнті). Локального списку дій більше немає.
     int sel = g_actionSel, total = numActions();
-    const char *name, *l1, *l2; uint8_t danger; char nbuf[26];
-    opInfo(sel, &name, &l1, &l2, &danger, nbuf, sizeof(nbuf));
+    const char *name, *l1, *l2; uint8_t danger, chips; char nbuf[26];
+    opInfo(sel, &name, &l1, &l2, &danger, nbuf, sizeof(nbuf), &chips);
 
-    char t[20]; snprintf(t, sizeof(t), "Дія  %d/%d", sel + 1, total);
+    // У шапці — не лише номер дії, а й КУДИ вона пише. Плутанина між DS2433
+    // (ідентичність) і DS2438 (монітор) коштує дорого, тож це видно завжди.
+    char t[26];
+    if (chips == OPC_NONE) snprintf(t, sizeof(t), "Дія  %d/%d", sel + 1, total);
+    else                   snprintf(t, sizeof(t), "Дія %d/%d -> %s", sel + 1, total,
+                                    opChipsShort(chips));
     drawHeader(t);
 
     // Назва обраної операції — крупним шрифтом.

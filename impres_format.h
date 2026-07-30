@@ -435,6 +435,7 @@ static const ImpresRated IMPRES_RATED[] = {
     { "PMNN4493A", 3000 },   // те саме
     { "PMNN4809A", 2700 },
     { "APLI4810C", 3100 },
+    { "APLI4811C", 3100 },   // R7; чип теж каже 3100
     // Далі — з KIT-таблиці Motorola, шаблонів у нас поки немає, але ємність
     // знадобиться, щойно такий пакет прочитають.
     { "PMNN4403A", 2150 },
@@ -495,14 +496,15 @@ inline int impresRatedMahFor(const uint8_t *d33, const char *model) {
     return m ? m : impresRatedMah(model);
 }
 
-// Заряд, % за напругою (7.00 В = 0 %, 8.40 В = 100 %) — запит власника:
+// Заряд, % за напругою (7.20 В = 0 %, 8.25 В = 100 %) — межі уточнені власником
+// на реальних пакетах:
 // показання паливоміра після ремонту не відповідають реальному стану, а ЗП
 // потім сама їх уточнить.
 #ifndef IMPRES_EMPTY_MV
-  #define IMPRES_EMPTY_MV 7000
+  #define IMPRES_EMPTY_MV 7200
 #endif
 #ifndef IMPRES_FULL_MV
-  #define IMPRES_FULL_MV  8400
+  #define IMPRES_FULL_MV  8250
 #endif
 inline int impresPercentFromMv(int mv) {
     long p = ((long)mv - IMPRES_EMPTY_MV) * 100 / (IMPRES_FULL_MV - IMPRES_EMPTY_MV);
@@ -510,30 +512,82 @@ inline int impresPercentFromMv(int mv) {
     if (p > 100) p = 100;
     return (int)p;
 }
-// ICA, що відповідає заданому відсотку (паливомір — 1 байт, 0..255).
+// ICA, що відповідає заданому відсотку. Шкала АПАРАТНА (див. блок нижче), тож
+// 100 % — це не 255, а стільки одиниць, скільки важить повний пакет:
+// ratedMah * Rsense / 0.4882. Без відомого шунта лишається стара шкала 0..255.
+inline uint8_t impresIcaFromPercentRs(int pct, int ratedMah, float rsOhm);
 inline uint8_t impresIcaFromPercent(int pct) {
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
     return (uint8_t)((pct * 255 + 50) / 100);
 }
 
-// Паливомір ICA <-> залишок у мА·год, ВІДНОСНО паспортної ємності моделі.
+// ─────────────────────────── ПАЛИВОМІР ICA ────────────────────────────────
+//  ICA — це АПАРАТНИЙ інтегратор DS2438: чіп сам віднімає від нього заряд, що
+//  витік із пакета. Ціна одиниці за даташитом — 0.4882 мВ·год, тобто в мА·год
+//  вона залежить від шунта: 0.4882 / Rsense.
 //
-// ⚠️ Раніше всюди рахували ica * DS2438_MAH_PER_LSB, де DS2438_MAH_PER_LSB
-// виводиться з ПІДІБРАНОГО вручну DS2438_RSENSE_OHM. При типовому 0.025 Ом це
-// дає 19.5 мА·год на одиницю, тобто повна шкала ICA=255 -> 4978 мА·год — удвічі
-// більше за будь-який із цих пакетів (PMNN4409A = 2150). Через це «залишок,
-// мА·год» не збігався з тим, що показує станція. ICA — це паливомір із повною
-// шкалою в один повний пакет, тож перераховуємо через паспортну ємність.
-inline int impresIcaToMah(uint8_t ica, int ratedMah) {
+//  ⚠️ ІСТОРІЯ ПОМИЛКИ (дві ітерації).
+//   1. Спершу рахували ica * DS2438_MAH_PER_LSB із зашитим Rsense = 0.025 Ом.
+//      Виходило 19.5 мА·год на одиницю і повна шкала 4978 мА·год — удвічі
+//      більше за будь-який пакет, тож числа не збігалися зі станцією.
+//   2. Тоді шкалу «випрямили» через паспортну ємність: 255 = повний пакет.
+//      Це прибрало симптом, але зламало суть: чіп ПРОДОВЖУВАВ віднімати
+//      апаратними одиницями. Через це наприкінці розряду ICA зупинявся не на
+//      нулі, а десь на 50 — саме те «незрозуміле кінцеве значення», яке видно
+//      в режимі розряду. Для PMNN4409A: повний пакет 2150 мА·год при шунті
+//      0.0459 Ом — це 202 одиниці, а ми ставили на старті 255.
+//
+//  Причина обох помилок одна: шунт брали з константи, а він СВІЙ у кожного
+//  пакета і лежить у DS2438[56..57] (impres_bms.h, розділ 4a.2 документа).
+//  Тепер рахуємо як фірмове ПЗ Motorola — 1000*ICA/(2048*Rsense), — і шкала
+//  збігається з апаратною, тож розряд доводить паливомір рівно до нуля.
+//
+//  rsOhm <= 0 — шунт невідомий; тоді падаємо на паспортну ємність (стара
+//  поведінка), бо це все одно краще, ніж завідомо чужа константа.
+#define IMPRES_ICA_MVH 0.48828125f
+
+inline int impresIcaToMahRs(uint8_t ica, int ratedMah, float rsOhm) {
+    if (rsOhm > 0.0f) return (int)(IMPRES_ICA_MVH * ica / rsOhm + 0.5f);
     return (int)(((long)ica * ratedMah) / 255);
 }
-inline uint8_t impresIcaFromMah(long mah, int ratedMah) {
+inline uint8_t impresIcaFromMahRs(long mah, int ratedMah, float rsOhm) {
     if (mah < 0) mah = 0;
-    if (ratedMah <= 0) ratedMah = IMPRES_RATED_DEFAULT;
-    long ica = (mah * 255 + ratedMah / 2) / ratedMah;
+    long ica;
+    if (rsOhm > 0.0f) ica = (long)(mah * rsOhm / IMPRES_ICA_MVH + 0.5f);
+    else {
+        if (ratedMah <= 0) ratedMah = IMPRES_RATED_DEFAULT;
+        ica = (mah * 255 + ratedMah / 2) / ratedMah;
+    }
     if (ica > 255) ica = 255;
+    if (ica < 0)   ica = 0;
     return (uint8_t)ica;
+}
+// Сумісні обгортки без шунта — лише для місць, де DS2438 недоступний.
+inline int impresIcaToMah(uint8_t ica, int ratedMah) {
+    return impresIcaToMahRs(ica, ratedMah, 0.0f);
+}
+inline uint8_t impresIcaFromMah(long mah, int ratedMah) {
+    return impresIcaFromMahRs(mah, ratedMah, 0.0f);
+}
+inline uint8_t impresIcaFromPercentRs(int pct, int ratedMah, float rsOhm) {
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    if (rsOhm <= 0.0f) return impresIcaFromPercent(pct);
+    if (ratedMah <= 0) ratedMah = IMPRES_RATED_DEFAULT;
+    return impresIcaFromMahRs((long)ratedMah * pct / 100, ratedMah, rsOhm);
+}
+// Відсоток заряду за паливоміром: залишок у мА·год від паспортної ємності.
+// Раніше це було просто ica*100/255, що при апаратній шкалі неправильно.
+inline int impresPercentFromIca(uint8_t ica, int ratedMah, float rsOhm) {
+    if (ratedMah <= 0) ratedMah = IMPRES_RATED_DEFAULT;
+    // Округлюємо, а не відкидаємо: запис 100 % дає цілу кількість апаратних
+    // одиниць, а зворотний перерахунок губить частку — і повний пакет
+    // показувався б як 99 %.
+    long p = ((long)impresIcaToMahRs(ica, ratedMah, rsOhm) * 100 + ratedMah / 2) / ratedMah;
+    if (p < 0)   p = 0;
+    if (p > 100) p = 100;
+    return (int)p;
 }
 
 // ---------------------------------------------------------------- формат

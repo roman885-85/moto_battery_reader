@@ -571,7 +571,7 @@ inline int batteryRemainingMah() {
     if (!hasDump2438) return -1;
     char m[16] = "";
     if (hasDump) impresModelName(batteryDump, m, sizeof(m));
-    return impresIcaToMah(batteryDump2438[12], impresRatedMah(m));
+    return impresIcaToMah(batteryDump2438[12], impresRatedMahFor(hasDump ? batteryDump : nullptr, m));
 }
 
 inline void drawPageMain() {
@@ -731,7 +731,8 @@ inline void drawPageHealth() {
     } else {
         char m[16] = "";
         if (hasDump) impresModelName(batteryDump, m, sizeof(m));
-        snprintf(buf, sizeof(buf), "Ємність: %d мА*год", impresRatedMah(m));
+        snprintf(buf, sizeof(buf), "Ємність: %d мА*год",
+                 impresRatedMahFor(hasDump ? batteryDump : nullptr, m));
         row(buf);
         int rem = batteryRemainingMah();
         if (rem >= 0) {
@@ -759,7 +760,7 @@ inline void drawPageHealth() {
         uint16_t dca = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
         // Цикли: сумарний заряд (розряд) / паспортна ємність (settings.h).
         char cyModel[16] = ""; if (hasDump) impresModelName(batteryDump, cyModel, sizeof(cyModel));
-        int  rated = impresRatedMah(cyModel);   // паспортна ємність ЗА МОДЕЛЛЮ
+        int  rated = impresRatedMahFor(hasDump ? batteryDump : nullptr, cyModel);  // з чипа, інакше з таблиці
         int chgCyc = (int)(cca * DS2438_MAH_PER_LSB / rated);
         int disCyc = (int)(dca * DS2438_MAH_PER_LSB / rated);
         snprintf(buf, sizeof(buf), "Циклів: зар.%d роз.%d", chgCyc, disCyc);

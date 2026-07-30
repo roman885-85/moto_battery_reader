@@ -114,7 +114,7 @@ static String serBuildInfo() {
         // Паспортна ємність — за МОДЕЛЛЮ (таблиця IMPRES_RATED), а не єдина
         // константа BATTERY_RATED_MAH: через неї цикли й мА·год розходилися
         // з показаннями станції на всіх моделях, крім однієї.
-        int ratedMah = impresRatedMah(modelBuf);
+        int ratedMah = impresRatedMahFor(hasDump ? batteryDump : nullptr, modelBuf);
         j += ",\"icaMah\":" + String(impresIcaToMah(ica, ratedMah));
         j += ",\"ccaMah\":" + String((int)(cca * DS2438_MAH_PER_LSB));
         j += ",\"dcaMah\":" + String((int)(dca * DS2438_MAH_PER_LSB));
@@ -160,7 +160,7 @@ static void serSetMah(const String &arg) {
     long mah = arg.toInt();
     char smModel[16] = "";
     if (hasDump) impresModelName(batteryDump, smModel, sizeof(smModel));
-    long ica = impresIcaFromMah(mah, impresRatedMah(smModel));
+    long ica = impresIcaFromMah(mah, impresRatedMahFor(hasDump ? batteryDump : nullptr, smModel));
     if (ica < 0) ica = 0; if (ica > 255) ica = 255;
     batteryDump2438[12] = (uint8_t)ica;
     ledSet(LED_WRITE); displayShow("USB ЄМН mAh");

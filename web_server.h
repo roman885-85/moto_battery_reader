@@ -1638,6 +1638,23 @@ void handleRecalPrepare() {
            : "{\"status\":\"error\",\"message\":\"Помилка запису\"}");
 }
 
+// ── ПЕРЕНЕСЕННЯ АПАРАТНОГО КАЛІБРУВАННЯ МОНІТОРА ───────────────────────────
+//  Два поля DS2438 налаштовані на ЗАВОДІ під конкретний екземпляр і в шаблоні
+//  належать ІНШОМУ пакету:
+//    0x0D..0x0E — OFFSET АЦП струму;
+//    0x38..0x39 — вимірювальний резистор (шунт), значення/100000 = Ом.
+//  Шунт у різних моделей відрізняється майже вдвічі (0.025 проти 0.046 Ом), тож
+//  чужий шунт робить неправильними струм, залишок і знос — рівно та пастка, що
+//  зловилась на APLI4811C (dumps/14-r7-4807a-4811c/README.md).
+//  Тому: якщо в самому пакеті ці поля правдоподібні — лишаємо ЙОГО значення.
+//  dst — те, що збираємось писати; src — те, що зараз у чипі (або nullptr).
+static void keepMonitorCalibration(uint8_t *dst, const uint8_t *src) {
+    if (!dst || !src) return;
+    if (impresBmsRsense(src) > 0.0f) { dst[56] = src[56]; dst[57] = src[57]; }
+    uint16_t off = (uint16_t)((src[0x0E] << 8) | src[0x0D]);
+    if (off != 0x0000 && off != 0xFFFF) { dst[0x0D] = src[0x0D]; dst[0x0E] = src[0x0E]; }
+}
+
 // ------------------- Ініціалізація нового акумулятора -------------------
 // Порожній/стертий/невідомий чіп -> робочий АКБ обраної моделі. Вантажимо
 // вшитий genuine-еталон (DS2433 + DS2438), зануляємо всю історію/лічильники
@@ -1649,8 +1666,20 @@ bool performInitBattery(const char *model, long mah) {
     if (t < 0) { displayShow("НЕМА ШАБЛОНУ"); return false; }
 
     Serial.printf("\n=== Init new battery: %s, %ld mAh ===\n", model, mah);
-    memcpy_P(batteryDump,     BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
-    memcpy_P(batteryDump2438, BATTERY_TEMPLATES[t].d38, DS2438_MEM_SIZE);
+    // Шунт і OFFSET АЦП цього пакета — до того, як затремо буфер шаблоном.
+    uint8_t was38[DS2438_MEM_SIZE];
+    bool had38 = hasDump2438;
+    if (had38) memcpy(was38, batteryDump2438, DS2438_MEM_SIZE);
+
+    memcpy_P(batteryDump, BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
+    // Для частини моделей еталона монітора немає (d38 = nullptr): тоді монітор
+    // пакета не підмінюємо, а лише зануляємо лічильники нижче.
+    if (BATTERY_TEMPLATES[t].d38) {
+        memcpy_P(batteryDump2438, BATTERY_TEMPLATES[t].d38, DS2438_MEM_SIZE);
+        if (had38) keepMonitorCalibration(batteryDump2438, was38);
+    } else if (!had38) {
+        memset(batteryDump2438, 0, DS2438_MEM_SIZE);   // чистий монітор із нуля
+    }
     hasDump = true; hasDump2438 = true;
 
     // ⚑ КЛЮЧОВЕ. Шаблон у templates.h — це побайтова копія ОДНОГО реального
@@ -1716,22 +1745,34 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
     if (t < 0) { displayShow("НЕМА ШАБЛОНУ"); return false; }
 
     Serial.printf("\n=== Restore %s: %s ===\n", verbatim ? "VERBATIM" : "model-part", model);
-    memcpy_P(batteryDump,     BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
-    memcpy_P(batteryDump2438, BATTERY_TEMPLATES[t].d38, DS2438_MEM_SIZE);
+    uint8_t was38[DS2438_MEM_SIZE];
+    bool had38 = hasDump2438;
+    if (had38) memcpy(was38, batteryDump2438, DS2438_MEM_SIZE);
+
+    memcpy_P(batteryDump, BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
+    bool write38 = (BATTERY_TEMPLATES[t].d38 != nullptr);
+    if (write38) {
+        memcpy_P(batteryDump2438, BATTERY_TEMPLATES[t].d38, DS2438_MEM_SIZE);
+        // verbatim — це ручний режим «байт-у-байт», там не втручаємось
+        if (!verbatim && had38) keepMonitorCalibration(batteryDump2438, was38);
+    }
     if (!verbatim) {
         int cleared = applyFreshTail(BATTERY_TEMPLATES[t].fresh);
         if (cleared < 0) cleared = impresEraseTail(batteryDump);
         impresFixHeader(batteryDump);
-        impresResetMonitor(batteryDump2438, batteryDump,
-                           impresIcaFromPercent(impresPercentFromMv(impresVoltageMv(batteryDump2438))));
+        if (write38 || had38)
+            impresResetMonitor(batteryDump2438, batteryDump,
+                               impresIcaFromPercent(impresPercentFromMv(impresVoltageMv(batteryDump2438))));
         Serial.printf("Restore: donor learned tail cleared: %d B\n", cleared);
     }
 
     ledSet(LED_WRITE); displayShow("ВІДНОВЛ. ЕТАЛОН");
     bool w33 = battery.writeBattery(batteryDump, DUMP_SIZE);
     if (w33) { hasDump = true; saveDump("/dump.bin", batteryDump, DUMP_SIZE); }
-    bool w38 = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
-    if (w38) { hasDump2438 = true; saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE); }
+    // Монітор пишемо лише якщо є що писати: коли еталона DS2438 для моделі
+    // немає, чіпати монітор пакета не можна — у ньому його власний шунт.
+    bool w38 = (write38 || had38) ? battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE) : true;
+    if (w38 && (write38 || had38)) { hasDump2438 = true; saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE); }
 
     if (ok33) *ok33 = w33;
     if (ok38) *ok38 = w38;

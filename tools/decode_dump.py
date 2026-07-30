@@ -116,9 +116,11 @@ def cca(e):  return int.from_bytes(e[60:62], 'little')
 def dca(e):  return int.from_bytes(e[62:64], 'little')
 
 
-RATED = {'PMNN4409A': 2150, 'PMNN4409B': 2250, 'PT4409A': 2150,
-         'PMNN4488A': 3000, 'PMNN4493A': 3000,
-         'PMNN4809A': 2450, 'APLI4810C': 2450}
+# Запасна таблиця — лише коли байт 0x008 чипа нечитабельний. Значення звірені
+# з самим чипом і з KIT-таблицею фірмового ПЗ (див. impres_format.h).
+RATED = {'PMNN4409A': 2150, 'PMNN4409B': 2150, 'PT4409A': 2150,
+         'PMNN4488A': 3000, 'PMNN4493A': 3000, 'PMNN4807A': 2050,
+         'PMNN4809A': 2700, 'APLI4810C': 3100, 'APLI4811C': 3100}
 
 
 def grab_template(name):

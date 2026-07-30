@@ -6,19 +6,24 @@
     <title>NGU · Motorola IMPRES Battery Tool</title>
     <style>
         :root{
-            --ua-blue:#0057b7; --ua-yellow:#ffd700;
-            --bg:#12172b; --card:#1b2140; --card2:#141a33;
-            --line:#2a335c; --accent:#e94560; --ok:#2ecc71; --warn:#f39c12; --info:#3498db;
-            --text:#e8ecff; --muted:#8b93b8;
+            /* Мілітарна тема НГУ: оливково-хакі поле + акцент «краповий» (maroon) */
+            --ua-blue:#7d2230; --ua-yellow:#c8b04a;      /* accent(краповий) / khaki-gold */
+            --bg:#14160f; --card:#20241a; --card2:#191c13;
+            --line:#3b4230; --accent:#a3312e; --ok:#6f8f3a; --warn:#c8a23a; --info:#7d8a52;
+            --text:#e7e3d2; --muted:#9a9c82;
+            --maroon:#7d2230; --olive:#6f8f3a; --khaki:#c8b04a;
         }
         *{margin:0;padding:0;box-sizing:border-box}
-        body{font-family:'Segoe UI',Arial,sans-serif;background:var(--bg);color:var(--text);
-             min-height:100vh;padding:16px;display:flex;justify-content:center}
+        body{font-family:'Segoe UI',Arial,sans-serif;color:var(--text);
+             min-height:100vh;padding:16px;display:flex;justify-content:center;
+             background:var(--bg);
+             background-image:repeating-linear-gradient(45deg,rgba(111,143,58,.035) 0 2px,transparent 2px 22px),
+                              repeating-linear-gradient(-45deg,rgba(125,34,48,.03) 0 2px,transparent 2px 22px);}
         .wrap{width:100%;max-width:900px}
         /* --- header / logo --- */
         .brand{display:flex;align-items:center;gap:16px;background:var(--card);
                border-radius:16px;padding:16px 20px;border:1px solid var(--line);
-               box-shadow:0 8px 30px rgba(0,0,0,.4)}
+               border-top:3px solid var(--maroon);box-shadow:0 8px 30px rgba(0,0,0,.5)}
         .badge{width:64px;height:72px;flex:0 0 auto;border-radius:10px;
                background:var(--ua-blue);border:2px solid var(--ua-yellow);
                display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,.4)}
@@ -31,6 +36,8 @@
              color:var(--muted);border-radius:12px;cursor:pointer;font-size:.95em;font-weight:600;
              text-align:center;transition:.2s}
         .tab.active{background:var(--ua-blue);color:#fff;border-color:var(--ua-blue)}
+        .tab[data-p="wizard"]{border-color:var(--maroon);color:var(--khaki);font-weight:700}
+        .tab[data-p="wizard"].active{background:var(--maroon);color:#fff}
         .page{display:none}
         .page.active{display:block;animation:fade .25s ease}
         @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
@@ -67,32 +74,122 @@
         .file input{display:none}
         .file label{display:inline-block;padding:9px 20px;background:var(--ua-blue);border-radius:8px;cursor:pointer}
         .fname{margin-left:12px;color:var(--muted);font-size:.9em}
-        .pw{width:100%;padding:12px;margin:10px 0;background:var(--card2);border:1px solid var(--line);
+        .pw{display:none} /* пароль адміністратора вимкнено — поля приховані */
+        .pw--off{width:100%;padding:12px;margin:10px 0;background:var(--card2);border:1px solid var(--line);
             border-radius:8px;color:var(--text);font-size:1em}
         .note{font-size:.82em;padding:10px;border-radius:8px;margin-top:10px;border-left:3px solid}
-        .note.i{background:#12233a;color:#9cc4ee;border-color:var(--info)}
+        .note.i{background:#23281a;color:#cdd0a8;border-color:var(--info)}
         .note.w{background:#3a2a10;color:#f0c274;border-color:var(--warn)}
         .zone{font-weight:700;font-size:.9em;padding:9px 12px;border-radius:8px;margin:20px 0 8px}
         .zone.zi{background:#16324a;color:#bfe0ff}
         .zone.zd{background:#4a1512;color:#ff9b8f;border:1px solid #e74c3c}
         .hxwrap{margin-top:8px;font-family:monospace;font-size:.8em;line-height:1.4;background:#0e1218;border-radius:8px;overflow:hidden}
-        .hxbar{display:flex;color:#7fd0ff;background:#12233a;padding:4px 0;white-space:pre}
+        .hxbar{display:flex;color:#a9c06a;background:#23281a;padding:4px 0;white-space:pre}
         .hxrow{display:flex;height:170px}
         .hxg{flex:none;width:46px;text-align:right;padding:0 6px;color:#6b8;white-space:pre;overflow:hidden}
         .hxh{flex:1;padding-left:2px;white-space:pre;overflow:hidden}
         .hxd{flex:1;min-width:0;font-family:monospace;font-size:1em;line-height:1.4;color:#e7ecf3;background:transparent;border:none;padding:0 2px;resize:none;white-space:pre;overflow-y:scroll}
-        .hxa{flex:none;width:150px;padding-left:8px;color:#8fb7d9;white-space:pre;overflow:hidden;border-left:1px solid #2a323f}
+        .hxa{flex:none;width:150px;padding-left:8px;color:#b9bd86;white-space:pre;overflow:hidden;border-left:1px solid #2a323f}
+        .hxae{font-family:monospace;font-size:1em;line-height:1.4;background:transparent;border:none;border-left:1px solid #2a323f;resize:none;overflow:hidden;caret-color:#b9bd86}
         .hex{font-family:'Courier New',monospace;font-size:.82em;color:#9fe3c0;word-break:break-all;
              background:var(--card2);padding:10px;border-radius:8px;border:1px solid var(--line)}
         #toast{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:9;padding:12px 20px;
                border-radius:10px;display:none;font-weight:600;box-shadow:0 6px 20px rgba(0,0,0,.5)}
         .t-ok{background:#123a24;color:var(--ok);border:1px solid var(--ok)}
         .t-err{background:#3a1414;color:var(--accent);border:1px solid var(--accent)}
-        .t-info{background:#12233a;color:#9cc4ee;border:1px solid var(--info)}
+        .t-info{background:#23281a;color:#cdd0a8;border:1px solid var(--info)}
         #progress{display:none;text-align:center;padding:16px}
         .spin{width:38px;height:38px;border:4px solid var(--line);border-top:4px solid var(--ua-yellow);
               border-radius:50%;margin:0 auto 8px;animation:spin 1s linear infinite}
         @keyframes spin{to{transform:rotate(360deg)}}
+        /* ---- Монітор розряду ----------------------------------------------
+           Розряд триває годинами, і дивитись на нього доводиться довго, тож це
+           не таблиця значень, а панель процесу: пульсуючий індикатор стану,
+           смуга прогресу з «течією» (видно, що процес живий, навіть коли числа
+           між опитуваннями не змінились), графік напруги за весь сеанс і плитки
+           показань, які підсвічуються на зміні. Дані тягнуться самі — раз на
+           2 с під час розряду, раз на 20 с у спокої (щоб побачити розряд,
+           запущений з кнопки на самому пристрої). */
+        .dm{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:12px}
+        .dm.run{border-color:var(--warn);box-shadow:0 0 0 2px rgba(200,162,58,.16)}
+        .dm.done{border-color:var(--ok)} .dm.abort{border-color:var(--accent)}
+        .dmhead{display:flex;align-items:center;gap:10px;font-weight:700;font-size:.92em}
+        .dmled{width:12px;height:12px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+        .dm.run .dmled{background:var(--warn);animation:dmpulse 1.4s ease-in-out infinite}
+        .dm.done .dmled{background:var(--ok)} .dm.abort .dmled{background:var(--accent)}
+        @keyframes dmpulse{0%,100%{box-shadow:0 0 0 0 rgba(200,162,58,.55)}
+                           70%{box-shadow:0 0 0 9px rgba(200,162,58,0)}}
+        .dmclock{margin-left:auto;font-family:'Courier New',monospace;color:var(--muted);font-variant-numeric:tabular-nums}
+        .dmbig{display:flex;align-items:baseline;gap:12px;margin:12px 0 6px;flex-wrap:wrap}
+        .dmv{font-size:2.4em;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+        .dmv small{font-size:.4em;color:var(--muted);margin-left:4px;font-weight:600}
+        .dmto{color:var(--muted);font-size:.85em}
+        .dmbar{position:relative;height:17px;background:#0e1108;border:1px solid var(--line);
+               border-radius:9px;overflow:hidden}
+        .dmfill{height:100%;width:0;border-radius:8px;transition:width .7s ease;
+                background:linear-gradient(90deg,var(--ok),var(--khaki))}
+        /* «Течія» — рухомі діагональні смужки поверх заливки. Єдина ознака, що
+           процес живий: між опитуваннями числа стоять на місці. */
+        .dm.run .dmfill{background-image:repeating-linear-gradient(115deg,
+                          rgba(255,255,255,.18) 0 9px,transparent 9px 20px),
+                        linear-gradient(90deg,var(--ok),var(--khaki));
+                        background-size:40px 100%,100% 100%;animation:dmflow 1s linear infinite}
+        @keyframes dmflow{to{background-position:40px 0,0 0}}
+        /* Відсоток — праворуч і світлим: по центру він губився, поки заливка ще
+           не дійшла до середини смуги. */
+        .dmbartxt{position:absolute;inset:0;display:flex;align-items:center;justify-content:flex-end;
+                  padding-right:9px;font-size:.72em;font-weight:700;color:var(--text);
+                  text-shadow:0 0 4px #0e1108,0 0 4px #0e1108}
+        .dmspark{width:100%;height:60px;margin:12px 0 0;display:block;
+                 background:#0e1108;border:1px solid var(--line);border-radius:9px}
+        .dmlab{display:flex;justify-content:space-between;font-size:.76em;color:var(--muted);margin:11px 0 4px}
+        .dmtrack{position:relative;height:13px;background:#0e1108;border:1px solid var(--line);
+                 border-radius:7px;overflow:hidden}
+        .dmcur{position:absolute;top:0;bottom:0;left:0;width:0;border-radius:6px;
+               background:var(--warn);transition:width .7s ease}
+        .dmcur.out{background:var(--accent)}
+        /* Коридор уставки малюється ПОВЕРХ заливки — інакше заливка струму його
+           перекривала б і видно було б лише «хвіст» коридору праворуч. */
+        .dmband{position:absolute;top:0;bottom:0;background:rgba(231,227,210,.12);
+                border-left:2px solid rgba(231,227,210,.55);border-right:2px solid rgba(231,227,210,.55)}
+        .dmmark{position:absolute;top:0;bottom:0;width:2px;background:var(--text);transition:left .7s ease}
+        .dmg{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:8px;margin-top:12px}
+        /* Підпис може займати два рядки — тримаємо значення на одній лінії в усіх
+           плитках, інакше числа стрибають по висоті й читати їх незручно. */
+        .dmc{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:7px 9px;
+             display:flex;flex-direction:column;justify-content:space-between}
+        .dmc.hero{border-color:var(--ok)}
+        .dmck{font-size:.72em;color:var(--muted);letter-spacing:.2px;min-height:2.3em;line-height:1.15}
+        .dmcv{font-weight:700;font-family:'Courier New',monospace;font-size:1.1em;
+              font-variant-numeric:tabular-nums;word-break:break-word}
+        .dmcv.flash{animation:dmflash .9s ease}
+        @keyframes dmflash{0%{color:var(--khaki)}100%{color:inherit}}
+        .dmwarn{margin-top:10px;font-size:.82em;padding:8px 10px;border-radius:8px;
+                background:#3a1414;color:#ff9b8f;border-left:3px solid var(--accent);display:none}
+        /* ---- Майстер відновлення ---- */
+        .wizbar{height:12px;background:var(--card2);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:6px 0}
+        .wizbarfill{height:100%;width:0;background:linear-gradient(90deg,var(--ok),#7be6a8);border-radius:8px;transition:width .5s ease}
+        .wizprog{font-size:.85em;color:#cdd0a8;margin-bottom:8px}
+        .wizmsg{margin-top:10px;font-size:.9em;min-height:1.2em}
+        .prob{display:flex;gap:10px;align-items:flex-start;padding:10px;margin:8px 0;border-radius:10px;
+              background:var(--card2);border-left:4px solid var(--line);animation:fade .35s ease both}
+        .prob .pico{font-size:1.2em;line-height:1}
+        .prob.sev2{border-left-color:var(--accent)} .prob.sev1{border-left-color:var(--warn)} .prob.sev0{border-left-color:var(--info)}
+        .prob b{display:block;margin-bottom:2px}
+        .prob .pfix{font-size:.85em;color:#cdd0a8}
+        .step{display:flex;gap:10px;align-items:flex-start;padding:10px;margin:6px 0;border-radius:10px;
+              background:var(--card2);border:1px solid var(--line);transition:all .3s ease;animation:fade .35s ease both}
+        .step.cur{border-color:var(--warn);box-shadow:0 0 0 2px rgba(243,156,18,.25)}
+        .step.done{opacity:.6}
+        .step .sico{font-size:1.15em;min-width:1.4em;text-align:center}
+        .step .stit{font-weight:600} .step .sdet{font-size:.82em;color:#a9b6d6;margin-top:2px}
+        .step.run .sico{animation:spin 1s linear infinite;display:inline-block}
+        .wizverd-ok{color:var(--ok)} .wizverd-bad{color:var(--warn)}
+        .jrn{background:var(--card2);border:1px solid var(--line);border-left:4px solid var(--khaki);border-radius:10px;padding:10px;margin:8px 0;animation:fade .3s ease both}
+        .jrn .jhead{font-size:.95em} .jrn .jsub{font-size:.82em;color:#cdd0a8;margin-top:2px}
+        .jbadge{background:var(--warn);color:#1a1400;border-radius:10px;padding:1px 7px;font-size:.75em;margin-left:6px}
+        @keyframes pulseWarn{0%,100%{box-shadow:0 0 0 2px rgba(243,156,18,.25)}50%{box-shadow:0 0 0 5px rgba(243,156,18,.05)}}
+        .step.cur{animation:fade .35s ease both, pulseWarn 2s ease-in-out infinite}
         @media(max-width:600px){.btn{width:100%}.btns{flex-direction:column}}
     </style>
 </head>
@@ -126,8 +223,9 @@
 
     <div class="tabs">
         <div class="tab active" data-p="overview" onclick="showTab(this)">📊 Огляд</div>
+        <div class="tab" data-p="wizard" onclick="showTab(this)">🧙 Майстер</div>
         <div class="tab" data-p="data" onclick="showTab(this)">🔬 Дані</div>
-        <div class="tab" data-p="fw" onclick="showTab(this)">📤 Прошивка</div>
+        <div class="tab" data-p="fw" onclick="showTab(this)">🔧 Ремонт</div>
     </div>
 
     <div id="progress"><div class="spin"></div><div id="progressText">Виконується...</div></div>
@@ -154,6 +252,48 @@
             <div class="row"><span class="k">Знос</span><span class="v" id="ovWear">—</span></div>
             <div class="row"><span class="k">Циклів</span><span class="v" id="ovCycles">—</span></div>
             <div class="row"><span class="k">Справжність</span><span class="v" id="ovAuth">—</span></div>
+            <div class="row"><span class="k">Навчена калібровка</span><span class="v" id="ovTail">—</span></div>
+        </div>
+    </div>
+
+    <!-- ========== WIZARD ========== -->
+    <div class="page" id="wizard">
+        <div class="card">
+            <h2>🧙 Майстер відновлення</h2>
+            <div class="note i">Автоматичне відновлення «однією кнопкою»: аналіз стану → перелік проблем →
+                пропозиції → покрокове виконання. Багатоетапні сценарії з зарядною станцією не перериваються —
+                Майстер запам'ятає прогрес і продовжить після повернення АКБ.</div>
+            <div class="btns">
+                <button class="btn btn-primary" onclick="wizAnalyze()">🔍 Аналізувати</button>
+                <button class="btn btn-info" onclick="wizReset()">↺ Скинути Майстра</button>
+            </div>
+            <input type="password" class="pw" id="pwWiz" placeholder="🔑 Пароль адміністратора (для дій)">
+        </div>
+
+        <div class="card" id="wizStatusCard" style="display:none">
+            <h2 id="wizVerdict">—</h2>
+            <div id="wizProblems"></div>
+        </div>
+
+        <div class="card" id="wizPlanCard" style="display:none">
+            <h2>🧭 План відновлення</h2>
+            <div class="wizbar"><div class="wizbarfill" id="wizBarFill"></div></div>
+            <div class="wizprog" id="wizProg">—</div>
+            <div id="wizModelRow" class="row" style="display:none"><span class="k">Модель для відновлення</span>
+                <select id="wizModel" style="border-radius:8px;border:none;padding:6px;min-width:150px"></select></div>
+            <div id="wizSteps"></div>
+            <div id="wizStationBanner" class="note w" style="display:none"></div>
+            <button class="btn btn-warn" id="wizNextBtn" style="width:100%;margin-top:8px" onclick="wizNext()">▶️ Виконати наступний крок</button>
+            <div id="wizMsg" class="wizmsg"></div>
+        </div>
+
+        <div class="card">
+            <h2>🗂 Збережені відновлення</h2>
+            <div class="note i">Пристрій запам'ятовує незавершені відновлення за <b>серійником АКБ</b> (напр. коли
+                акумулятор пішов на зарядну станцію). Тут — усі збережені серійники із запланованими діями; зайві
+                можна видалити з пам'яті.</div>
+            <button class="btn btn-info" onclick="wizJournalsLoad()">🔄 Оновити список</button>
+            <div id="wizJournals" style="margin-top:8px"></div>
         </div>
     </div>
 
@@ -163,6 +303,7 @@
             <h2>🪪 Модель / Серійний</h2>
             <div class="row"><span class="k">Модель</span><span class="v" id="dModel">—</span></div>
             <div class="row"><span class="k">Серійний (DS2438)</span><span class="v" style="font-size:.85em" id="dSerial">—</span></div>
+            <div class="row"><span class="k">Серійний (DS2433)</span><span class="v" style="font-size:.85em" id="dSerial33">—</span></div>
             <div class="row"><span class="k">Перше використання (≈)</span><span class="v" id="dFirst">—</span></div>
             <div class="row"><span class="k">Наробіток (ETM)</span><span class="v" id="dEtm">—</span></div>
         </div>
@@ -174,6 +315,23 @@
             <div class="row"><span class="k">Залишок (ICA)</span><span class="v" id="dICA">—</span></div>
             <div class="row"><span class="k">Заряджено (CCA)</span><span class="v" id="dCCA">—</span></div>
             <div class="row"><span class="k">Розряджено (DCA)</span><span class="v" id="dDCA">—</span></div>
+            <div class="row"><span class="k">Шунт вимірювача</span><span class="v" id="dRs">—</span></div>
+        </div>
+        <div class="card">
+            <h2>🧬 Штатні лічильники Motorola</h2>
+            <div class="note i">Читаються тим самим алгоритмом, що й фірмове ПЗ Motorola
+                (перевірено на 53 еталонних пакетах). Лічильник циклів лежить у гістограмі
+                й ключа не потребує; знос, дати й лічильник калібрувань <b>зашифровані</b>
+                ключем із ROM-ID чипа DS2433.</div>
+            <div class="note w" id="warn2438" style="display:none"></div>
+            <div class="row"><span class="k">Циклів заряду (IMPRES)</span><span class="v" id="bCyc">—</span></div>
+            <div class="row"><span class="k">Циклів не-IMPRES</span><span class="v" id="bCycN">—</span></div>
+            <div class="row"><span class="k">Реальна ємність</span><span class="v" id="bPot">—</span></div>
+            <div class="row"><span class="k">Знос / здоров'я</span><span class="v" id="bHealth">—</span></div>
+            <div class="row"><span class="k">Калібрувань пройдено</span><span class="v" id="bCal">—</span></div>
+            <div class="row"><span class="k">Дата виготовлення</span><span class="v" id="bMfg">—</span></div>
+            <div class="row"><span class="k">Перше користування</span><span class="v" id="bUse">—</span></div>
+            <div class="row"><span class="k">Ключ</span><span class="v" id="bKey">—</span></div>
         </div>
         <div class="card">
             <h2>📋 Повний дамп DS2438 (64 Б)</h2>
@@ -188,9 +346,9 @@
     <!-- ========== FIRMWARE ========== -->
     <div class="page" id="fw">
 
-        <!-- КРОК 1 -->
         <div class="zone zi">📦 Крок 1 — резервна копія (робіть ЗАВЖДИ перед записом)</div>
-        <div class="card">
+
+<div class="card">
             <h2>💾 Зчитати та зберегти</h2>
             <div class="btns">
                 <button class="btn btn-primary" onclick="readDump()">🔍 Зчитати АКБ</button>
@@ -201,40 +359,127 @@
                 піде не так — цей файл поверне АКБ у попередній стан («Відновлення» нижче).</div>
         </div>
 
-        <!-- ОБСЛУГОВУВАННЯ -->
-        <div class="zone zi">🔧 Обслуговування — безпечно для ідентичності/калібрування</div>
+<div class="zone zi">🩹 Крок 2 — РЕМОНТ. Після заміни елементів починайте звідси</div>
 
-        <div class="card">
-            <h2>♻️ Скидання для рекалібрування</h2>
-            <div class="note i">Обнуляє лічильники заряд/розряд і знос (ємність→100 %), калібрування
-                зберігається. Далі — калібрування на <b>оригінальному</b> IMPRES-ЗП.</div>
-            <input type="password" class="pw" id="pwRst" placeholder="🔑 Пароль адміністратора">
-            <button class="btn btn-warn" style="width:100%" onclick="resetBattery()">♻️ СКИНУТИ ЛІЧИЛЬНИКИ</button>
+<div class="card" style="border-color:var(--warn)">
+            <h2>🔧 Ремонт після заміни елементів (підготовка до калібрування)</h2>
+            <div class="note i">Для АКБ, яку рація бачить <b>«невідома»</b> / не переходить у калібрування після заміни
+                банок. У DS2433 стирається <b>навчений калібрувальний хвіст 0x18A–0x1FF</b> — виміряні параметри СТАРИХ
+                (або донорських) банок, які суперечать новому пакету. Ідентичність, розрядна крива, copyright, заводська
+                таблиця й <b>запис моделі</b> лишаються недоторканими. У DS2438 обнуляються лише <b>лічильники</b>
+                (ETM/CCA/DCA), а конфіг, апаратне калібрування АЦП струму й дзеркало зберігаються; паливомір виставляється
+                за фактичною напругою. Пакет стає <b>фірмовим, але не відкаліброваним</b>: рація приймає й показує рівень
+                заряду, а IMPRES-ЗП запускає повний цикл калібрування нових банок.</div>
+            <div class="note w">⚠️ Хвіст саме <b>скидається</b>, а не стирається в <code>0xFF</code>. Зарядна станція
+                пише навчені значення за <b>фіксованими адресами</b> і структуру записів заново НЕ створює: у
+                <code>dumps/13-dozaryadka-na-stantsii</code> після ПОВНОГО циклу на стертому хвості з'явилися рівно два
+                байти, а байт довжини лишився <code>0xFF</code>. Тому на стертому хвості рація АКБ приймає, але
+                калібрування щоразу завершується <b>помилкою</b> — саме це й спостерігалось на практиці.</div>
+            <div class="note w">⚠️ Фізичну калібровку це не замінює — після цього обов'язково поставте АКБ на
+                IMPRES-зарядку на повний цикл.</div>
+            <input type="password" class="pw" id="pwRecal" placeholder="🔑 Пароль адміністратора">
+            <label style="display:block;margin:8px 0"><input type="checkbox" id="recalDeep"> Глибока чистка — додатково
+                стерти навчені записи ємності (0x153–0x189) і журнал використання. Вмикайте, лише якщо після звичайної
+                підготовки ЗП тримається за стару ємність.</label>
+            <button class="btn btn-warn" style="width:100%" onclick="recalPrep()">🔧 РЕМОНТ ПІСЛЯ ЗАМІНИ ЕЛЕМЕНТІВ</button>
         </div>
 
-        <div class="card">
+<div class="card">
             <h2>🛠 Ремонт цілісності</h2>
             <div class="note i">Перераховує контрольні суми (заголовок Σ≡0x41, записи Σ≡0x5A) і відновлює
                 дзеркало калібрування з уцілілого DS2438. Використовуйте, якщо рація «не бачить» АКБ, а чіп
-                читається. Стан: заголовок <b id="intHdr">—</b>, дзеркало <b id="intMir">—</b>.</div>
+                читається. Стан: заголовок <b id="intHdr">—</b>, дзеркало <b id="intMir">—</b>,
+                профіль моделі <b id="intProf">—</b>, COPYRIGHT <b id="intCp">—</b>.</div>
             <input type="password" class="pw" id="pwRep" placeholder="🔑 Пароль адміністратора">
             <button class="btn btn-warn" style="width:100%" onclick="repairFw()">🛠 ВІДНОВИТИ ЦІЛІСНІСТЬ</button>
         </div>
 
-        <div class="card" style="border-color:var(--warn)">
-            <h2>🔧 Ремонт після заміни елементів (підготовка до калібрування)</h2>
-            <div class="note i">Для АКБ, яку рація бачить як <b>«невідома»</b> після заміни банок. Стирає старе
-                <b>learned-калібрування</b> (запис 0x0A, який зарядка записала під СТАРІ банки і який тепер суперечить
-                новим — перевірено діффом дампа до/після калібрування), обнуляє лічильники, лишає модель/криву/ID.
-                Пакет стає <b>«валідний, не відкалібрований»</b>: рація приймає, а <b>IMPRES-ЗП запускає калібрування</b>
-                нових банок.</div>
-            <div class="note w">⚠️ Фізичну калібровку це <b>не замінює</b> — після цього обов'язково поставте АКБ
-                на оригінальну IMPRES-зарядку для повного циклу навчання.</div>
-            <input type="password" class="pw" id="pwRecal" placeholder="🔑 Пароль адміністратора">
-            <button class="btn btn-warn" style="width:100%" onclick="recalPrep()">🔧 ПІДГОТУВАТИ ДО КАЛІБРУВАННЯ</button>
+<div class="zone zi">🔌 Крок 3 — калібрування на IMPRES-ЗП (обов’язково, прошивкою не замінюється)</div>
+
+<div class="card" style="border-color:var(--warn)">
+            <h2>🪫 Розряд перед калібруванням</h2>
+            <div class="note i">Зарядна станція <b>не бере АКБ на калібрування, поки бачить його зарядженим</b> —
+                світить зеленим і просто тримає. Керований розряд до <b>7.20 В</b> знімає цю невизначеність:
+                пакет свідомо не повний, і станція йде в повний цикл. Заразом рахується <b>реальна ємність</b>
+                нових банок — струм іде через вимірювальний резистор DS2438 усередині пакета, тож мА·год
+                рахуються за фактом.</div>
+            <div class="note w">⚠️ Розряд — єдина операція, що може <b>фізично</b> зашкодити банкам. Аварійна
+                зупинка спрацьовує за напругою нижче 6.00 В, перегрівом (45 °C), стелею часу й втратою зв'язку
+                з монітором. Резистор нагрівається — на 5 Ом це ~14 Вт.</div>
+            <!-- Монітор процесу: оновлюється сам, дивитись можна годинами. -->
+            <div class="dm" id="disMon">
+                <div class="dmhead">
+                    <span class="dmled"></span><span id="disState">—</span>
+                    <span class="dmclock" id="disEl">0:00:00</span>
+                </div>
+                <div class="dmbig">
+                    <span class="dmv" id="disMvBig">—<small>В</small></span>
+                    <span class="dmto" id="disMvSub">—</span>
+                </div>
+                <div class="dmbar"><div class="dmfill" id="disFill"></div>
+                    <span class="dmbartxt" id="disPct"></span></div>
+                <!-- Графік напруги за весь сеанс: видно і темп розряду, і
+                     «полицю» наприкінці, коли банки віддають останнє. -->
+                <svg class="dmspark" id="disSpark" viewBox="0 0 300 60" preserveAspectRatio="none">
+                    <polyline id="disSparkArea" fill="rgba(111,143,58,.22)" stroke="none" points=""/>
+                    <line id="disSparkTarget" x1="0" x2="300" y1="-9" y2="-9" stroke="#a3312e"
+                          stroke-width="1" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>
+                    <polyline id="disSparkLine" fill="none" stroke="#c8b04a" stroke-width="2"
+                              vector-effect="non-scaling-stroke" stroke-linejoin="round" points=""/>
+                </svg>
+                <!-- Струм у коридорі уставки: зелена зона — 80–110 % від
+                     уставки, риска — сама уставка, заливка — середній струм. -->
+                <div class="dmlab"><span>струм / уставка</span><span id="disLim">—</span></div>
+                <div class="dmtrack"><div class="dmband" id="disBand"></div>
+                    <div class="dmcur" id="disCur"></div><div class="dmmark" id="disMark"></div></div>
+                <div class="dmlab"><span>шпаруватість ключа (ШІМ)</span><span id="disDutyTxt">—</span></div>
+                <div class="dmtrack"><div class="dmcur" id="disDuty" style="background:var(--info)"></div></div>
+                <div class="dmg">
+                    <!-- Одиниці — у підпису, значення — саме число: інакше
+                         «1103 мА·год» переноситься на два рядки й плитки скачуть. -->
+                    <div class="dmc hero"><div class="dmck">віддано, мА·год</div><div class="dmcv" id="disMah">—</div></div>
+                    <div class="dmc"><div class="dmck">DCA, мА·год</div><div class="dmcv" id="disDca">—</div></div>
+                    <div class="dmc"><div class="dmck">струм, мА</div><div class="dmcv" id="disMa">—</div></div>
+                    <div class="dmc"><div class="dmck">потужність, Вт</div><div class="dmcv" id="disW">—</div></div>
+                    <div class="dmc"><div class="dmck">температура, °C</div><div class="dmcv" id="disT">—</div></div>
+                    <div class="dmc"><div class="dmck" id="disIcaK">паливомір ICA</div><div class="dmcv" id="disIca">—</div></div>
+                    <div class="dmc"><div class="dmck">лишилось ≈</div><div class="dmcv" id="disEta">—</div></div>
+                </div>
+                <div class="dmwarn" id="disWarn"></div>
+            </div>
+            <div class="row" style="margin-top:10px"><span class="k">Цільова напруга, мВ</span>
+                <input type="number" id="disTarget" value="7200" min="6200" max="8300"
+                       style="border-radius:8px;border:none;padding:6px;width:110px"></div>
+            <input type="password" class="pw" id="pwDis" placeholder="🔑 Пароль адміністратора">
+            <div class="btns">
+                <button class="btn btn-warn" onclick="disStart()">🪫 ПОЧАТИ РОЗРЯД</button>
+                <button class="btn btn-danger" onclick="disStop()">⏹ ЗУПИНИТИ</button>
+            </div>
         </div>
 
-        <div class="card">
+        <div class="card" style="border-color:var(--ok)">
+            <h2>🔌 Калібрування на зарядній станції</h2>
+            <div class="note i">Після ремонту навчена калібровка в АКБ <b>порожня</b> — рація приймає пакет як
+                фірмовий і просить калібрування. Поставте АКБ на <b>оригінальну IMPRES-ЗП</b> на повний цикл
+                (заряд → розряд → заряд). Саме станція виміряє нові банки й запише навчену калібровку в
+                блок <code>0x18A–0x1FF</code>. Обійти цей крок прошивкою неможливо.</div>
+            <div class="note i">Стан навченої калібровки зараз: <b id="fwTail">—</b>.
+                Після успішного циклу тут з’явиться «присутня».</div>
+        </div>
+
+<div class="zone zi">🧰 Обслуговування — безпечно для ідентичності</div>
+
+<div class="card">
+            <h2>♻️ Скидання для рекалібрування</h2>
+            <div class="note i">Обнуляє лічильники DS2438: напрацювання ETM, заряд CCA, розряд DCA.
+                Навчену калібровку, модель та ідентичність не чіпає. Після скидання рація показуватиме
+                неправильну «дату першого користування», доки АКБ не пройде цикл на IMPRES-ЗП: рація
+                рахує цю дату як «свій час − ETM».</div>
+            <input type="password" class="pw" id="pwRst" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="resetBattery()">♻️ СКИНУТИ ЛІЧИЛЬНИКИ</button>
+        </div>
+
+<div class="card">
             <h2>🔋 Заряд у мА·год</h2>
             <div class="note i">Записує рівень заряду (регістр ICA DS2438). Поточне: <b id="mahNow">—</b>.</div>
             <div class="row"><span class="k">мА·год</span>
@@ -242,9 +487,14 @@
                        style="width:110px;text-align:center;font-size:1.1em;border-radius:8px;border:none;padding:6px"></div>
             <input type="password" class="pw" id="pwMah" placeholder="🔑 Пароль адміністратора">
             <button class="btn btn-warn" style="width:100%" onclick="setMah()">💾 ЗАПИСАТИ мА·год</button>
+            <div class="row" style="margin-top:8px"><span class="k">Заряд, % (0..100)</span>
+                <input type="number" id="chgVal" min="0" max="100" placeholder="авто"
+                       style="width:110px;text-align:center;font-size:1.1em;border-radius:8px;border:none;padding:6px"></div>
+            <button class="btn btn-warn" style="width:100%" onclick="setChargeAuto()">⚡ ЗАРЯД ПО НАПРУЗІ (авто: 7В=0%, 8.4В=100%)</button>
+            <button class="btn btn-warn" style="width:100%;margin-top:6px" onclick="setChargePct()">💾 ЗАПИСАТИ ЗАРЯД %</button>
         </div>
 
-        <div class="card">
+<div class="card">
             <h2>📅 Дата першого використання</h2>
             <div class="note i">Рація показує «перше користування» = <b>її поточний час − ETM</b> (лічильник наробітку
                 DS2438). Дата <b>не зберігається</b> у батареї — обчислюється рацією; на «оригінальність» НЕ впливає.
@@ -257,17 +507,18 @@
                 Перевірте на рації після запису.</div>
         </div>
 
-        <div class="card">
-            <h2>🩺 Знос / здоров'я (%)</h2>
-            <div class="note i">Показник ємності/зносу 0–100 % (100 % = «як нова»). Поточне: <b id="capNow">—</b>.</div>
-            <div class="row"><span class="k">Ємність, %</span>
-                <input type="number" id="capVal" min="0" max="100" value="100"
-                       style="width:90px;text-align:center;font-size:1.1em;border-radius:8px;border:none;padding:6px"></div>
-            <input type="password" class="pw" id="pwCap" placeholder="🔑 Пароль адміністратора">
-            <button class="btn btn-warn" style="width:100%" onclick="setCapacity()">💾 ЗАПИСАТИ %</button>
+<div class="card">
+            <h2>🧹 Очистити (крім критичних)</h2>
+            <div class="note w">⚠️ Стирає ВСІ дані використання/історії/статистики (лічильники, знос,
+                таблиці 0x16). <b>Зберігає:</b> модель, серійний/ID, криву калібрування, автентифікацію,
+                дзеркало. Батарея лишається робочою, але «як нова, без історії».</div>
+            <input type="password" class="pw" id="pwCln" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-danger" style="width:100%" onclick="cleanBattery()">🧹 ОЧИСТИТИ ДАНІ</button>
         </div>
 
-        <div class="card">
+<div class="zone zi">🪪 Ідентичність — модель і відновлення порожнього чипа</div>
+
+<div class="card">
             <h2>🪪 Модель та серійний (ручний запис)</h2>
             <div class="note i">Модель (part number) записується у DS2433: поле запису 0x0B + заголовок,
                 з перерахунком контрольних сум. Поточна: <b id="mdNow">—</b>.</div>
@@ -285,7 +536,27 @@
                 редактором байтів (нижче) — там є лінійка адрес як у HxD.</div>
         </div>
 
-        <div class="card" style="border-color:var(--ok)">
+<div class="card" style="border-color:var(--ok)">
+            <h2>🛠️ Відновити еталон (ремонт з нуля)</h2>
+            <div class="note i">Записує <b>модельну частину</b> еталона: ідентичність <code>0x000–0x065</code>,
+                розрядну криву, <code>COPYRIGHT</code>, заводську таблицю й запис моделі. Ця частина побайтово
+                однакова в усіх екземплярів моделі, тому переносити її безпечно. Навчений калібрувальний хвіст
+                <code>0x18A–0x1FF</code> <b>лишається порожнім</b> — його запише зарядна станція під нові банки.
+                Працює на <b>порожній / повністю битій</b> мікросхемі (попереднє зчитування не потрібне).</div>
+            <div class="note w">⚠️ Раніше ця кнопка писала еталон <b>байт-у-байт</b>, разом із навченою
+                калібровкою донора — і рація після цього казала «невідомий акумулятор»
+                (<code>dumps/08-nova-batareya</code>). Побайтовий режим лишився нижче, для аналізу.</div>
+            <div class="row"><span class="k">Модель</span>
+                <select id="restModel" style="border-radius:8px;border:none;padding:6px;min-width:150px"></select></div>
+            <div class="note w">⚠️ Перезапише <b>ОБИДВІ</b> мікросхеми. Після запису — калібрування на IMPRES-ЗП.</div>
+            <label style="display:block;margin:8px 0"><input type="checkbox" id="restVerbatim">
+                <b>Ручний режим:</b> записати байт-у-байт, разом із навченою калібровкою донора.
+                Для аналізу й експериментів; для ремонту НЕ вмикайте.</label>
+            <input type="password" class="pw" id="pwRest" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="restoreBattery()">🛠️ ВІДНОВИТИ ЕТАЛОН</button>
+        </div>
+
+<div class="card" style="border-color:var(--ok)">
             <h2>🆕 Новий акумулятор (ініціалізація порожнього чипа)</h2>
             <div class="note i">Для <b>порожнього / стертого / невідомого</b> чипа: записує повний еталон обраної
                 моделі (DS2433 + DS2438 — ідентичність, калібрування, автентифікація), обнуляє історію/лічильники,
@@ -301,52 +572,23 @@
             <button class="btn btn-warn" style="width:100%" onclick="initBattery()">🆕 ЗАПИСАТИ НОВИЙ АКБ</button>
         </div>
 
-        <!-- НЕБЕЗПЕЧНА ЗОНА -->
-        <div class="zone zd">⛔ НЕБЕЗПЕЧНА ЗОНА — незворотні операції, стирають/переписують дані. Спочатку зробіть копію!</div>
+<div class="zone zd">🧪 Ручний режим / експерт — для аналізу та нештатних ситуацій</div>
 
-        <div class="card">
-            <h2>🧹 Очистити (крім критичних)</h2>
-            <div class="note w">⚠️ Стирає ВСІ дані використання/історії/статистики (лічильники, знос,
-                таблиці 0x16). <b>Зберігає:</b> модель, серійний/ID, криву калібрування, автентифікацію,
-                дзеркало. Батарея лишається робочою, але «як нова, без історії».</div>
-            <input type="password" class="pw" id="pwCln" placeholder="🔑 Пароль адміністратора">
-            <button class="btn btn-danger" style="width:100%" onclick="cleanBattery()">🧹 ОЧИСТИТИ ДАНІ</button>
+<div class="card">
+            <h2>🩺 Знос / здоров'я (%)</h2>
+            <div class="note i">Показник ємності/зносу 0–100 % (100 % = «як нова»). Поточне: <b id="capNow">—</b>.</div>
+            <div class="note w">⚠️ Цей байт лежить у <b>заводській таблиці моделі</b> (<code>0x129</code>) —
+                у всіх екземплярів однієї моделі вона побайтово однакова, тому показань рації правка тут
+                <b>не змінить</b>. Справжній знос рація бере з поля <code>CTS</code> блока калібрування —
+                див. картку <b>«Штатні лічильники Motorola»</b> на вкладці «Дані». Лишено для ручного аналізу.</div>
+            <div class="row"><span class="k">Ємність, %</span>
+                <input type="number" id="capVal" min="0" max="100" value="100"
+                       style="width:90px;text-align:center;font-size:1.1em;border-radius:8px;border:none;padding:6px"></div>
+            <input type="password" class="pw" id="pwCap" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="setCapacity()">💾 ЗАПИСАТИ %</button>
         </div>
 
-        <div class="card">
-            <h2>📤 Відновлення / запис DS2433</h2>
-            <div class="note w">⚠️ Записує <b>завідомо справний</b> дамп (512 Б) тієї ж моделі — так оживляють
-                стерту/пошкоджену АКБ. Невірний файл або чужа модель зроблять АКБ невизначеною.</div>
-            <form enctype="multipart/form-data"><div class="file">
-                <label for="fu33">📁 Файл .bin (512 байт)</label>
-                <input type="file" id="fu33" accept=".bin"><span class="fname" id="fn33">не обрано</span>
-            </div></form>
-            <input type="password" class="pw" id="pw33" placeholder="🔑 Пароль адміністратора">
-            <button class="btn btn-danger" style="width:100%" onclick="writeDump()">⚡ ЗАПИСАТИ DS2433</button>
-        </div>
-
-        <div class="card">
-            <h2>🔬 Запис DS2438 (монітор)</h2>
-            <div class="note w">⚠️ Записує дамп монітора (64 Б). Зазвичай не потрібно окремо.</div>
-            <form enctype="multipart/form-data"><div class="file">
-                <label for="fu38">📁 Файл .bin (64 байти)</label>
-                <input type="file" id="fu38" accept=".bin"><span class="fname" id="fn38">не обрано</span>
-            </div></form>
-            <input type="password" class="pw" id="pw38" placeholder="🔑 Пароль адміністратора">
-            <button class="btn btn-danger" style="width:100%" onclick="writeDump2438()">⚡ ЗАПИСАТИ DS2438</button>
-        </div>
-
-        <div class="card" style="border-color:#e74c3c">
-            <h2>🔥 ПОВНЕ стирання DS2433 (крайній випадок)</h2>
-            <div class="note w">🛑 Стирає <b>ВЕСЬ</b> чіп DS2433 у 0xFF, разом з моделлю, серійним/ID та
-                калібруванням! Після цього АКБ <b>НЕ ПРАЦЮЄ</b>, доки не запишете еталонний дамп тієї ж
-                моделі («Відновлення DS2433» вище). Робіть лише коли чіп остаточно «зіпсований» і ремонт
-                не допомагає. <b>DS2438 не чіпається</b> — з нього потім відновиться калібрування.</div>
-            <input type="password" class="pw" id="pwWipe" placeholder="🔑 Пароль адміністратора">
-            <button class="btn btn-danger" style="width:100%;background:#c0392b" onclick="wipe2433()">🔥 СТЕРТИ DS2433 ПОВНІСТЮ</button>
-        </div>
-
-        <div class="card">
+<div class="card">
             <h2>✏️ Редактор байтів (експертний)</h2>
             <div class="note w">⚠️ Пряме редагування. «Автовиправлення» перераховує суму заголовка DS2433 і
                 тримає дзеркало узгодженим. Невірні дані можуть зробити АКБ невизначеною.</div>
@@ -361,8 +603,8 @@
                 <div class="hxbar"><span class="hxg">Зсув</span><span class="hxh">00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F</span><span class="hxa">Текст</span></div>
                 <div class="hxrow">
                     <div class="hxg" id="hxGut"></div>
-                    <textarea class="hxd" id="hxData" spellcheck="false" oninput="hexAux()"></textarea>
-                    <div class="hxa" id="hxAsc"></div>
+                    <textarea class="hxd" id="hxData" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off"></textarea>
+                    <textarea class="hxa hxae" id="hxAsc" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off"></textarea>
                 </div>
             </div>
             <label style="display:block;margin:6px 0"><input type="checkbox" id="hxFix" checked>
@@ -371,7 +613,43 @@
             <button class="btn btn-danger" style="width:100%" onclick="writeHex()">⚡ ЗАПИСАТИ БАЙТИ</button>
         </div>
 
-        <div class="card">
+<div class="card">
+            <h2>📤 Відновлення / запис DS2433</h2>
+            <div class="note w">⚠️ Записує <b>завідомо справний</b> дамп (512 Б) тієї ж моделі — так оживляють
+                стерту/пошкоджену АКБ. Невірний файл або чужа модель зроблять АКБ невизначеною.</div>
+            <form enctype="multipart/form-data"><div class="file">
+                <label for="fu33">📁 Файл .bin (512 байт)</label>
+                <input type="file" id="fu33" accept=".bin"><span class="fname" id="fn33">не обрано</span>
+            </div></form>
+            <input type="password" class="pw" id="pw33" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-danger" style="width:100%" onclick="writeDump()">⚡ ЗАПИСАТИ DS2433</button>
+        </div>
+
+<div class="card">
+            <h2>🔬 Запис DS2438 (монітор)</h2>
+            <div class="note w">⚠️ Записує дамп монітора (64 Б). Зазвичай не потрібно окремо.</div>
+            <form enctype="multipart/form-data"><div class="file">
+                <label for="fu38">📁 Файл .bin (64 байти)</label>
+                <input type="file" id="fu38" accept=".bin"><span class="fname" id="fn38">не обрано</span>
+            </div></form>
+            <input type="password" class="pw" id="pw38" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-danger" style="width:100%" onclick="writeDump2438()">⚡ ЗАПИСАТИ DS2438</button>
+        </div>
+
+<div class="zone zd">⛔ НЕБЕЗПЕЧНА ЗОНА — незворотні операції. Спочатку зробіть копію!</div>
+
+<div class="card" style="border-color:#e74c3c">
+            <h2>🔥 ПОВНЕ стирання DS2433 (крайній випадок)</h2>
+            <div class="note w">🛑 Стирає <b>ВЕСЬ</b> чіп DS2433 у 0xFF, разом з моделлю, серійним/ID та
+                калібруванням! Після цього АКБ <b>НЕ ПРАЦЮЄ</b>, доки не запишете еталонний дамп тієї ж
+                моделі («Відновлення DS2433» вище). Робіть лише коли чіп остаточно «зіпсований» і ремонт
+                не допомагає. <b>DS2438 не чіпається</b> — з нього потім відновиться калібрування.</div>
+            <input type="password" class="pw" id="pwWipe" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-danger" style="width:100%;background:#c0392b" onclick="wipe2433()">🔥 СТЕРТИ DS2433 ПОВНІСТЮ</button>
+            <button class="btn btn-danger" style="width:100%;background:#922b21;margin-top:6px" onclick="wipe2438()">🔥 СТЕРТИ DS2438 ПОВНІСТЮ</button>
+        </div>
+
+<div class="card">
             <h2>🔁 Перезавантаження пристрою</h2>
             <div class="note i">Перезапускає ESP32 (Wi-Fi/веб-сервер підніметься знову за кілька секунд).
                 Корисно після серії операцій або якщо 1-Wire шина «зависла».</div>
@@ -409,7 +687,62 @@ async function readDump(){
     prog(false);
 }
 
+// Пакет не міг ПРАЦЮВАТИ довше, ніж він ІСНУЄ: якщо напрацювання ETM більше за
+// вік від дати виготовлення, DS2438 майже напевно не від цього пакета (типово —
+// монітор не перечитали після зміни АКБ). Це не дрібниця: шунт у DS2438 свій у
+// кожного пакета, тож із чужого монітора і струм, і знос вийдуть неправильні.
+// Допуск 180 діб: на 31 рідній парі з dumps/ ETM перевищував вік щонайбільше
+// на 44 доби (лічильник стартує до того, як у чип запишуть дату).
+const ETM_AGE_SLACK_D = 180;
+function warnForeign2438(d, etmSec){
+    const w = $('warn2438'); if(!w) return;
+    const mfg = d.bms && d.bms.mfgDate;
+    if(!mfg){ w.style.display='none'; return; }
+    const ageD = Math.floor((Date.now() - new Date(mfg).getTime())/86400000);
+    const etmD = Math.floor(etmSec/86400);
+    if(etmD > ageD + ETM_AGE_SLACK_D){
+        w.style.display='';
+        w.textContent='⚠️ Напрацювання ETM ('+etmD+' діб) більше за вік пакета ('+ageD+
+            ' діб від '+mfg+'). DS2438 майже напевно не від цього АКБ — перечитайте монітор. '+
+            'Доти струм, залишок і знос рахуються за чужим шунтом і будуть неправильні.';
+    } else {
+        w.style.display='none';
+    }
+}
+
+// Штатні поля Motorola із /api/info2438 → картка «Штатні лічильники».
+// Цикли показуємо завжди (ключа не потребують); решта — лише коли ключ відомий.
+function renderBms(b){
+    const set=(id,v,col)=>{const e=$(id); if(!e)return; e.textContent=v; if(col)e.style.color=col;};
+    if(!b){['bCyc','bCycN','bPot','bHealth','bCal','bMfg','bUse','bKey']
+             .forEach(i=>set(i,'—')); return;}
+    set('bCyc', b.cycles>=0?String(b.cycles):'— (блок гістограми побитий)');
+    set('bCycN', b.nonImpresCycles!==undefined?String(b.nonImpresCycles):'—');
+    if(b.haveKey){
+        set('bPot', b.potentialMah+' мА·год'+(b.firstUseMah?(' (на початку '+b.firstUseMah+')'):''));
+        // Знос рахується через шунт. Якщо шунт узято не з чипа, число —
+        // лише оцінка: у різних моделей шунт відрізняється майже вдвічі.
+        set('bHealth', b.health+' %'+(window.__rsChip?'':' (оцінка: шунт не з чипа)'),
+            b.health>=80?'#22c55e':(b.health>=60?'':'#ef4444'));
+        set('bCal', String(b.calCycles));
+        set('bMfg', b.mfgDate||'—');
+        set('bUse', b.firstUseDate||'— (пакет ще не вмикався)');
+        set('bKey', b.keyGuessed
+            ? 'підібрано перебором (ROM чипа недоступний)'
+            : 'з ROM-ID чипа DS2433');
+        // Дублюємо в оглядову картку — там раніше стояло «рахує рація».
+        set('ovWear', b.health+' %');
+        set('ovCap', b.potentialMah+' мА·год');
+        set('ovCycles', b.cycles+' зар. IMPRES'+(b.nonImpresCycles?(' / +'+b.nonImpresCycles+' звич. ЗП'):''));
+    } else {
+        ['bPot','bHealth','bCal','bMfg','bUse'].forEach(i=>set(i,'—'));
+        set('bKey','не визначено — зчитайте АКБ пристроєм (потрібен ROM-ID DS2433)');
+        if(b.cycles>=0)set('ovCycles', b.cycles+' зар. IMPRES');
+    }
+}
+
 async function refreshAll(){
+    disPoll();
     // DS2433 info
     try{
         const r=await fetch('/api/info');
@@ -420,10 +753,36 @@ async function refreshAll(){
             if(typeof d.capacity==='number'&&d.capacity>=0){
                 $('ovCap').textContent=d.capacity+' %'; $('ovWear').textContent=d.wear+' %';
                 $('capNow').textContent=d.capacity+' %'; $('capVal').value=d.capacity;
+            } else {
+                // Строк служби / знос у прошивці НЕ зберігається — рація рахує його
+                // сама з навчених даних. Раніше сюди підставлявся байт заводської
+                // таблиці, тому завжди показувало «100 % / знос 0 %».
+                $('ovCap').textContent='рахує рація'; $('ovWear').textContent='рахує рація';
+                $('capNow').textContent='—';
+            }
+            if(d.tail!==undefined){
+                const tl={blank:['⛔ хвіст СТЕРТО — ЗП не зможе завершити калібрування','#ef4444'],
+                          fresh:['✅ чиста (скелет цілий, навчені значення обнулені)','#22c55e'],
+                          learned:['присутня (навчена на реальних банках)','#eab308'],
+                          broken:['пошкоджена — потрібен ремонт після заміни елементів','#eab308']}[d.tail];
+                if(tl){
+                    $('ovTail').textContent=tl[0];$('ovTail').style.color=tl[1];
+                    if($('fwTail')){$('fwTail').textContent=tl[0];$('fwTail').style.color=tl[1];}
+                }
             }
             if(typeof d.headerOk==='boolean'){
                 $('intHdr').textContent=d.headerOk?'✅ OK':'❌ пошкоджено';
                 $('intMir').textContent=d.mirrorOk?'✅ OK':'❌ розсинхрон';
+                // Профіль моделі — друга 32-байтна сума (0x021–0x040, Σ≡0x00).
+                // Автоматично НЕ правиться: блок побайтово однаковий у всіх
+                // екземплярів моделі, тож хибна сума = побиті дані, і лікується
+                // це записом модельної частини еталона.
+                if($('intProf'))$('intProf').textContent =
+                    d.profileOk===undefined?'—':(d.profileOk?'✅ OK':'❌ побитий — запишіть модельну частину');
+                // COPYRIGHT є не в усіх моделей: 4409A й APLI4810C його штатно
+                // не мають, і рація такі пакети приймає. «немає» — не помилка.
+                if($('intCp'))$('intCp').textContent =
+                    {ok:'✅ OK',broken:'❌ сума хибна',none:'— немає (норма для цієї моделі)'}[d.copyright]||'—';
             }
             if(typeof d.genuine==='boolean'){
                 $('ovAuth').innerHTML=d.genuine
@@ -442,7 +801,7 @@ async function refreshAll(){
             const rmah=(d.icaMah!==undefined)?d.icaMah:null;   // залишкова ємність, мА·год
             $('chargePct').textContent=pct!==null?pct+'%':'--%';
             $('chargeSub').textContent=(rmah!==null?('залишок '+rmah+' мА·год'):'')+
-                (pct!==null?(' · '+(d.chargeSrc==='ICA'?'ICA':'напруга')):'');
+                (pct!==null?(' · '+(d.chargeSrc==='ICA'?'ICA':(d.chargeSrc==='U!'?'за напругою (паливомір не калібр.)':'напруга'))):'');
             if(rmah!==null){$('mahVal').value=rmah;$('mahNow').textContent=rmah+' мА·год';}
             const fill=$('battFill');
             fill.style.width=(pct!==null?pct:0)+'%';
@@ -457,15 +816,39 @@ async function refreshAll(){
             $('dDCA').textContent=cyc(d.dcaCycles,d.dcaMah,d.dca);
             if(d.ccaCycles!==undefined)$('ovCycles').textContent=d.ccaCycles+' зар. / '+d.dcaCycles+' розр. (ємн. '+d.ratedMah+' мА·год)';
             $('dSerial').textContent=d.serial||'—';
+            $('dSerial33').textContent=d.serial33||'—';
+            window.__rsChip=!!d.rsenseChip;
+            if(d.rsense!==undefined)$('dRs').textContent=(d.rsense*1000).toFixed(2)+' мОм'+
+                (d.rsenseChip?' (з чипа)':' (з налаштувань — у чипі поля немає)');
+            renderBms(d.bms);
             // ETM (наробіток) -> вік і приблизна дата першого користування = сьогодні − ETM.
             // Рація рахує так само (свій годинник − ETM). Годинник ПК ≈ годинник рації.
+            // УВАГА: якщо ETM > ~34 років, це не «час напрацювання», а «зашитий»
+            // Unix-timestamp (сек від 1970). Рація тоді покаже абсурдну дату (напр. 1976).
             if(typeof d.etmSec==='number'){
-                const days=Math.floor(d.etmSec/86400), y=Math.floor(days/365), dd=days%365;
-                $('dEtm').textContent=y+' р '+dd+' дн ('+d.etmSec+' с)';
-                const first=new Date(Date.now()-d.etmSec*1000);
-                $('dFirst').textContent=first.toLocaleDateString();
-                if($('etmNow'))$('etmNow').textContent=first.toLocaleDateString()+' ('+y+' р '+dd+' дн)';
+                const etm=d.etmSec, YS=31557600;               // 365.25 дн
+                const days=Math.floor(etm/86400), y=Math.floor(days/365), dd=days%365;
+                const first=new Date(Date.now()-etm*1000);       // так рахує рація
+                if(etm>34*YS){
+                    // Нереально як напрацювання -> схоже на Unix-дату, зашиту в поле.
+                    const asUnix=new Date(etm*1000);
+                    $('dEtm').innerHTML='<span style="color:#c0392b">⚠ '+y+' р ('+etm+' с) — некоректно</span>';
+                    $('dFirst').innerHTML='<span style="color:#c0392b">⚠ рація покаже '+first.toLocaleDateString()+
+                        '</span> <span style="opacity:.7">(поле = Unix-дата '+asUnix.toLocaleDateString()+'; треба перезаписати кнопкою нижче)</span>';
+                    if($('etmNow'))$('etmNow').textContent='⚠ '+first.toLocaleDateString()+' — некоректно, задайте вручну';
+                }else{
+                    $('dEtm').textContent=y+' р '+dd+' дн ('+etm+' с)';
+                    $('dFirst').textContent=first.toLocaleDateString();
+                    if($('etmNow'))$('etmNow').textContent=first.toLocaleDateString()+' ('+y+' р '+dd+' дн)';
+                }
                 if($('etmDate')&&!$('etmDate').value)$('etmDate').value=first.toISOString().slice(0,10);
+                // Оцінка «сьогодні − ETM» лишається лише запасним варіантом:
+                // якщо блок дат прочитався, показуємо СПРАВЖНЮ дату з чипа.
+                if(d.bms&&d.bms.firstUseDate){
+                    $('dFirst').textContent=d.bms.firstUseDate+' (з чипа)';
+                    $('dFirst').style.color='';
+                }
+                warnForeign2438(d, etm);
             }
             $('dHex38').textContent=d.hex||d.preview||'—';
         }
@@ -488,7 +871,7 @@ const downloadDump2438=()=>downloadBin('/api/download2438','ds2438');
 async function writeGeneric(file,size,pwId,upUrl,wrUrl,name){
     if(!file){toast('Оберіть файл '+name,'err');return}
     if(file.size!==size){toast('Файл має бути '+size+' байт (зараз '+file.size+')','err');return}
-    const pw=$(pwId).value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$(pwId).value; 
     if(!confirm('⚠️ Запис '+name+' НЕЗВОРОТНІЙ.\nФайл: '+file.name+'\nПродовжити?'))return;
     prog(true,'Завантаження файлу...');
     try{
@@ -507,7 +890,7 @@ const writeDump=()=>writeGeneric(f33,512,'pw33','/upload','/api/write','DS2433')
 const writeDump2438=()=>writeGeneric(f38,64,'pw38','/upload2438','/api/write2438','DS2438');
 
 async function resetBattery(){
-    const pw=$('pwRst').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwRst').value; 
     if(!confirm('♻️ Скидання лічильників/зносу та запис у чіп НЕЗВОРОТНІ.\n'+
                 'Потім — калібрування на оригінальному IMPRES-ЗП.\nПродовжити?'))return;
     prog(true,'Скидання та запис...');
@@ -525,8 +908,116 @@ async function postForm(url,obj){
     return (await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body})).json();
 }
 
+// ============ МАЙСТЕР ВІДНОВЛЕННЯ ============
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+let wizState=null;
+async function wizAnalyze(){
+    prog(true,'Аналіз батареї...');
+    try{
+        const r=await(await fetch('/api/wizard')).json();
+        wizState=r; wizRender(r); wizJournalsLoad();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+function wizRender(r){
+    if(!r||!r.ok)return;
+    $('wizStatusCard').style.display='';
+    const vd=$('wizVerdict');
+    if(!r.have33&&!r.have38){vd.textContent='❌ Чіпи не знайдено на шині';vd.className='wizverd-bad';}
+    else if(r.healthy){vd.textContent='✅ Батарея справна — відновлення не потрібне';vd.className='wizverd-ok';}
+    else {vd.textContent='⚠️ Виявлено проблем: '+((r.problems||[]).length);vd.className='wizverd-bad';}
+    const pc=$('wizProblems');pc.innerHTML='';
+    (r.problems||[]).forEach(p=>{
+        const ico=p.sev>=2?'⛔':(p.sev==1?'⚠️':'ℹ️');
+        const d=document.createElement('div');d.className='prob sev'+p.sev;
+        d.innerHTML='<div class="pico">'+ico+'</div><div><b>'+esc(p.problem)+'</b><div class="pfix">→ '+esc(p.fix)+'</div></div>';
+        pc.appendChild(d);
+    });
+    if((r.steps||[]).length && !r.healthy){$('wizPlanCard').style.display='';wizRenderSteps(r);}
+    else $('wizPlanCard').style.display='none';
+}
+function wizRenderSteps(r){
+    const pct=r.total?Math.round(r.progress/r.total*100):0;
+    $('wizBarFill').style.width=pct+'%';
+    $('wizProg').textContent='Крок '+Math.min(r.progress+1,r.total)+' з '+r.total+' • виконано: '+r.progress;
+    $('wizModelRow').style.display=r.needModel?'':'none';
+    const sc=$('wizSteps');sc.innerHTML='';
+    (r.steps||[]).forEach(s=>{
+        const cur=(s.idx===r.progress);
+        const ico=s.done?'✅':(cur?(s.external?'🔌':'▶️'):'•');
+        const d=document.createElement('div');
+        d.className='step'+(s.done?' done':'')+(cur&&!r.awaitCharge?' cur':'');
+        d.id='wstep'+s.idx;
+        d.innerHTML='<div class="sico">'+ico+'</div><div><div class="stit">'+esc(s.title)+'</div><div class="sdet">'+esc(s.detail)+'</div></div>';
+        sc.appendChild(d);
+    });
+    const banner=$('wizStationBanner'), btn=$('wizNextBtn');
+    if(r.awaitCharge){
+        banner.style.display='';
+        banner.innerHTML='🔌 АКБ на зарядній станції. Після повного циклу (заряд/розряд/заряд) поверніть її сюди.'+
+            (r.chargeDone?'<br><b style="color:var(--ok)">✔ Зміни виявлено — калібрування пройшло, можна продовжити.</b>':'');
+        btn.disabled=false;
+        btn.textContent=r.chargeDone?'✅ Продовжити відновлення':'🔄 Перевірити після ЗП';
+    } else {
+        banner.style.display='none';
+        if(r.progress>=r.total){btn.disabled=true;btn.textContent='✅ Відновлення завершено';}
+        else {const cur=(r.steps||[])[r.progress];btn.disabled=false;btn.textContent='▶️ Виконати: '+(cur?cur.title:'наступний крок');}
+    }
+}
+async function wizNext(){
+    const r=wizState; if(!r)return;
+    if(r.awaitCharge && !r.chargeDone){await wizAnalyze();return;}   // опитуємо ЗП
+    const pw=$('pwWiz').value; 
+    const idx=r.progress;
+    const model=r.needModel?$('wizModel').value:'';
+    if(r.needModel && !model){toast('Оберіть модель для відновлення','err');return;}
+    const stepEl=$('wstep'+idx); if(stepEl)stepEl.classList.add('run');
+    prog(true,'Виконую крок…');
+    try{
+        const res=await postForm('/api/wizard/step',{password:pw,idx:idx,model:model});
+        wizState=res;
+        if(res.msg)toast((res.result?'✅ ':'❌ ')+res.msg,res.result?'ok':'err');
+        wizRender(res); wizJournalsLoad();
+        await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+async function wizReset(){
+    const pw=$('pwWiz').value; 
+    try{await postForm('/api/wizard/reset',{password:pw});toast('Майстра скинуто','ok');}catch(e){}
+    wizAnalyze();
+}
+async function wizJournalsLoad(){
+    try{
+        const r=await(await fetch('/api/wizard/journals')).json();
+        const c=$('wizJournals'); c.innerHTML='';
+        const js=r.journals||[];
+        if(!js.length){c.innerHTML='<div class="wizprog">Немає збережених відновлень.</div>';return;}
+        js.forEach(j=>{
+            const planned=(j.planned||[]).join(' → ')||'—';
+            const rem=Math.max(0,(j.total||0)-(j.done||0));
+            const d=document.createElement('div'); d.className='jrn';
+            d.innerHTML='<div class="jhead"><b>'+esc(j.serial)+'</b>'+(j.model?(' · '+esc(j.model)):'')
+                +(j.await?'<span class="jbadge">на ЗП</span>':'')
+                +'</div><div class="jsub">Прогрес: '+(j.done||0)+'/'+(j.total||0)+' · лишилось '+rem+'</div>'
+                +'<div class="jsub">Заплановано: '+esc(planned)+'</div>';
+            const btn=document.createElement('button'); btn.className='btn btn-danger'; btn.style.marginTop='6px';
+            btn.textContent='🗑 Видалити з пам’яті'; btn.onclick=()=>wizJournalDelete(j.serial);
+            d.appendChild(btn); c.appendChild(d);
+        });
+    }catch(e){toast('Помилка: '+e.message,'err');}
+}
+async function wizJournalDelete(serial){
+    const pw=$('pwWiz').value; 
+    if(!confirm('Видалити збережене відновлення для '+serial+'?'))return;
+    try{
+        const r=await postForm('/api/wizard/journals/delete',{password:pw,serial:serial});
+        if(r.ok){toast('Видалено','ok'); wizJournalsLoad();} else toast('Помилка: '+(r.err||''),'err');
+    }catch(e){toast('Помилка: '+e.message,'err');}
+}
+
 async function setCapacity(){
-    const pw=$('pwCap').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwCap').value; 
     const cap=parseInt($('capVal').value); if(isNaN(cap)||cap<0||cap>100){toast('Ємність 0..100','err');return}
     if(!confirm('🔋 Записати ємність '+cap+'% у АКБ? Незворотньо.'))return;
     prog(true,'Запис ємності...');
@@ -539,7 +1030,7 @@ async function setCapacity(){
 }
 
 async function setEtm(){
-    const pw=$('pwEtm').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwEtm').value; 
     const ds=$('etmDate').value; if(!ds){toast('Оберіть дату','err');return}
     const target=new Date(ds+'T00:00:00');
     let sec=Math.floor((Date.now()-target.getTime())/1000);
@@ -556,7 +1047,7 @@ async function setEtm(){
 }
 
 async function setMah(){
-    const pw=$('pwMah').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwMah').value; 
     const mah=parseInt($('mahVal').value); if(isNaN(mah)||mah<0){toast('Вкажіть мА·год','err');return}
     if(!confirm('🔋 Записати залишкову ємність '+mah+' мА·год у DS2438? Незворотньо.'))return;
     prog(true,'Запис мА·год...');
@@ -568,8 +1059,30 @@ async function setMah(){
     prog(false);
 }
 
+async function setChargeAuto(){
+    const pw=$('pwMah').value; 
+    prog(true,'Заряд по напрузі...');
+    try{
+        const r=await postForm('/api/setcharge',{password:pw,auto:'1'});
+        toast(r.status==='success'?('✅ Заряд '+r.pct+'% (ICA='+r.ica+')'):('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+async function setChargePct(){
+    const pw=$('pwMah').value; 
+    const pct=parseInt($('chgVal').value); if(isNaN(pct)||pct<0||pct>100){toast('Вкажіть 0..100','err');return}
+    prog(true,'Запис заряду...');
+    try{
+        const r=await postForm('/api/setcharge',{password:pw,pct:pct});
+        toast(r.status==='success'?('✅ Заряд '+r.pct+'% (ICA='+r.ica+')'):('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
 async function wipe2433(){
-    const pw=$('pwWipe').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwWipe').value; 
     if(!confirm('🔥 ПОВНЕ стирання DS2433!\n\nСтираються МОДЕЛЬ, СЕРІЙНИЙ/ID та КАЛІБРУВАННЯ.\nАКБ НЕ ПРАЦЮВАТИМЕ, доки не запишете еталонний дамп тієї ж моделі.\n\nВи зробили резервну копію? Продовжити?'))return;
     if(!confirm('Останнє попередження: стерти DS2433 ПОВНІСТЮ?'))return;
     prog(true,'Повне стирання DS2433...');
@@ -581,8 +1094,21 @@ async function wipe2433(){
     prog(false);
 }
 
+async function wipe2438(){
+    const pw=$('pwWipe').value; 
+    if(!confirm('🔥 ПОВНЕ стирання DS2438!\n\nСтирається дзеркало калібрування (DS2438).\nАКБ треба відновити («Новий АКБ» тієї ж моделі).\n\nВи зробили резервну копію? Продовжити?'))return;
+    if(!confirm('Останнє попередження: стерти DS2438 ПОВНІСТЮ?'))return;
+    prog(true,'Повне стирання DS2438...');
+    try{
+        const r=await postForm('/api/wipe2438',{password:pw});
+        toast(r.status==='success'?'✅ DS2438 стерто. Відновіть АКБ («Новий АКБ»).':('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        if(r.status==='success')await refreshAll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
 async function cleanBattery(){
-    const pw=$('pwCln').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwCln').value; 
     if(!confirm('🧹 Стерти ВСІ дані використання/історії, лишивши модель/ID/калібрування?\nНезворотньо. Продовжити?'))return;
     prog(true,'Очистка...');
     try{
@@ -600,7 +1126,7 @@ function mdCheck(){
     el.style.color=(v.length>=3&&v.length<=9)?'var(--ok)':'var(--warn)';
 }
 async function setModel(){
-    const pw=$('pwMd').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwMd').value; 
     const m=$('mdVal').value.trim().toUpperCase();
     if(!/^[A-Z0-9]{3,9}$/.test(m)){toast('Модель: 3–9 символів A–Z / 0–9','err');return}
     if(!confirm('Записати модель «'+m+'» у DS2433?\nНевірна модель може зробити АКБ невизначеною для рації.'))return;
@@ -613,12 +1139,164 @@ async function setModel(){
     prog(false);
 }
 
-async function recalPrep(){
-    const pw=$('pwRecal').value; if(!pw){toast('Введіть пароль','err');return}
-    if(!confirm('🔧 Підготувати АКБ до рекалібрування?\nСтерти старе learned-калібрування і обнулити лічильники (модель/крива лишаються). Далі — калібрування на IMPRES-ЗП.'))return;
-    prog(true,'Підготовка до калібрування...');
+// ---- керований розряд: старт/стоп + живий моніторинг ----------------------
+// Монітор розряду. Опитуємо САМІ, без кнопок: раз на 2 с під час розряду
+// (пристрій знімає показання раз на 5 с, але між ними ще йде годинник і
+// анімація, тож частіший запит робить картинку живою) і раз на 20 с у спокої —
+// щоб побачити розряд, запущений кнопкою на самому пристрої, а не звідси.
+let disTimer=null, disPeriod=0, disHist=[], disStep=10, disLast=null, disLastAt=0, disWasRun=false;
+function disFmtT(s){const h=Math.floor(s/3600),m=Math.floor(s/60)%60,x=s%60;
+    return h+':'+String(m).padStart(2,'0')+':'+String(x).padStart(2,'0');}
+
+// Перезапустити таймер лише якщо період справді змінився — інакше кожне
+// опитування зсувало б наступне й ритм «плив».
+function disSchedule(ms){
+    if(disPeriod===ms&&disTimer)return;
+    if(disTimer)clearInterval(disTimer);
+    disPeriod=ms; disTimer=setInterval(disPoll,ms);
+}
+// Значення в плитці + спалах, якщо змінилось: за годину спостереження око саме
+// чіпляється за те, що ворухнулось.
+function disSet(id,txt){
+    const el=$(id); if(!el||el.textContent===txt)return;
+    el.textContent=txt; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+}
+// Графік напруги за ВЕСЬ сеанс. Точки не викидаються з початку (інакше через
+// пів години було б видно лише останні хвилини) — коли їх забагато, ряд
+// проріджується вдвічі, а крок між новими точками подвоюється. Так уся крива
+// лишається на екрані незалежно від тривалості розряду.
+function disPush(t,mv){
+    const last=disHist[disHist.length-1];
+    if(last&&t-last.t<disStep)return;
+    disHist.push({t:t,mv:mv});
+    if(disHist.length>300){ disHist=disHist.filter((_,i)=>i%2===0); disStep*=2; }
+}
+function disSpark(targetMv){
+    const tl=$('disSparkTarget');
+    if(disHist.length<2){$('disSparkLine').setAttribute('points','');
+                         $('disSparkArea').setAttribute('points','');
+                         tl.setAttribute('y1',-9); tl.setAttribute('y2',-9); return;}
+    const vs=disHist.map(p=>p.mv);
+    let lo=Math.min(...vs)-20, hi=Math.max(...vs)+20;
+    if(targetMv&&targetMv<lo) lo=targetMv-20;              // ціль завжди в кадрі
+    const t0=disHist[0].t, t1=Math.max(disHist[disHist.length-1].t,t0+1);
+    const X=p=>3+((p.t-t0)/(t1-t0))*294;                   // 3 px полів, щоб лінія
+    const Y=v=>58-((v-lo)/(hi-lo||1))*54;                  // не лягала на рамку
+    const pts=disHist.map(p=>X(p).toFixed(1)+','+Y(p.mv).toFixed(1)).join(' ');
+    $('disSparkLine').setAttribute('points',pts);
+    $('disSparkArea').setAttribute('points','3,60 '+pts+' 297,60');
+    const ty=Y(targetMv);                                   // пунктир цілі
+    tl.setAttribute('y1',ty); tl.setAttribute('y2',ty);
+}
+async function disPoll(){
+    let d;
+    try{ const r=await fetch('/api/discharge'); d=await r.json(); }
+    catch(e){ return; }                      // мережа моргнула — спробуємо наступного разу
+    const mon=$('disMon');
+    if(!d.available){ mon.className='dm'; $('disState').textContent='не налаштовано (LOAD_PIN у settings.h)';
+                      disSchedule(20000); return; }
+    const run=d.state==='run';
+    mon.className='dm '+d.state;
+    const st={idle:'очікування',run:'ІДЕ РОЗРЯД',
+              done:'✅ ГОТОВО — на IMPRES-ЗП',abort:'⛔ '+(d.reason||'аварія')}[d.state]||d.state;
+    $('disState').textContent=st;
+
+    // Історія напруги для графіка. Скидаємо, коли почався НОВИЙ сеанс (час
+    // пішов назад) — інакше графік склеював би два різні розряди в один.
+    if(run){
+        if(disHist.length&&d.elapsedS<disHist[disHist.length-1].t){disHist=[];disStep=10;}
+        disPush(d.elapsedS,d.mv);
+    }
+    disSpark(d.targetMv);
+
+    $('disMvBig').innerHTML=(d.mv/1000).toFixed(2)+'<small>В</small>';
+    $('disMvSub').textContent='старт '+(d.startMv/1000).toFixed(2)+' В → ціль '+(d.targetMv/1000).toFixed(2)+' В';
+    const span=d.startMv-d.targetMv, done=d.startMv-d.mv;
+    const pct=span>0?Math.max(0,Math.min(100,Math.round(done*100/span))):0;
+    $('disFill').style.width=pct+'%'; $('disPct').textContent=pct+' %';
+
+    // Смуга струму. Масштаб — до 125 % уставки, щоб коридор займав більшу
+    // частину доріжки, а вихід за нього був помітний, а не губився в кінці.
+    const ma=Math.abs(d.ma), scale=Math.max(d.setMa*1.25,ma*1.05,1);
+    $('disCur').style.width=Math.min(100,ma*100/scale)+'%';
+    $('disCur').className='dmcur'+(run&&!d.inBand?' out':'');
+    $('disBand').style.left=(d.bandLoMa*100/scale)+'%';
+    $('disBand').style.width=Math.max(0,(d.bandHiMa-d.bandLoMa)*100/scale)+'%';
+    $('disMark').style.left=Math.min(100,d.setMa*100/scale)+'%';
+    $('disLim').textContent=d.pwm?('уставка '+d.setMa+' мА · пік '+d.peakMa+' мА')
+                                 :'⚠ ШІМ недоступний';
+    $('disLim').style.color=d.pwm?(d.inBand?'var(--ok)':'var(--warn)'):'var(--accent)';
+    $('disDuty').style.width=(d.pwm?d.duty:100)+'%';
+    $('disDutyTxt').textContent=d.pwm?(d.duty+' %'):'ключ відкрито постійно';
+
+    disSet('disMah',String(d.mah));
+    // DCA — апаратний інтегратор самого DS2438: рахує неперервно, тож служить
+    // перехресною перевіркою нашого інтеграла по опитуваннях.
+    disSet('disDca',String(d.dcaMah));
+    disSet('disMa',String(d.ma));
+    disSet('disW',String(d.watts));
+    disSet('disT',String(d.tempC));
+    disSet('disIca',String(d.ica));
+    $('disIcaK').textContent='паливомір ICA · старт '+d.icaStart;
+
+    // Залишок часу — з фактичного темпу за весь сеанс. Оцінка груба (наприкінці
+    // крива положистіша, та й струм ми навмисне зменшуємо), тож і подається як
+    // «≈», але дає зрозуміти, чекати десять хвилин чи дві години.
+    let eta='—';
+    if(run&&d.elapsedS>60&&d.startMv>d.mv){
+        const rate=(d.startMv-d.mv)/d.elapsedS;                 // мВ/с
+        const left=Math.max(0,(d.mv-d.targetMv)/rate);
+        eta=left>0?disFmtT(Math.round(left)):'ось-ось';
+    }
+    disSet('disEta',eta);
+
+    const warn=$('disWarn');
+    if(!d.pwm&&(run||d.state==='done')){
+        warn.style.display='block';
+        warn.textContent='ШІМ недоступний: каналу LEDC не знайшлося, ключ відкритий постійно і струм не '
+                        +'обмежується ('+d.peakMa+' мА на '+d.loadOhm+' Ом). Перевірте LOAD_LEDC_CH у settings.h.';
+    } else warn.style.display='none';
+
+    disLast=d; disLastAt=Date.now();
+    $('disEl').textContent=disFmtT(d.elapsedS);
+    disSchedule(run?2000:20000);
+    if(!run&&disWasRun){disWasRun=false;await refreshAll();}   // сеанс завершився — оновити решту сторінки
+    if(run)disWasRun=true;
+}
+// Годинник між опитуваннями: сервер віддає час раз на 2 с, а секунди мають
+// бігти рівно — інакше здається, що інтерфейс завис.
+setInterval(()=>{
+    if(!disLast||disLast.state!=='run')return;
+    $('disEl').textContent=disFmtT(disLast.elapsedS+Math.floor((Date.now()-disLastAt)/1000));
+},1000);
+async function disStart(){
+    const pw=$('pwDis').value, t=parseInt($('disTarget').value)||7200;
+    if(!confirm('🪫 Почати розряд до '+(t/1000).toFixed(2)+' В?\n\nСтрум обмежується ШІМом: 1000 мА на повному заряді, далі лінійно до 300 мА на 7.20 В.\nНавантаження буде увімкнено; резистор нагріється. Не залишайте пристрій без нагляду.\nЗупинити можна кнопкою «ЗУПИНИТИ» або довгим натисканням на пристрої.'))return;
+    prog(true,'Запуск розряду...');
     try{
-        const r=await postForm('/api/recalprep',{password:pw});
+        const r=await postForm('/api/discharge/start',{password:pw,target:t});
+        toast(r.status==='success'?'✅ Розряд почато':('Помилка: '+r.message),r.status==='success'?'ok':'err');
+        await disPoll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+async function disStop(){
+    prog(true,'Зупинка...');
+    try{
+        const r=await postForm('/api/discharge/stop',{password:$('pwDis').value});
+        toast(r.status==='success'?'⏹ Розряд зупинено':'Помилка','info');
+        await disPoll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+async function recalPrep(){
+    const pw=$('pwRecal').value;
+    const deep=$('recalDeep')&&$('recalDeep').checked;
+    if(!confirm('🔧 Ремонт після заміни елементів?\nБуде стерто навчений калібрувальний хвіст 0x18A–0x1FF'+(deep?' + навчені записи ємності й журнал':'')+' і обнулено лічильники DS2438.\nМодель, крива й ідентичність лишаються. Далі — калібрування на IMPRES-ЗП.'))return;
+    prog(true,'Ремонт після заміни елементів...');
+    try{
+        const r=await postForm('/api/recalprep',{password:pw,deep:deep?'1':'0'});
         toast(r.status==='success'?'✅ Готово. Поставте АКБ на IMPRES-ЗП.':('Помилка: '+r.message),r.status==='success'?'ok':'err');
         if(r.status==='success')await refreshAll();
     }catch(e){toast('Помилка: '+e.message,'err')}
@@ -626,7 +1304,7 @@ async function recalPrep(){
 }
 
 async function repairFw(){
-    const pw=$('pwRep').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwRep').value; 
     if(!confirm('🛠 Відновити цілісність (контрольні суми + дзеркало) і записати у чіп?'))return;
     prog(true,'Ремонт...');
     try{
@@ -637,56 +1315,106 @@ async function repairFw(){
     prog(false);
 }
 
+// ---- Модель-орієнтований hex-редактор ------------------------------------
+// Єдине джерело правди — масив байтів hxBytes. Обидві панелі (hex і ASCII)
+// лише ВІДОБРАЖАЮТЬ модель; правки перехоплюються на keydown і йдуть у модель,
+// тож роздільники/адреси/вирівнювання НЕ псуються, а к-сть байт завжди точна.
+let hxBytes=new Uint8Array(0);
+const hxColHex=j=> j<8 ? j*3 : 25+(j-8)*3;   // колонка старшого нібла байта j
+function hxByteAtHex(col){for(let j=0;j<16;j++){const c=hxColHex(j);if(col===c)return[j,0];if(col===c+1)return[j,1];}return null;}
+const hxColAsc=j=> j<8 ? j : 10+(j-8);        // колонка байта j у ASCII-панелі
+function hxByteAtAsc(col){for(let j=0;j<16;j++)if(col===hxColAsc(j))return j;return null;}
+const HX_NAV=['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','PageUp','PageDown','Tab'];
+
+function hxRender(){
+    const n=hxBytes.length; let gut='',hx='',asc='';
+    for(let i=0;i<n;i+=16){
+        gut+=i.toString(16).toUpperCase().padStart(4,'0')+'\n';
+        let h='',a='';
+        for(let j=0;j<16&&i+j<n;j++){
+            const v=hxBytes[i+j];
+            h+=(j===0?'':(j===8?'  ':' '))+v.toString(16).toUpperCase().padStart(2,'0');
+            a+=(j===8?'  ':'')+((v>=32&&v<127)?String.fromCharCode(v):'.');
+        }
+        hx+=h+'\n'; asc+=a+'\n';
+    }
+    const sc=$('hxData').scrollTop;                 // збережемо позицію прокрутки
+    $('hxGut').textContent=gut.replace(/\n$/,'');
+    $('hxData').value=hx.replace(/\n$/,'');
+    $('hxAsc').value=asc.replace(/\n$/,'');
+    $('hxData').scrollTop=sc; $('hxAsc').scrollTop=sc; $('hxGut').scrollTop=sc;
+}
+function hxRC(ta){const s=ta.value.substring(0,ta.selectionStart).split('\n');return[s.length-1,s[s.length-1].length];}
+function hxSet(ta,r,c,lineLen){const p=r*(lineLen+1)+c;ta.selectionStart=ta.selectionEnd=p;}
+
+function hxKeyHex(e){
+    if(e.ctrlKey||e.metaKey||e.altKey)return;
+    if(HX_NAV.includes(e.key))return;
+    e.preventDefault();
+    if(e.key.length!==1||!/[0-9a-fA-F]/.test(e.key))return;
+    const [r,col]=hxRC($('hxData')), bn=hxByteAtHex(col);
+    if(!bn)return;
+    const bi=r*16+bn[0]; if(bi>=hxBytes.length)return;
+    const d=parseInt(e.key,16), v=hxBytes[bi];
+    hxBytes[bi]= bn[1]===0 ? ((d<<4)|(v&0x0F)) : ((v&0xF0)|d);
+    hxRender();
+    if(bn[1]===0) hxSet($('hxData'),r,col+1,48);
+    else{const nb=bi+1; nb<hxBytes.length ? hxSet($('hxData'),(nb>>4),hxColHex(nb&15),48) : hxSet($('hxData'),r,col,48);}
+}
+function hxKeyAsc(e){
+    if(e.ctrlKey||e.metaKey||e.altKey)return;
+    if(HX_NAV.includes(e.key))return;
+    e.preventDefault();
+    if(e.key.length!==1)return;
+    const code=e.key.charCodeAt(0); if(code<32||code>=127)return;
+    const [r,col]=hxRC($('hxAsc')), j=hxByteAtAsc(col);
+    if(j===null)return;
+    const bi=r*16+j; if(bi>=hxBytes.length)return;
+    hxBytes[bi]=code; hxRender();
+    const nb=bi+1; if(nb<hxBytes.length) hxSet($('hxAsc'),(nb>>4),hxColAsc(nb&15),18);
+}
+
 async function loadHex(){
     const t=$('hxTarget').value;
     try{
         const r=await fetch(t==='2438'?'/api/info2438':'/api/info');
-        if(r.status===404){$('hxData').value='';toast('Спочатку зчитайте АКБ','err');return}
+        if(r.status===404){hxBytes=new Uint8Array(0);hxRender();toast('Спочатку зчитайте АКБ','err');return}
         const d=await r.json();
-        // hex приходит строкой "AA BB ..." — раскладываем по 16 в ряд
-        const parts=(d.hex||'').trim().split(/\s+/);
-        let out='';
-        for(let i=0;i<parts.length;i+=16) out+=parts.slice(i,i+16).join(' ')+'\n';
-        $('hxData').value=out.trim();
-        hexAux();
+        const parts=(d.hex||'').trim().split(/\s+/).filter(x=>x.length);
+        hxBytes=Uint8Array.from(parts,x=>parseInt(x,16));
+        hxRender();
     }catch(e){toast('Помилка: '+e.message,'err')}
 }
 
-// Лінійка адресів + ASCII-колонка (як у HxD): перераховуємо при кожній зміні
-function hexAux(){
-    const bytes=($('hxData').value.match(/[0-9a-fA-F]{2}/g))||[];
-    let gut='', asc='';
-    for(let i=0;i<bytes.length;i+=16){
-        gut+=i.toString(16).toUpperCase().padStart(4,'0')+'\n';
-        let s='';
-        for(let j=i;j<i+16&&j<bytes.length;j++){
-            const v=parseInt(bytes[j],16);
-            s+=(v>=32&&v<127)?String.fromCharCode(v):'.';
-        }
-        asc+=s+'\n';
-    }
-    $('hxGut').textContent=gut;
-    $('hxAsc').textContent=asc;
-}
-// Синхронне прокручування гутера/тексту/ASCII
+// Синхронне прокручування гутера/тексту/ASCII + прив'язка обробників
 document.addEventListener('DOMContentLoaded',function(){
-    const d=$('hxData');
-    if(d)d.addEventListener('scroll',function(){
-        $('hxGut').scrollTop=d.scrollTop;
-        $('hxAsc').scrollTop=d.scrollTop;
-    });
+    const d=$('hxData'), a=$('hxAsc');
+    if(d){
+        d.addEventListener('scroll',function(){$('hxGut').scrollTop=d.scrollTop; a.scrollTop=d.scrollTop;});
+        d.addEventListener('keydown',hxKeyHex);
+        d.addEventListener('paste',e=>e.preventDefault());
+        d.addEventListener('cut',e=>e.preventDefault());
+        d.addEventListener('drop',e=>e.preventDefault());
+    }
+    if(a){
+        a.addEventListener('scroll',function(){$('hxGut').scrollTop=a.scrollTop; d.scrollTop=a.scrollTop;});
+        a.addEventListener('keydown',hxKeyAsc);
+        a.addEventListener('paste',e=>e.preventDefault());
+        a.addEventListener('cut',e=>e.preventDefault());
+        a.addEventListener('drop',e=>e.preventDefault());
+    }
 });
 
 async function writeHex(){
-    const pw=$('pwHex').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwHex').value; 
     const t=$('hxTarget').value;
-    const data=$('hxData').value.replace(/[^0-9a-fA-F]/g,'');
-    const need=(t==='2438'?64:512)*2;
-    if(data.length!==need){toast('Треба '+(need/2)+' байт, зараз '+Math.floor(data.length/2),'err');return}
-    if(!confirm('⚡ Запис '+ (need/2) +' байт у '+t+' НЕЗВОРОТНІЙ. Продовжити?'))return;
+    const need=(t==='2438'?64:512);
+    if(hxBytes.length!==need){toast('Треба '+need+' байт, зараз '+hxBytes.length+'. Натисніть «↻ Завантажити».','err');return}
+    if(!confirm('⚡ Запис '+need+' байт у '+t+' НЕЗВОРОТНІЙ. Продовжити?'))return;
+    const data=Array.from(hxBytes,b=>b.toString(16).padStart(2,'0')).join('');
     prog(true,'Запис байтів...');
     try{
-        const r=await postForm('/api/writehex',{password:pw,target:t,autofix:$('hxFix').checked?'1':'0',data:$('hxData').value});
+        const r=await postForm('/api/writehex',{password:pw,target:t,autofix:$('hxFix').checked?'1':'0',data:data});
         toast(r.status==='success'?'✅ Байти записано':('Помилка: '+r.message),r.status==='success'?'ok':'err');
         if(r.status==='success')await refreshAll();
     }catch(e){toast('Помилка: '+e.message,'err')}
@@ -696,13 +1424,31 @@ async function writeHex(){
 async function loadTemplates(){
     try{
         const d=await(await fetch('/api/templates')).json();
-        const sel=$('initModel'); if(!sel)return; sel.innerHTML='';
-        (d.models||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o)});
-        if(!(d.models||[]).length){const o=document.createElement('option');o.textContent='(немає шаблонів)';sel.appendChild(o)}
+        const models=d.models||[];
+        for(const id of ['initModel','restModel','wizModel']){
+            const sel=$(id); if(!sel)continue; sel.innerHTML='';
+            models.forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o)});
+            if(!models.length){const o=document.createElement('option');o.textContent='(немає шаблонів)';sel.appendChild(o)}
+        }
     }catch(e){}
 }
+async function restoreBattery(){
+    const pw=$('pwRest').value; 
+    const model=$('restModel').value;
+    if(!model){toast('Оберіть модель','err');return}
+    if(!confirm('🛠️ Відновити еталон '+model+' БАЙТ-У-БАЙТ?\n\nПерезапише ОБИДВІ мікросхеми точною genuine-копією (з навченою калібровкою).\nПрацює й на порожньому/битому чипі. Продовжити?'))return;
+    prog(true,'Відновлення еталона...');
+    try{
+        const r=await postForm('/api/restore',{password:pw,model:model,verbatim:($('restVerbatim')&&$('restVerbatim').checked)?'1':'0'});
+        if(r.status==='success'){
+            toast('✅ Еталон '+model+' відновлено'+(r.ds2438?' (DS2433+DS2438)':' (лише DS2433, DS2438 не записано)'),'ok');
+            await refreshAll();
+        } else toast('Помилка: '+(r.message||''),'err');
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
 async function initBattery(){
-    const pw=$('pwInit').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwInit').value; 
     const model=$('initModel').value; const mah=parseInt($('initMah').value);
     if(!model){toast('Оберіть модель','err');return}
     if(isNaN(mah)||mah<=0){toast('Вкажіть ємність у мА·год','err');return}
@@ -717,7 +1463,7 @@ async function initBattery(){
 }
 
 async function rebootDevice(){
-    const pw=$('pwReboot').value; if(!pw){toast('Введіть пароль','err');return}
+    const pw=$('pwReboot').value; 
     if(!confirm('🔁 Перезавантажити ESP32? На кілька секунд зникне Wi-Fi/сторінка.'))return;
     prog(true,'Перезавантаження...');
     try{

@@ -303,6 +303,7 @@
             <h2>🪪 Модель / Серійний</h2>
             <div class="row"><span class="k">Модель</span><span class="v" id="dModel">—</span></div>
             <div class="row"><span class="k">Серійний (DS2438)</span><span class="v" style="font-size:.85em" id="dSerial">—</span></div>
+            <div class="row"><span class="k">Серійний (DS2433)</span><span class="v" style="font-size:.85em" id="dSerial33">—</span></div>
             <div class="row"><span class="k">Перше використання (≈)</span><span class="v" id="dFirst">—</span></div>
             <div class="row"><span class="k">Наробіток (ETM)</span><span class="v" id="dEtm">—</span></div>
         </div>
@@ -314,6 +315,22 @@
             <div class="row"><span class="k">Залишок (ICA)</span><span class="v" id="dICA">—</span></div>
             <div class="row"><span class="k">Заряджено (CCA)</span><span class="v" id="dCCA">—</span></div>
             <div class="row"><span class="k">Розряджено (DCA)</span><span class="v" id="dDCA">—</span></div>
+            <div class="row"><span class="k">Шунт вимірювача</span><span class="v" id="dRs">—</span></div>
+        </div>
+        <div class="card">
+            <h2>🧬 Штатні лічильники Motorola</h2>
+            <div class="note i">Читаються тим самим алгоритмом, що й фірмове ПЗ Motorola
+                (перевірено на 53 еталонних пакетах). Лічильник циклів лежить у гістограмі
+                й ключа не потребує; знос, дати й лічильник калібрувань <b>зашифровані</b>
+                ключем із ROM-ID чипа DS2433.</div>
+            <div class="row"><span class="k">Циклів заряду (IMPRES)</span><span class="v" id="bCyc">—</span></div>
+            <div class="row"><span class="k">Циклів не-IMPRES</span><span class="v" id="bCycN">—</span></div>
+            <div class="row"><span class="k">Реальна ємність</span><span class="v" id="bPot">—</span></div>
+            <div class="row"><span class="k">Знос / здоров'я</span><span class="v" id="bHealth">—</span></div>
+            <div class="row"><span class="k">Калібрувань пройдено</span><span class="v" id="bCal">—</span></div>
+            <div class="row"><span class="k">Дата виготовлення</span><span class="v" id="bMfg">—</span></div>
+            <div class="row"><span class="k">Перше користування</span><span class="v" id="bUse">—</span></div>
+            <div class="row"><span class="k">Ключ</span><span class="v" id="bKey">—</span></div>
         </div>
         <div class="card">
             <h2>📋 Повний дамп DS2438 (64 Б)</h2>
@@ -560,9 +577,9 @@
             <h2>🩺 Знос / здоров'я (%)</h2>
             <div class="note i">Показник ємності/зносу 0–100 % (100 % = «як нова»). Поточне: <b id="capNow">—</b>.</div>
             <div class="note w">⚠️ Цей байт лежить у <b>заводській таблиці моделі</b> (<code>0x129</code>) —
-                у всіх екземплярів однієї моделі вона побайтово однакова. Рація рахує «строк служби»
-                <b>сама</b> й на цей байт не дивиться, тому показань станції правка тут <b>не змінить</b>.
-                Лишено для ручного аналізу.</div>
+                у всіх екземплярів однієї моделі вона побайтово однакова, тому показань рації правка тут
+                <b>не змінить</b>. Справжній знос рація бере з поля <code>CTS</code> блока калібрування —
+                див. картку <b>«Штатні лічильники Motorola»</b> на вкладці «Дані». Лишено для ручного аналізу.</div>
             <div class="row"><span class="k">Ємність, %</span>
                 <input type="number" id="capVal" min="0" max="100" value="100"
                        style="width:90px;text-align:center;font-size:1.1em;border-radius:8px;border:none;padding:6px"></div>
@@ -669,6 +686,34 @@ async function readDump(){
     prog(false);
 }
 
+// Штатні поля Motorola із /api/info2438 → картка «Штатні лічильники».
+// Цикли показуємо завжди (ключа не потребують); решта — лише коли ключ відомий.
+function renderBms(b){
+    const set=(id,v,col)=>{const e=$(id); if(!e)return; e.textContent=v; if(col)e.style.color=col;};
+    if(!b){['bCyc','bCycN','bPot','bHealth','bCal','bMfg','bUse','bKey']
+             .forEach(i=>set(i,'—')); return;}
+    set('bCyc', b.cycles>=0?String(b.cycles):'— (блок гістограми побитий)');
+    set('bCycN', b.nonImpresCycles!==undefined?String(b.nonImpresCycles):'—');
+    if(b.haveKey){
+        set('bPot', b.potentialMah+' мА·год'+(b.firstUseMah?(' (на початку '+b.firstUseMah+')'):''));
+        set('bHealth', b.health+' %', b.health>=80?'#22c55e':(b.health>=60?'':'#ef4444'));
+        set('bCal', String(b.calCycles));
+        set('bMfg', b.mfgDate||'—');
+        set('bUse', b.firstUseDate||'— (пакет ще не вмикався)');
+        set('bKey', b.keyGuessed
+            ? 'підібрано перебором (ROM чипа недоступний)'
+            : 'з ROM-ID чипа DS2433');
+        // Дублюємо в оглядову картку — там раніше стояло «рахує рація».
+        set('ovWear', b.health+' %');
+        set('ovCap', b.potentialMah+' мА·год');
+        set('ovCycles', b.cycles+' зар. IMPRES'+(b.nonImpresCycles?(' / +'+b.nonImpresCycles+' звич. ЗП'):''));
+    } else {
+        ['bPot','bHealth','bCal','bMfg','bUse'].forEach(i=>set(i,'—'));
+        set('bKey','не визначено — зчитайте АКБ пристроєм (потрібен ROM-ID DS2433)');
+        if(b.cycles>=0)set('ovCycles', b.cycles+' зар. IMPRES');
+    }
+}
+
 async function refreshAll(){
     disPoll();
     // DS2433 info
@@ -744,6 +789,10 @@ async function refreshAll(){
             $('dDCA').textContent=cyc(d.dcaCycles,d.dcaMah,d.dca);
             if(d.ccaCycles!==undefined)$('ovCycles').textContent=d.ccaCycles+' зар. / '+d.dcaCycles+' розр. (ємн. '+d.ratedMah+' мА·год)';
             $('dSerial').textContent=d.serial||'—';
+            $('dSerial33').textContent=d.serial33||'—';
+            if(d.rsense!==undefined)$('dRs').textContent=(d.rsense*1000).toFixed(2)+' мОм'+
+                (d.rsenseChip?' (з чипа)':' (з налаштувань — у чипі поля немає)');
+            renderBms(d.bms);
             // ETM (наробіток) -> вік і приблизна дата першого користування = сьогодні − ETM.
             // Рація рахує так само (свій годинник − ETM). Годинник ПК ≈ годинник рації.
             // УВАГА: якщо ETM > ~34 років, це не «час напрацювання», а «зашитий»

@@ -23,6 +23,7 @@
 #include <U8g2_for_Adafruit_GFX.h>
 #include "settings.h"
 #include "impres_format.h"
+#include "impres_bms.h"   // штатний декодер Motorola (цикли, знос, дати)
 #include "battery_reader.h"
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — дії «Новий АКБ»
 #include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
@@ -35,6 +36,8 @@ extern uint8_t batteryDump[DUMP_SIZE];
 extern uint8_t batteryDump2438[DS2438_MEM_SIZE];
 extern uint8_t chipSN2438[8];
 extern bool hasSN2438;
+extern uint8_t chipSN2433[8];
+extern bool hasSN2433;
 
 // -------------------- Роздільність (будь-яка панель ST7789) --------------------
 // Пресети для типових панелей АБО власний розмір DISPLAY_ST7789_W/H.
@@ -703,24 +706,35 @@ inline void drawPageHealth() {
         }
     }
 
-    if (hasDump2438) {
-        uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
-        uint16_t dca = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
-        char cyModel[16] = ""; if (hasDump) impresModelName(batteryDump, cyModel, sizeof(cyModel));
-        int  rated = impresRatedMahFor(hasDump ? batteryDump : nullptr, cyModel);  // з чипа, інакше з таблиці
-        int chgCyc = (int)(cca * DS2438_MAH_PER_LSB / rated);
-        int disCyc = (int)(dca * DS2438_MAH_PER_LSB / rated);
-        snprintf(buf, sizeof(buf), "Циклів: зар.%d роз.%d", chgCyc, disCyc);
+    // ── штатні поля Motorola (impres_bms.h) ────────────────────────────────
+    //  Тут раніше було «Знос: рахує рація», а цикли оцінювались із CCA. Обидва
+    //  числа насправді лежать у чипі: цикли — у гістограмі доданого заряду
+    //  (ключа не потребує), знос — у зашифрованому CTS блока калібрування.
+    const ImpresBms &bms = impresBmsOf(hasDump ? batteryDump : nullptr,
+                                       hasDump2438 ? batteryDump2438 : nullptr,
+                                       hasSN2433 ? chipSN2433 : nullptr,
+                                       DS2438_RSENSE_OHM);
+    if (bms.ok && bms.cycles >= 0) {
+        if (bms.nonImpresCycles > 0)
+            snprintf(buf, sizeof(buf), "Циклів: %d (+%d не IMPRES)",
+                     bms.cycles, bms.nonImpresCycles);
+        else
+            snprintf(buf, sizeof(buf), "Циклів: %d", bms.cycles);
         row(buf, C_TEXT, 30);
     }
-
-    // Знос/строк служби — останнім: він нічого не вимірює, лише пояснює, чому
-    // числа немає. Саме цей рядок раніше й казав «(зчитайте)».
-    if (hasDump || hasDump2438) {
-        row("Знос: рахує рація", C_MUTED, 22);
+    if (bms.ok && bms.haveKey) {
+        snprintf(buf, sizeof(buf), "Знос: %d%%  (%d мА*год)", bms.health, bms.potentialMah);
+        row(buf, bms.health >= 80 ? C_GREEN : (bms.health >= 60 ? C_TEXT : C_RED), 30);
+        if (bms.useY) {
+            snprintf(buf, sizeof(buf), "Перше вмикання: %04d-%02d-%02d",
+                     bms.useY, bms.useM, bms.useD);
+            row(buf, C_MUTED, 30);
+        }
+    } else if (hasDump || hasDump2438) {
+        row("Знос: ключ не визначено", C_MUTED, 22);
         if (y <= FOOT_Y - 10) {
             tSet(FONT_SMALL, C_MUTED);
-            tPut(CX, y, "у прошивці не зберігається");
+            tPut(CX, y, "потрібен ROM-ID чипа DS2433");
         }
     }
 

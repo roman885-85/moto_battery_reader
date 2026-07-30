@@ -8,6 +8,7 @@
 #include "battery_reader.h"
 #include "settings.h"
 #include "impres_format.h"     // структура прошивки IMPRES (єдине джерело правди)
+#include "impres_bms.h"        // штатний декодер Motorola (лічильники, знос, дати)
 #include "operations.h"        // єдиний каталог операцій для всіх поверхонь
 #include "discharge.h"         // керований розряд навантаженням (MOSFET)
 #include "leds.h"
@@ -22,6 +23,8 @@ extern uint8_t batteryDump2438[DS2438_MEM_SIZE];
 extern bool hasDump2438;
 extern uint8_t chipSN2438[8];
 extern bool hasSN2438;
+extern uint8_t chipSN2433[8];
+extern bool hasSN2433;
 
 // Збереження дампа в SPIFFS (перезапис файлу).
 static void saveDump(const char *path, const uint8_t *data, size_t size) {
@@ -158,10 +161,15 @@ bool readAllChips(bool &ok2433, bool &ok2438) {
         saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
     }
 
-    // Серійний номер чипа (лазерний ROM-ID DS2438)
+    // Серійні номери чипів (лазерні ROM-ID). ROM DS2433 — це ще й ключ до
+    // зашифрованих лічильників і дат у прошивці АКБ (див. impres_bms.h).
     if (battery.hasRom2438()) {
         memcpy(chipSN2438, battery.rom2438(), 8);
         hasSN2438 = true;
+    }
+    if (battery.hasRom2433()) {
+        memcpy(chipSN2433, battery.rom2433(), 8);
+        hasSN2433 = true;
     }
 
     char st[40];
@@ -350,7 +358,18 @@ void handleDumpInfo2438() {
 
     int16_t current = (int16_t)((batteryDump2438[6] << 8) | batteryDump2438[5]); // сире значення
 
-    float    i_mA = (float)current / (4096.0f * DS2438_RSENSE_OHM) * 1000.0f;
+    // ⚑ Шунт беремо З ЧИПА (DS2438[56..57]), а не з константи. У пакетів
+    // PMNN4409A/B він ~45.2..46.1 мОм, у 4488A/4493A/4809A ~24.9..25.6 мОм —
+    // тобто єдина константа 0.025 Ом занижувала опір і завищувала струм і
+    // мА·год майже вдвічі на всій родині 4409. Перевірено проти показань
+    // фірмового ПЗ Motorola (див. impres_bms.h).
+    const ImpresBms &bms = impresBmsOf(hasDump ? batteryDump : nullptr,
+                                       batteryDump2438,
+                                       hasSN2433 ? chipSN2433 : nullptr,
+                                       DS2438_RSENSE_OHM);
+    float rs = bms.rsense > 0.0f ? bms.rsense : DS2438_RSENSE_OHM;
+
+    float    i_mA = (float)current / (4096.0f * rs) * 1000.0f;
     uint8_t  ica  = batteryDump2438[12];
     uint16_t cca  = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
     uint16_t dca  = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
@@ -380,10 +399,15 @@ void handleDumpInfo2438() {
     decodeModel(rmModel, sizeof(rmModel));
     int ratedMah = impresRatedMahFor(hasDump ? batteryDump : nullptr, rmModel);
     json += ",\"icaMah\":" + String(impresIcaToMah((uint8_t)ica, ratedMah));
-    json += ",\"ccaMah\":" + String((int)(cca * DS2438_MAH_PER_LSB));
-    json += ",\"dcaMah\":" + String((int)(dca * DS2438_MAH_PER_LSB));
-    json += ",\"ccaCycles\":" + String((int)(cca * DS2438_MAH_PER_LSB / ratedMah));
-    json += ",\"dcaCycles\":" + String((int)(dca * DS2438_MAH_PER_LSB / ratedMah));
+    // Ціна розряду CCA/DCA — 15.625 мВ·год, а НЕ 0.4882 як у ICA (даташит
+    // DS2438). Раніше тут стояла константа ICA, і накопичений заряд виходив
+    // у 32 рази меншим за дійсний.
+    json += ",\"ccaMah\":" + String(bms.ccaMah);
+    json += ",\"dcaMah\":" + String(bms.dcaMah);
+    json += ",\"ccaCycles\":" + String((int)(bms.ccaMah / ratedMah));
+    json += ",\"dcaCycles\":" + String((int)(bms.dcaMah / ratedMah));
+    json += ",\"rsense\":" + String(rs, 5);
+    json += ",\"rsenseChip\":" + String(bms.rsenseFromChip ? 1 : 0);
     json += ",\"ratedMah\":" + String(ratedMah);
     json += ",\"charge\":" + String(charge);
     json += ",\"chargeSrc\":\"" + String(csrc) + "\"";
@@ -393,6 +417,39 @@ void handleDumpInfo2438() {
                    ((uint32_t)batteryDump2438[9] << 8) | batteryDump2438[8];
     json += ",\"etmSec\":" + String(etm);
     json += ",\"serial\":\"" + serial + "\"";
+    if (hasSN2433) {
+        char b[3]; String s33 = "";
+        for (int i = 0; i < 8; i++) { sprintf(b, "%02X", chipSN2433[i]); s33 += b; }
+        json += ",\"serial33\":\"" + s33 + "\"";
+    }
+    // ── штатні поля Motorola (impres_bms.h) ────────────────────────────────
+    //  cycles     — цикли заряду IMPRES; рахуються з гістограми і ключа НЕ
+    //               потребують: саме це число показує фірмове ПЗ.
+    //  решта      — зашифровані; ключ або з ROM DS2433, або підібраний.
+    if (bms.ok) {
+        json += ",\"bms\":{\"kit\":\"" + String(bms.kit) + "\"";
+        json += ",\"cycles\":" + String(bms.cycles);
+        json += ",\"nonImpresCycles\":" + String(bms.nonImpresCycles);
+        json += ",\"haveKey\":" + String(bms.haveKey ? 1 : 0);
+        json += ",\"keyGuessed\":" + String(bms.keyGuessed ? 1 : 0);
+        if (bms.haveKey) {
+            json += ",\"health\":" + String(bms.health);
+            json += ",\"potentialMah\":" + String(bms.potentialMah);
+            json += ",\"firstUseMah\":" + String(bms.firstUseMah);
+            json += ",\"cyclesEnc\":" + String(bms.cyclesEnc);
+            json += ",\"calCycles\":" + String(bms.calCycles);
+            json += ",\"reverts\":" + String(bms.reverts);
+            json += ",\"topOffCycles\":" + String(bms.topOffCycles);
+            char d[12];
+            snprintf(d, sizeof(d), "%04d-%02d-%02d", bms.mfgY, bms.mfgM, bms.mfgD);
+            json += ",\"mfgDate\":\"" + String(d) + "\"";
+            if (bms.useY) {
+                snprintf(d, sizeof(d), "%04d-%02d-%02d", bms.useY, bms.useM, bms.useD);
+                json += ",\"firstUseDate\":\"" + String(d) + "\"";
+            }
+        }
+        json += "}";
+    }
     json += ",\"preview\":\"" + hexPreview(batteryDump2438, 16) + "\"";
     json += ",\"hex\":\"" + hexPreview(batteryDump2438, 64) + "\"";
     json += "}";
@@ -936,8 +993,13 @@ static bool dischargeSample(uint16_t *mv, int16_t *ma, int16_t *tC10) {
     hasDump2438 = true;
     *mv = impresVoltageMv(buf);
     // Струм зі знаком; при розряді від'ємний. Формула та сама, що в /api/info2438.
+    // ⚑ Шунт — із самого чипа (DS2438[56..57]). Це не косметика: уставка ШІМ
+    // тримає САМЕ виміряний струм, і з чужою константою (0.025 Ом на пакеті,
+    // де шунт 0.046 Ом) реальний струм був би вдвічі меншим за задану уставку.
     int16_t raw = (int16_t)((buf[6] << 8) | buf[5]);
-    *ma  = (int16_t)((float)raw / (4096.0f * DS2438_RSENSE_OHM) * 1000.0f);
+    float rs = impresBmsRsense(buf);
+    if (rs <= 0.0f) rs = DS2438_RSENSE_OHM;
+    *ma  = (int16_t)((float)raw / (4096.0f * rs) * 1000.0f);
     *tC10 = (int16_t)((((int16_t)((buf[2] << 8) | buf[1])) >> 3) * 0.3125f);  // 0.03125*10
     return true;
 }

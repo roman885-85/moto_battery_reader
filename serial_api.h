@@ -97,7 +97,14 @@ static String serBuildInfo() {
         uint16_t vraw = ((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3];
         int16_t traw = ((int16_t)((batteryDump2438[2] << 8) | batteryDump2438[1])) >> 3;
         int16_t cur = (int16_t)((batteryDump2438[6] << 8) | batteryDump2438[5]);
-        float i_mA = (float)cur / (4096.0f * DS2438_RSENSE_OHM) * 1000.0f;
+        // Шунт — із чипа (DS2438[56..57]); константа лишається лише запасним
+        // варіантом. Див. impres_bms.h: у родини 4409 він удвічі більший.
+        const ImpresBms &bms = impresBmsOf(hasDump ? batteryDump : nullptr,
+                                           batteryDump2438,
+                                           hasSN2433 ? chipSN2433 : nullptr,
+                                           DS2438_RSENSE_OHM);
+        float rs = bms.rsense > 0.0f ? bms.rsense : DS2438_RSENSE_OHM;
+        float i_mA = (float)cur / (4096.0f * rs) * 1000.0f;
         uint8_t ica = batteryDump2438[12];
         uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
         uint16_t dca = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
@@ -116,13 +123,46 @@ static String serBuildInfo() {
         // з показаннями станції на всіх моделях, крім однієї.
         int ratedMah = impresRatedMahFor(hasDump ? batteryDump : nullptr, modelBuf);
         j += ",\"icaMah\":" + String(impresIcaToMah(ica, ratedMah));
-        j += ",\"ccaMah\":" + String((int)(cca * DS2438_MAH_PER_LSB));
-        j += ",\"dcaMah\":" + String((int)(dca * DS2438_MAH_PER_LSB));
-        j += ",\"ccaCycles\":" + String((int)(cca * DS2438_MAH_PER_LSB / ratedMah));
-        j += ",\"dcaCycles\":" + String((int)(dca * DS2438_MAH_PER_LSB / ratedMah));
+        // Ціна розряду CCA/DCA — 15.625 мВ·год (даташит), а не 0.4882 як в ICA.
+        j += ",\"ccaMah\":" + String(bms.ccaMah);
+        j += ",\"dcaMah\":" + String(bms.dcaMah);
+        j += ",\"ccaCycles\":" + String((int)(bms.ccaMah / ratedMah));
+        j += ",\"dcaCycles\":" + String((int)(bms.dcaMah / ratedMah));
+        j += ",\"rsense\":" + String(rs, 5);
+        j += ",\"rsenseChip\":" + String(bms.rsenseFromChip ? 1 : 0);
         j += ",\"ratedMah\":" + String(ratedMah);
         j += ",\"charge\":" + String(charge) + ",\"chargeSrc\":\"" + String(csrc) + "\"";
         j += ",\"serial\":\"" + serial + "\"";
+        if (hasSN2433) {
+            char b[3]; String s33 = "";
+            for (int i = 0; i < 8; i++) { sprintf(b, "%02X", chipSN2433[i]); s33 += b; }
+            j += ",\"serial33\":\"" + s33 + "\"";
+        }
+        // Штатні поля Motorola: цикли — без ключа, решта — після дешифрування.
+        if (bms.ok) {
+            j += ",\"bms\":{\"kit\":\"" + String(bms.kit) + "\"";
+            j += ",\"cycles\":" + String(bms.cycles);
+            j += ",\"nonImpresCycles\":" + String(bms.nonImpresCycles);
+            j += ",\"haveKey\":" + String(bms.haveKey ? 1 : 0);
+            j += ",\"keyGuessed\":" + String(bms.keyGuessed ? 1 : 0);
+            if (bms.haveKey) {
+                j += ",\"health\":" + String(bms.health);
+                j += ",\"potentialMah\":" + String(bms.potentialMah);
+                j += ",\"firstUseMah\":" + String(bms.firstUseMah);
+                j += ",\"cyclesEnc\":" + String(bms.cyclesEnc);
+                j += ",\"calCycles\":" + String(bms.calCycles);
+                j += ",\"reverts\":" + String(bms.reverts);
+                j += ",\"topOffCycles\":" + String(bms.topOffCycles);
+                char d[12];
+                snprintf(d, sizeof(d), "%04d-%02d-%02d", bms.mfgY, bms.mfgM, bms.mfgD);
+                j += ",\"mfgDate\":\"" + String(d) + "\"";
+                if (bms.useY) {
+                    snprintf(d, sizeof(d), "%04d-%02d-%02d", bms.useY, bms.useM, bms.useD);
+                    j += ",\"firstUseDate\":\"" + String(d) + "\"";
+                }
+            }
+            j += "}";
+        }
         j += ",\"hex38\":\"" + serHex(batteryDump2438, DS2438_MEM_SIZE) + "\"";
     }
     j += "}";

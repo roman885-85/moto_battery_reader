@@ -208,6 +208,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <h2>🪪 Модель / Серійний</h2>
       <div class="row"><span class="k">Модель</span><span class="v" id="dModel">—</span></div>
       <div class="row"><span class="k">Серійний (DS2438)</span><span class="v" style="font-size:.85em" id="dSer">—</span></div>
+      <div class="row"><span class="k">Серійний (DS2433)</span><span class="v" style="font-size:.85em" id="dSer33">—</span></div>
       <div class="row"><span class="k">Перше використання (≈)</span><span class="v" id="dFirst">—</span></div>
       <div class="row"><span class="k">Наробіток (ETM)</span><span class="v" id="dEtm">—</span></div>
     </div>
@@ -219,6 +220,21 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="row"><span class="k">Залишок (ICA)</span><span class="v" id="dICA">—</span></div>
       <div class="row"><span class="k">Заряджено (CCA)</span><span class="v" id="dCCA">—</span></div>
       <div class="row"><span class="k">Розряджено (DCA)</span><span class="v" id="dDCA">—</span></div>
+      <div class="row"><span class="k">Шунт вимірювача</span><span class="v" id="dRs">—</span></div>
+    </div>
+    <div class="card">
+      <h2>🧬 Штатні лічильники Motorola</h2>
+      <div class="note i">Той самий алгоритм, що й у фірмового ПЗ Motorola (звірено на 53
+        еталонних пакетах). Цикли лежать у гістограмі й ключа не потребують; знос, дати
+        й калібрування <b>зашифровані</b> ключем із ROM-ID чипа DS2433.</div>
+      <div class="row"><span class="k">Циклів заряду (IMPRES)</span><span class="v" id="bCyc">—</span></div>
+      <div class="row"><span class="k">Циклів не-IMPRES</span><span class="v" id="bCycN">—</span></div>
+      <div class="row"><span class="k">Реальна ємність</span><span class="v" id="bPot">—</span></div>
+      <div class="row"><span class="k">Знос / здоров'я</span><span class="v" id="bHealth">—</span></div>
+      <div class="row"><span class="k">Калібрувань пройдено</span><span class="v" id="bCal">—</span></div>
+      <div class="row"><span class="k">Дата виготовлення</span><span class="v" id="bMfg">—</span></div>
+      <div class="row"><span class="k">Перше користування</span><span class="v" id="bUse">—</span></div>
+      <div class="row"><span class="k">Ключ</span><span class="v" id="bKey">—</span></div>
     </div>
     <div class="card"><h2>📋 Дамп DS2438 (64 Б)</h2><div id="h38" style="font-family:monospace;font-size:.75em;word-break:break-all">—</div></div>
     <div class="card"><h2>📋 Дамп DS2433 (512 Б)</h2><div id="h33" style="font-family:monospace;font-size:.75em;word-break:break-all">—</div></div>
@@ -402,6 +418,9 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 
 <div class="card">
       <h2>🩺 Знос/здоров'я (0–100 %)</h2>
+      <div class="note w">⚠️ Це байт <b>заводської таблиці моделі</b> (<code>0x129</code>), однаковий у всіх
+        екземплярів моделі — показань рації правка тут не змінить. Справжній знос — у картці
+        <b>«Штатні лічильники Motorola»</b> на вкладці «Дані».</div>
       <div class="row"><span class="k">Ємність, %</span><input type="number" id="capv" min="0" max="100" value="100" style="width:90px;text-align:center"></div>
       <button class="btn b-warn" onclick="setCap()">💾 ЗАПИСАТИ %</button>
     </div>
@@ -624,8 +643,36 @@ async function refresh(){
   $('dICA').textContent=mah(d.icaMah,d.ica);
   $('dCCA').textContent=cyc(d.ccaCycles,d.ccaMah,d.cca);
   $('dDCA').textContent=cyc(d.dcaCycles,d.dcaMah,d.dca);
+  $('dSer33').textContent=d.serial33||'—';
+  if(d.rsense!==undefined)$('dRs').textContent=(d.rsense*1000).toFixed(2)+' мОм'+
+    (d.rsenseChip?' (з чипа)':' (з налаштувань — у чипі поля немає)');
+  renderBms(d.bms);
   if(d.hex38)$('h38').textContent=d.hex38;
   if(d.hex33)$('h33').textContent=d.hex33;
+}
+
+// Штатні поля Motorola із INFO. Цикли показуємо завжди; знос і дати — лише
+// коли ключ відомий (ROM-ID чипа DS2433 або вдалий перебір).
+function renderBms(b){
+  const set=(id,v,col)=>{const e=$(id); if(!e)return; e.textContent=v; if(col!==undefined)e.style.color=col;};
+  if(!b){['bCyc','bCycN','bPot','bHealth','bCal','bMfg','bUse','bKey'].forEach(i=>set(i,'—')); return;}
+  set('bCyc', b.cycles>=0?String(b.cycles):'— (блок гістограми побитий)');
+  set('bCycN', b.nonImpresCycles!==undefined?String(b.nonImpresCycles):'—');
+  if(b.haveKey){
+    set('bPot', b.potentialMah+' мА·год'+(b.firstUseMah?(' (на початку '+b.firstUseMah+')'):''));
+    set('bHealth', b.health+' %', b.health>=80?'#22c55e':(b.health>=60?'':'#ef4444'));
+    set('bCal', String(b.calCycles));
+    set('bMfg', b.mfgDate||'—');
+    set('bUse', b.firstUseDate||'— (пакет ще не вмикався)');
+    set('bKey', b.keyGuessed?'підібрано перебором (ROM чипа недоступний)':'з ROM-ID чипа DS2433');
+    set('wear', b.health+' %');
+    set('cap', b.potentialMah+' мА·год');
+    set('cyc', b.cycles+' зар. IMPRES'+(b.nonImpresCycles?(' / +'+b.nonImpresCycles+' звич. ЗП'):''));
+  } else {
+    ['bPot','bHealth','bCal','bMfg','bUse'].forEach(i=>set(i,'—'));
+    set('bKey','не визначено — зчитайте АКБ пристроєм (потрібен ROM-ID DS2433)');
+    if(b.cycles>=0)set('cyc', b.cycles+' зар. IMPRES');
+  }
 }
 
 async function doRead(){

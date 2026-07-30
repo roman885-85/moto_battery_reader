@@ -3,6 +3,7 @@
 
 #include "settings.h"
 #include "impres_format.h"
+#include "impres_bms.h"   // штатний декодер Motorola (цикли, знос, дати)
 #include "battery_reader.h"
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — для дій «Новий АКБ» у меню
 #include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
@@ -15,6 +16,8 @@ extern uint8_t batteryDump[DUMP_SIZE];
 extern uint8_t batteryDump2438[DS2438_MEM_SIZE];
 extern uint8_t chipSN2438[8];
 extern bool hasSN2438;
+extern uint8_t chipSN2433[8];
+extern bool hasSN2433;
 
 // Сторінки меню (перегортаються кнопкою):
 //   0 - головна (заряд + статус)
@@ -755,20 +758,24 @@ inline void drawPageHealth() {
         }
     }
 
-    if (hasDump2438) {
-        uint16_t cca = ((uint16_t)batteryDump2438[61] << 8) | batteryDump2438[60];
-        uint16_t dca = ((uint16_t)batteryDump2438[63] << 8) | batteryDump2438[62];
-        // Цикли: сумарний заряд (розряд) / паспортна ємність (settings.h).
-        char cyModel[16] = ""; if (hasDump) impresModelName(batteryDump, cyModel, sizeof(cyModel));
-        int  rated = impresRatedMahFor(hasDump ? batteryDump : nullptr, cyModel);  // з чипа, інакше з таблиці
-        int chgCyc = (int)(cca * DS2438_MAH_PER_LSB / rated);
-        int disCyc = (int)(dca * DS2438_MAH_PER_LSB / rated);
-        snprintf(buf, sizeof(buf), "Циклів: зар.%d роз.%d", chgCyc, disCyc);
+    // ── штатні поля Motorola (impres_bms.h) ────────────────────────────────
+    //  Раніше тут стояло «Знос: рахує рація», а цикли оцінювались із CCA.
+    //  Насправді і знос, і справжній лічильник циклів лежать у самому чипі:
+    //  цикли — у гістограмі (без ключа), знос — у зашифрованому CTS.
+    const ImpresBms &bms = impresBmsOf(hasDump ? batteryDump : nullptr,
+                                       hasDump2438 ? batteryDump2438 : nullptr,
+                                       hasSN2433 ? chipSN2433 : nullptr,
+                                       DS2438_RSENSE_OHM);
+    if (bms.ok && bms.cycles >= 0) {
+        snprintf(buf, sizeof(buf), "Циклів: %d", bms.cycles);
         row(buf);
     }
-
-    // Знос — останнім: він нічого не вимірює, лише пояснює, чому числа немає.
-    if (hasDump || hasDump2438) row("Знос: рахує рація");
+    if (bms.ok && bms.haveKey) {
+        snprintf(buf, sizeof(buf), "Знос: %d%% (%d мА*год)", bms.health, bms.potentialMah);
+        row(buf);
+    } else if (hasDump || hasDump2438) {
+        row("Знос: нема ключа");
+    }
 
     drawFooter();
 }

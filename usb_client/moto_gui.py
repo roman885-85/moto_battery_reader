@@ -1119,6 +1119,23 @@ class App:
         self.dICA = self._kv(box, "Залишок ICA:", 5)
         self.dCCA = self._kv(box, "Заряджено CCA:", 6)
         self.dDCA = self._kv(box, "Розряджено DCA:", 7)
+        self.dRs = self._kv(box, "Шунт вимірювача:", 10)
+        self.dSerial33 = self._kv(box, "Серійний DS2433:", 11)
+
+        # Штатні поля Motorola. Читаються тим самим алгоритмом, що й фірмове ПЗ
+        # (звірено на 53 еталонних пакетах). Цикли лежать у гістограмі й ключа
+        # не потребують; знос, дати й калібрування зашифровані ключем із ROM-ID
+        # чипа DS2433 — саме тому раніше ці поля здавалися відсутніми.
+        bbox = ttk.LabelFrame(f, text="Штатні лічильники Motorola", padding=8)
+        bbox.pack(fill="x", pady=(8, 0))
+        self.bCyc = self._kv(bbox, "Циклів заряду (IMPRES):", 0)
+        self.bCycN = self._kv(bbox, "Циклів не-IMPRES:", 1)
+        self.bPot = self._kv(bbox, "Реальна ємність:", 2)
+        self.bHealth = self._kv(bbox, "Знос / здоров'я:", 3)
+        self.bCal = self._kv(bbox, "Калібрувань пройдено:", 4)
+        self.bMfg = self._kv(bbox, "Дата виготовлення:", 5)
+        self.bUse = self._kv(bbox, "Перше користування:", 6)
+        self.bKey = self._kv(bbox, "Ключ:", 7)
         ttk.Label(f, text="Дамп DS2433 (512 Б):").pack(anchor="w", pady=(8, 0))
         self.tx33 = scrolledtext.ScrolledText(f, height=6, font=fnt("Consolas", 8),
                                               bg=MIL["field"], fg="#b9bd86", insertbackground=MIL["khaki"],
@@ -1545,14 +1562,14 @@ class App:
         self.dT.config(text=(f"{t:.1f} °C" if isinstance(t, (int, float)) else "—"))
         m = d.get("model") or "—"
         self.ovModel.config(text=m); self.dModel.config(text=m)
-        # Прочерк тут читався як «даних ще немає, зчитайте ще раз», хоча насправді
-        # строк служби в прошивці НЕ зберігається — його рахує рація з навчених
-        # даних. Кажемо це прямо, щоб не штовхати шукати неіснуючу дію.
+        # Ємність/знос і цикли беруться зі штатних полів Motorola — їх нижче
+        # проставить _render_bms(). Тут лише запасний варіант на випадок, коли
+        # блоки прошивки побиті й декодер нічого не дав.
         cap = d.get("capacity"); wear = d.get("wear")
         self.ovCap.config(text=(f"{cap}% / знос {wear}%" if isinstance(cap, int) and cap >= 0
-                                else "рахує рація (у прошивці не зберігається)"))
+                                else "— (див. «Штатні лічильники»)"))
         if d.get("ccaCycles") is not None:
-            self.ovCyc.config(text=f"{d['ccaCycles']} зар. / {d['dcaCycles']} розр.")
+            self.ovCyc.config(text=f"{d['ccaCycles']} зар. / {d['dcaCycles']} розр. (за CCA/DCA)")
         if "genuine" in d:
             self.ovAuth.config(text=("OK" if d["genuine"] else "РИЗИК (" + str(d.get("authReason", "")) + ")"))
         if "headerOk" in d:
@@ -1588,12 +1605,50 @@ class App:
         self.dICA.config(text=(f"≈{d.get('icaMah')} мА·год (raw {d.get('ica')})") if d.get("icaMah") is not None else "—")
         self.dCCA.config(text=(f"{d.get('ccaCycles')} ц (≈{d.get('ccaMah')} мА·год)") if d.get("ccaMah") is not None else "—")
         self.dDCA.config(text=(f"{d.get('dcaCycles')} ц (≈{d.get('dcaMah')} мА·год)") if d.get("dcaMah") is not None else "—")
+        rs = d.get("rsense")
+        self.dRs.config(text=(f"{rs * 1000:.2f} мОм " +
+                              ("(з чипа)" if d.get("rsenseChip") else "(з налаштувань — у чипі поля немає)"))
+                        if isinstance(rs, (int, float)) else "—")
+        self.dSerial33.config(text=d.get("serial33") or "—")
+        self._render_bms(d.get("bms"))
         if isinstance(cap, int) and cap >= 0:
             self._set_entry(self.eCap, str(cap))
         if d.get("icaMah") is not None:
             self._set_entry(self.eMah, str(d.get("icaMah")))
         self._set_text(self.tx33, d.get("hex33", ""))
         self._set_text(self.tx38, d.get("hex38", ""))
+
+    def _render_bms(self, b):
+        """Штатні поля Motorola з відповіді INFO."""
+        empty = [self.bCyc, self.bCycN, self.bPot, self.bHealth,
+                 self.bCal, self.bMfg, self.bUse, self.bKey]
+        if not b:
+            for w in empty:
+                w.config(text="—", foreground="")
+            return
+        cyc = b.get("cycles", -1)
+        self.bCyc.config(text=str(cyc) if cyc >= 0 else "— (блок гістограми побитий)")
+        self.bCycN.config(text=str(b.get("nonImpresCycles", "—")))
+        if b.get("haveKey"):
+            pot = b.get("potentialMah", 0); first = b.get("firstUseMah") or 0
+            self.bPot.config(text=f"{pot} мА·год" + (f" (на початку {first})" if first else ""))
+            h = b.get("health", 0)
+            self.bHealth.config(text=f"{h} %",
+                                foreground="#7ea24a" if h >= 80 else ("" if h >= 60 else "#c0392b"))
+            self.bCal.config(text=str(b.get("calCycles", "—")))
+            self.bMfg.config(text=b.get("mfgDate") or "—")
+            self.bUse.config(text=b.get("firstUseDate") or "— (пакет ще не вмикався)")
+            self.bKey.config(text="підібрано перебором (ROM чипа недоступний)"
+                             if b.get("keyGuessed") else "з ROM-ID чипа DS2433")
+            self.ovCap.config(text=f"{pot} мА·год / знос {h}%")
+            self.ovCyc.config(text=f"{cyc} зар. IMPRES" +
+                              (f" / +{b['nonImpresCycles']} звич. ЗП" if b.get("nonImpresCycles") else ""))
+        else:
+            for w in (self.bPot, self.bHealth, self.bCal, self.bMfg, self.bUse):
+                w.config(text="—", foreground="")
+            self.bKey.config(text="не визначено — зчитайте АКБ пристроєм (потрібен ROM-ID DS2433)")
+            if cyc >= 0:
+                self.ovCyc.config(text=f"{cyc} зар. IMPRES")
 
     def _set_entry(self, e, val):
         e.delete(0, "end"); e.insert(0, val)

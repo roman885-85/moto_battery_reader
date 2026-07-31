@@ -502,7 +502,7 @@ inline int impresRatedMahFor(const uint8_t *d33, const char *model) {
 // показання паливоміра після ремонту не відповідають реальному стану, а ЗП
 // потім сама їх уточнить.
 #ifndef IMPRES_EMPTY_MV
-  #define IMPRES_EMPTY_MV 6850
+  #define IMPRES_EMPTY_MV 6350
 #endif
 #ifndef IMPRES_FULL_MV
   #define IMPRES_FULL_MV  8250

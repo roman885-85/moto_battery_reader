@@ -1353,10 +1353,11 @@ function rpRender(){
     let extra='';
     if(f.key==='rated')  extra=rpRatedBox(p);
     if(f.key==='rsense') extra=rpRsBox(p);
+    if(f.key==='crypt')  extra=rpMfgBox(p);
     h+='<tr class="'+cls+'"><td>'+
        (f.avail?'<input type="checkbox" data-k="'+f.key+'"'+(f.on?' checked':'')+' onchange="rpApply()">':'—')+
        '</td><td><b>'+wesc(f.title)+'</b> <span class="chipb">пише в '+wesc(f.chipsText)+'</span>'+
-       '<div class="det">'+wesc(f.detail)+(f.avail||f.key==='rated'||f.key==='rsense'?'':' <b>Джерела немає</b> — мікросхема не читається або поле порожнє.')+'</div>'+
+       '<div class="det">'+wesc(f.detail)+(f.avail||f.key==='rated'||f.key==='rsense'||f.key==='crypt'?'':' <b>Джерела немає</b> — мікросхема не читається або поле порожнє.')+'</div>'+
        extra+'</td>'+
        '<td class="num dim">'+wesc(f.tpl)+'</td><td class="num">'+wesc(f.pack)+'</td>'+
        '<td class="use">'+wesc(f.use)+'</td></tr>';
@@ -1405,6 +1406,22 @@ function rpRsPick(){const e=$('rpRs');if(e)e.value='';rpApply();}
 function rpRsTyped(){const e=$('rpRsModel');if(e)e.value='';rpApply();}
 function rpRsModel(){const e=$('rpRsModel');return e&&e.value?e.value:'';}
 function rpRs(){const e=$('rpRs');return e&&e.value?Math.round(parseFloat(e.value)*100):'';}
+// Дати й лічильники шифруються ключем із ROM самого чипа. Еталон знято з
+// чужого пакета, тож рація прочитає його поля своїм ключем і побачить сміття.
+function rpMfgBox(p){
+  if(!p.haveRom) return '<div class="det"><b>ROM чипа невідомий</b> — правка можлива '+
+    'лише на живому чипі (для дампа з файлу ключ узяти нізвідки).</div>';
+  const dt=v=>v?(''+v).replace(/^(\d{4})(\d{2})(\d{2})$/,'$1-$2-$3'):'—';
+  const w=p.cryptWrong
+    ? '⚠️ Вміст зашифровано <b>чужим ключем</b>: рація читає дату виготовлення як <b>'+
+      dt(p.mfgSeen)+'</b>, насправді це <b>'+dt(p.mfgReal)+'</b>.'
+    : 'Ключ вмісту збігається з ROM цього чипа — перешифровувати нічого.';
+  return '<div class="det">'+w+'<br>Дата виготовлення вручну: '+
+    '<input type="date" id="rpMfg" value="'+(p.mfgUser?dt(p.mfgUser):'')+
+    '" onchange="rpApply()" style="margin-top:4px"> '+
+    '<span class="dim">(порожньо — узяти справжню з даних)</span></div>';
+}
+function rpMfg(){const e=$('rpMfg');return e&&e.value?e.value.replace(/-/g,''):'';}
 function rpKeys(){
   const k=Array.from(document.querySelectorAll('#rpTable input[type=checkbox]'))
                .filter(c=>c.checked).map(c=>c.dataset.k);
@@ -1412,13 +1429,15 @@ function rpKeys(){
   // бути (рядок був недоступним, поки поле стояло порожнім).
   if(rpRated()&&k.indexOf('rated')<0)k.push('rated');
   if((rpRs()||rpRsModel())&&k.indexOf('rsense')<0)k.push('rsense');
+  if(rpMfg()&&k.indexOf('crypt')<0)k.push('crypt');
   return k.join(',');
 }
 function rpRated(){const e=$('rpRated');return e&&e.value?e.value:'';}
 function rpArgs(){
   // Модель із бібліотеки й ручне число взаємно виключні — так само, як у полях.
   return ' FIXES='+rpKeys()+(rpRated()?(' RATED='+rpRated()):'')+
-         (rpRsModel()?(' RSMODEL='+rpRsModel()):(rpRs()?(' RSENSE='+rpRs()):''));
+         (rpRsModel()?(' RSMODEL='+rpRsModel()):(rpRs()?(' RSENSE='+rpRs()):''))+
+         (rpMfg()?(' MFG='+rpMfg()):'');
 }
 // Перерахунок робить ПРИСТРІЙ: паливомір залежить від того, який шунт опиниться
 // в чипі, і рахувати це вдруге тут означало б завести другу формулу, яка одного

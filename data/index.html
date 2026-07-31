@@ -1141,7 +1141,8 @@ async function wizNext(){
         // галочки (зокрема наробіток і шунт) для нього нічого б не значили.
         const body={password:pw,idx:idx,model:model};
         if(rpPlan){body.fixes=rpKeys();body.rated=rpRated()||'0';
-                   body.rsense=rpRs()||'-1';body.rsmodel=rpRsModel();}
+                   body.rsense=rpRs()||'-1';body.rsmodel=rpRsModel();
+                   body.mfg=rpMfg()||'-1';}
         const res=await postForm('/api/wizard/step',body);
         wizState=res;
         if(res.msg)toast((res.result?'✅ ':'❌ ')+res.msg,res.result?'ok':'err');
@@ -1691,10 +1692,11 @@ function rpRender(){
         let extra='';
         if(f.key==='rated')  extra=rpRatedBox(p);
         if(f.key==='rsense') extra=rpRsBox(p);
+        if(f.key==='crypt')  extra=rpMfgBox(p);
         h+='<tr class="'+cls+'"><td>'+
            (f.avail?'<input type="checkbox" data-k="'+f.key+'"'+(f.on?' checked':'')+' onchange="rpApply()">':'—')+
            '</td><td><b>'+esc(f.title)+'</b> <span class="chipb">пише в '+esc(f.chipsText)+'</span>'+
-           '<div class="det">'+esc(f.detail)+(f.avail||f.key==='rated'||f.key==='rsense'?'':' <b>Джерела немає</b> — мікросхема не читається або поле порожнє.')+'</div>'+
+           '<div class="det">'+esc(f.detail)+(f.avail||f.key==='rated'||f.key==='rsense'||f.key==='crypt'?'':' <b>Джерела немає</b> — мікросхема не читається або поле порожнє.')+'</div>'+
            extra+'</td>'+
            '<td class="num dim">'+esc(f.tpl)+'</td><td class="num">'+esc(f.pack)+'</td>'+
            '<td class="use">'+esc(f.use)+'</td></tr>';
@@ -1749,6 +1751,26 @@ function rpRsTyped(){const e=$('rpRsModel');if(e)e.value='';rpApply();}
 function rpRsModel(){const e=$('rpRsModel');return e&&e.value?e.value:'';}
 // У прошивку шунт іде «сирим» (мОм×100) — так само, як він лежить у чипі.
 function rpRs(){const e=$('rpRs');return e&&e.value?Math.round(parseFloat(e.value)*100):'';}
+// Дати й лічильники шифруються ключем із ROM самого чипа. Еталон знято з
+// чужого пакета, тож рація прочитає його поля своїм ключем і побачить сміття.
+// Правка перешифровує ті самі числа — а дату виготовлення, якої на «свіжому»
+// хвості просто немає, можна вписати руками.
+function rpMfgBox(p){
+    if(!p.haveRom) return '<div class="det"><b>ROM чипа невідомий</b> — правка можлива '+
+        'лише на живому чипі (для дампа з файлу ключ узяти нізвідки).</div>';
+    const dt=v=>v?(''+v).replace(/^(\d{4})(\d{2})(\d{2})$/,'$1-$2-$3'):'—';
+    const w=p.cryptWrong
+        ? '⚠️ Вміст зашифровано <b>чужим ключем</b>: рація читає дату виготовлення як <b>'+
+          dt(p.mfgSeen)+'</b>, насправді це <b>'+dt(p.mfgReal)+'</b>.'
+        : 'Ключ вмісту збігається з ROM цього чипа — перешифровувати нічого.';
+    return '<div class="det">'+w+'<br>Дата виготовлення вручну: '+
+        '<input type="date" id="rpMfg" value="'+(p.mfgUser?dt(p.mfgUser):'')+'" '+
+        'onchange="rpApply()" style="padding:5px;border-radius:6px;border:1px solid var(--line);'+
+        'background:var(--card2);color:var(--text);margin-top:4px"> '+
+        '<span class="dim">(порожньо — узяти справжню з даних)</span></div>';
+}
+// У пристрій дата йде одним числом YYYYMMDD — так само, як лежить у плані.
+function rpMfg(){const e=$('rpMfg');return e&&e.value?e.value.replace(/-/g,''):'';}
 function rpKeys(){
     const k=Array.from(document.querySelectorAll('#rpTable input[type=checkbox]'))
                  .filter(c=>c.checked).map(c=>c.dataset.k);
@@ -1756,6 +1778,7 @@ function rpKeys(){
     // бути (рядок був недоступним, поки поле стояло порожнім).
     if(rpRated()&&k.indexOf('rated')<0)k.push('rated');
     if((rpRs()||rpRsModel())&&k.indexOf('rsense')<0)k.push('rsense');
+    if(rpMfg()&&k.indexOf('crypt')<0)k.push('crypt');
     return k.join(',');
 }
 // Спільний хвіст запиту: план, запис еталона й «лише правки» мусять слати
@@ -1764,7 +1787,8 @@ function rpQuery(){
     return '&fixes='+encodeURIComponent(rpKeys())+
            '&rated='+encodeURIComponent(rpRated()||'0')+
            '&rsense='+encodeURIComponent(rpRs()||'-1')+
-           '&rsmodel='+encodeURIComponent(rpRsModel());
+           '&rsmodel='+encodeURIComponent(rpRsModel())+
+           '&mfg='+encodeURIComponent(rpMfg()||'-1');
 }
 function rpRated(){const e=$('rpRated');return e&&e.value?e.value:'';}
 // Перерахунок робить ПРИСТРІЙ: паливомір залежить від того, який шунт
@@ -1804,7 +1828,8 @@ async function rpWrite(){
     try{
         const r=await postForm('/api/restore/fixes',
                                {password:$('pwRest').value,model:model,fixes:rpKeys(),
-                                rated:rpRated()||'0',rsense:rpRs()||'-1',rsmodel:rpRsModel()});
+                                rated:rpRated()||'0',rsense:rpRs()||'-1',rsmodel:rpRsModel(),
+                                mfg:rpMfg()||'-1'});
         if(r.status==='success'){
             if(r.plan){rpPlan=r.plan;rpRender();}
             toast('✅ Правки записано ('+on.length+')','ok');
@@ -1834,7 +1859,8 @@ async function restoreBattery(){
     try{
         const body={password:pw,model:model,verbatim:verb?'1':'0'};
         if(!verb&&rpPlan){body.fixes=rpKeys();body.rated=rpRated()||'0';
-                          body.rsense=rpRs()||'-1';body.rsmodel=rpRsModel();}
+                          body.rsense=rpRs()||'-1';body.rsmodel=rpRsModel();
+                          body.mfg=rpMfg()||'-1';}
         const r=await postForm('/api/restore',body);
         if(r.status==='success'){
             if(r.plan){rpPlan=r.plan;rpRender();}

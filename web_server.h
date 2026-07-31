@@ -1851,7 +1851,8 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
         restorePlanBuild(localPlan, model,
                          BATTERY_TEMPLATES[t].d33, BATTERY_TEMPLATES[t].d38,
                          hasDump ? batteryDump : nullptr,
-                         had38 ? was38 : nullptr);
+                         had38 ? was38 : nullptr,
+                         hasSN2433 ? chipSN2433 : nullptr);
         plan = &localPlan;
     }
 
@@ -1922,9 +1923,12 @@ static bool buildRestorePlanFor(const char *model, RestorePlan &p, bool refresh)
     int t = findTemplate(model);
     if (t < 0) return false;
     if (refresh) { bool a, b; readAllChips(a, b); }
+    // ROM DS2433 потрібен для правки шифрування: ключ береться з нього. Для
+    // дампа, відкритого з файлу, ROM невідомий — і правку ми не пропонуємо.
     restorePlanBuild(p, model, BATTERY_TEMPLATES[t].d33, BATTERY_TEMPLATES[t].d38,
                      hasDump ? batteryDump : nullptr,
-                     hasDump2438 ? batteryDump2438 : nullptr);
+                     hasDump2438 ? batteryDump2438 : nullptr,
+                     hasSN2433 ? chipSN2433 : nullptr);
     return true;
 }
 
@@ -1954,6 +1958,14 @@ static String restorePlanJson(const RestorePlan &p) {
     j += ",\"rsMax\":";     j += (int)RP_RS_MAX_RAW;
     // Бібліотека: у кожної вшитої моделі свій шунт — його можна взяти звідси,
     // коли в самому пакеті шунта немає.
+    // Шифрування: чи відомий ROM, чи чужий ключ, які дати бачить рація й які
+    // насправді. Дати — числом YYYYMMDD, щоб клієнти не парсили рядки.
+    j += ",\"haveRom\":";   j += p.haveRom ? "true" : "false";
+    j += ",\"cryptWrong\":";j += p.cryptWrong ? "true" : "false";
+    j += ",\"cryptSrcOk\":";j += p.cryptSrcOk ? "true" : "false";
+    j += ",\"mfgSeen\":";   j += restoreDateNum(p.seenY, p.seenM, p.seenD);
+    j += ",\"mfgReal\":";   j += restoreDateNum(p.mfgY, p.mfgM, p.mfgD);
+    j += ",\"mfgUser\":";   j += restoreDateNum(p.mfgUserY, p.mfgUserM, p.mfgUserD);
     j += ",\"rsLib\":[";
     bool first = true;
     for (int i = 0; i < BATTERY_TEMPLATE_COUNT; i++) {
@@ -2000,8 +2012,11 @@ static String restorePlanJson(const RestorePlan &p) {
 //   rsRaw   — шунт числом (мОм×100), <0 — не чіпати
 //   rsModel — шунт із бібліотеки еталонів за назвою моделі; головніший за rsRaw
 static void restorePlanOverride(RestorePlan &p, const char *fixes, long rated,
-                                long rsRaw, const char *rsModel) {
+                                long rsRaw, const char *rsModel, long mfg = -1) {
     if (rated >= 0) restorePlanSetRated(p, rated);
+    // Дата виготовлення — одним числом YYYYMMDD (0 прибирає ручне значення).
+    if (mfg >= 0) restorePlanSetMfg(p, (int)(mfg / 10000), (int)((mfg / 100) % 100),
+                                    (int)(mfg % 100));
     if (rsModel && *rsModel)
         restorePlanSetRsense(p, templateRsenseRawByName(rsModel), rsModel);
     else if (rsRaw >= 0) restorePlanSetRsense(p, rsRaw);
@@ -2010,9 +2025,11 @@ static void restorePlanOverride(RestorePlan &p, const char *fixes, long rated,
         int  user   = p.ratedUser;              // маска не має стирати введене
         long rsUser = p.rsUser;
         char rsSrc[16]; snprintf(rsSrc, sizeof(rsSrc), "%s", p.rsSrc);
+        int  my = p.mfgUserY, mm = p.mfgUserM, md = p.mfgUserD;
         restorePlanSetMask(p, m);
         if (user > 0 && (m & (1UL << RPF_RATED))) restorePlanSetRated(p, user);
         if (rsUser > 0 && (m & (1UL << RPF_RSENSE))) restorePlanSetRsense(p, rsUser, rsSrc);
+        if (my > 0 && (m & (1UL << RPF_CRYPT))) restorePlanSetMfg(p, my, mm, md);
     }
 }
 
@@ -2027,7 +2044,8 @@ static void applyPlanArgs(RestorePlan &p) {
         server.hasArg("fixes")  ? server.arg("fixes").c_str() : nullptr,
         server.hasArg("rated")  ? server.arg("rated").toInt() : -1,
         server.hasArg("rsense") ? server.arg("rsense").toInt() : -1,
-        rsm.c_str());
+        rsm.c_str(),
+        server.hasArg("mfg") ? server.arg("mfg").toInt() : -1);
 }
 
 void handleRestorePlan() {
@@ -2057,7 +2075,7 @@ bool performApplyFixes(const RestorePlan &p, bool *ok33 = nullptr, bool *ok38 = 
 
     bool need38 = hasDump2438 && (p.fx[RPF_CHARGE].on || p.fx[RPF_RSENSE].on ||
                                   p.fx[RPF_ADCOFF].on || p.fx[RPF_ETM].on);
-    bool need33 = hasDump && p.fx[RPF_RATED].on;
+    bool need33 = hasDump && (p.fx[RPF_RATED].on || p.fx[RPF_CRYPT].on);
     if (!need33 && !need38) return false;          // нічого не обрано
 
     restorePlanApply(p, need33 ? batteryDump : nullptr,
@@ -2392,8 +2410,10 @@ void handleWizardStep() {
     String wfx = server.hasArg("fixes") ? server.arg("fixes") : String();
     long wrated = server.hasArg("rated") ? server.arg("rated").toInt() : -1;
     long wrs    = server.hasArg("rsense") ? server.arg("rsense").toInt() : -1;
+    long wmfg   = server.hasArg("mfg") ? server.arg("mfg").toInt() : -1;
     String wrsm = server.arg("rsmodel"); wrsm.trim(); wrsm.toUpperCase();
-    server.send(200, "application/json", wizExecStep(idx, model, wfx, wrated, wrs, wrsm));
+    server.send(200, "application/json",
+                wizExecStep(idx, model, wfx, wrated, wrs, wrsm, wmfg));
 }
 // POST /api/wizard/reset — скинути журнал продовження ПОТОЧНОГО АКБ (під паролем).
 void handleWizardReset() {

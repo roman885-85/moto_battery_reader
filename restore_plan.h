@@ -27,6 +27,7 @@
 #include "settings.h"        // BATTERY_SCALE_TXT — шкала «заряд за напругою»
 #include "impres_format.h"
 #include "impres_bms.h"
+#include "impres_crypt.h"   // перешифрування дат/лічильників під ROM цього чипа
 
 enum {
     RPF_CHARGE = 0,   // паливомір ICA з реальної напруги пакета
@@ -34,6 +35,7 @@ enum {
     RPF_ADCOFF,       // апаратний OFFSET АЦП струму (DS2438[0x0D..0x0E])
     RPF_ETM,          // наробіток -> «дата першого користування» в рації
     RPF_RATED,        // паспортна ємність (DS2433[0x008])
+    RPF_CRYPT,        // дати й лічильники — під ROM ЦЬОГО чипа (шифрування)
     RPF_COUNT
 };
 
@@ -73,6 +75,13 @@ static const RestoreFixDoc RESTORE_FIX_DOC[RPF_COUNT] = {
       "еталоном моделі; розбіжність означає інший підваріант. Якщо після заміни "
       "ви поставили банки іншої ємності — впишіть її вручну: за нею ж "
       "перерахується й паливомір." },
+    { "crypt",  "Дати й лічильники — під ROM цього чипа", "", 1, true,
+      "Частина полів DS2433 зашифрована, і ключ береться з ROM-ID самого чипа. "
+      "Еталон знято з ЧУЖОГО акумулятора, тож рація розшифрує його поля своїм "
+      "ключем і побачить сміття: на реальному пакеті це була дата виготовлення "
+      "«2107-13-21», 3548 циклів при 1097 і знос 76 % замість 34 %. Правка "
+      "перешифровує ті самі числа під ROM цього чипа — значення не міняються, "
+      "міняється лише те, хто здатен їх прочитати." },
 };
 
 struct RestoreFix {
@@ -100,8 +109,26 @@ struct RestorePlan {
     char     rsSrc[16];     // звідки взято ручний шунт: модель або "" (вручну)
     float    rsUse;         // ЕФЕКТИВНИЙ шунт — за ним рахується паливомір
     uint8_t  icaTpl, icaPack, icaUse;
+
+    // --- шифрування ---------------------------------------------------------
+    bool     haveRom;       // чи відомий ROM DS2433 цього чипа (тільки на пристрої)
+    uint8_t  romK1, romK2;  // ключ ЦЬОГО чипа: ROM[1] і ROM[6]
+    bool     cryptSrcOk;    // чи вдалось визначити ключ, яким зашифровано вміст
+    uint8_t  srcK1, srcK2;
+    bool     cryptWrong;    // вміст зашифровано ЧУЖИМ ключем — рація бачить сміття
+    ImpresCryptFields cf;   // справжні значення, прочитані ключем джерела
+    int      mfgY, mfgM, mfgD;         // справжня дата виготовлення
+    int      seenY, seenM, seenD;      // яку дату бачить рація ЗАРАЗ
+    int      mfgUserY, mfgUserM, mfgUserD;   // вписана ВРУЧНУ, 0 — не вписували
+
     RestoreFix fx[RPF_COUNT];
 };
+
+// Дата як одне число YYYYMMDD — щоб класти її в long-поля правки й показувати
+// однаково в усіх клієнтах.
+inline long restoreDateNum(int y, int m, int d) {
+    return (y > 0) ? (long)y * 10000 + m * 100 + d : 0;
+}
 
 // Правдоподібна напруга Li-Ion 2S: нижче — обрив/не читалось, вище — сміття.
 #define RP_MV_MIN 3000
@@ -127,7 +154,8 @@ inline void restorePlanRecalc(RestorePlan &p);   // визначена нижч�
 // pack38 — те, що зараз у пакеті (теж може бути nullptr, якщо чіп не читається).
 inline void restorePlanBuild(RestorePlan &p, const char *model,
                              const uint8_t *tpl33, const uint8_t *tpl38,
-                             const uint8_t *pack33, const uint8_t *pack38) {
+                             const uint8_t *pack33, const uint8_t *pack38,
+                             const uint8_t *packRom33 = nullptr) {
     memset(&p, 0, sizeof(p));
     snprintf(p.model, sizeof(p.model), "%s", model ? model : "");
     p.haveTpl33 = tpl33 != nullptr;
@@ -182,6 +210,30 @@ inline void restorePlanBuild(RestorePlan &p, const char *model,
     e.on      = e.avail && RESTORE_FIX_DOC[RPF_ETM].defOn;
     e.tplVal  = 0;                       // без правки наробіток обнуляється
     e.packVal = (long)etm;
+
+    // --- шифрування ----------------------------------------------------------
+    // Зашифровані поля читаються ключем із ROM чипа DS2433. Еталон знято з
+    // ЧУЖОГО пакета, тож його поля зашифровані ROM'ом донора — і рація,
+    // розшифрувавши їх СВОЇМ ключем, побачить сміття (dumps/16). Тут ми лише
+    // дивимось, чи так воно і є; перешифрування робить restorePlanApply().
+    p.haveRom = packRom33 != nullptr;
+    if (p.haveRom) { p.romK1 = packRom33[1]; p.romK2 = packRom33[6]; }
+    RestoreFix &cr = p.fx[RPF_CRYPT];
+    if (pack33) {
+        p.cryptSrcOk = impresCryptSourceKey(pack33, pack38, &p.srcK1, &p.srcK2);
+        if (p.cryptSrcOk) {
+            impresCryptRead(pack33, p.srcK1, p.srcK2, &p.cf);
+            p.mfgY = p.cf.mfgY; p.mfgM = p.cf.mfgM; p.mfgD = p.cf.mfgD;
+            if (p.haveRom) {
+                p.cryptWrong = impresCryptKeyDiffers(p.srcK1, p.srcK2, p.romK1, p.romK2);
+                // Що бачить рація ЗАРАЗ — тими самими байтами, але СВОЇМ ключем.
+                ImpresCryptFields seen;
+                impresCryptRead(pack33, p.romK1, p.romK2, &seen);
+                p.seenY = seen.mfgY; p.seenM = seen.mfgM; p.seenD = seen.mfgD;
+            }
+        }
+    }
+    cr.on = p.cryptWrong && RESTORE_FIX_DOC[RPF_CRYPT].defOn;
 
     // --- паспортна ємність ---------------------------------------------------
     RestoreFix &m = p.fx[RPF_RATED];
@@ -252,6 +304,18 @@ inline void restorePlanRecalc(RestorePlan &p) {
                                p.rsTpl > 0.0f ? p.rsTpl : DS2438_RSENSE_OHM)
         : -1;
 
+    // Шифрування. Правку пропонуємо, коли є ROM цього чипа і або вміст
+    // зашифровано чужим ключем, або власник вписав дату виготовлення вручну
+    // (на «свіжому» хвості її взяти нізвідки).
+    RestoreFix &cr = p.fx[RPF_CRYPT];
+    bool haveUserDate = p.mfgUserY > 0;
+    cr.avail  = p.haveRom && (p.cryptWrong || (haveUserDate && p.cryptSrcOk));
+    cr.tplVal = restoreDateNum(p.seenY, p.seenM, p.seenD);   // що бачить рація зараз
+    cr.packVal = haveUserDate ? restoreDateNum(p.mfgUserY, p.mfgUserM, p.mfgUserD)
+                              : restoreDateNum(p.mfgY, p.mfgM, p.mfgD);
+    if (!cr.avail) cr.on = false;
+    if (haveUserDate && cr.avail) cr.on = true;
+
     for (int i = 0; i < RPF_COUNT; i++)
         p.fx[i].useVal = p.fx[i].on ? p.fx[i].packVal
                                     : (i == RPF_ETM ? 0 : p.fx[i].tplVal);
@@ -266,6 +330,7 @@ inline void restorePlanSetMask(RestorePlan &p, uint32_t mask) {
     // масці немає, вважаємо, що користувач передумав писати ємність.
     if (!(mask & (1UL << RPF_RATED)))  p.ratedUser = 0;
     if (!(mask & (1UL << RPF_RSENSE))) { p.rsUser = 0; p.rsSrc[0] = '\0'; }
+    if (!(mask & (1UL << RPF_CRYPT)))  { p.mfgUserY = p.mfgUserM = p.mfgUserD = 0; }
     // avail шунта залежить від rsUser, тож маску треба накласти ще раз — уже
     // після того, як ручне значення прибрано.
     p.fx[RPF_RSENSE].on = (mask & (1UL << RPF_RSENSE)) && (p.rsRawPack > 0);
@@ -287,6 +352,14 @@ inline void restorePlanSetRsense(RestorePlan &p, long raw, const char *src = nul
     p.rsUser = restoreRsClamp(raw);
     if (p.rsUser > 0 && src && *src) snprintf(p.rsSrc, sizeof(p.rsSrc), "%s", src);
     else                             p.rsSrc[0] = '\0';
+    restorePlanRecalc(p);
+}
+
+// Вписати дату виготовлення вручну (рік 0 — прибрати). Межі — ті самі, що в
+// impresBmsDateSane(): поза ними дата все одно вважалась би сміттям.
+inline void restorePlanSetMfg(RestorePlan &p, int y, int m, int d) {
+    if (y < 2005 || y > 2035 || m < 1 || m > 12 || d < 1 || d > 31) y = m = d = 0;
+    p.mfgUserY = y; p.mfgUserM = m; p.mfgUserD = d;
     restorePlanRecalc(p);
 }
 
@@ -354,6 +427,16 @@ inline void restorePlanApply(const RestorePlan &p, uint8_t *d33, uint8_t *d38,
         d33[IMPRES_RATED_BYTE] = (uint8_t)(p.fx[RPF_RATED].useVal / IMPRES_RATED_STEP);
         impresFixHeader(d33);
     }
+    // Перешифрування — ОСТАННІМ по DS2433: воно лагодить суми своїх блоків, і
+    // будь-яка правка після нього ці суми знову зламала б.
+    if (d33 && p.fx[RPF_CRYPT].on && p.haveRom) {
+        ImpresCryptFields f = p.cf;
+        if (p.mfgUserY > 0) {
+            f.haveDat = f.haveDat || (impresCryptAddr(d33, BMS_V_DATE) != BMS_INVALID);
+            f.mfgY = p.mfgUserY; f.mfgM = p.mfgUserM; f.mfgD = p.mfgUserD;
+        }
+        impresCryptWrite(d33, p.romK1, p.romK2, &f);
+    }
 }
 
 // Людський текст значення правки — щоб веб, USB і екран показували однаково.
@@ -366,6 +449,9 @@ inline void restoreFixText(const RestorePlan &p, int i, long v, char *out, size_
         case RPF_ETM:    v ? snprintf(out, n, "%ld діб", v / 86400L)
                            : snprintf(out, n, "з нуля"); break;
         case RPF_RATED:  snprintf(out, n, "%ld мА·год", v); break;
+        case RPF_CRYPT:  v ? snprintf(out, n, "%04ld-%02ld-%02ld",
+                                      v / 10000, (v / 100) % 100, v % 100)
+                           : snprintf(out, n, "—"); break;
         default:         snprintf(out, n, "%ld", v); break;
     }
 }

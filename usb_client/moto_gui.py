@@ -189,6 +189,11 @@ class SerialWorker(threading.Thread):
 # Пункт списку «шунт беремо не з бібліотеки, а руками / зі свого пакета».
 RP_RS_MANUAL = "— вручну —"
 
+
+def _dnum(v):
+    """Дата з плану (число YYYYMMDD) у людський вигляд; 0 -> прочерк."""
+    return "%04d-%02d-%02d" % (v // 10000, (v // 100) % 100, v % 100) if v else "—"
+
 CTRL_MASK = 0x0004
 _CTRL_KEYS = {"c": ("c", "cyrillic_es"),      # С
               "v": ("v", "cyrillic_em"),      # М
@@ -2156,6 +2161,22 @@ class App:
         v = c.get().strip() if c is not None else ""
         return "" if v in ("", RP_RS_MANUAL) else v.split(" ")[0]
 
+    def _rp_mfg(self):
+        """Вписана вручну дата виготовлення як YYYYMMDD; порожньо/сміття -> 0."""
+        e = getattr(self, "eRpMfg", None)
+        if e is None:
+            return 0
+        t = (e.get() or "").strip().replace(".", "-").replace("/", "-")
+        if not t:
+            return 0
+        try:
+            y, m, d = (int(x) for x in t.split("-"))
+        except (ValueError, tk.TclError):
+            return 0
+        if not (2005 <= y <= 2035 and 1 <= m <= 12 and 1 <= d <= 31):
+            return 0
+        return y * 10000 + m * 100 + d
+
     def _rp_keys(self):
         k = [key for key, v in self.rpVars.items() if v.get()]
         # Вписана ємність — це вже згода її записати, галочки для неї може ще
@@ -2164,14 +2185,18 @@ class App:
             k.append("rated")
         if (self._rp_rsense() or self._rp_rsmodel()) and "rsense" not in k:
             k.append("rsense")
+        if self._rp_mfg() and "crypt" not in k:
+            k.append("crypt")
         return ",".join(k)
 
     def _rp_args(self):
         r = self._rp_rated()
         # Модель із бібліотеки й ручне число взаємно виключні — так само, як у полях.
         rsm, rs = self._rp_rsmodel(), self._rp_rsense()
+        mfg = self._rp_mfg()
         return (" FIXES=" + self._rp_keys() + (" RATED=%d" % r if r else "") +
-                (" RSMODEL=%s" % rsm if rsm else (" RSENSE=%d" % rs if rs else "")))
+                (" RSMODEL=%s" % rsm if rsm else (" RSENSE=%d" % rs if rs else "")) +
+                (" MFG=%d" % mfg if mfg else ""))
 
     def _rp_fixes_arg(self):
         if self.rpPlan is None:
@@ -2262,7 +2287,7 @@ class App:
             else:
                 ttk.Label(self.rpGrid, text="—", foreground="#6b6f58").grid(row=i, column=0, sticky="w")
             title = f.get("title", "") + "  ·  пише в " + f.get("chipsText", "")
-            if not avail and f.get("key") not in ("rated", "rsense"):
+            if not avail and f.get("key") not in ("rated", "rsense", "crypt"):
                 title += "  (джерела немає)"
             # wraplength — щоб довга назва переносилась, а не заповзала під
             # стовпець значень і не обрізалась на вузькому вікні.
@@ -2311,6 +2336,28 @@ class App:
                 if not p.get("rsPack"):
                     ttk.Label(sub, text="(у пакеті шунта немає!)",
                               foreground="#d08a3a").pack(side="left")
+            # Дати й лічильники зашифровані ключем із ROM самого чипа. Еталон
+            # знято з чужого пакета, тож рація прочитає його поля СВОЇМ ключем
+            # і побачить сміття. Дату виготовлення, якої на «свіжому» хвості
+            # просто немає, можна вписати руками.
+            if f.get("key") == "crypt":
+                sub = ttk.Frame(cell); sub.pack(anchor="w", pady=(2, 0))
+                if not p.get("haveRom"):
+                    ttk.Label(sub, text="ROM чипа невідомий — правка можлива лише на живому чипі",
+                              foreground="#d08a3a").pack(side="left")
+                else:
+                    if p.get("cryptWrong"):
+                        ttk.Label(sub, text="⚠ рація читає %s, насправді %s"
+                                  % (_dnum(p.get("mfgSeen", 0)), _dnum(p.get("mfgReal", 0))),
+                                  foreground="#d08a3a").pack(side="left")
+                    ttk.Label(sub, text="  дата вигот. вручну (РРРР-ММ-ДД):",
+                              foreground="#b9bd86").pack(side="left")
+                    self.eRpMfg = ttk.Entry(sub, width=11)
+                    self.eRpMfg.pack(side="left", padx=4)
+                    if p.get("mfgUser", 0) > 0:
+                        self.eRpMfg.insert(0, _dnum(p["mfgUser"]))
+                    self.eRpMfg.bind("<Return>", lambda _e: self._rp_recalc())
+                    self.eRpMfg.bind("<FocusOut>", lambda _e: self._rp_recalc())
             for c, key, col in ((2, "tpl", "#9a9c82"), (3, "pack", "#e7e3d2"), (4, "use", "#c8b04a")):
                 ttk.Label(self.rpGrid, text=f.get(key, "—"), font=mono,
                           foreground=col if avail else "#6b6f58").grid(row=i, column=c, sticky="e", padx=4)

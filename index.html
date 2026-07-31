@@ -647,6 +647,24 @@
             <label style="display:block;margin:8px 0"><input type="checkbox" id="restVerbatim" onchange="rpToggle()">
                 <b>Ручний режим:</b> записати байт-у-байт, разом із навченою калібровкою донора.
                 Для аналізу й експериментів; для ремонту НЕ вмикайте.</label>
+            <div style="margin:8px 0;padding:8px;border:1px solid var(--line);border-radius:8px">
+                <b>Навчений хвіст</b> (0x18A–0x1FF) — те, що ЗП вважає «історією» пакета:
+                <select id="restTail" style="margin-left:6px;padding:5px;border-radius:6px;
+                        border:1px solid var(--line);background:var(--card2);color:var(--text)">
+                    <option value="fresh">Свіжий (скелет + нулі) — типово</option>
+                    <option value="erase">Стерти в 0xFF</option>
+                </select>
+                <div class="det" style="margin-top:6px">
+                    <b>Свіжий</b> — структура записів на місці, навчені значення обнулені.
+                    Калібрування на ЗП здатне завершитись.<br>
+                    <b>Стерти</b> — саме в цьому стані ЗП починала <b>заряджати</b> й переходити
+                    в калібрування (перевірено тричі: <code>dumps/11,12,13</code>). Ціна: у
+                    <code>dumps/13</code> після повного циклу ЗП дописала лише два байти, а байт
+                    довжини лишився 0xFF — навчений блок так і не став валідним, тож
+                    калібрування може не завершуватись. Пробуйте, якщо ЗП світить зеленим і
+                    не заряджає.
+                </div>
+            </div>
             <input type="password" class="pw" id="pwRest" placeholder="🔑 Пароль адміністратора">
             <button class="btn btn-warn" style="width:100%" onclick="restoreBattery()">🛠️ ВІДНОВИТИ ЕТАЛОН</button>
         </div>
@@ -1143,6 +1161,7 @@ async function wizNext(){
         if(rpPlan){body.fixes=rpKeys();body.rated=rpRated()||'0';
                    body.rsense=rpRs()||'-1';body.rsmodel=rpRsModel();
                    body.mfg=rpMfg()||'-1';}
+        body.tail=restTail();
         const res=await postForm('/api/wizard/step',body);
         wizState=res;
         if(res.msg)toast((res.result?'✅ ':'❌ ')+res.msg,res.result?'ok':'err');
@@ -1771,6 +1790,8 @@ function rpMfgBox(p){
 }
 // У пристрій дата йде одним числом YYYYMMDD — так само, як лежить у плані.
 function rpMfg(){const e=$('rpMfg');return e&&e.value?e.value.replace(/-/g,''):'';}
+// Режим навченого хвоста: «свіжий» скелет чи стирання в 0xFF (див. картку).
+function restTail(){const e=$('restTail');return e&&e.value?e.value:'fresh';}
 function rpKeys(){
     const k=Array.from(document.querySelectorAll('#rpTable input[type=checkbox]'))
                  .filter(c=>c.checked).map(c=>c.dataset.k);
@@ -1852,12 +1873,13 @@ async function restoreBattery(){
         q='🛠️ Відновити еталон '+model+'?\n\nМодельна частина — з еталона.\n'+
           (on.length?('Під цей пакет буде виправлено:\n'+on.map(f=>'  • '+f.title+': '+f.use).join('\n'))
                     :'Правок під пакет немає (нема з чого взяти реальні значення).')+
-          '\n\nПерезапише ОБИДВІ мікросхеми. Продовжити?';
+          '\n\nНавчений хвіст: '+(restTail()==='erase'?'СТЕРТИ в 0xFF':'свіжий скелет')+
+          '.\nПерезапише ОБИДВІ мікросхеми. Продовжити?';
     }
     if(!confirm(q))return;
     prog(true,'Відновлення еталона...');
     try{
-        const body={password:pw,model:model,verbatim:verb?'1':'0'};
+        const body={password:pw,model:model,verbatim:verb?'1':'0',tail:restTail()};
         if(!verb&&rpPlan){body.fixes=rpKeys();body.rated=rpRated()||'0';
                           body.rsense=rpRs()||'-1';body.rsmodel=rpRsModel();
                           body.mfg=rpMfg()||'-1';}

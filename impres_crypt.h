@@ -75,6 +75,16 @@ inline uint16_t impresCryptAddr(const uint8_t *d33, int vec) {
     return impresBmsVector(d33, vec);
 }
 
+// Чи можна писати в цей блок: він має існувати й бути достатньо довгим для
+// полів, які ми туди кладемо. На СТЕРТОМУ хвості байт довжини = 0xFF, і без
+// цієї перевірки перешифрування писало б у порожнечу, псуючи сусідні записи.
+inline bool impresCryptBlockUsable(const uint8_t *d33, uint16_t a, int need) {
+    if (a == BMS_INVALID) return false;
+    uint8_t len = d33[a];
+    if (len < need || len > 32) return false;
+    return (int)a + len <= IMPRES_33_SIZE;
+}
+
 // Прочитати зашифровані поля ключем k1/k2. Блок, сума якого не сходиться,
 // пропускаємо: на побитому хвості там не дані, а сміття, і переносити його
 // в новий чип означало б закріпити помилку.
@@ -115,21 +125,21 @@ inline void impresCryptWrite(uint8_t *d33, uint8_t k1, uint8_t k2,
     uint16_t aRec = impresCryptAddr(d33, BMS_V_RECOND);
     uint16_t aDat = impresCryptAddr(d33, BMS_V_DATE);
 
-    if (f->haveCyc && aCyc != BMS_INVALID) {
+    if (f->haveCyc && impresCryptBlockUsable(d33, aCyc, 10)) {
         impresCryptPutBE(d33, aCyc + 1, impresCryptEncInt(f->cyclesEnc,     2, k1));
         impresCryptPutBE(d33, aCyc + 3, impresCryptEncInt(f->reverts,       2, k1));
         impresCryptPutBE(d33, aCyc + 5, impresCryptEncInt(f->dayLastCharge, 2, k1));
         impresCryptPutBE(d33, aCyc + 7, impresCryptEncInt(f->topOffCycles,  2, k1));
         impresFixRecord(d33, aCyc, d33[aCyc]);
     }
-    if (f->haveRec && aRec != BMS_INVALID) {
+    if (f->haveRec && impresCryptBlockUsable(d33, aRec, 8)) {
         impresCryptPutBE(d33, aRec + 1, impresCryptEncInt(f->calCycles,     2, k1));
         impresCryptPutBE(d33, aRec + 3, impresCryptEncInt(f->dayLastRecond, 2, k1));
         d33[aRec + 5] = (uint8_t)impresCryptEncInt(f->firstUse, 1, k1);
         d33[aRec + 6] = (uint8_t)impresCryptEncInt(f->cts,      1, k1);
         impresFixRecord(d33, aRec, d33[aRec]);
     }
-    if (f->haveDat && aDat != BMS_INVALID) {
+    if (f->haveDat && impresCryptBlockUsable(d33, aDat, 6)) {
         impresCryptPutBE(d33, aDat + 1, impresCryptEncDate(f->mfgY, f->mfgM, f->mfgD, k1, k2));
         impresCryptPutBE(d33, aDat + 3, impresCryptEncInt(f->dayInitialUse, 2, k1));
         impresFixRecord(d33, aDat, d33[aDat]);
@@ -171,7 +181,7 @@ inline bool impresCryptRekey(uint8_t *d33, const uint8_t *d38,
     ImpresCryptFields f;
     impresCryptRead(d33, sk1, sk2, &f);
     if (mfgY > 0) {
-        f.haveDat = f.haveDat || (impresCryptAddr(d33, BMS_V_DATE) != BMS_INVALID);
+        f.haveDat = f.haveDat || impresCryptBlockUsable(d33, impresCryptAddr(d33, BMS_V_DATE), 6);
         f.mfgY = mfgY; f.mfgM = mfgM; f.mfgD = mfgD;
     }
     impresCryptWrite(d33, ownK1, ownK2, &f);

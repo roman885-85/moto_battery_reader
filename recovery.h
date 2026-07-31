@@ -551,7 +551,8 @@ static String wizStart() {
 // власник саме на це й наштовхнувся з наробітком.
 static String wizExecStep(int idx, const String &model, const String &fixes = String(),
                           long ratedMah = -1, long rsRaw = -1,
-                          const String &rsModel = String(), long mfg = -1) {
+                          const String &rsModel = String(), long mfg = -1,
+                          int tailMode = 0 /* RTAIL_FRESH */) {
     BatteryDiag d; wizAnalyze(d);
     wizJournalLoad();
 
@@ -588,7 +589,7 @@ static String wizExecStep(int idx, const String &model, const String &fixes = St
                                     ratedMah, rsRaw, rsModel.c_str(), mfg);
                 wpp = &wp;
             }
-            ok = performRestoreTemplate(m.c_str(), &o33, &o38, false, wpp);
+            ok = performRestoreTemplate(m.c_str(), &o33, &o38, false, wpp, tailMode);
             msg = ok ? (String("Еталон ") + m + " відновлено" + (o38 ? " (DS2433+DS2438)" : " (лише DS2433)"))
                      : "Збій запису еталона";
             if (ok) strncpy(g_wizJ.model, m.c_str(), sizeof(g_wizJ.model) - 1);

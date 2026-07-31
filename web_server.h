@@ -1830,8 +1830,32 @@ bool performInitBattery(const char *model, long mah) {
 //
 // plan — правки під конкретний пакет (restore_plan.h). nullptr = типовий набір,
 // порахований тут же з того, що зараз у буферах.
+// Режим навченого хвоста 0x18A..0x1FF.
+//
+// ⚑ ЧОМУ ЦЕ ВИБІР, А НЕ КОНСТАНТА. Обидва варіанти перевірені на дампах
+// власника, і кожен має свою ціну:
+//
+//   RTAIL_FRESH — «свіжий» хвіст: скелет записів на місці, навчені значення
+//     обнулені, суми правильні. Калібрування на ЗП може завершитись, бо ЗП
+//     пише навчені значення за фіксованими адресами й структуру НЕ створює.
+//     Але ЗП бачить валідний навчений блок і на всіх ремонтованих пакетах
+//     (dumps/06,07,08,15) світила зеленим і не заряджала.
+//
+//   RTAIL_ERASE — хвіст стертий у 0xFF. Рівно в цьому стані ЗП починала
+//     заряджати й переходити в калібрування — тричі незалежно
+//     (dumps/11,12,13). Ціна: у dumps/13 після повного циклу з'явилися лише
+//     два байти (0x1E1,0x1E2), а байт довжини 0x1E0 лишився 0xFF, тобто
+//     навчений блок так і не став валідним — калібрування не завершується.
+enum { RTAIL_FRESH = 0, RTAIL_ERASE = 1 };
+
+static int tailModeFromArg(const String &v) {
+    String t = v; t.trim(); t.toLowerCase();
+    return (t == "erase" || t == "1") ? RTAIL_ERASE : RTAIL_FRESH;
+}
+
 bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 = nullptr,
-                            bool verbatim = false, const RestorePlan *plan = nullptr) {
+                            bool verbatim = false, const RestorePlan *plan = nullptr,
+                            int tailMode = RTAIL_FRESH) {
     if (ok33) *ok33 = false;
     if (ok38) *ok38 = false;
     int t = findTemplate(model);
@@ -1881,8 +1905,15 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
         }
     }
     if (!verbatim) {
-        int cleared = applyFreshTail(BATTERY_TEMPLATES[t].fresh);
-        if (cleared < 0) cleared = impresEraseTail(batteryDump);
+        int cleared;
+        if (tailMode == RTAIL_ERASE) {
+            cleared = impresEraseTail(batteryDump);
+            Serial.println("Restore: навчений хвіст СТЕРТО (0xFF) — ЗП почне заряджати, "
+                           "але калібрування може не завершитись");
+        } else {
+            cleared = applyFreshTail(BATTERY_TEMPLATES[t].fresh);
+            if (cleared < 0) cleared = impresEraseTail(batteryDump);
+        }
         impresFixHeader(batteryDump);
         bool touch38 = write38 || had38;
         if (touch38) impresResetMonitor(batteryDump2438, batteryDump, plan->icaUse);
@@ -2146,7 +2177,9 @@ void handleRestore() {
         pp = &p;
     }
 
-    bool ok = performRestoreTemplate(model.c_str(), &ok33, &ok38, verbatim, pp);
+    // tail=erase — лишити навчений хвіст стертим (див. RTAIL_* вище).
+    int tailMode = tailModeFromArg(server.arg("tail"));
+    bool ok = performRestoreTemplate(model.c_str(), &ok33, &ok38, verbatim, pp, tailMode);
     String j = String("{\"status\":\"") + (ok ? "success" : "error") + "\",\"ds2433\":" +
                (ok33 ? "true" : "false") + ",\"ds2438\":" + (ok38 ? "true" : "false");
     // Звітуємо ФАКТИЧНО застосовані правки: користувач має бачити, що саме
@@ -2413,7 +2446,8 @@ void handleWizardStep() {
     long wmfg   = server.hasArg("mfg") ? server.arg("mfg").toInt() : -1;
     String wrsm = server.arg("rsmodel"); wrsm.trim(); wrsm.toUpperCase();
     server.send(200, "application/json",
-                wizExecStep(idx, model, wfx, wrated, wrs, wrsm, wmfg));
+                wizExecStep(idx, model, wfx, wrated, wrs, wrsm, wmfg,
+                            tailModeFromArg(server.arg("tail"))));
 }
 // POST /api/wizard/reset — скинути журнал продовження ПОТОЧНОГО АКБ (під паролем).
 void handleWizardReset() {

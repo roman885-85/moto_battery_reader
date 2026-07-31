@@ -432,7 +432,7 @@ inline void restorePlanApply(const RestorePlan &p, uint8_t *d33, uint8_t *d38,
     if (d33 && p.fx[RPF_CRYPT].on && p.haveRom) {
         ImpresCryptFields f = p.cf;
         if (p.mfgUserY > 0) {
-            f.haveDat = f.haveDat || (impresCryptAddr(d33, BMS_V_DATE) != BMS_INVALID);
+            f.haveDat = f.haveDat || impresCryptBlockUsable(d33, impresCryptAddr(d33, BMS_V_DATE), 6);
             f.mfgY = p.mfgUserY; f.mfgM = p.mfgUserM; f.mfgD = p.mfgUserD;
         }
         impresCryptWrite(d33, p.romK1, p.romK2, &f);

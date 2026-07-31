@@ -1160,7 +1160,7 @@ async function wizNext(){
         const body={password:pw,idx:idx,model:model};
         if(rpPlan){body.fixes=rpKeys();body.rated=rpRated()||'0';
                    body.rsense=rpRs()||'-1';body.rsmodel=rpRsModel();
-                   body.mfg=rpMfg()||'-1';}
+                   body.mfg=rpMfg()||'-1';body.health=rpHp()||'-1';}
         body.tail=restTail();
         const res=await postForm('/api/wizard/step',body);
         wizState=res;
@@ -1778,27 +1778,36 @@ function rpMfgBox(p){
     if(!p.haveRom) return '<div class="det"><b>ROM чипа невідомий</b> — правка можлива '+
         'лише на живому чипі (для дампа з файлу ключ узяти нізвідки).</div>';
     const dt=v=>v?(''+v).replace(/^(\d{4})(\d{2})(\d{2})$/,'$1-$2-$3'):'—';
+    const hp=v=>v?(v+' %'):'—';
     let w;
     if(p.cryptWrong)
         w='⚠️ Вміст зашифровано <b>чужим ключем</b>: рація читає дату виготовлення як <b>'+
-          dt(p.mfgSeen)+'</b>, насправді це <b>'+dt(p.mfgReal)+'</b>. Правка перенесе ті самі '+
-          'числа під ROM цього чипа.';
+          dt(p.mfgSeen)+'</b> і знос <b>'+hp(p.hpSeen)+'</b>, насправді це <b>'+dt(p.mfgReal)+
+          '</b> і <b>'+hp(p.hpReal)+'</b>. Правка перенесе ті самі числа під ROM цього чипа.';
     else if(p.cryptUnknown)
         w='⚠️ Вміст <b>ні з чим не узгоджений</b> — визначити, яким ключем його писали, '+
-          'не вдається. Рація читає дату виготовлення як <b>'+dt(p.mfgSeen)+'</b>. Перенести '+
-          'звідси нічого не можна, але <b>дату можна вписати вручну</b> — вона запишеться '+
-          'ключем цього чипа. Лічильники правка не чіпає: ми не знаємо, що в них.';
+          'не вдається. Рація читає дату <b>'+dt(p.mfgSeen)+'</b>, знос <b>'+hp(p.hpSeen)+
+          '</b>. Перенести звідси нічого не можна, але <b>дату й знос можна вписати '+
+          'вручну</b> — вони запишуться ключем цього чипа.';
     else
-        w='Ключ вмісту збігається з ROM цього чипа — перешифровувати нічого.';
-    return '<div class="det">'+w+'<br>Дата виготовлення вручну: '+
-        '<input type="date" id="rpMfg" value="'+(p.mfgUser?dt(p.mfgUser):'')+'" '+
-        'onchange="rpApply()" style="padding:5px;border-radius:6px;border:1px solid var(--line);'+
-        'background:var(--card2);color:var(--text);margin-top:4px"> '+
-        '<span class="dim">'+(p.cryptUnknown?'(без неї правці нічого записувати)'
-                                            :'(порожньо — узяти справжню з даних)')+'</span></div>';
+        w='Ключ вмісту збігається з ROM цього чипа — перешифровувати нічого. Знос усе одно '+
+          'можна вписати вручну.';
+    return '<div class="det">'+w+
+        '<br>Дата виготовлення: <input type="date" id="rpMfg" value="'+(p.mfgUser?dt(p.mfgUser):'')+
+        '" onchange="rpApply()" style="padding:5px;border-radius:6px;border:1px solid var(--line);'+
+        'background:var(--card2);color:var(--text);margin-top:4px">'+
+        '&nbsp;&nbsp;Знос (здоров\'я), %: <input type="number" id="rpHp" min="1" max="100" step="1" '+
+        'placeholder="як є" value="'+(p.hpUser>0?p.hpUser:'')+'" onchange="rpApply()" '+
+        'style="width:80px;padding:5px;border-radius:6px;border:1px solid var(--line);'+
+        'background:var(--card2);color:var(--text);margin-top:4px">'+
+        '<div class="dim" style="margin-top:4px">Знос рахується від ЕФЕКТИВНИХ шунта й '+
+        'паспортної ємності — тих, що підуть у чип після всіх правок. '+
+        (p.hpUser>0?('Буде записано CTS = '+p.ctsUse+'.'):'Порожньо — лишити як є.')+'</div></div>';
 }
 // У пристрій дата йде одним числом YYYYMMDD — так само, як лежить у плані.
 function rpMfg(){const e=$('rpMfg');return e&&e.value?e.value.replace(/-/g,''):'';}
+// Знос у відсотках; порожньо — не чіпати.
+function rpHp(){const e=$('rpHp');return e&&e.value?e.value:'';}
 // Режим навченого хвоста: «свіжий» скелет чи стирання в 0xFF (див. картку).
 function restTail(){const e=$('restTail');return e&&e.value?e.value:'fresh';}
 function rpKeys(){
@@ -1808,7 +1817,7 @@ function rpKeys(){
     // бути (рядок був недоступним, поки поле стояло порожнім).
     if(rpRated()&&k.indexOf('rated')<0)k.push('rated');
     if((rpRs()||rpRsModel())&&k.indexOf('rsense')<0)k.push('rsense');
-    if(rpMfg()&&k.indexOf('crypt')<0)k.push('crypt');
+    if((rpMfg()||rpHp())&&k.indexOf('crypt')<0)k.push('crypt');
     return k.join(',');
 }
 // Спільний хвіст запиту: план, запис еталона й «лише правки» мусять слати
@@ -1818,7 +1827,8 @@ function rpQuery(){
            '&rated='+encodeURIComponent(rpRated()||'0')+
            '&rsense='+encodeURIComponent(rpRs()||'-1')+
            '&rsmodel='+encodeURIComponent(rpRsModel())+
-           '&mfg='+encodeURIComponent(rpMfg()||'-1');
+           '&mfg='+encodeURIComponent(rpMfg()||'-1')+
+           '&health='+encodeURIComponent(rpHp()||'-1');
 }
 function rpRated(){const e=$('rpRated');return e&&e.value?e.value:'';}
 // Перерахунок робить ПРИСТРІЙ: паливомір залежить від того, який шунт
@@ -1859,7 +1869,7 @@ async function rpWrite(){
         const r=await postForm('/api/restore/fixes',
                                {password:$('pwRest').value,model:model,fixes:rpKeys(),
                                 rated:rpRated()||'0',rsense:rpRs()||'-1',rsmodel:rpRsModel(),
-                                mfg:rpMfg()||'-1'});
+                                mfg:rpMfg()||'-1',health:rpHp()||'-1'});
         if(r.status==='success'){
             if(r.plan){rpPlan=r.plan;rpRender();}
             toast('✅ Правки записано ('+on.length+')','ok');
@@ -1891,7 +1901,7 @@ async function restoreBattery(){
         const body={password:pw,model:model,verbatim:verb?'1':'0',tail:restTail()};
         if(!verb&&rpPlan){body.fixes=rpKeys();body.rated=rpRated()||'0';
                           body.rsense=rpRs()||'-1';body.rsmodel=rpRsModel();
-                          body.mfg=rpMfg()||'-1';}
+                          body.mfg=rpMfg()||'-1';body.health=rpHp()||'-1';}
         const r=await postForm('/api/restore',body);
         if(r.status==='success'){
             if(r.plan){rpPlan=r.plan;rpRender();}

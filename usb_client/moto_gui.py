@@ -2200,6 +2200,17 @@ class App:
             return 0
         return y * 10000 + m * 100 + d
 
+    def _rp_health(self):
+        """Вписаний вручну знос, %; порожньо/сміття -> 0."""
+        e = getattr(self, "eRpHp", None)
+        if e is None:
+            return 0
+        try:
+            v = int((e.get() or "").strip() or 0)
+        except (ValueError, tk.TclError):
+            return 0
+        return v if 1 <= v <= 100 else 0
+
     def _rp_keys(self):
         k = [key for key, v in self.rpVars.items() if v.get()]
         # Вписана ємність — це вже згода її записати, галочки для неї може ще
@@ -2208,7 +2219,7 @@ class App:
             k.append("rated")
         if (self._rp_rsense() or self._rp_rsmodel()) and "rsense" not in k:
             k.append("rsense")
-        if self._rp_mfg() and "crypt" not in k:
+        if (self._rp_mfg() or self._rp_health()) and "crypt" not in k:
             k.append("crypt")
         return ",".join(k)
 
@@ -2219,7 +2230,8 @@ class App:
         mfg = self._rp_mfg()
         return (" FIXES=" + self._rp_keys() + (" RATED=%d" % r if r else "") +
                 (" RSMODEL=%s" % rsm if rsm else (" RSENSE=%d" % rs if rs else "")) +
-                (" MFG=%d" % mfg if mfg else ""))
+                (" MFG=%d" % mfg if mfg else "") +
+                (" HEALTH=%d" % self._rp_health() if self._rp_health() else ""))
 
     def _rp_fixes_arg(self):
         if self.rpPlan is None:
@@ -2387,6 +2399,17 @@ class App:
                         self.eRpMfg.insert(0, _dnum(p["mfgUser"]))
                     self.eRpMfg.bind("<Return>", lambda _e: self._rp_recalc())
                     self.eRpMfg.bind("<FocusOut>", lambda _e: self._rp_recalc())
+                    ttk.Label(sub, text="знос, %:", foreground="#b9bd86").pack(side="left")
+                    self.eRpHp = ttk.Entry(sub, width=5)
+                    self.eRpHp.pack(side="left", padx=4)
+                    if p.get("hpUser", 0) > 0:
+                        self.eRpHp.insert(0, str(p["hpUser"]))
+                    self.eRpHp.bind("<Return>", lambda _e: self._rp_recalc())
+                    self.eRpHp.bind("<FocusOut>", lambda _e: self._rp_recalc())
+                    ttk.Label(cell, foreground="#6b6f58", justify="left", wraplength=460,
+                              text=("рація зараз читає знос %s; буде записано CTS = %d"
+                                    % (("%d %%" % p["hpSeen"]) if p.get("hpSeen") else "—",
+                                       p.get("ctsUse", 0)))).pack(anchor="w")
             for c, key, col in ((2, "tpl", "#9a9c82"), (3, "pack", "#e7e3d2"), (4, "use", "#c8b04a")):
                 ttk.Label(self.rpGrid, text=f.get(key, "—"), font=mono,
                           foreground=col if avail else "#6b6f58").grid(row=i, column=c, sticky="e", padx=4)

@@ -116,6 +116,8 @@ struct RestorePlan {
     bool     cryptSrcOk;    // чи вдалось визначити ключ, яким зашифровано вміст
     uint8_t  srcK1, srcK2;
     bool     cryptWrong;    // вміст зашифровано ЧУЖИМ ключем — рація бачить сміття
+    bool     cryptUnknown;  // ключ вмісту не визначається: переносити нічого,
+                            // але дату виготовлення вписати вручну МОЖНА
     ImpresCryptFields cf;   // справжні значення, прочитані ключем джерела
     int      mfgY, mfgM, mfgD;         // справжня дата виготовлення
     int      seenY, seenM, seenD;      // яку дату бачить рація ЗАРАЗ
@@ -220,17 +222,29 @@ inline void restorePlanBuild(RestorePlan &p, const char *model,
     if (p.haveRom) { p.romK1 = packRom33[1]; p.romK2 = packRom33[6]; }
     RestoreFix &cr = p.fx[RPF_CRYPT];
     if (pack33) {
+        // ⚑ Що бачить рація ЗАРАЗ — рахується ТІЛЬКИ з ROM цього чипа й ні від
+        // чого більше не залежить. Раніше цей рядок стояв усередині гілки «ключ
+        // вмісту визначився», і на найцікавішому випадку — коли вміст
+        // неузгоджений і ключ не знаходиться взагалі — колонка мовчала.
+        if (p.haveRom) {
+            ImpresCryptFields seen;
+            impresCryptRead(pack33, p.romK1, p.romK2, &seen);
+            if (seen.haveDat) { p.seenY = seen.mfgY; p.seenM = seen.mfgM; p.seenD = seen.mfgD; }
+        }
         p.cryptSrcOk = impresCryptSourceKey(pack33, pack38, &p.srcK1, &p.srcK2);
         if (p.cryptSrcOk) {
             impresCryptRead(pack33, p.srcK1, p.srcK2, &p.cf);
             p.mfgY = p.cf.mfgY; p.mfgM = p.cf.mfgM; p.mfgD = p.cf.mfgD;
-            if (p.haveRom) {
+            if (p.haveRom)
                 p.cryptWrong = impresCryptKeyDiffers(p.srcK1, p.srcK2, p.romK1, p.romK2);
-                // Що бачить рація ЗАРАЗ — тими самими байтами, але СВОЇМ ключем.
-                ImpresCryptFields seen;
-                impresCryptRead(pack33, p.romK1, p.romK2, &seen);
-                p.seenY = seen.mfgY; p.seenM = seen.mfgM; p.seenD = seen.mfgD;
-            }
+        } else {
+            // Ключ не визначається — саме так виглядають ПОЛАМАНІ пакети
+            // (dumps/06,07,08,15): блоки на місці, а вміст ні з чим не
+            // узгоджений. Перенести з них нічого не можна, але вписати дату
+            // виготовлення вручну — можна й треба, інакше рація так і читатиме
+            // сміття. Лічильники при цьому НЕ чіпаємо: ми не знаємо, що там.
+            p.cryptUnknown = impresCryptBlockUsable(pack33,
+                                 impresCryptAddr(pack33, BMS_V_DATE), 6);
         }
     }
     cr.on = p.cryptWrong && RESTORE_FIX_DOC[RPF_CRYPT].defOn;
@@ -309,11 +323,17 @@ inline void restorePlanRecalc(RestorePlan &p) {
     // (на «свіжому» хвості її взяти нізвідки).
     RestoreFix &cr = p.fx[RPF_CRYPT];
     bool haveUserDate = p.mfgUserY > 0;
-    cr.avail  = p.haveRom && (p.cryptWrong || (haveUserDate && p.cryptSrcOk));
+    // Правку пропонуємо у двох випадках: ключ відомий і чужий (тоді
+    // перешифруємо все) або ключ не визначається (тоді єдине, що можна
+    // осмислено записати, — вписана вручну дата).
+    cr.avail  = p.haveRom && (p.cryptWrong || p.cryptUnknown);
     cr.tplVal = restoreDateNum(p.seenY, p.seenM, p.seenD);   // що бачить рація зараз
     cr.packVal = haveUserDate ? restoreDateNum(p.mfgUserY, p.mfgUserM, p.mfgUserD)
                               : restoreDateNum(p.mfgY, p.mfgM, p.mfgD);
     if (!cr.avail) cr.on = false;
+    // Коли ключ не визначається, вмикати правку без дати нема сенсу: писати
+    // нічого. З датою — вмикаємо одразу, це свідома дія.
+    if (p.cryptUnknown && !haveUserDate) cr.on = false;
     if (haveUserDate && cr.avail) cr.on = true;
 
     for (int i = 0; i < RPF_COUNT; i++)

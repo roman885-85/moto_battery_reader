@@ -2373,6 +2373,12 @@ class App:
                         ttk.Label(sub, text="⚠ рація читає %s, насправді %s"
                                   % (_dnum(p.get("mfgSeen", 0)), _dnum(p.get("mfgReal", 0))),
                                   foreground="#d08a3a").pack(side="left")
+                    elif p.get("cryptUnknown"):
+                        # Вміст ні з чим не узгоджений: перенести нічого, але
+                        # дату вписати можна — вона піде ключем цього чипа.
+                        ttk.Label(sub, text="⚠ рація читає %s; вміст неузгоджений — впишіть дату"
+                                  % _dnum(p.get("mfgSeen", 0)),
+                                  foreground="#d08a3a").pack(side="left")
                     ttk.Label(sub, text="  дата вигот. вручну (РРРР-ММ-ДД):",
                               foreground="#b9bd86").pack(side="left")
                     self.eRpMfg = ttk.Entry(sub, width=11)

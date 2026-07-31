@@ -1994,6 +1994,7 @@ static String restorePlanJson(const RestorePlan &p) {
     j += ",\"haveRom\":";   j += p.haveRom ? "true" : "false";
     j += ",\"cryptWrong\":";j += p.cryptWrong ? "true" : "false";
     j += ",\"cryptSrcOk\":";j += p.cryptSrcOk ? "true" : "false";
+    j += ",\"cryptUnknown\":"; j += p.cryptUnknown ? "true" : "false";
     j += ",\"mfgSeen\":";   j += restoreDateNum(p.seenY, p.seenM, p.seenD);
     j += ",\"mfgReal\":";   j += restoreDateNum(p.mfgY, p.mfgM, p.mfgD);
     j += ",\"mfgUser\":";   j += restoreDateNum(p.mfgUserY, p.mfgUserM, p.mfgUserD);

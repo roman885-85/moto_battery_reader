@@ -500,6 +500,21 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
           нижче — коли треба перезаписати й модельну частину.</div>
       </div>
 
+      <div style="margin:8px 0;padding:8px;border:1px solid #3c4530;border-radius:8px">
+        <b>Навчений хвіст</b> (0x18A–0x1FF) — те, що ЗП вважає «історією» пакета:
+        <select id="restTail" style="margin-left:6px">
+          <option value="fresh">Свіжий (скелет + нулі) — типово</option>
+          <option value="erase">Стерти в 0xFF</option>
+        </select>
+        <div class="det" style="margin-top:6px">
+          <b>Свіжий</b> — структура записів на місці, навчені значення обнулені; калібрування
+          на ЗП здатне завершитись.<br>
+          <b>Стерти</b> — саме в цьому стані ЗП починала <b>заряджати</b> й переходити в
+          калібрування (перевірено тричі: dumps/11,12,13). Ціна: навчений блок може так і не
+          стати валідним, тож калібрування не завершиться. Пробуйте, якщо ЗП світить зеленим
+          і не заряджає.
+        </div>
+      </div>
       <button class="btn b-warn" onclick="restoreBattery(false)">🛠️ ВІДНОВИТИ ЕТАЛОН</button>
       <button class="btn" onclick="restoreBattery(true)">🧪 Байт-у-байт (ручний режим, для аналізу)</button>
     </div>
@@ -1126,7 +1141,8 @@ async function wizNext(){
   const stepEl=$('wstep'+idx); if(stepEl)stepEl.classList.add('run');
   setBusy(true); toast('Виконую крок…');
   // Майстер бере ТІ САМІ правки, що й картка «Відновити еталон».
-  const res=await cmd('WIZSTEP '+idx+(model?(' '+model):'')+(rpPlan?rpArgs():''),25000);
+  const res=await cmd('WIZSTEP '+idx+(model?(' '+model):'')+(rpPlan?rpArgs():'')+
+                      ' TAIL='+restTail().toUpperCase(),25000);
   setBusy(false);
   if(res){wizState=res; if(res.msg)toast((res.result?'✅ ':'❌ ')+res.msg); wizRender(res); wizJournalsLoad(); await refresh();}
 }
@@ -1412,16 +1428,25 @@ function rpMfgBox(p){
   if(!p.haveRom) return '<div class="det"><b>ROM чипа невідомий</b> — правка можлива '+
     'лише на живому чипі (для дампа з файлу ключ узяти нізвідки).</div>';
   const dt=v=>v?(''+v).replace(/^(\d{4})(\d{2})(\d{2})$/,'$1-$2-$3'):'—';
-  const w=p.cryptWrong
-    ? '⚠️ Вміст зашифровано <b>чужим ключем</b>: рація читає дату виготовлення як <b>'+
-      dt(p.mfgSeen)+'</b>, насправді це <b>'+dt(p.mfgReal)+'</b>.'
-    : 'Ключ вмісту збігається з ROM цього чипа — перешифровувати нічого.';
+  let w;
+  if(p.cryptWrong)
+    w='⚠️ Вміст зашифровано <b>чужим ключем</b>: рація читає дату виготовлення як <b>'+
+      dt(p.mfgSeen)+'</b>, насправді це <b>'+dt(p.mfgReal)+'</b>.';
+  else if(p.cryptUnknown)
+    w='⚠️ Вміст <b>ні з чим не узгоджений</b> — яким ключем його писали, визначити не '+
+      'вдається. Рація читає дату як <b>'+dt(p.mfgSeen)+'</b>. Перенести звідси нічого не '+
+      'можна, але <b>дату можна вписати вручну</b>. Лічильники правка не чіпає.';
+  else
+    w='Ключ вмісту збігається з ROM цього чипа — перешифровувати нічого.';
   return '<div class="det">'+w+'<br>Дата виготовлення вручну: '+
     '<input type="date" id="rpMfg" value="'+(p.mfgUser?dt(p.mfgUser):'')+
     '" onchange="rpApply()" style="margin-top:4px"> '+
-    '<span class="dim">(порожньо — узяти справжню з даних)</span></div>';
+    '<span class="dim">'+(p.cryptUnknown?'(без неї правці нічого записувати)'
+                                        :'(порожньо — узяти справжню з даних)')+'</span></div>';
 }
 function rpMfg(){const e=$('rpMfg');return e&&e.value?e.value.replace(/-/g,''):'';}
+// Режим навченого хвоста: «свіжий» скелет чи стирання в 0xFF (див. картку).
+function restTail(){const e=$('restTail');return e&&e.value?e.value:'fresh';}
 function rpKeys(){
   const k=Array.from(document.querySelectorAll('#rpTable input[type=checkbox]'))
                .filter(c=>c.checked).map(c=>c.dataset.k);
@@ -1483,13 +1508,14 @@ async function restoreBattery(verbatim){
     q='🛠️ Відновити модельну частину еталона '+model+'?\n'+
       (on.length?('Під цей пакет буде виправлено:\n'+on.map(f=>'  • '+f.title+': '+f.use).join('\n'))
                 :'Правок під пакет немає (нема з чого взяти реальні значення).')+
-      '\nПерезапише ОБИДВІ мікросхеми; навчений хвіст 0x18A–0x1FF лишиться порожнім. Продовжити?';
+      '\nНавчений хвіст: '+(restTail()==='erase'?'СТЕРТИ в 0xFF':'свіжий скелет')+
+      '.\nПерезапише ОБИДВІ мікросхеми. Продовжити?';
   }
   if(!confirm(q))return;
   await ensureAuth();
   setBusy(true); toast('Відновлення еталона...');
   const fx=(!verbatim&&rpPlan)?rpArgs():'';
-  const r=await cmd('RESTORE '+model+(verbatim?' VERBATIM':fx),25000);
+  const r=await cmd('RESTORE '+model+(verbatim?' VERBATIM':fx+' TAIL='+restTail().toUpperCase()),25000);
   if(r.ok){
     if(r.plan){rpPlan=r.plan;rpRender();}
     const on=r.plan?r.plan.fixes.filter(f=>f.on).length:0;

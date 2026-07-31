@@ -35,7 +35,7 @@
 //   DISCHARGE STOP       -> зупинити розряд;  DISCHARGE ? -> стан розряду
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
 //   RESTORE <MODEL> [VERBATIM] [FIXES=..] [RATED=мАг] [RSENSE=мОм*100|RSMODEL=..] [MFG=..]
-//            -> відновити модельну
+//            [TAIL=FRESH|ERASE] -> відновити модельну
 //                          частину еталона (без чужого навченого хвоста), з
 //                          правками під цей пакет; VERBATIM — байт-у-байт
 //   RESTOREPLAN <MODEL> [NOREAD] [FIXES=..] [RATED=мАг] [RSENSE=..|RSMODEL=..] [MFG=..] -> що саме буде
@@ -336,16 +336,16 @@ static String serSound(const String &argIn) {
 }
 
 // Хвіст команд RESTORE / RESTOREPLAN: «<МОДЕЛЬ> [VERBATIM] [NOREAD] [FIXES=a,b]
-// [RATED=мАг] [RSENSE=мОм*100] [RSMODEL=МОДЕЛЬ] [MFG=РРРРММДД]». RSENSE/RSMODEL — шунт, коли в
+// [RATED=мАг] [RSENSE=мОм*100] [RSMODEL=МОДЕЛЬ] [MFG=РРРРММДД] [TAIL=FRESH|ERASE]». RSENSE/RSMODEL — шунт, коли в
 // пакеті свого немає: числом або з бібліотеки еталонів.
 // Одна функція на обидві команди — щоб вони не розійшлися в тому, що вважають
 // моделлю, а що прапорцем. Модель — перше слово, яке не є прапорцем; регістр
 // моделі й прапорців не має значення, а от ключі правок завжди малими.
 struct SerRestoreArgs { String model, fixes, rsModel; bool verbatim, reread, haveFixes;
-                       long rated, rsense, mfg; };
+                       long rated, rsense, mfg; int tail; };
 static SerRestoreArgs serParseRestore(const String &argIn) {
     SerRestoreArgs a; a.verbatim = false; a.reread = true; a.haveFixes = false;
-    a.rated = -1; a.rsense = -1; a.mfg = -1;
+    a.rated = -1; a.rsense = -1; a.mfg = -1; a.tail = 0 /* RTAIL_FRESH */;
     String rest = argIn; rest.trim();
     while (rest.length()) {
         int s = rest.indexOf(' ');
@@ -363,6 +363,8 @@ static SerRestoreArgs serParseRestore(const String &argIn) {
         else if (up.startsWith("RSMODEL=")) a.rsModel = up.substring(8);
         // Дата виготовлення одним числом: MFG=20140522 (0 — прибрати ручну).
         else if (up.startsWith("MFG="))     a.mfg = up.substring(4).toInt();
+        // TAIL=ERASE — лишити навчений хвіст стертим (див. RTAIL_* у web_server.h).
+        else if (up.startsWith("TAIL="))    a.tail = (up.substring(5) == "ERASE") ? 1 : 0;
         else if (!a.model.length())       a.model = up;
     }
     return a;
@@ -509,7 +511,8 @@ static void serialExec(const String &line) {
                                              serApplyPlanArgs(p, a);
                                              pp = &p;
                                          }
-                                         bool ok = performRestoreTemplate(md.c_str(), &o33, &o38, verbatim, pp);
+                                         bool ok = performRestoreTemplate(md.c_str(), &o33, &o38,
+                                                                          verbatim, pp, a.tail);
                                          String r = String("{\"ok\":") + (ok ? "true" : "false")
                                                   + ",\"ds2433\":" + (o33 ? "true" : "false")
                                                   + ",\"ds2438\":" + (o38 ? "true" : "false");
@@ -549,7 +552,7 @@ static void serialExec(const String &line) {
                                   si.trim();
                                   SerRestoreArgs wa = serParseRestore(rest);
                                   sResp(wizExecStep(si.toInt(), wa.model, wa.fixes, wa.rated,
-                                                    wa.rsense, wa.rsModel, wa.mfg)); }
+                                                    wa.rsense, wa.rsModel, wa.mfg, wa.tail)); }
     else if (cmd == "WIZRESET") { wizJournalClear(); sResp("{\"ok\":true}"); }
     else if (cmd == "WIZLIST")  { sResp(wizJournalListJson()); }
     else if (cmd == "WIZDEL")   { String s = arg; s.trim(); s.toUpperCase();

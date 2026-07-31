@@ -188,6 +188,8 @@ class SerialWorker(threading.Thread):
 #  зроблено нижче для всіх полів вводу й обох панелей редактора.
 # Пункт списку «шунт беремо не з бібліотеки, а руками / зі свого пакета».
 RP_RS_MANUAL = "— вручну —"
+# Режим навченого хвоста 0x18A..0x1FF; порядок важливий — [0] типовий, [1] стирання.
+TAIL_MODES = ("Свіжий (скелет + нулі)", "Стерти в 0xFF")
 
 
 def _dnum(v):
@@ -1152,8 +1154,8 @@ class App:
                 messagebox.showwarning("Модель", "Оберіть модель для відновлення"); return
         # Майстер бере ТІ САМІ правки, що й картка «Відновити еталон»: інакше
         # галочки (наробіток, шунт, ємність) для нього нічого б не значили.
-        cmd = "WIZSTEP %d%s%s" % (idx, (" " + model) if model else "",
-                                  self._rp_fixes_arg())
+        cmd = "WIZSTEP %d%s%s TAIL=%s" % (idx, (" " + model) if model else "",
+                                          self._rp_fixes_arg(), self._tail_mode())
         self.status("Виконую крок…")
         self.maybe_auth(lambda: self.cmd(cmd, 25.0, cb=lambda res: self._wiz_after(res)))
 
@@ -1353,6 +1355,20 @@ class App:
                        "ні навчену калібровку, ні лічильники CCA/DCA. Повне «Відновити модельну\n"
                        "частину» — коли треба перезаписати й еталон.").pack(anchor="w", pady=(2, 0))
         self.rpVars, self.rpPlan = {}, None
+
+        # Режим навченого хвоста 0x18A..0x1FF. «Свіжий» лишає скелет записів із
+        # нулями — калібрування на ЗП здатне завершитись. «Стерти» — саме той
+        # стан, у якому ЗП починала ЗАРЯДЖАТИ (dumps/11,12,13), але навчений
+        # блок може так і не стати валідним.
+        frTail = ttk.Frame(b4r); frTail.pack(anchor="w", pady=(4, 0))
+        ttk.Label(frTail, text="Навчений хвіст:", foreground="#b9bd86").pack(side="left")
+        self.cbTail = ttk.Combobox(frTail, values=list(TAIL_MODES), state="readonly", width=26)
+        self.cbTail.set(TAIL_MODES[0])
+        self.cbTail.pack(side="left", padx=4)
+        ttk.Label(b4r, foreground="#b9bd86", justify="left", wraplength=640,
+                  text="«Стерти в 0xFF» — пробуйте, якщо ЗП світить зеленим і не заряджає: саме в\n"
+                       "цьому стані вона починала заряджати й переходити в калібрування. Ціна —\n"
+                       "калібрування може не завершитись.").pack(anchor="w", pady=(2, 2))
 
         ttk.Button(b4r, text="🛠️ Відновити модельну частину (DS2433+DS2438)", command=self.restore_battery).pack(anchor="w", pady=2)
         ttk.Button(b4r, text="🧪 Байт-у-байт (ручний режим, для аналізу)", command=self.restore_battery_verbatim).pack(anchor="w", pady=2)
@@ -2127,7 +2143,9 @@ class App:
                                      + (f", правок під пакет: {n}" if n else ""))
             else:
                 self._after_write(r, "")
-        arg = f"RESTORE {model}" + (" VERBATIM" if verbatim else self._rp_fixes_arg())
+        arg = (f"RESTORE {model}" +
+               (" VERBATIM" if verbatim
+                else self._rp_fixes_arg() + " TAIL=" + self._tail_mode()))
         self.maybe_auth(lambda: (self.status("Відновлення еталона..."),
                                  self.cmd(arg, 25.0, cb=done)))
 
@@ -2160,6 +2178,11 @@ class App:
         c = getattr(self, "cbRpRs", None)
         v = c.get().strip() if c is not None else ""
         return "" if v in ("", RP_RS_MANUAL) else v.split(" ")[0]
+
+    def _tail_mode(self):
+        """FRESH або ERASE — режим навченого хвоста для RESTORE/WIZSTEP."""
+        c = getattr(self, "cbTail", None)
+        return "ERASE" if (c is not None and c.get() == TAIL_MODES[1]) else "FRESH"
 
     def _rp_mfg(self):
         """Вписана вручну дата виготовлення як YYYYMMDD; порожньо/сміття -> 0."""
@@ -2349,6 +2372,12 @@ class App:
                     if p.get("cryptWrong"):
                         ttk.Label(sub, text="⚠ рація читає %s, насправді %s"
                                   % (_dnum(p.get("mfgSeen", 0)), _dnum(p.get("mfgReal", 0))),
+                                  foreground="#d08a3a").pack(side="left")
+                    elif p.get("cryptUnknown"):
+                        # Вміст ні з чим не узгоджений: перенести нічого, але
+                        # дату вписати можна — вона піде ключем цього чипа.
+                        ttk.Label(sub, text="⚠ рація читає %s; вміст неузгоджений — впишіть дату"
+                                  % _dnum(p.get("mfgSeen", 0)),
                                   foreground="#d08a3a").pack(side="left")
                     ttk.Label(sub, text="  дата вигот. вручну (РРРР-ММ-ДД):",
                               foreground="#b9bd86").pack(side="left")

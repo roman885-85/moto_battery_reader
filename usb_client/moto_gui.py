@@ -1222,14 +1222,28 @@ class App:
         # Порядок блоків повторює operations.h і веб-інтерфейс: спершу копія,
         # потім РЕМОНТ (головна операція — перша), далі обов'язковий крок на ЗП,
         # обслуговування, ідентичність і лише наприкінці — незворотні дії.
-        p = self._scroll_area(self.tabFw)
+        # Сторінка була на 15 блоків в один скрол, і знайти потрібний можна було
+        # лише прокруткою. Розкладаємо по під-вкладках у тому ж порядку, що й у
+        # вебі: ремонт -> калібрування -> значення -> еталон -> експерт ->
+        # небезпечна зона. Налаштування пристрою й звук — окрема вкладка.
+        nbf = ttk.Notebook(self.tabFw); nbf.pack(fill="both", expand=True)
+        def _sub(title):
+            f = ttk.Frame(nbf, padding=6); nbf.add(f, text=title)
+            return self._scroll_area(f)
+        p_rep  = _sub("🩹 Ремонт")
+        p_cal  = _sub("🔌 Калібрування")
+        p_val  = _sub("🎚 Значення")
+        p_id   = _sub("🪪 Еталон і модель")
+        p_exp  = _sub("🧪 Експерт")
+        p_dang = _sub("⛔ Небезпечно")
+        p_cfg  = _sub("⚙️ Налаштування")
 
-        b1 = ttk.LabelFrame(p, text="Крок 1 — резервна копія (робіть ЗАВЖДИ перед записом)", padding=8); b1.pack(fill="x", pady=4)
+        b1 = ttk.LabelFrame(p_rep, text="Крок 1 — резервна копія (робіть ЗАВЖДИ перед записом)", padding=8); b1.pack(fill="x", pady=4)
         ttk.Button(b1, text="🔍 Зчитати АКБ", command=self.do_read).pack(side="left", padx=3)
         ttk.Button(b1, text="⬇ Копія DS2433", command=lambda: self.save_dump("GET33", 512, "ds2433.bin")).pack(side="left", padx=3)
         ttk.Button(b1, text="⬇ Копія DS2438", command=lambda: self.save_dump("GET38", 64, "ds2438.bin")).pack(side="left", padx=3)
 
-        b2b = ttk.LabelFrame(p, text="Крок 2 — РЕМОНТ. Після заміни елементів починайте звідси  ·  пише в DS2433 + DS2438", padding=8); b2b.pack(fill="x", pady=4)
+        b2b = ttk.LabelFrame(p_rep, text="Крок 2 — РЕМОНТ. Після заміни елементів починайте звідси  ·  пише в DS2433 + DS2438", padding=8); b2b.pack(fill="x", pady=4)
         ttk.Label(b2b, text="Для АКБ, яку рація бачить «невідома» / не бере на калібрування після заміни банок.\n"
                             "У DS2433 СКИДАЄТЬСЯ навчений хвіст 0x18A–0x1FF: скелет записів і сталі моделі\n"
                             "лишаються, виміряні параметри старих/донорських банок обнуляються, суми правильні.\n"
@@ -1244,7 +1258,7 @@ class App:
         ttk.Button(b2b, text="🛠 Ремонт цілісності (контрольні суми + дзеркало)",
                    command=lambda: self.simple_op("REPAIR", "Відновити цілісність і записати?")).pack(anchor="w", pady=3)
 
-        b2d = ttk.LabelFrame(p, text="Розряд перед калібруванням (навантаження MOSFET)  ·  пише в DS2438", padding=8); b2d.pack(fill="x", pady=4)
+        b2d = ttk.LabelFrame(p_cal, text="Розряд перед калібруванням (навантаження MOSFET)  ·  пише в DS2438", padding=8); b2d.pack(fill="x", pady=4)
         ttk.Label(b2d, text="Розряд — це приймальний контроль після перепайки: він міряє реальну ємність нових\n"
                             "банок. Для калібрування він НЕ обов'язковий — фірмова станція бере в цикл навіть\n"
                             "повністю заряджений пакет, якщо він оригінальний. Але якщо станція вперлась і не\n"
@@ -1282,21 +1296,21 @@ class App:
         # чекати періоду, коли й так стоїш біля пристрою.
         self.monDis = DischargeMonitor(b2d); self.monDis.pack(anchor="w", pady=(6, 0))
 
-        b2c = ttk.LabelFrame(p, text="Крок 3 — калібрування на IMPRES-ЗП (обов'язково)", padding=8); b2c.pack(fill="x", pady=4)
+        b2c = ttk.LabelFrame(p_cal, text="Крок 3 — калібрування на IMPRES-ЗП (обов'язково)", padding=8); b2c.pack(fill="x", pady=4)
         ttk.Label(b2c, text="Після ремонту навчена калібровка порожня — рація приймає пакет як фірмовий і просить\n"
                             "калібрування. Поставте АКБ на оригінальну IMPRES-ЗП на повний цикл (заряд → розряд →\n"
                             "заряд): саме станція виміряє нові банки й запише калібровку в 0x18A–0x1FF.\n"
                             "Прошивкою цей крок не замінюється.",
                   foreground="#b9bd86", justify="left").pack(anchor="w")
 
-        b2 = ttk.LabelFrame(p, text="Обслуговування (безпечно для ідентичності)  ·  пише в DS2433 + DS2438", padding=8); b2.pack(fill="x", pady=4)
+        b2 = ttk.LabelFrame(p_cal, text="Обслуговування (безпечно для ідентичності)  ·  пише в DS2433 + DS2438", padding=8); b2.pack(fill="x", pady=4)
         ttk.Button(b2, text="♻️ Скидання лічильників", command=lambda: self.simple_op("RESET", "Обнулити лічильники DS2438 (ETM/CCA/DCA)?\nНавчену калібровку й ідентичність не чіпає.")).pack(side="left", padx=3)
         ttk.Button(b2, text="🧹 Очистити дані (лишити ID/калібр.)", command=lambda: self.simple_op("CLEAN", "Стерти дані використання, лишивши ID/калібрування?")).pack(side="left", padx=3)
 
         # Ємність і відсоток — ДВІ окремі операції. Пишуть вони в один і той
         # самий регістр ICA, але це різні задачі: точний залишок у мА·год
         # (як його рахує Motorola) і груба оцінка у відсотках.
-        b5 = ttk.LabelFrame(p, text="🔋 Ємність — внести залишок у мА·год  ·  пише в DS2438",
+        b5 = ttk.LabelFrame(p_val, text="🔋 Ємність — внести залишок у мА·год  ·  пише в DS2438",
                             padding=8); b5.pack(fill="x", pady=4)
         ttk.Label(b5, text="Залишок ЗАРЯДУ в паливомірі (регістр ICA), одиниця = 0.4882 мВ·год / шунт\n"
                            "цього пакета. Це не паспортна ємність (вона в DS2433, 0x008) і не знос.",
@@ -1304,7 +1318,7 @@ class App:
         self.eMah = self._row(b5, "Залишок, мА·год:", lambda fr: self._entry(fr, 10, "0"))
         ttk.Button(b5, text="💾 Записати мА·год", command=self.set_mah).pack(anchor="w", pady=2)
 
-        b5p = ttk.LabelFrame(p, text="⚡ Рівень заряду у відсотках  ·  пише в DS2438",
+        b5p = ttk.LabelFrame(p_val, text="⚡ Рівень заряду у відсотках  ·  пише в DS2438",
                              padding=8); b5p.pack(fill="x", pady=4)
         ttk.Label(b5p, text="Той самий регістр ICA, але у відсотках від паспортної ємності —\n"
                             "коли точних мА·год немає. Станція згодом уточнить значення сама.",
@@ -1319,15 +1333,15 @@ class App:
         self.btnChgAuto.pack(side="left", padx=2)
         ttk.Button(cf, text="💾 Записати заряд %", command=self.set_charge_pct).pack(side="left", padx=2)
 
-        b5c = ttk.LabelFrame(p, text="Дата першого використання (рація рахує як «час − ETM»)  ·  пише в DS2438", padding=8); b5c.pack(fill="x", pady=4)
+        b5c = ttk.LabelFrame(p_val, text="Дата першого використання (рація рахує як «час − ETM»)  ·  пише в DS2438", padding=8); b5c.pack(fill="x", pady=4)
         self.eEtmDate = self._row(b5c, "Дата (YYYY-MM-DD):", lambda fr: self._entry(fr, 12))
         ttk.Button(b5c, text="📅 Записати дату (ETM)", command=self.set_etm).pack(anchor="w", pady=2)
 
-        b3 = ttk.LabelFrame(p, text="Ідентичність — модель  ·  пише в DS2433", padding=8); b3.pack(fill="x", pady=4)
+        b3 = ttk.LabelFrame(p_id, text="Ідентичність — модель  ·  пише в DS2433", padding=8); b3.pack(fill="x", pady=4)
         self.eModel = self._row(b3, "Модель (3–9, A–Z0–9):", lambda fr: self._entry(fr, 12))
         ttk.Button(b3, text="💾 Записати модель", command=self.set_model).pack(anchor="w", pady=2)
 
-        b4r = ttk.LabelFrame(p, text="🛠️ Відновити модельну частину еталона  ·  пише в DS2433 (+ DS2438, якщо є еталон монітора)", padding=8); b4r.pack(fill="x", pady=4)
+        b4r = ttk.LabelFrame(p_id, text="🛠️ Відновити модельну частину еталона  ·  пише в DS2433 (+ DS2438, якщо є еталон монітора)", padding=8); b4r.pack(fill="x", pady=4)
         self.cbRest = self._row(b4r, "Модель-еталон:", lambda fr: self._combo(fr, 18))
         ttk.Label(b4r, text="Пише ідентичність 0x000–0x065, криву, COPYRIGHT, заводську таблицю й запис моделі.\n"
                            "Навчений хвіст 0x18A–0x1FF лишається порожнім — його запише зарядна станція.\n"
@@ -1373,28 +1387,28 @@ class App:
         ttk.Button(b4r, text="🛠️ Відновити модельну частину (DS2433+DS2438)", command=self.restore_battery).pack(anchor="w", pady=2)
         ttk.Button(b4r, text="🧪 Байт-у-байт (ручний режим, для аналізу)", command=self.restore_battery_verbatim).pack(anchor="w", pady=2)
 
-        b4 = ttk.LabelFrame(p, text="🆕 Новий акумулятор (порожній чип)  ·  пише в DS2433 + DS2438", padding=8); b4.pack(fill="x", pady=4)
+        b4 = ttk.LabelFrame(p_id, text="🆕 Новий акумулятор (порожній чип)  ·  пише в DS2433 + DS2438", padding=8); b4.pack(fill="x", pady=4)
         self.cbInit = self._row(b4, "Модель-еталон:", lambda fr: self._combo(fr, 18))
         self.eInitMah = self._row(b4, "Заряд, мА·год:", lambda fr: self._entry(fr, 10, "1000"))
         ttk.Button(b4, text="🆕 Записати новий АКБ (DS2433+DS2438)", command=self.init_battery).pack(anchor="w", pady=2)
 
-        b8 = ttk.LabelFrame(p, text="🧪 Ручний режим / експерт  ·  пише в ту мікросхему, яку обрано в редакторі", padding=8); b8.pack(fill="x", pady=4)
+        b8 = ttk.LabelFrame(p_exp, text="🧪 Ручний режим / експерт  ·  пише в ту мікросхему, яку обрано в редакторі", padding=8); b8.pack(fill="x", pady=4)
         ttk.Label(b8, text="Строк служби в прошивці НЕ зберігається — рація рахує його сама. Поле нижче править\n"
                            "байт у ЗАВОДСЬКІЙ таблиці моделі (0x129) і показань станції не змінить.",
                   foreground="#b9bd86", justify="left").pack(anchor="w")
         self.eCap = self._row(b8, "Байт заводської таблиці, %:", lambda fr: self._entry(fr, 10, "100"))
         ttk.Button(b8, text="💾 Записати %", command=self.set_cap).pack(anchor="w", pady=2)
 
-        b6 = ttk.LabelFrame(p, text="⛔ Небезпечна зона (незворотно!)  ·  стирає обрану мікросхему повністю", padding=8); b6.pack(fill="x", pady=4)
+        b6 = ttk.LabelFrame(p_dang, text="⛔ Небезпечна зона (незворотно!)  ·  стирає обрану мікросхему повністю", padding=8); b6.pack(fill="x", pady=4)
         rf = ttk.Frame(b6); rf.pack(fill="x", pady=2)
         ttk.Button(rf, text="📤 Записати DS2433 з .bin (512 Б)", command=lambda: self.write_file(512, "WRITE33")).pack(side="left", padx=3)
         ttk.Button(rf, text="🔬 DS2438 з .bin (64 Б)", command=lambda: self.write_file(64, "WRITE38")).pack(side="left", padx=3)
         ttk.Button(b6, text="🔥 ПОВНЕ стирання DS2433", command=self.wipe33).pack(anchor="w", pady=2)
         ttk.Button(b6, text="🔥 ПОВНЕ стирання DS2438", command=self.wipe38).pack(anchor="w", pady=2)
 
-        self._build_sound(p)
+        self._build_sound(p_cfg)
 
-        b7 = ttk.LabelFrame(p, text="Пристрій", padding=8); b7.pack(fill="x", pady=4)
+        b7 = ttk.LabelFrame(p_cfg, text="Пристрій", padding=8); b7.pack(fill="x", pady=4)
         ttk.Button(b7, text="🔁 Перезавантажити ESP32", command=self.reboot).pack(side="left", padx=3)
 
     # ---- налаштування звуку ---------------------------------------------

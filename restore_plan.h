@@ -81,7 +81,9 @@ static const RestoreFixDoc RESTORE_FIX_DOC[RPF_COUNT] = {
       "ключем і побачить сміття: на реальному пакеті це була дата виготовлення "
       "«2107-13-21», 3548 циклів при 1097 і знос 76 % замість 34 %. Правка "
       "перешифровує ті самі числа під ROM цього чипа — значення не міняються, "
-      "міняється лише те, хто здатен їх прочитати." },
+      "міняється лише те, хто здатен їх прочитати. Тут же можна вписати ВРУЧНУ "
+      "дату виготовлення й знос (здоров'я) — після заміни елементів реальний "
+      "знос знає лише той, хто ставив банки." },
 };
 
 struct RestoreFix {
@@ -122,9 +124,39 @@ struct RestorePlan {
     int      mfgY, mfgM, mfgD;         // справжня дата виготовлення
     int      seenY, seenM, seenD;      // яку дату бачить рація ЗАРАЗ
     int      mfgUserY, mfgUserM, mfgUserD;   // вписана ВРУЧНУ, 0 — не вписували
+    int      healthSeen;    // знос, який бачить рація ЗАРАЗ (своїм ключем), %
+    int      healthReal;    // знос за ключем, яким вміст зашифровано, %
+    int      healthUser;    // вписаний ВРУЧНУ, 0 — не вписували
+    uint8_t  ctsUse;        // байт CTS, який реально піде в чип
 
     RestoreFix fx[RPF_COUNT];
 };
+
+// ── знос (здоров'я) ───────────────────────────────────────────────────────
+//  У чипі це байт CTS у блоці RECOND: потенційна ємність пакета в одиницях
+//  ICA. Рація рахує знос як CTS / паспортна ємність:
+//      мА·год = 0.48828125 * CTS / шунт
+//      знос % = 100 * мА·год / паспортна
+//  Зворотне перетворення — точне: перевірено на реальному пакеті (знос 34 %,
+//  ємність 2150, шунт 0.04517 -> CTS 68, і саме 68 лежало в чипі).
+//
+//  ⚠️ Знос залежить і від ШУНТА, і від ПАСПОРТНОЇ ЄМНОСТІ. Тому рахувати його
+//  треба тими значеннями, які РЕАЛЬНО опиняться в чипі після всіх правок, —
+//  інакше вписані 80 % прочитаються як 45 %.
+inline uint8_t restoreCtsFromHealth(int pct, int ratedMah, float rsOhm) {
+    if (pct <= 0 || ratedMah <= 0 || rsOhm <= 0.0f) return 0;
+    float mah = (float)ratedMah * pct / 100.0f;
+    long cts = (long)(mah * rsOhm / BMS_ICA_MVH + 0.5f);
+    if (cts < 0)   cts = 0;
+    if (cts > 255) cts = 255;
+    return (uint8_t)cts;
+}
+inline int restoreHealthFromCts(uint8_t cts, int ratedMah, float rsOhm) {
+    if (!cts || ratedMah <= 0 || rsOhm <= 0.0f) return 0;
+    long mah = (long)(BMS_ICA_MVH * cts / rsOhm + 0.5f);
+    int h = (int)((100L * mah + ratedMah / 2) / ratedMah);
+    return h > 100 ? 100 : h;
+}
 
 // Дата як одне число YYYYMMDD — щоб класти її в long-поля правки й показувати
 // однаково в усіх клієнтах.
@@ -230,11 +262,19 @@ inline void restorePlanBuild(RestorePlan &p, const char *model,
             ImpresCryptFields seen;
             impresCryptRead(pack33, p.romK1, p.romK2, &seen);
             if (seen.haveDat) { p.seenY = seen.mfgY; p.seenM = seen.mfgM; p.seenD = seen.mfgD; }
+            // Знос рахуємо шунтом і паспортною ємністю ПАКЕТА — так само, як це
+            // зробить рація, читаючи цей чип.
+            if (seen.haveRec)
+                p.healthSeen = restoreHealthFromCts(seen.cts, p.ratedTpl,
+                                   p.rsRawPack ? p.rsRawPack / 100000.0f : p.rsTpl);
         }
         p.cryptSrcOk = impresCryptSourceKey(pack33, pack38, &p.srcK1, &p.srcK2);
         if (p.cryptSrcOk) {
             impresCryptRead(pack33, p.srcK1, p.srcK2, &p.cf);
             p.mfgY = p.cf.mfgY; p.mfgM = p.cf.mfgM; p.mfgD = p.cf.mfgD;
+            if (p.cf.haveRec)
+                p.healthReal = restoreHealthFromCts(p.cf.cts, p.ratedTpl,
+                                   p.rsRawPack ? p.rsRawPack / 100000.0f : p.rsTpl);
             if (p.haveRom)
                 p.cryptWrong = impresCryptKeyDiffers(p.srcK1, p.srcK2, p.romK1, p.romK2);
         } else {
@@ -323,6 +363,12 @@ inline void restorePlanRecalc(RestorePlan &p) {
     // (на «свіжому» хвості її взяти нізвідки).
     RestoreFix &cr = p.fx[RPF_CRYPT];
     bool haveUserDate = p.mfgUserY > 0;
+    bool haveUserHp   = p.healthUser > 0;
+    // ⚑ CTS рахуємо ЕФЕКТИВНИМИ шунтом і паспортною ємністю — тими, що реально
+    // опиняться в чипі після всіх правок. Інакше вписані 80 % прочитались би
+    // як зовсім інше число.
+    p.ctsUse = haveUserHp ? restoreCtsFromHealth(p.healthUser, p.ratedMah, p.rsUse)
+                          : (p.cryptSrcOk ? p.cf.cts : 0);
     // Правку пропонуємо у двох випадках: ключ відомий і чужий (тоді
     // перешифруємо все) або ключ не визначається (тоді єдине, що можна
     // осмислено записати, — вписана вручну дата).
@@ -333,8 +379,8 @@ inline void restorePlanRecalc(RestorePlan &p) {
     if (!cr.avail) cr.on = false;
     // Коли ключ не визначається, вмикати правку без дати нема сенсу: писати
     // нічого. З датою — вмикаємо одразу, це свідома дія.
-    if (p.cryptUnknown && !haveUserDate) cr.on = false;
-    if (haveUserDate && cr.avail) cr.on = true;
+    if (p.cryptUnknown && !haveUserDate && !haveUserHp) cr.on = false;
+    if ((haveUserDate || haveUserHp) && cr.avail) cr.on = true;
 
     for (int i = 0; i < RPF_COUNT; i++)
         p.fx[i].useVal = p.fx[i].on ? p.fx[i].packVal
@@ -350,7 +396,8 @@ inline void restorePlanSetMask(RestorePlan &p, uint32_t mask) {
     // масці немає, вважаємо, що користувач передумав писати ємність.
     if (!(mask & (1UL << RPF_RATED)))  p.ratedUser = 0;
     if (!(mask & (1UL << RPF_RSENSE))) { p.rsUser = 0; p.rsSrc[0] = '\0'; }
-    if (!(mask & (1UL << RPF_CRYPT)))  { p.mfgUserY = p.mfgUserM = p.mfgUserD = 0; }
+    if (!(mask & (1UL << RPF_CRYPT)))  { p.mfgUserY = p.mfgUserM = p.mfgUserD = 0;
+                                         p.healthUser = 0; }
     // avail шунта залежить від rsUser, тож маску треба накласти ще раз — уже
     // після того, як ручне значення прибрано.
     p.fx[RPF_RSENSE].on = (mask & (1UL << RPF_RSENSE)) && (p.rsRawPack > 0);
@@ -380,6 +427,13 @@ inline void restorePlanSetRsense(RestorePlan &p, long raw, const char *src = nul
 inline void restorePlanSetMfg(RestorePlan &p, int y, int m, int d) {
     if (y < 2005 || y > 2035 || m < 1 || m > 12 || d < 1 || d > 31) y = m = d = 0;
     p.mfgUserY = y; p.mfgUserM = m; p.mfgUserD = d;
+    restorePlanRecalc(p);
+}
+
+// Вписати знос (здоров'я) вручну, % (0 — прибрати). Нижче 1 % і вище 100 %
+// значення не мають сенсу: 0 означало б «ємності немає зовсім».
+inline void restorePlanSetHealth(RestorePlan &p, int pct) {
+    p.healthUser = (pct >= 1 && pct <= 100) ? pct : 0;
     restorePlanRecalc(p);
 }
 
@@ -454,6 +508,17 @@ inline void restorePlanApply(const RestorePlan &p, uint8_t *d33, uint8_t *d38,
         if (p.mfgUserY > 0) {
             f.haveDat = f.haveDat || impresCryptBlockUsable(d33, impresCryptAddr(d33, BMS_V_DATE), 6);
             f.mfgY = p.mfgUserY; f.mfgM = p.mfgUserM; f.mfgD = p.mfgUserD;
+        }
+        if (p.healthUser > 0) {
+            bool hadRec = f.haveRec;
+            f.haveRec = f.haveRec || impresCryptBlockUsable(d33, impresCryptAddr(d33, BMS_V_RECOND), 8);
+            f.cts = p.ctsUse;
+            // Якщо блок RECOND прочитати не вдалося, решта його полів у нас
+            // нульові — і саме нулі туди й підуть. Це свідомо: сміття, яке
+            // лежало там доти, рація однаково читала як безглуздя. Ємність при
+            // ПЕРШОМУ використанні ставимо рівною потенційній: пакет із новими
+            // елементами саме такий і є.
+            if (!hadRec) f.firstUse = p.ctsUse;
         }
         impresCryptWrite(d33, p.romK1, p.romK2, &f);
     }

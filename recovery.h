@@ -552,7 +552,7 @@ static String wizStart() {
 static String wizExecStep(int idx, const String &model, const String &fixes = String(),
                           long ratedMah = -1, long rsRaw = -1,
                           const String &rsModel = String(), long mfg = -1,
-                          int tailMode = 0 /* RTAIL_FRESH */) {
+                          int tailMode = 0 /* RTAIL_FRESH */, int health = -1) {
     BatteryDiag d; wizAnalyze(d);
     wizJournalLoad();
 
@@ -586,7 +586,7 @@ static String wizExecStep(int idx, const String &model, const String &fixes = St
             RestorePlan wp; const RestorePlan *wpp = nullptr;
             if (buildRestorePlanFor(m.c_str(), wp, true)) {
                 restorePlanOverride(wp, fixes.length() ? fixes.c_str() : nullptr,
-                                    ratedMah, rsRaw, rsModel.c_str(), mfg);
+                                    ratedMah, rsRaw, rsModel.c_str(), mfg, health);
                 wpp = &wp;
             }
             ok = performRestoreTemplate(m.c_str(), &o33, &o38, false, wpp, tailMode);

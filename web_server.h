@@ -1998,6 +1998,12 @@ static String restorePlanJson(const RestorePlan &p) {
     j += ",\"mfgSeen\":";   j += restoreDateNum(p.seenY, p.seenM, p.seenD);
     j += ",\"mfgReal\":";   j += restoreDateNum(p.mfgY, p.mfgM, p.mfgD);
     j += ",\"mfgUser\":";   j += restoreDateNum(p.mfgUserY, p.mfgUserM, p.mfgUserD);
+    // Знос: що бачить рація зараз, що там насправді, що вписали руками, і
+    // байт CTS, який реально піде в чип.
+    j += ",\"hpSeen\":";    j += p.healthSeen;
+    j += ",\"hpReal\":";    j += p.healthReal;
+    j += ",\"hpUser\":";    j += p.healthUser;
+    j += ",\"ctsUse\":";    j += (int)p.ctsUse;
     j += ",\"rsLib\":[";
     bool first = true;
     for (int i = 0; i < BATTERY_TEMPLATE_COUNT; i++) {
@@ -2044,11 +2050,13 @@ static String restorePlanJson(const RestorePlan &p) {
 //   rsRaw   — шунт числом (мОм×100), <0 — не чіпати
 //   rsModel — шунт із бібліотеки еталонів за назвою моделі; головніший за rsRaw
 static void restorePlanOverride(RestorePlan &p, const char *fixes, long rated,
-                                long rsRaw, const char *rsModel, long mfg = -1) {
+                                long rsRaw, const char *rsModel, long mfg = -1,
+                                int health = -1) {
     if (rated >= 0) restorePlanSetRated(p, rated);
     // Дата виготовлення — одним числом YYYYMMDD (0 прибирає ручне значення).
     if (mfg >= 0) restorePlanSetMfg(p, (int)(mfg / 10000), (int)((mfg / 100) % 100),
                                     (int)(mfg % 100));
+    if (health >= 0) restorePlanSetHealth(p, health);
     if (rsModel && *rsModel)
         restorePlanSetRsense(p, templateRsenseRawByName(rsModel), rsModel);
     else if (rsRaw >= 0) restorePlanSetRsense(p, rsRaw);
@@ -2058,10 +2066,12 @@ static void restorePlanOverride(RestorePlan &p, const char *fixes, long rated,
         long rsUser = p.rsUser;
         char rsSrc[16]; snprintf(rsSrc, sizeof(rsSrc), "%s", p.rsSrc);
         int  my = p.mfgUserY, mm = p.mfgUserM, md = p.mfgUserD;
+        int  hp = p.healthUser;
         restorePlanSetMask(p, m);
         if (user > 0 && (m & (1UL << RPF_RATED))) restorePlanSetRated(p, user);
         if (rsUser > 0 && (m & (1UL << RPF_RSENSE))) restorePlanSetRsense(p, rsUser, rsSrc);
         if (my > 0 && (m & (1UL << RPF_CRYPT))) restorePlanSetMfg(p, my, mm, md);
+        if (hp > 0 && (m & (1UL << RPF_CRYPT))) restorePlanSetHealth(p, hp);
     }
 }
 
@@ -2077,7 +2087,8 @@ static void applyPlanArgs(RestorePlan &p) {
         server.hasArg("rated")  ? server.arg("rated").toInt() : -1,
         server.hasArg("rsense") ? server.arg("rsense").toInt() : -1,
         rsm.c_str(),
-        server.hasArg("mfg") ? server.arg("mfg").toInt() : -1);
+        server.hasArg("mfg") ? server.arg("mfg").toInt() : -1,
+        server.hasArg("health") ? server.arg("health").toInt() : -1);
 }
 
 void handleRestorePlan() {
@@ -2448,7 +2459,8 @@ void handleWizardStep() {
     String wrsm = server.arg("rsmodel"); wrsm.trim(); wrsm.toUpperCase();
     server.send(200, "application/json",
                 wizExecStep(idx, model, wfx, wrated, wrs, wrsm, wmfg,
-                            tailModeFromArg(server.arg("tail"))));
+                            tailModeFromArg(server.arg("tail")),
+                            server.hasArg("health") ? server.arg("health").toInt() : -1));
 }
 // POST /api/wizard/reset — скинути журнал продовження ПОТОЧНОГО АКБ (під паролем).
 void handleWizardReset() {

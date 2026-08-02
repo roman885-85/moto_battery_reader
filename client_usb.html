@@ -137,6 +137,14 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 @keyframes dmflash{0%{color:var(--gold)}100%{color:inherit}}
 .dmwarn{margin-top:9px;font-size:.82em;padding:8px 10px;border-radius:8px;background:#4a1512;color:#ff9b8f;display:none}
 .badge{padding:2px 8px;border-radius:20px;font-size:.85em}.bo{background:#123d24;color:var(--grn)}.bb{background:#4a1512;color:#ff9b8f}
+.subnav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+.subtab{padding:7px 13px;border:1px solid #3c4530;border-radius:8px;background:#252b1c;
+        color:#9a9c82;cursor:pointer;font-size:.9em;user-select:none}
+.subtab:hover{color:#e7e3d2;border-color:#b9bd86}
+.subtab.active{background:#b9bd86;color:#1a1c14;border-color:#b9bd86;font-weight:700}
+.sub{display:none}
+.sub.active{display:block}
+.subintro{color:#9a9c82;font-size:.89em;margin:0 0 10px;line-height:1.45}
 .zone{font-weight:700;font-size:.88em;padding:8px 11px;border-radius:8px;margin:16px 0 8px}
 .zone.zi{background:#232a17;color:#cdd0a8}.zone.zd{background:#4a1512;color:#ff9b8f;border:1px solid var(--red)}
 #log{font-family:monospace;font-size:.72em;background:#171a10;border-radius:8px;padding:8px;height:120px;overflow:auto;white-space:pre-wrap;color:#b9bd86}
@@ -193,6 +201,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
     <div class="tab tab-wiz" onclick="tab(this,'wz')">🧙 Майстер</div>
     <div class="tab" onclick="tab(this,'dt')">🔬 Дані</div>
     <div class="tab" onclick="tab(this,'fw')">🔧 Ремонт</div>
+    <div class="tab" onclick="tab(this,'cfg')">⚙️ Налаштування</div>
   </div>
 
   <!-- WIZARD -->
@@ -295,7 +304,17 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
   </div>
 
   <!-- FIRMWARE -->
-  <div class="page" id="fw">
+<div class="page" id="fw">
+  <div class="subnav">
+    <div class="subtab active" onclick="sub(this,'fwrep')">🩹 Ремонт</div>
+    <div class="subtab" onclick="sub(this,'fwcal')">🔌 Калібрування</div>
+    <div class="subtab" onclick="sub(this,'fwval')">🎚 Значення</div>
+    <div class="subtab" onclick="sub(this,'fwid')">🪪 Еталон і модель</div>
+    <div class="subtab" onclick="sub(this,'fwexp')">🧪 Експерт</div>
+    <div class="subtab" onclick="sub(this,'fwdang')">⛔ Небезпечно</div>
+  </div>
+  <div class="sub active" id="fwrep">
+    <div class="subintro">Типовий шлях після заміни елементів: копія → ремонт → калібрування на ЗП.</div>
     <div class="card" style="border-color:var(--gold)">
       <h2>🔑 Авторизація адміністратора (опційно)</h2>
       <div class="note i">По USB пароль <b>не обов'язковий</b> — фізичний доступ до кабелю вже є дозволом, запис
@@ -308,9 +327,6 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       </div>
       <div class="bar" id="authSt" style="margin-top:6px">🔒 не перевірено</div>
     </div>
-
-<div class="zone zi">📦 Крок 1 — резервна копія (робіть ЗАВЖДИ перед записом)</div>
-
 <div class="card">
       <h2>💾 Зчитати та зберегти</h2>
       <div class="btns">
@@ -320,9 +336,6 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       </div>
       <div class="note i">ℹ️ Спочатку «Зчитати АКБ», потім збережіть обидві копії — вони повернуть АКБ у попередній стан.</div>
     </div>
-
-<div class="zone zi">🩹 Крок 2 — РЕМОНТ. Після заміни елементів починайте звідси</div>
-
 <div class="card" style="border-color:var(--org)">
       <h2>🔧 Ремонт після заміни елементів <span class="chipb">пише в DS2433 + DS2438</span></h2>
       <div class="note i">Для АКБ, яку рація бачить <b>«невідома»</b> / не бере на калібрування після заміни банок.
@@ -336,15 +349,14 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <button class="btn b-warn" onclick="op('RECAL','🔧 Ремонт після заміни елементів?\nСтирає навчений хвіст DS2433 (0x18A–0x1FF) і обнуляє лічильники DS2438.\nМодель, крива й ідентичність лишаються.',20000)">🔧 РЕМОНТ ПІСЛЯ ЗАМІНИ ЕЛЕМЕНТІВ</button>
       <button class="btn" onclick="op('RECAL DEEP','🔧 Глибока чистка?\nДодатково стирає навчені записи ємності (0x153–0x189) і журнал використання.\nВмикайте, лише якщо після звичайного ремонту ЗП тримається за стару ємність.',20000)">🧹 Глибока чистка</button>
     </div>
-
 <div class="card">
       <h2>🛠 Ремонт цілісності <span class="chipb">пише в DS2433 + DS2438</span></h2>
       <div class="note i">Суми (0x41/0x5A) + дзеркало калібрування з уцілілого DS2438. Якщо рація «не бачить» АКБ.</div>
       <button class="btn b-warn" onclick="op('REPAIR','🛠 Відновити цілісність і записати?',15000)">🛠 ВІДНОВИТИ</button>
     </div>
-
-<div class="zone zi">🔌 Крок 3 — калібрування на IMPRES-ЗП (обов’язково)</div>
-
+  </div>
+  <div class="sub" id="fwcal">
+    <div class="subintro">Розряд перед калібруванням і сама процедура на IMPRES-ЗП. Прошивкою вона не замінюється.</div>
 <div class="card" style="border-color:var(--org)">
       <h2>🪫 Розряд перед калібруванням <span class="chipb">пише в DS2438</span></h2>
       <div class="note i">Розряд — це <b>приймальний контроль після перепайки</b>: він міряє реальну ємність нових банок. Для калібрування він <b>не обов'язковий</b> — фірмова станція бере в цикл навіть повністю заряджений пакет, якщо він оригінальний. Але якщо станція вперлась і не переходить у калібрування, часткова розрядка це підштовхує.</div>
@@ -410,7 +422,6 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <button class="btn b-dng" onclick="disStop()">⏹ ЗУПИНИТИ</button>
       <button class="btn b-inf" onclick="disStatus()">🔄 Оновити зараз</button>
     </div>
-
     <div class="card" style="border-color:var(--ok)">
       <h2>🔌 Калібрування на зарядній станції</h2>
       <div class="note i">Після ремонту навчена калібровка <b>порожня</b> — рація приймає пакет як фірмовий і
@@ -418,15 +429,14 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         саме станція виміряє нові банки й запише калібровку в <code>0x18A–0x1FF</code>. Прошивкою цей крок
         не замінюється.</div>
     </div>
-
-<div class="zone zi">🧰 Обслуговування — безпечно для ідентичності</div>
-
 <div class="card">
       <h2>♻️ Скидання для рекалібрування <span class="chipb">пише в DS2438</span></h2>
       <div class="note i">Обнуляє лічильники/знос, калібрування зберігається. Потім — калібрування на IMPRES-ЗП.</div>
       <button class="btn b-warn" onclick="op('RESET','♻️ Скинути лічильники і записати у чіп?',15000)">♻️ СКИНУТИ</button>
     </div>
-
+  </div>
+  <div class="sub" id="fwval">
+    <div class="subintro">Окремі поля АКБ. Безпечно для ідентичності — модель, крива й заводська таблиця не чіпаються.</div>
 <div class="card">
       <h2>🔋 Ємність — внести залишок у мА·год <span class="chipb">пише в DS2438</span></h2>
       <div class="note i">Окрема операція: записує <b>залишок ємності</b> в паливомір (регістр ICA
@@ -435,7 +445,6 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="row"><span class="k">мА·год</span><input type="number" id="mahv" min="0" max="6000" value="0" style="width:110px;text-align:center"></div>
       <button class="btn b-warn" onclick="setMah()">💾 ЗАПИСАТИ мА·год</button>
     </div>
-
 <div class="card">
       <h2>⚡ Рівень заряду у відсотках <span class="chipb">пише в DS2438</span></h2>
       <div class="note i">Той самий регістр ICA, але у відсотках від паспортної ємності — коли
@@ -444,7 +453,6 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <button class="btn b-warn" id="btnChgAuto" onclick="setChargeAuto()">⚡ ЗА НАПРУГОЮ</button>
       <button class="btn b-warn" onclick="setChargePct()">💾 ЗАПИСАТИ ЗАРЯД %</button>
     </div>
-
 <div class="card">
       <h2>📅 Дата першого використання <span class="chipb">пише в DS2438</span></h2>
       <div class="note i">Рація рахує «перше користування» = її час − ETM (наробіток DS2438). Дата не зберігається
@@ -452,15 +460,22 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="row"><span class="k">Бажана дата</span><input type="date" id="etmDate"></div>
       <button class="btn b-warn" onclick="setEtm()">📅 ЗАПИСАТИ ДАТУ (ETM)</button>
     </div>
-
+<div class="card">
+      <h2>🩺 Знос/здоров'я (0–100 %) <span class="chipb">пише в DS2433</span></h2>
+      <div class="note w">⚠️ Це байт <b>заводської таблиці моделі</b> (<code>0x129</code>), однаковий у всіх
+        екземплярів моделі — показань рації правка тут не змінить. Справжній знос — у картці
+        <b>«Штатні лічильники Motorola»</b> на вкладці «Дані».</div>
+      <div class="row"><span class="k">Ємність, %</span><input type="number" id="capv" min="0" max="100" value="100" style="width:90px;text-align:center"></div>
+      <button class="btn b-warn" onclick="setCap()">💾 ЗАПИСАТИ %</button>
+    </div>
 <div class="card">
       <h2>🧹 Очистити (крім критичних) <span class="chipb">пише в DS2433 + DS2438</span></h2>
       <div class="note w">⚠️ Стирає все використання/історію/статистику. Зберігає модель/серійний/ID/калібрування.</div>
       <button class="btn b-dng" onclick="op('CLEAN','🧹 Стерти всі дані використання, лишивши ID/калібрування?',15000)">🧹 ОЧИСТИТИ</button>
     </div>
-
-<div class="zone zi">🪪 Ідентичність — модель і відновлення порожнього чипа</div>
-
+  </div>
+  <div class="sub" id="fwid">
+    <div class="subintro">Ідентичність пакета: запис моделі, відновлення з еталона, ініціалізація порожнього чипа.</div>
 <div class="card">
       <h2>🪪 Модель (ручний запис) <span class="chipb">пише в DS2433</span></h2>
       <div class="note i">Модель (part number) пишеться у DS2433: поле 0x0B + заголовок, із перерахунком сум.
@@ -474,7 +489,6 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="note w">ℹ️ <b>Серійний номер</b> — апаратний лазерний ROM DS2438: унікальний, незмінний,
         <b>фізично не перезаписується</b>. Для власного інвентарного ID — редактор байтів нижче.</div>
     </div>
-
 <div class="card" style="border-color:#2ecc71">
       <h2>🛠️ Відновити еталон (ремонт з нуля) <span class="chipb">пише в DS2433 + DS2438</span></h2>
       <div class="note i">Записує <b>модельну частину</b> еталона (ідентичність 0x000–0x065, крива,
@@ -518,7 +532,6 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <button class="btn b-warn" onclick="restoreBattery(false)">🛠️ ВІДНОВИТИ ЕТАЛОН</button>
       <button class="btn" onclick="restoreBattery(true)">🧪 Байт-у-байт (ручний режим, для аналізу)</button>
     </div>
-
 <div class="card" style="border-color:var(--grn)">
       <h2>🆕 Новий акумулятор (порожній чип) <span class="chipb">пише в DS2433 + DS2438</span></h2>
       <div class="note i">Для <b>порожнього/стертого/невідомого</b> чипа: пише повний еталон обраної моделі
@@ -530,7 +543,52 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="note w">⚠️ Перезапише ОБИДВІ мікросхеми. Лише для порожнього/невідомого чипа. Вкажіть паспортну ємність вашої моделі.</div>
       <button class="btn b-warn" onclick="initBattery()">🆕 ЗАПИСАТИ НОВИЙ АКБ</button>
     </div>
-
+  </div>
+  <div class="sub" id="fwexp">
+    <div class="subintro">Для аналізу та нештатних ситуацій. Тут немає запобіжників — спочатку зробіть копію.</div>
+<div class="card">
+      <h2>✏️ Редактор байтів <span class="chipb">пише в обрану в редакторі</span></h2>
+      <div class="note w">⚠️ Пряма правка. Автовиправлення чинить суму заголовка DS2433 і дзеркало.</div>
+      <div class="row"><span class="k">Мікросхема</span>
+        <select id="hxT" onchange="hxLoad()"><option value="33">DS2433 (512 Б)</option><option value="38">DS2438 (64 Б)</option></select>
+        <button class="btn b-inf" style="width:auto;padding:8px 12px" onclick="hxLoad()">↻ Завантажити</button></div>
+      <div class="hxwrap">
+        <div class="hxbar"><span class="hxg">Зсув</span><span class="hxh">00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F</span><span class="hxa">Текст</span></div>
+        <div class="hxrow">
+          <div class="hxg" id="hxGut"></div>
+          <textarea class="hxd" id="hxD" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off"></textarea>
+          <textarea class="hxa hxae" id="hxAsc" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off"></textarea>
+        </div>
+      </div>
+      <label style="display:block;margin:6px 0"><input type="checkbox" id="hxFix" checked> Автовиправлення (DS2433)</label>
+      <button class="btn b-dng" onclick="hxWrite()">⚡ ЗАПИСАТИ БАЙТИ</button>
+    </div>
+<div class="card">
+      <h2>📤 Відновлення / запис DS2433 (512 Б) <span class="chipb">пише в DS2433</span></h2>
+      <div class="note w">⚠️ Запис завідомо справного дампа тієї ж моделі — оживляє стерту АКБ. Чужа модель зіпсує.</div>
+      <input type="file" id="f33" accept=".bin">
+      <button class="btn b-dng" onclick="writeFile('f33',512,'WRITE33')">⚡ ЗАПИСАТИ DS2433</button>
+    </div>
+<div class="card">
+      <h2>🔬 Запис DS2438 (64 Б) <span class="chipb">пише в DS2438</span></h2>
+      <div class="note w">⚠️ Зазвичай не потрібно окремо.</div>
+      <input type="file" id="f38" accept=".bin">
+      <button class="btn b-dng" onclick="writeFile('f38',64,'WRITE38')">⚡ ЗАПИСАТИ DS2438</button>
+    </div>
+  </div>
+  <div class="sub" id="fwdang">
+    <div class="subintro">Незворотні операції. Після них АКБ не працюватиме, доки не запишете еталон моделі.</div>
+<div class="card" style="border-color:#e74c3c">
+      <h2>🔥 ПОВНЕ стирання DS2433 (крайній випадок) <span class="chipb">пише в DS2433</span></h2>
+      <div class="note w">🛑 Стирає ВЕСЬ DS2433 у 0xFF: модель, серійний/ID, калібрування. АКБ НЕ ПРАЦЮВАТИМЕ,
+        доки не запишете еталонний дамп. DS2438 не чіпається.</div>
+      <button class="btn b-dng" style="background:#c0392b" onclick="wipe33()">🔥 СТЕРТИ DS2433 ПОВНІСТЮ</button>
+      <button class="btn b-dng" style="background:#922b21" onclick="wipe38()">🔥 СТЕРТИ DS2438 ПОВНІСТЮ</button>
+    </div>
+  </div>
+</div>
+<div class="page" id="cfg">
+  <div class="subintro">Налаштування пристрою та журнал обміну. В акумулятор нічого не пишеться.</div>
 <div class="card">
       <h2>🔊 Налаштування звуку <span class="nochip">в АКБ не пише</span></h2>
       <div class="note i">Нічого не пише в акумулятор — це налаштування самого пристрою; воно
@@ -572,62 +630,8 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="sndtest" id="sndSignals"></div>
       <button class="btn b-warn" onclick="sndReset()">↩️ Заводські значення</button>
     </div>
-
-<div class="zone zd">🧪 Ручний режим / експерт — для аналізу та нештатних ситуацій</div>
-
-<div class="card">
-      <h2>🩺 Знос/здоров'я (0–100 %) <span class="chipb">пише в DS2433</span></h2>
-      <div class="note w">⚠️ Це байт <b>заводської таблиці моделі</b> (<code>0x129</code>), однаковий у всіх
-        екземплярів моделі — показань рації правка тут не змінить. Справжній знос — у картці
-        <b>«Штатні лічильники Motorola»</b> на вкладці «Дані».</div>
-      <div class="row"><span class="k">Ємність, %</span><input type="number" id="capv" min="0" max="100" value="100" style="width:90px;text-align:center"></div>
-      <button class="btn b-warn" onclick="setCap()">💾 ЗАПИСАТИ %</button>
-    </div>
-
-<div class="card">
-      <h2>✏️ Редактор байтів <span class="chipb">пише в обрану в редакторі</span></h2>
-      <div class="note w">⚠️ Пряма правка. Автовиправлення чинить суму заголовка DS2433 і дзеркало.</div>
-      <div class="row"><span class="k">Мікросхема</span>
-        <select id="hxT" onchange="hxLoad()"><option value="33">DS2433 (512 Б)</option><option value="38">DS2438 (64 Б)</option></select>
-        <button class="btn b-inf" style="width:auto;padding:8px 12px" onclick="hxLoad()">↻ Завантажити</button></div>
-      <div class="hxwrap">
-        <div class="hxbar"><span class="hxg">Зсув</span><span class="hxh">00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F</span><span class="hxa">Текст</span></div>
-        <div class="hxrow">
-          <div class="hxg" id="hxGut"></div>
-          <textarea class="hxd" id="hxD" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off"></textarea>
-          <textarea class="hxa hxae" id="hxAsc" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off"></textarea>
-        </div>
-      </div>
-      <label style="display:block;margin:6px 0"><input type="checkbox" id="hxFix" checked> Автовиправлення (DS2433)</label>
-      <button class="btn b-dng" onclick="hxWrite()">⚡ ЗАПИСАТИ БАЙТИ</button>
-    </div>
-
-<div class="card">
-      <h2>📤 Відновлення / запис DS2433 (512 Б) <span class="chipb">пише в DS2433</span></h2>
-      <div class="note w">⚠️ Запис завідомо справного дампа тієї ж моделі — оживляє стерту АКБ. Чужа модель зіпсує.</div>
-      <input type="file" id="f33" accept=".bin">
-      <button class="btn b-dng" onclick="writeFile('f33',512,'WRITE33')">⚡ ЗАПИСАТИ DS2433</button>
-    </div>
-
-<div class="card">
-      <h2>🔬 Запис DS2438 (64 Б) <span class="chipb">пише в DS2438</span></h2>
-      <div class="note w">⚠️ Зазвичай не потрібно окремо.</div>
-      <input type="file" id="f38" accept=".bin">
-      <button class="btn b-dng" onclick="writeFile('f38',64,'WRITE38')">⚡ ЗАПИСАТИ DS2438</button>
-    </div>
-
-<div class="zone zd">⛔ НЕБЕЗПЕЧНА ЗОНА — незворотні операції. Спочатку копія!</div>
-
-<div class="card" style="border-color:#e74c3c">
-      <h2>🔥 ПОВНЕ стирання DS2433 (крайній випадок) <span class="chipb">пише в DS2433</span></h2>
-      <div class="note w">🛑 Стирає ВЕСЬ DS2433 у 0xFF: модель, серійний/ID, калібрування. АКБ НЕ ПРАЦЮВАТИМЕ,
-        доки не запишете еталонний дамп. DS2438 не чіпається.</div>
-      <button class="btn b-dng" style="background:#c0392b" onclick="wipe33()">🔥 СТЕРТИ DS2433 ПОВНІСТЮ</button>
-      <button class="btn b-dng" style="background:#922b21" onclick="wipe38()">🔥 СТЕРТИ DS2438 ПОВНІСТЮ</button>
-    </div>
-
 <div class="card"><h2>📜 Журнал обміну</h2><div id="log"></div></div>
-  </div>
+</div>
 </div>
 
 <script>
@@ -638,7 +642,15 @@ let authed=false;
 
 function tab(el,id){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-  el.classList.add('active');$(id).classList.add('active');}
+  el.classList.add('active');$(id).classList.add('active');window.scrollTo(0,0);}
+// Під-вкладки «Ремонту»: сторінка була на 20 карток в один скрол. Картка
+// «Відновити еталон» показує план правок — при поверненні на неї план треба
+// перечитати, інакше висів би складений під іншу модель.
+function sub(el,id){const box=el.closest('.page');
+  box.querySelectorAll('.subtab').forEach(t=>t.classList.remove('active'));
+  box.querySelectorAll('.sub').forEach(p=>p.classList.remove('active'));
+  el.classList.add('active');$(id).classList.add('active');window.scrollTo(0,0);
+  if(id==='fwid'&&$('restModel')&&$('restModel').value) rpLoad(false);}
 function log(s){const l=$('log');l.textContent+=s+'\n';l.scrollTop=l.scrollHeight;}
 function toast(m){$('st').textContent=m;}
 function setBusy(b){document.querySelectorAll('.btn').forEach(x=>{if(x.id!=='btnConn')x.disabled=b;});}
@@ -1428,23 +1440,30 @@ function rpMfgBox(p){
   if(!p.haveRom) return '<div class="det"><b>ROM чипа невідомий</b> — правка можлива '+
     'лише на живому чипі (для дампа з файлу ключ узяти нізвідки).</div>';
   const dt=v=>v?(''+v).replace(/^(\d{4})(\d{2})(\d{2})$/,'$1-$2-$3'):'—';
+  const hp=v=>v?(v+' %'):'—';
   let w;
   if(p.cryptWrong)
-    w='⚠️ Вміст зашифровано <b>чужим ключем</b>: рація читає дату виготовлення як <b>'+
-      dt(p.mfgSeen)+'</b>, насправді це <b>'+dt(p.mfgReal)+'</b>.';
+    w='⚠️ Вміст зашифровано <b>чужим ключем</b>: рація читає дату <b>'+dt(p.mfgSeen)+
+      '</b> і знос <b>'+hp(p.hpSeen)+'</b>, насправді це <b>'+dt(p.mfgReal)+'</b> і <b>'+
+      hp(p.hpReal)+'</b>.';
   else if(p.cryptUnknown)
     w='⚠️ Вміст <b>ні з чим не узгоджений</b> — яким ключем його писали, визначити не '+
-      'вдається. Рація читає дату як <b>'+dt(p.mfgSeen)+'</b>. Перенести звідси нічого не '+
-      'можна, але <b>дату можна вписати вручну</b>. Лічильники правка не чіпає.';
+      'вдається. Рація читає дату <b>'+dt(p.mfgSeen)+'</b>, знос <b>'+hp(p.hpSeen)+
+      '</b>. Перенести звідси нічого не можна, але <b>дату й знос можна вписати вручну</b>.';
   else
-    w='Ключ вмісту збігається з ROM цього чипа — перешифровувати нічого.';
-  return '<div class="det">'+w+'<br>Дата виготовлення вручну: '+
-    '<input type="date" id="rpMfg" value="'+(p.mfgUser?dt(p.mfgUser):'')+
-    '" onchange="rpApply()" style="margin-top:4px"> '+
-    '<span class="dim">'+(p.cryptUnknown?'(без неї правці нічого записувати)'
-                                        :'(порожньо — узяти справжню з даних)')+'</span></div>';
+    w='Ключ вмісту збігається з ROM цього чипа. Знос усе одно можна вписати вручну.';
+  return '<div class="det">'+w+
+    '<br>Дата виготовлення: <input type="date" id="rpMfg" value="'+(p.mfgUser?dt(p.mfgUser):'')+
+    '" onchange="rpApply()" style="margin-top:4px">'+
+    '&nbsp;&nbsp;Знос, %: <input type="number" id="rpHp" min="1" max="100" step="1" '+
+    'placeholder="як є" value="'+(p.hpUser>0?p.hpUser:'')+'" onchange="rpApply()" '+
+    'style="width:80px;margin-top:4px">'+
+    '<div class="dim" style="margin-top:4px">Знос рахується від ефективних шунта й паспортної '+
+    'ємності. '+(p.hpUser>0?('Буде записано CTS = '+p.ctsUse+'.'):'Порожньо — лишити як є.')+
+    '</div></div>';
 }
 function rpMfg(){const e=$('rpMfg');return e&&e.value?e.value.replace(/-/g,''):'';}
+function rpHp(){const e=$('rpHp');return e&&e.value?e.value:'';}
 // Режим навченого хвоста: «свіжий» скелет чи стирання в 0xFF (див. картку).
 function restTail(){const e=$('restTail');return e&&e.value?e.value:'fresh';}
 function rpKeys(){
@@ -1454,7 +1473,7 @@ function rpKeys(){
   // бути (рядок був недоступним, поки поле стояло порожнім).
   if(rpRated()&&k.indexOf('rated')<0)k.push('rated');
   if((rpRs()||rpRsModel())&&k.indexOf('rsense')<0)k.push('rsense');
-  if(rpMfg()&&k.indexOf('crypt')<0)k.push('crypt');
+  if((rpMfg()||rpHp())&&k.indexOf('crypt')<0)k.push('crypt');
   return k.join(',');
 }
 function rpRated(){const e=$('rpRated');return e&&e.value?e.value:'';}
@@ -1462,7 +1481,7 @@ function rpArgs(){
   // Модель із бібліотеки й ручне число взаємно виключні — так само, як у полях.
   return ' FIXES='+rpKeys()+(rpRated()?(' RATED='+rpRated()):'')+
          (rpRsModel()?(' RSMODEL='+rpRsModel()):(rpRs()?(' RSENSE='+rpRs()):''))+
-         (rpMfg()?(' MFG='+rpMfg()):'');
+         (rpMfg()?(' MFG='+rpMfg()):'')+(rpHp()?(' HEALTH='+rpHp()):'');
 }
 // Перерахунок робить ПРИСТРІЙ: паливомір залежить від того, який шунт опиниться
 // в чипі, і рахувати це вдруге тут означало б завести другу формулу, яка одного

@@ -31,16 +31,20 @@
 //   SETETM <сек>         -> ETM (наробіток) -> «дата першого користування» у рації
 //   TEMPLATES            -> список вшитих моделей для ініціалізації (без пароля)
 //   OPS                  -> каталог операцій (спільний для екрана/веба/клієнта)
+//   CLOCK [РРРРММДД]     -> системна дата пристрою (без аргументу — прочитати).
+//                          RTC/NTP тут немає: дату приносить клієнт, вона
+//                          зберігається в SPIFFS і потрібна для наробітку
 //   DISCHARGE [мВ]       -> почати керований розряд (типово до 7200 мВ)
 //   DISCHARGE STOP       -> зупинити розряд;  DISCHARGE ? -> стан розряду
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
 //   RESTORE <MODEL> [VERBATIM] [FIXES=..] [RATED=мАг] [RSENSE=мОм*100|RSMODEL=..] [MFG=..]
-//            [TAIL=FRESH|ERASE] [HEALTH=%] [USE=РРРРММДД] [CAL=] [CYC=] [NONIMP=] -> відновити модельну
+//            [TAIL=FRESH|ERASE] [HEALTH=%] [USE=РРРРММДД] [CAL=] [CYC=] [NONIMP=]
+//            [TODAY=РРРРММДД] [ETMSRC=USE|PACK] -> відновити модельну
 //                          частину еталона (без чужого навченого хвоста), з
 //                          правками під цей пакет; VERBATIM — байт-у-байт
-//   RESTOREPLAN <MODEL> [NOREAD] [FIXES=..] [RATED=мАг] [RSENSE=..|RSMODEL=..] [MFG=..] [HEALTH=%] [USE=РРРРММДД] [CAL=] [CYC=] [NONIMP=] -> що саме буде
+//   RESTOREPLAN <MODEL> [NOREAD] [FIXES=..] [RATED=мАг] [RSENSE=..|RSMODEL=..] [MFG=..] [HEALTH=%] [USE=РРРРММДД] [CAL=] [CYC=] [NONIMP=] [TODAY=..] [ETMSRC=..] -> що саме буде
 //                          виправлено в еталоні під цей пакет (нічого не пише)
-//   FIXES <MODEL> [FIXES=..] [RATED=мАг] [RSENSE=..|RSMODEL=..] [MFG=..] [HEALTH=%] [USE=РРРРММДД] [CAL=] [CYC=] [NONIMP=] -> записати ЛИШЕ правки до того, що вже
+//   FIXES <MODEL> [FIXES=..] [RATED=мАг] [RSENSE=..|RSMODEL=..] [MFG=..] [HEALTH=%] [USE=РРРРММДД] [CAL=] [CYC=] [NONIMP=] [TODAY=..] [ETMSRC=..] -> записати ЛИШЕ правки до того, що вже
 //                          в чипах; еталон і навчена калібровка не чіпаються
 //   WIZARD               -> Майстер: зчитати + аналіз/проблеми/план (JSON)
 //   WIZSTEP <idx> [MODEL]-> Майстер: виконати крок плану (model для відновлення)
@@ -556,6 +560,16 @@ static void serialExec(const String &line) {
                                          sResp(r + "}"); } }
     else if (cmd == "OPS")      { sResp(serBuildOps()); }
     else if (cmd == "SOUND")    { sResp(serSound(arg)); }
+    // CLOCK — яку дату пристрій вважає сьогоднішньою; CLOCK РРРРММДД — завести
+    // годинник. Годинника реального часу в ESP32 немає, а NTP недосяжний:
+    // пристрій сам є точкою доступу. Ту саму дату несе TODAY= у RESTORE/FIXES.
+    else if (cmd == "CLOCK")    { String a3 = arg; a3.trim();
+                                  if (a3.length() && !deviceClockSetNum(a3.toInt()))
+                                      sResp("{\"ok\":false,\"err\":\"потрібна дата РРРРММДД\"}");
+                                  else { String r = "{\"ok\":true,\"today\":";
+                                         r += deviceClockNum();
+                                         r += ",\"src\":\""; r += deviceClockSrcName();
+                                         sResp(r + "\"}"); } }
     // DISCHARGE [мВ] — почати розряд; DISCHARGE STOP — зупинити; DISCHARGE? — стан.
     else if (cmd == "DISCHARGE"){ String a2 = arg; a2.trim(); a2.toUpperCase();
                                   if (a2 == "STOP") { dischargeStop(DISR_USER); sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); }

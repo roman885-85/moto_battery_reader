@@ -11,6 +11,7 @@
 #include "impres_bms.h"        // штатний декодер Motorola (лічильники, знос, дати)
 #include "operations.h"        // єдиний каталог операцій для всіх поверхонь
 #include "restore_plan.h"      // правки еталона під конкретний пакет перед записом
+#include "device_clock.h"     // системна дата пристрою (джерело «сьогодні»)
 #include "discharge.h"         // керований розряд навантаженням (MOSFET)
 #include "leds.h"
 #include "display.h"
@@ -1877,6 +1878,10 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
                          hasDump ? batteryDump : nullptr,
                          had38 ? was38 : nullptr,
                          hasSN2433 ? chipSN2433 : nullptr);
+        // Дата — із системного годинника пристрою: цей шлях і є «відновлення
+        // з меню приладу», де клієнта немає й передати її нікому.
+        int cy, cm, cd;
+        if (deviceClockToday(&cy, &cm, &cd)) restorePlanSetToday(localPlan, cy, cm, cd);
         plan = &localPlan;
     }
 
@@ -1960,6 +1965,12 @@ static bool buildRestorePlanFor(const char *model, RestorePlan &p, bool refresh)
                      hasDump ? batteryDump : nullptr,
                      hasDump2438 ? batteryDump2438 : nullptr,
                      hasSN2433 ? chipSN2433 : nullptr);
+    // «Сьогодні» беремо з СИСТЕМНОГО годинника пристрою — тоді наробіток
+    // рахується і там, де клієнта немає взагалі: у меню самого приладу й у
+    // Майстрі, запущеному з екрана. Клієнт, якщо прийде, перекриє це своєю
+    // датою (і заодно заведе годинник) — див. restorePlanOverride().
+    int cy, cm, cd;
+    if (deviceClockToday(&cy, &cm, &cd)) restorePlanSetToday(p, cy, cm, cd);
     return true;
 }
 
@@ -2023,6 +2034,9 @@ static String restorePlanJson(const RestorePlan &p) {
     j += ",\"etmUseDate\":";j += p.etmUseDate;
     j += ",\"etmFromUse\":";j += p.etmFromUse ? "true" : "false";
     j += ",\"today\":";     j += restoreDateNum(p.todayY, p.todayM, p.todayD);
+    // Звідки взялась дата пристрою: none — годинник не заведено, saved —
+    // відновлена після перезавантаження (відстає), client — щойно від клієнта.
+    j += ",\"todaySrc\":\""; j += deviceClockSrcName(); j += "\"";
     j += ",\"rsLib\":[";
     bool first = true;
     for (int i = 0; i < BATTERY_TEMPLATE_COUNT; i++) {
@@ -2076,8 +2090,14 @@ static void restorePlanOverride(RestorePlan &p, const char *fixes, long rated,
     if (rated >= 0) restorePlanSetRated(p, rated);
     // Сьогоднішню дату ставимо ПЕРШОЮ: від неї залежить наробіток, а той
     // перераховується при кожній наступній правці.
-    if (today >= 0) restorePlanSetToday(p, (int)(today / 10000),
-                                        (int)((today / 100) % 100), (int)(today % 100));
+    if (today > 0) {
+        // Годинника реального часу в ESP32 немає, а NTP недосяжний: пристрій
+        // сам є точкою доступу. Тому дата, яку приніс клієнт, стає СИСТЕМНОЮ —
+        // далі нею користуються й ті шляхи, де клієнта немає.
+        deviceClockSetNum(today);
+        restorePlanSetToday(p, (int)(today / 10000),
+                            (int)((today / 100) % 100), (int)(today % 100));
+    }
     // Дата виготовлення — одним числом YYYYMMDD (0 прибирає ручне значення).
     if (mfg >= 0) restorePlanSetMfg(p, (int)(mfg / 10000), (int)((mfg / 100) % 100),
                                     (int)(mfg % 100));
@@ -2376,6 +2396,30 @@ static String soundFullJson() {
     return j;
 }
 
+// ── СИСТЕМНА ДАТА ПРИСТРОЮ ──────────────────────────────────────────────────
+//  GET  /api/clock              — яку дату пристрій вважає сьогоднішньою
+//  POST /api/clock?today=…      — завести годинник (те саме роблять і всі
+//                                 запити плану, які несуть today=)
+//  Пароля не питаємо: дата нічого не псує, а без неї наробіток не рахується.
+static String deviceClockJson() {
+    String j = "{\"status\":\"success\",\"today\":";
+    j += deviceClockNum();
+    j += ",\"src\":\"";
+    j += deviceClockSrcName();
+    j += "\"}";
+    return j;
+}
+void handleClockGet() { server.send(200, "application/json", deviceClockJson()); }
+void handleClockSet() {
+    long t = server.hasArg("today") ? server.arg("today").toInt() : 0;
+    if (!deviceClockSetNum(t)) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Потрібна дата РРРРММДД\"}");
+        return;
+    }
+    server.send(200, "application/json", deviceClockJson());
+}
+
 void handleSoundGet() { server.send(200, "application/json", soundFullJson()); }
 
 // POST /api/sound — приймає будь-яку підмножину полів: чого немає, те не
@@ -2621,6 +2665,8 @@ void setupWebServer() {
     server.on("/api/reboot", HTTP_POST, handleReboot);           // перезавантаження ESP32
     server.on("/api/templates", HTTP_GET, handleTemplates);      // список вшитих моделей
     server.on("/api/ops", HTTP_GET, handleOps);                  // каталог операцій (operations.h)
+    server.on("/api/clock", HTTP_GET, handleClockGet);           // системна дата пристрою
+    server.on("/api/clock", HTTP_POST, handleClockSet);          // завести годинник
     server.on("/api/sound", HTTP_GET, handleSoundGet);           // налаштування звуку
     server.on("/api/sound", HTTP_POST, handleSoundSet);          // змінити налаштування звуку
     server.on("/api/sound/test", HTTP_POST, handleSoundTest);    // прослухати сигнал

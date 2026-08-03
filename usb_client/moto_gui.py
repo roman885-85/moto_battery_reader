@@ -2577,7 +2577,8 @@ class App:
                 dd = lambda v: int(round(v / 86400.0))
                 if p.get("etmUseDate"):
                     t = ("від дати запуску %s до сьогодні (%s) — %d діб"
-                         % (_dnum(p["etmUseDate"]), _dnum(p.get("today", 0)), dd(p.get("etmCalc", 0))))
+                         % (_dnum(p["etmUseDate"]), _dnum(p.get("today", 0)),
+                            dd(p.get("etmCalc", 0))))
                 else:
                     t = "порахувати нема з чого: невідома дата першого запуску"
                 ttk.Label(cell, foreground="#6b6f58", justify="left", wraplength=460,

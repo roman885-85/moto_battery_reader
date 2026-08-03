@@ -36,6 +36,7 @@ enum {
     RPF_ETM,          // наробіток -> «дата першого користування» в рації
     RPF_RATED,        // паспортна ємність (DS2433[0x008])
     RPF_CRYPT,        // дати й лічильники — під ROM ЦЬОГО чипа (шифрування)
+    RPF_HIST,         // цикли заряду IMPRES і не-IMPRES (без шифрування)
     RPF_COUNT
 };
 
@@ -83,7 +84,14 @@ static const RestoreFixDoc RESTORE_FIX_DOC[RPF_COUNT] = {
       "перешифровує ті самі числа під ROM цього чипа — значення не міняються, "
       "міняється лише те, хто здатен їх прочитати. Тут же можна вписати ВРУЧНУ "
       "дату виготовлення й знос (здоров'я) — після заміни елементів реальний "
-      "знос знає лише той, хто ставив банки." },
+      "знос знає лише той, хто ставив банки. Тут же — дата першого запуску й "
+      "скільки калібрувань пройдено." },
+    { "hist",   "Лічильники циклів", "", 1, false,
+      "Цикли заряду IMPRES і не-IMPRES ключа НЕ потребують — саме тому фірмове "
+      "ПЗ показує їх завжди. Цикли IMPRES лежать у гістограмі доданого заряду: "
+      "нульовий кошик несе саму суму, решта — розподіл. Після заміни елементів "
+      "«вік» пакета зазвичай починають із нуля; але це вибір власника, тож "
+      "правка є — просто вимкнена." },
 };
 
 struct RestoreFix {
@@ -128,6 +136,15 @@ struct RestorePlan {
     int      healthReal;    // знос за ключем, яким вміст зашифровано, %
     int      healthUser;    // вписаний ВРУЧНУ, 0 — не вписували
     uint8_t  ctsUse;        // байт CTS, який реально піде в чип
+    // Дата першого запуску: у чипі це НЕ дата, а скільки діб минуло від
+    // виготовлення. Тому вона залежить від дати виготовлення — правимо разом.
+    int      useSeen;       // що бачить рація ЗАРАЗ, YYYYMMDD (0 — немає)
+    int      useReal;       // те саме ключем вмісту
+    int      useUserY, useUserM, useUserD;   // вписана ВРУЧНУ, 0 — не вписували
+    int      calSeen, calReal, calUser;      // калібрувань пройдено; -1 — не вписували
+    // --- лічильники без шифрування -----------------------------------------
+    int      cycNow,  cycUser;   // цикли заряду IMPRES (гістограма); -1 — не вписували
+    int      nonNow,  nonUser;   // цикли не-IMPRES;                  -1 — не вписували
 
     RestoreFix fx[RPF_COUNT];
 };
@@ -162,6 +179,16 @@ inline int restoreHealthFromCts(uint8_t cts, int ratedMah, float rsOhm) {
 // однаково в усіх клієнтах.
 inline long restoreDateNum(int y, int m, int d) {
     return (y > 0) ? (long)y * 10000 + m * 100 + d : 0;
+}
+
+// Скільки діб від виготовлення до першого запуску — саме це число лежить у
+// чипі. Від'ємне (запуск раніше за виготовлення) не має сенсу й дало б
+// 16-бітне переповнення, тож затискаємо в нуль.
+inline uint16_t restoreDaysBetween(int y1, int m1, int d1, int y2, int m2, int d2) {
+    long n = impresBmsToDays(y2, m2, d2) - impresBmsToDays(y1, m1, d1);
+    if (n < 0) n = 0;
+    if (n > 65535) n = 65535;
+    return (uint16_t)n;
 }
 
 // Правдоподібна напруга Li-Ion 2S: нижче — обрив/не читалось, вище — сміття.
@@ -264,17 +291,33 @@ inline void restorePlanBuild(RestorePlan &p, const char *model,
             if (seen.haveDat) { p.seenY = seen.mfgY; p.seenM = seen.mfgM; p.seenD = seen.mfgD; }
             // Знос рахуємо шунтом і паспортною ємністю ПАКЕТА — так само, як це
             // зробить рація, читаючи цей чип.
-            if (seen.haveRec)
+            if (seen.haveRec) {
                 p.healthSeen = restoreHealthFromCts(seen.cts, p.ratedTpl,
                                    p.rsRawPack ? p.rsRawPack / 100000.0f : p.rsTpl);
+                p.calSeen = seen.calCycles;
+            }
+            if (seen.haveDat && impresBmsDateSane(seen.mfgY, seen.mfgM, seen.mfgD)) {
+                int y, m, d;
+                impresBmsFromDays(impresBmsToDays(seen.mfgY, seen.mfgM, seen.mfgD)
+                                  + seen.dayInitialUse, &y, &m, &d);
+                p.useSeen = restoreDateNum(y, m, d);
+            }
         }
         p.cryptSrcOk = impresCryptSourceKey(pack33, pack38, &p.srcK1, &p.srcK2);
         if (p.cryptSrcOk) {
             impresCryptRead(pack33, p.srcK1, p.srcK2, &p.cf);
             p.mfgY = p.cf.mfgY; p.mfgM = p.cf.mfgM; p.mfgD = p.cf.mfgD;
-            if (p.cf.haveRec)
+            if (p.cf.haveRec) {
                 p.healthReal = restoreHealthFromCts(p.cf.cts, p.ratedTpl,
                                    p.rsRawPack ? p.rsRawPack / 100000.0f : p.rsTpl);
+                p.calReal = p.cf.calCycles;
+            }
+            if (p.cf.haveDat && impresBmsDateSane(p.cf.mfgY, p.cf.mfgM, p.cf.mfgD)) {
+                int y, m, d;
+                impresBmsFromDays(impresBmsToDays(p.cf.mfgY, p.cf.mfgM, p.cf.mfgD)
+                                  + p.cf.dayInitialUse, &y, &m, &d);
+                p.useReal = restoreDateNum(y, m, d);
+            }
             if (p.haveRom)
                 p.cryptWrong = impresCryptKeyDiffers(p.srcK1, p.srcK2, p.romK1, p.romK2);
         } else {
@@ -288,6 +331,18 @@ inline void restorePlanBuild(RestorePlan &p, const char *model,
         }
     }
     cr.on = p.cryptWrong && RESTORE_FIX_DOC[RPF_CRYPT].defOn;
+
+    // --- лічильники циклів (без шифрування) ---------------------------------
+    // Ці два числа читаються без ключа, тож вони відомі завжди, коли блоки цілі.
+    p.calUser = p.cycUser = p.nonUser = -1;
+    p.cycNow = p.nonNow = -1;
+    if (pack33) {
+        ImpresBms b;
+        if (impresBmsParse(pack33, pack38, nullptr, 0.0f, &b)) {
+            p.cycNow = b.cycles;                 // -1, якщо гістограма побита
+            p.nonNow = b.nonImpresCycles;
+        }
+    }
 
     // --- паспортна ємність ---------------------------------------------------
     RestoreFix &m = p.fx[RPF_RATED];
@@ -364,6 +419,9 @@ inline void restorePlanRecalc(RestorePlan &p) {
     RestoreFix &cr = p.fx[RPF_CRYPT];
     bool haveUserDate = p.mfgUserY > 0;
     bool haveUserHp   = p.healthUser > 0;
+    bool haveUserUse  = p.useUserY > 0;
+    bool haveUserCal  = p.calUser >= 0;
+    bool anyCryptUser = haveUserDate || haveUserHp || haveUserUse || haveUserCal;
     // ⚑ CTS рахуємо ЕФЕКТИВНИМИ шунтом і паспортною ємністю — тими, що реально
     // опиняться в чипі після всіх правок. Інакше вписані 80 % прочитались би
     // як зовсім інше число.
@@ -379,8 +437,17 @@ inline void restorePlanRecalc(RestorePlan &p) {
     if (!cr.avail) cr.on = false;
     // Коли ключ не визначається, вмикати правку без дати нема сенсу: писати
     // нічого. З датою — вмикаємо одразу, це свідома дія.
-    if (p.cryptUnknown && !haveUserDate && !haveUserHp) cr.on = false;
-    if ((haveUserDate || haveUserHp) && cr.avail) cr.on = true;
+    if (p.cryptUnknown && !anyCryptUser) cr.on = false;
+    if (anyCryptUser && cr.avail) cr.on = true;
+
+    // Лічильники циклів. Правку пропонуємо, коли блоки цілі; вмикається лише
+    // свідомо — вписаним числом (0 теж число: «пакет як новий»).
+    RestoreFix &hs = p.fx[RPF_HIST];
+    hs.avail   = (p.cycNow >= 0) || (p.nonNow >= 0);
+    hs.tplVal  = p.cycNow >= 0 ? p.cycNow : 0;
+    hs.packVal = p.cycUser >= 0 ? p.cycUser : hs.tplVal;
+    if (!hs.avail) hs.on = false;
+    if ((p.cycUser >= 0 || p.nonUser >= 0) && hs.avail) hs.on = true;
 
     for (int i = 0; i < RPF_COUNT; i++)
         p.fx[i].useVal = p.fx[i].on ? p.fx[i].packVal
@@ -397,7 +464,10 @@ inline void restorePlanSetMask(RestorePlan &p, uint32_t mask) {
     if (!(mask & (1UL << RPF_RATED)))  p.ratedUser = 0;
     if (!(mask & (1UL << RPF_RSENSE))) { p.rsUser = 0; p.rsSrc[0] = '\0'; }
     if (!(mask & (1UL << RPF_CRYPT)))  { p.mfgUserY = p.mfgUserM = p.mfgUserD = 0;
-                                         p.healthUser = 0; }
+                                         p.healthUser = 0;
+                                         p.useUserY = p.useUserM = p.useUserD = 0;
+                                         p.calUser = -1; }
+    if (!(mask & (1UL << RPF_HIST)))   { p.cycUser = p.nonUser = -1; }
     // avail шунта залежить від rsUser, тож маску треба накласти ще раз — уже
     // після того, як ручне значення прибрано.
     p.fx[RPF_RSENSE].on = (mask & (1UL << RPF_RSENSE)) && (p.rsRawPack > 0);
@@ -434,6 +504,29 @@ inline void restorePlanSetMfg(RestorePlan &p, int y, int m, int d) {
 // значення не мають сенсу: 0 означало б «ємності немає зовсім».
 inline void restorePlanSetHealth(RestorePlan &p, int pct) {
     p.healthUser = (pct >= 1 && pct <= 100) ? pct : 0;
+    restorePlanRecalc(p);
+}
+
+// Вписати дату першого запуску (рік 0 — прибрати). У чипі це не дата, а
+// кількість діб від виготовлення, тож саме число рахується вже при записі —
+// коли остаточно відома дата виготовлення.
+inline void restorePlanSetUse(RestorePlan &p, int y, int m, int d) {
+    if (y < 2005 || y > 2035 || m < 1 || m > 12 || d < 1 || d > 31) y = m = d = 0;
+    p.useUserY = y; p.useUserM = m; p.useUserD = d;
+    restorePlanRecalc(p);
+}
+
+// Калібрувань пройдено (-1 — прибрати). Нуль тут — повноцінне значення:
+// «жодного», саме це й потрібно після заміни елементів.
+inline void restorePlanSetCal(RestorePlan &p, int n) {
+    p.calUser = (n >= 0 && n <= 65535) ? n : -1;
+    restorePlanRecalc(p);
+}
+
+// Цикли заряду IMPRES і не-IMPRES (-1 — прибрати; 0 — «як новий»).
+inline void restorePlanSetCycles(RestorePlan &p, int impres, int nonImpres) {
+    p.cycUser = (impres    >= 0 && impres    <= 65535) ? impres    : -1;
+    p.nonUser = (nonImpres >= 0 && nonImpres <= 65535) ? nonImpres : -1;
     restorePlanRecalc(p);
 }
 
@@ -520,7 +613,24 @@ inline void restorePlanApply(const RestorePlan &p, uint8_t *d33, uint8_t *d38,
             // елементами саме такий і є.
             if (!hadRec) f.firstUse = p.ctsUse;
         }
+        if (p.calUser >= 0) {
+            f.haveRec = f.haveRec || impresCryptBlockUsable(d33, impresCryptAddr(d33, BMS_V_RECOND), 8);
+            f.calCycles = (uint16_t)p.calUser;
+        }
+        // Дата першого запуску зберігається як «стільки діб від виготовлення»,
+        // тож рахуємо її від ТІЄЇ дати, яка реально піде в чип.
+        if (p.useUserY > 0) {
+            f.haveDat = f.haveDat || impresCryptBlockUsable(d33, impresCryptAddr(d33, BMS_V_DATE), 6);
+            uint16_t n = restoreDaysBetween(f.mfgY, f.mfgM, f.mfgD,
+                                            p.useUserY, p.useUserM, p.useUserD);
+            f.dayInitialUse = f.dayInitialUse2 = n;
+        }
         impresCryptWrite(d33, p.romK1, p.romK2, &f);
+    }
+    // Лічильники циклів ключа не потребують — пишемо їх незалежно від ROM.
+    if (d33 && p.fx[RPF_HIST].on) {
+        if (p.cycUser >= 0) impresCyclesWrite(d33, p.cycUser);
+        if (p.nonUser >= 0) impresNonImpresWrite(d33, p.nonUser);
     }
 }
 
@@ -534,6 +644,7 @@ inline void restoreFixText(const RestorePlan &p, int i, long v, char *out, size_
         case RPF_ETM:    v ? snprintf(out, n, "%ld діб", v / 86400L)
                            : snprintf(out, n, "з нуля"); break;
         case RPF_RATED:  snprintf(out, n, "%ld мА·год", v); break;
+        case RPF_HIST:   snprintf(out, n, "%ld циклів", v); break;
         case RPF_CRYPT:  v ? snprintf(out, n, "%04ld-%02ld-%02ld",
                                       v / 10000, (v / 100) % 100, v % 100)
                            : snprintf(out, n, "—"); break;

@@ -70,7 +70,10 @@ static const RestoreFixDoc RESTORE_FIX_DOC[RPF_COUNT] = {
     { "etm",    "Наробіток (дата першого користування)", "діб", 2, false,
       "Рація показує «дату першого користування» як «зараз мінус наробіток». "
       "Вимкнено — лічильник почнеться з нуля (пакет із новими елементами — новий). "
-      "Увімкнено — збережеться реальний вік цього пакета." },
+      "Увімкнено — або збережеться наробіток цього пакета, або він порахується "
+      "з ДАТИ ПЕРШОГО ЗАПУСКУ: «сьогодні мінус дата» × 86400 с. Другий варіант "
+      "потрібен, щоб рація показала саме ту дату, яку ми записали в DS2433, — "
+      "інакше вона рахує свою, з наробітку, і числа розходяться." },
     { "rated",  "Паспортна ємність", "мА·год", 1, false,
       "Ємність, яку пакет носить у собі (DS2433, 0x008). Зазвичай збігається з "
       "еталоном моделі; розбіжність означає інший підваріант. Якщо після заміни "
@@ -145,6 +148,14 @@ struct RestorePlan {
     // --- лічильники без шифрування -----------------------------------------
     int      cycNow,  cycUser;   // цикли заряду IMPRES (гістограма); -1 — не вписували
     int      nonNow,  nonUser;   // цикли не-IMPRES;                  -1 — не вписували
+    // --- наробіток із дати першого запуску ----------------------------------
+    // ⚑ Годинника в пристрої немає (ні RTC, ні NTP), тож «сьогодні» приходить
+    // від клієнта — браузер чи ПК дату знають завжди.
+    long     etmPack;       // наробіток самого пакета, с (0 — немає/сміття)
+    int      todayY, todayM, todayD;   // 0 — клієнт дати не передав
+    bool     etmFromUse;    // рахувати наробіток із дати першого запуску
+    long     etmCalc;       // порахований наробіток, с (0 — порахувати не з чого)
+    int      etmUseDate;    // від якої дати рахували, YYYYMMDD
 
     RestoreFix fx[RPF_COUNT];
 };
@@ -267,10 +278,11 @@ inline void restorePlanBuild(RestorePlan &p, const char *model,
     // --- наробіток ----------------------------------------------------------
     RestoreFix &e = p.fx[RPF_ETM];
     uint32_t etm = pack38 ? impresEtm(pack38) : 0;
-    e.avail   = pack38 && etm > 0 && etm < RP_ETM_MAX;
+    p.etmPack = (etm > 0 && etm < RP_ETM_MAX) ? (long)etm : 0;
+    e.avail   = pack38 && p.etmPack > 0;
     e.on      = e.avail && RESTORE_FIX_DOC[RPF_ETM].defOn;
     e.tplVal  = 0;                       // без правки наробіток обнуляється
-    e.packVal = (long)etm;
+    e.packVal = p.etmPack;
 
     // --- шифрування ----------------------------------------------------------
     // Зашифровані поля читаються ключем із ROM чипа DS2433. Еталон знято з
@@ -449,6 +461,34 @@ inline void restorePlanRecalc(RestorePlan &p) {
     if (!hs.avail) hs.on = false;
     if ((p.cycUser >= 0 || p.nonUser >= 0) && hs.avail) hs.on = true;
 
+    // Наробіток. У DS2438 це секунди, а рація показує «дату першого
+    // користування» як «зараз мінус наробіток» — тобто числа з DS2433 вона для
+    // цього рядка не питає. Тому дату, вписану в DS2433, треба продублювати
+    // наробітком, інакше рація покаже дві різні дати. Рахуємо його самі:
+    //     наробіток = (сьогодні − дата першого запуску) × 86400.
+    // ⚑ «Сьогодні» приходить від клієнта: годинника (RTC/NTP) у пристрої немає.
+    RestoreFix &etm = p.fx[RPF_ETM];
+    long useEff = p.useUserY > 0 ? restoreDateNum(p.useUserY, p.useUserM, p.useUserD)
+                                 : (long)p.useReal;
+    p.etmCalc = 0; p.etmUseDate = 0;
+    if (p.todayY > 0 && useEff > 0) {
+        int uy = (int)(useEff / 10000), um = (int)((useEff / 100) % 100), ud = (int)(useEff % 100);
+        long days = impresBmsToDays(p.todayY, p.todayM, p.todayD) - impresBmsToDays(uy, um, ud);
+        // Дата в майбутньому — наробітку ще немає; понад 20 років — це вже не
+        // дата, а сміття, і рахувати з неї нічого.
+        if (days < 0) days = 0;
+        if (days * 86400L < (long)RP_ETM_MAX) {
+            p.etmCalc = days * 86400L;
+            p.etmUseDate = (int)useEff;   // ознака «порахувалось», бо 0 діб — теж число
+        }
+    }
+    if (!p.etmUseDate) p.etmFromUse = false;
+    // Наробіток живе в DS2438: без прочитаного монітора писати його нікуди, і
+    // пропонувати правку означало б обіцяти те, чого не станеться.
+    etm.avail   = p.havePack38 && ((p.etmPack > 0) || p.etmUseDate > 0);
+    if (!etm.avail) etm.on = false;
+    etm.packVal = p.etmFromUse ? p.etmCalc : p.etmPack;
+
     for (int i = 0; i < RPF_COUNT; i++)
         p.fx[i].useVal = p.fx[i].on ? p.fx[i].packVal
                                     : (i == RPF_ETM ? 0 : p.fx[i].tplVal);
@@ -513,6 +553,28 @@ inline void restorePlanSetHealth(RestorePlan &p, int pct) {
 inline void restorePlanSetUse(RestorePlan &p, int y, int m, int d) {
     if (y < 2005 || y > 2035 || m < 1 || m > 12 || d < 1 || d > 31) y = m = d = 0;
     p.useUserY = y; p.useUserM = m; p.useUserD = d;
+    // Вписана дата — свідома дія: одразу переводимо наробіток на неї. Інакше
+    // людина вписала б дату, а рація й далі показувала б свою — пораховану зі
+    // старого наробітку монітора.
+    if (y > 0) p.etmFromUse = true;
+    restorePlanRecalc(p);
+    // Чи є що рахувати, видно лише після перерахунку; а вмикати правку треба
+    // ДО другого — інакше «буде записано» лишиться від попереднього стану.
+    if (y > 0 && p.etmUseDate > 0) { p.fx[RPF_ETM].on = true; restorePlanRecalc(p); }
+}
+
+// Сьогоднішня дата — від клієнта (годинника в пристрої немає). 0 — не знаємо;
+// тоді наробіток із дати першого запуску порахувати нема з чого.
+inline void restorePlanSetToday(RestorePlan &p, int y, int m, int d) {
+    if (y < 2005 || y > 2099 || m < 1 || m > 12 || d < 1 || d > 31) y = m = d = 0;
+    p.todayY = y; p.todayM = m; p.todayD = d;
+    restorePlanRecalc(p);
+}
+
+// Звідки брати наробіток: true — рахувати з дати першого запуску, false —
+// лишити той, що вже в моніторі пакета.
+inline void restorePlanSetEtmSource(RestorePlan &p, bool fromUse) {
+    p.etmFromUse = fromUse;
     restorePlanRecalc(p);
 }
 

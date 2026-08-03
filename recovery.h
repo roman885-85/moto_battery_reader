@@ -553,7 +553,8 @@ static String wizExecStep(int idx, const String &model, const String &fixes = St
                           long ratedMah = -1, long rsRaw = -1,
                           const String &rsModel = String(), long mfg = -1,
                           int tailMode = 0 /* RTAIL_FRESH */, int health = -1,
-                          long useDate = -1, int cal = -1, int cyc = -1, int nonImp = -1) {
+                          long useDate = -1, int cal = -1, int cyc = -1, int nonImp = -1,
+                          long today = -1, int etmSrc = -1) {
     BatteryDiag d; wizAnalyze(d);
     wizJournalLoad();
 
@@ -588,7 +589,7 @@ static String wizExecStep(int idx, const String &model, const String &fixes = St
             if (buildRestorePlanFor(m.c_str(), wp, true)) {
                 restorePlanOverride(wp, fixes.length() ? fixes.c_str() : nullptr,
                                     ratedMah, rsRaw, rsModel.c_str(), mfg, health,
-                                    useDate, cal, cyc, nonImp);
+                                    useDate, cal, cyc, nonImp, today, etmSrc);
                 wpp = &wp;
             }
             ok = performRestoreTemplate(m.c_str(), &o33, &o38, false, wpp, tailMode);

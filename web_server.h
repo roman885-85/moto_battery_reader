@@ -2004,6 +2004,18 @@ static String restorePlanJson(const RestorePlan &p) {
     j += ",\"hpReal\":";    j += p.healthReal;
     j += ",\"hpUser\":";    j += p.healthUser;
     j += ",\"ctsUse\":";    j += (int)p.ctsUse;
+    // Дата першого запуску, калібрування й лічильники циклів. Дати — числом
+    // YYYYMMDD; -1 у лічильниках означає «не вписували» (0 — повноцінне число).
+    j += ",\"useSeen\":";   j += p.useSeen;
+    j += ",\"useReal\":";   j += p.useReal;
+    j += ",\"useUser\":";   j += restoreDateNum(p.useUserY, p.useUserM, p.useUserD);
+    j += ",\"calSeen\":";   j += p.calSeen;
+    j += ",\"calReal\":";   j += p.calReal;
+    j += ",\"calUser\":";   j += p.calUser;
+    j += ",\"cycNow\":";    j += p.cycNow;
+    j += ",\"cycUser\":";   j += p.cycUser;
+    j += ",\"nonNow\":";    j += p.nonNow;
+    j += ",\"nonUser\":";   j += p.nonUser;
     j += ",\"rsLib\":[";
     bool first = true;
     for (int i = 0; i < BATTERY_TEMPLATE_COUNT; i++) {
@@ -2051,12 +2063,17 @@ static String restorePlanJson(const RestorePlan &p) {
 //   rsModel — шунт із бібліотеки еталонів за назвою моделі; головніший за rsRaw
 static void restorePlanOverride(RestorePlan &p, const char *fixes, long rated,
                                 long rsRaw, const char *rsModel, long mfg = -1,
-                                int health = -1) {
+                                int health = -1, long useDate = -1, int cal = -1,
+                                int cyc = -1, int nonImp = -1) {
     if (rated >= 0) restorePlanSetRated(p, rated);
     // Дата виготовлення — одним числом YYYYMMDD (0 прибирає ручне значення).
     if (mfg >= 0) restorePlanSetMfg(p, (int)(mfg / 10000), (int)((mfg / 100) % 100),
                                     (int)(mfg % 100));
     if (health >= 0) restorePlanSetHealth(p, health);
+    if (useDate >= 0) restorePlanSetUse(p, (int)(useDate / 10000),
+                                        (int)((useDate / 100) % 100), (int)(useDate % 100));
+    if (cal >= -1 && cal != -1) restorePlanSetCal(p, cal);
+    if (cyc != -1 || nonImp != -1) restorePlanSetCycles(p, cyc, nonImp);
     if (rsModel && *rsModel)
         restorePlanSetRsense(p, templateRsenseRawByName(rsModel), rsModel);
     else if (rsRaw >= 0) restorePlanSetRsense(p, rsRaw);
@@ -2067,11 +2084,16 @@ static void restorePlanOverride(RestorePlan &p, const char *fixes, long rated,
         char rsSrc[16]; snprintf(rsSrc, sizeof(rsSrc), "%s", p.rsSrc);
         int  my = p.mfgUserY, mm = p.mfgUserM, md = p.mfgUserD;
         int  hp = p.healthUser;
+        int  uy = p.useUserY, um = p.useUserM, ud = p.useUserD;
+        int  ca = p.calUser, cy = p.cycUser, ni = p.nonUser;
         restorePlanSetMask(p, m);
         if (user > 0 && (m & (1UL << RPF_RATED))) restorePlanSetRated(p, user);
         if (rsUser > 0 && (m & (1UL << RPF_RSENSE))) restorePlanSetRsense(p, rsUser, rsSrc);
         if (my > 0 && (m & (1UL << RPF_CRYPT))) restorePlanSetMfg(p, my, mm, md);
         if (hp > 0 && (m & (1UL << RPF_CRYPT))) restorePlanSetHealth(p, hp);
+        if (uy > 0 && (m & (1UL << RPF_CRYPT))) restorePlanSetUse(p, uy, um, ud);
+        if (ca >= 0 && (m & (1UL << RPF_CRYPT))) restorePlanSetCal(p, ca);
+        if ((cy >= 0 || ni >= 0) && (m & (1UL << RPF_HIST))) restorePlanSetCycles(p, cy, ni);
     }
 }
 
@@ -2088,7 +2110,11 @@ static void applyPlanArgs(RestorePlan &p) {
         server.hasArg("rsense") ? server.arg("rsense").toInt() : -1,
         rsm.c_str(),
         server.hasArg("mfg") ? server.arg("mfg").toInt() : -1,
-        server.hasArg("health") ? server.arg("health").toInt() : -1);
+        server.hasArg("health") ? server.arg("health").toInt() : -1,
+        server.hasArg("use")    ? server.arg("use").toInt()    : -1,
+        server.hasArg("cal")    ? server.arg("cal").toInt()    : -1,
+        server.hasArg("cyc")    ? server.arg("cyc").toInt()    : -1,
+        server.hasArg("nonimp") ? server.arg("nonimp").toInt() : -1);
 }
 
 void handleRestorePlan() {
@@ -2118,7 +2144,7 @@ bool performApplyFixes(const RestorePlan &p, bool *ok33 = nullptr, bool *ok38 = 
 
     bool need38 = hasDump2438 && (p.fx[RPF_CHARGE].on || p.fx[RPF_RSENSE].on ||
                                   p.fx[RPF_ADCOFF].on || p.fx[RPF_ETM].on);
-    bool need33 = hasDump && (p.fx[RPF_RATED].on || p.fx[RPF_CRYPT].on);
+    bool need33 = hasDump && (p.fx[RPF_RATED].on || p.fx[RPF_CRYPT].on || p.fx[RPF_HIST].on);
     if (!need33 && !need38) return false;          // нічого не обрано
 
     restorePlanApply(p, need33 ? batteryDump : nullptr,
@@ -2460,7 +2486,11 @@ void handleWizardStep() {
     server.send(200, "application/json",
                 wizExecStep(idx, model, wfx, wrated, wrs, wrsm, wmfg,
                             tailModeFromArg(server.arg("tail")),
-                            server.hasArg("health") ? server.arg("health").toInt() : -1));
+                            server.hasArg("health") ? server.arg("health").toInt() : -1,
+                            server.hasArg("use")    ? server.arg("use").toInt()    : -1,
+                            server.hasArg("cal")    ? server.arg("cal").toInt()    : -1,
+                            server.hasArg("cyc")    ? server.arg("cyc").toInt()    : -1,
+                            server.hasArg("nonimp") ? server.arg("nonimp").toInt() : -1));
 }
 // POST /api/wizard/reset — скинути журнал продовження ПОТОЧНОГО АКБ (під паролем).
 void handleWizardReset() {

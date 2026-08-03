@@ -69,6 +69,12 @@ struct ImpresCryptFields {
     uint8_t  firstUse, cts;                                     // …він же
     int      mfgY, mfgM, mfgD;                                  // блок DATE
     uint16_t dayInitialUse;
+    // ⚑ Поле-близнюк за зсувом +5..+6. Його призначення ми не розібрали, але
+    // виміряно: у 40 дампах із 43 воно ПОБАЙТОВО дорівнює dayInitialUse, а в
+    // трьох відрізняється на одиниці. Тож читаємо й пишемо його разом із
+    // основним — інакше після правки вони розійшлися б, чого в живих пакетах
+    // практично не буває.
+    uint16_t dayInitialUse2;
 };
 
 inline uint16_t impresCryptAddr(const uint8_t *d33, int vec) {
@@ -112,7 +118,8 @@ inline void impresCryptRead(const uint8_t *d33, uint8_t k1, uint8_t k2,
     if (aDat != BMS_INVALID && impresBmsBlockOk(d33, aDat)) {
         f->haveDat = true;
         impresBmsDecDate(bmsBE(d33, aDat + 1), k1, k2, &f->mfgY, &f->mfgM, &f->mfgD);
-        f->dayInitialUse = impresBmsDecInt(bmsBE(d33, aDat + 3), 2, k1);
+        f->dayInitialUse  = impresBmsDecInt(bmsBE(d33, aDat + 3), 2, k1);
+        f->dayInitialUse2 = impresBmsDecInt(bmsBE(d33, aDat + 5), 2, k1);
     }
 }
 
@@ -142,8 +149,45 @@ inline void impresCryptWrite(uint8_t *d33, uint8_t k1, uint8_t k2,
     if (f->haveDat && impresCryptBlockUsable(d33, aDat, 6)) {
         impresCryptPutBE(d33, aDat + 1, impresCryptEncDate(f->mfgY, f->mfgM, f->mfgD, k1, k2));
         impresCryptPutBE(d33, aDat + 3, impresCryptEncInt(f->dayInitialUse, 2, k1));
+        if (impresCryptBlockUsable(d33, aDat, 8))
+            impresCryptPutBE(d33, aDat + 5, impresCryptEncInt(f->dayInitialUse2, 2, k1));
         impresFixRecord(d33, aDat, d33[aDat]);
     }
+}
+
+// ═══════════════════ ЛІЧИЛЬНИКИ ЦИКЛІВ (БЕЗ ШИФРУВАННЯ) ═══════════════════
+//  Ці два числа ключа не потребують — саме тому фірмове ПЗ показує їх завжди.
+//
+//  «Цикли заряду IMPRES» лежать у гістограмі доданого заряду (блок ADDED):
+//  нульовий кошик несе САМУ суму циклів, решта дев'ять — розподіл. Читання
+//  (impresBmsCyclesFromHist): якщо h0 >= суми решти, то це й є відповідь.
+//  Отже, щоб записати N, досить покласти h0 = N — але лише поки решта не
+//  більша за N. Якщо більша, розподіл масштабуємо, зберігаючи форму: інакше
+//  формула поверне суму всіх кошиків замість N.
+//
+//  «Цикли не-IMPRES» — просте 16-бітне число в блоці NONSMART за зсувом +7.
+inline bool impresCyclesWrite(uint8_t *d33, int cycles) {
+    uint16_t a = impresBmsVector(d33, BMS_V_ADDED);
+    if (cycles < 0 || !impresCryptBlockUsable(d33, a, 21)) return false;
+    long rest = 0;
+    for (int i = 1; i < 10; i++) rest += bmsBE(d33, a + 1 + i * 2);
+    if (rest > cycles) {                       // стиснути розподіл під нову суму
+        for (int i = 1; i < 10; i++) {
+            long v = bmsBE(d33, a + 1 + i * 2);
+            impresCryptPutBE(d33, a + 1 + i * 2, (uint16_t)(rest ? v * cycles / rest : 0));
+        }
+    }
+    impresCryptPutBE(d33, a + 1, (uint16_t)cycles);
+    impresFixRecord(d33, a, d33[a]);
+    return true;
+}
+
+inline bool impresNonImpresWrite(uint8_t *d33, int cycles) {
+    uint16_t a = impresBmsVector(d33, BMS_V_NONSMART);
+    if (cycles < 0 || !impresCryptBlockUsable(d33, a, 10)) return false;
+    impresCryptPutBE(d33, a + 7, (uint16_t)cycles);
+    impresFixRecord(d33, a, d33[a]);
+    return true;
 }
 
 // ------------------------------------------------------------- ключ вмісту

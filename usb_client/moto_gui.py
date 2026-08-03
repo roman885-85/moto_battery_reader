@@ -2214,6 +2214,44 @@ class App:
             return 0
         return y * 10000 + m * 100 + d
 
+    def _rp_entry(self, parent, width, value=""):
+        """Поле правки: створити, заповнити й підписати на перерахунок плану."""
+        e = ttk.Entry(parent, width=width)
+        e.pack(side="left", padx=4)
+        if value:
+            e.insert(0, value)
+        e.bind("<Return>", lambda _e: self._rp_recalc())
+        e.bind("<FocusOut>", lambda _e: self._rp_recalc())
+        return e
+
+    def _rp_int(self, attr):
+        """Ціле з поля правки; -1 = не вписували (нуль тут — повноцінне число)."""
+        e = getattr(self, attr, None)
+        if e is None:
+            return -1
+        t = (e.get() or "").strip()
+        if not t:
+            return -1
+        try:
+            v = int(t)
+        except (ValueError, tk.TclError):
+            return -1
+        return v if 0 <= v <= 65535 else -1
+
+    def _rp_use(self):
+        """Дата першого запуску як YYYYMMDD; 0 — не вписували."""
+        e = getattr(self, "eRpUse", None)
+        if e is None:
+            return 0
+        t = (e.get() or "").strip().replace(".", "-").replace("/", "-")
+        if not t:
+            return 0
+        try:
+            y, m, d = (int(x) for x in t.split("-"))
+        except (ValueError, tk.TclError):
+            return 0
+        return y * 10000 + m * 100 + d if (2005 <= y <= 2035 and 1 <= m <= 12 and 1 <= d <= 31) else 0
+
     def _rp_health(self):
         """Вписаний вручну знос, %; порожньо/сміття -> 0."""
         e = getattr(self, "eRpHp", None)
@@ -2233,8 +2271,11 @@ class App:
             k.append("rated")
         if (self._rp_rsense() or self._rp_rsmodel()) and "rsense" not in k:
             k.append("rsense")
-        if (self._rp_mfg() or self._rp_health()) and "crypt" not in k:
+        if (self._rp_mfg() or self._rp_health() or self._rp_use()
+                or self._rp_int("eRpCal") >= 0) and "crypt" not in k:
             k.append("crypt")
+        if (self._rp_int("eRpCyc") >= 0 or self._rp_int("eRpNon") >= 0) and "hist" not in k:
+            k.append("hist")
         return ",".join(k)
 
     def _rp_args(self):
@@ -2245,7 +2286,11 @@ class App:
         return (" FIXES=" + self._rp_keys() + (" RATED=%d" % r if r else "") +
                 (" RSMODEL=%s" % rsm if rsm else (" RSENSE=%d" % rs if rs else "")) +
                 (" MFG=%d" % mfg if mfg else "") +
-                (" HEALTH=%d" % self._rp_health() if self._rp_health() else ""))
+                (" HEALTH=%d" % self._rp_health() if self._rp_health() else "") +
+                (" USE=%d" % self._rp_use() if self._rp_use() else "") +
+                (" CAL=%d" % self._rp_int("eRpCal") if self._rp_int("eRpCal") >= 0 else "") +
+                (" CYC=%d" % self._rp_int("eRpCyc") if self._rp_int("eRpCyc") >= 0 else "") +
+                (" NONIMP=%d" % self._rp_int("eRpNon") if self._rp_int("eRpNon") >= 0 else ""))
 
     def _rp_fixes_arg(self):
         if self.rpPlan is None:
@@ -2336,7 +2381,7 @@ class App:
             else:
                 ttk.Label(self.rpGrid, text="—", foreground="#6b6f58").grid(row=i, column=0, sticky="w")
             title = f.get("title", "") + "  ·  пише в " + f.get("chipsText", "")
-            if not avail and f.get("key") not in ("rated", "rsense", "crypt"):
+            if not avail and f.get("key") not in ("rated", "rsense", "crypt", "hist"):
                 title += "  (джерела немає)"
             # wraplength — щоб довга назва переносилась, а не заповзала під
             # стовпець значень і не обрізалась на вузькому вікні.
@@ -2420,10 +2465,38 @@ class App:
                         self.eRpHp.insert(0, str(p["hpUser"]))
                     self.eRpHp.bind("<Return>", lambda _e: self._rp_recalc())
                     self.eRpHp.bind("<FocusOut>", lambda _e: self._rp_recalc())
+                    sub2 = ttk.Frame(cell); sub2.pack(anchor="w", pady=(2, 0))
+                    ttk.Label(sub2, text="дата запуску (РРРР-ММ-ДД):",
+                              foreground="#b9bd86").pack(side="left")
+                    self.eRpUse = self._rp_entry(sub2, 11, _dnum(p.get("useUser", 0))
+                                                 if p.get("useUser") else "")
+                    ttk.Label(sub2, text="калібрувань:", foreground="#b9bd86").pack(side="left")
+                    self.eRpCal = self._rp_entry(sub2, 6,
+                                                 str(p["calUser"]) if p.get("calUser", -1) >= 0 else "")
+                    ttk.Label(cell, foreground="#6b6f58", justify="left", wraplength=460,
+                              text="рація зараз читає запуск %s, калібрувань %s"
+                                   % (_dnum(p.get("useSeen", 0)),
+                                      p.get("calSeen") if p.get("calSeen", -1) >= 0 else "—")
+                              ).pack(anchor="w")
                     ttk.Label(cell, foreground="#6b6f58", justify="left", wraplength=460,
                               text=("рація зараз читає знос %s; буде записано CTS = %d"
                                     % (("%d %%" % p["hpSeen"]) if p.get("hpSeen") else "—",
                                        p.get("ctsUse", 0)))).pack(anchor="w")
+            # Цикли ключа не потребують — окремий рядок із двома полями.
+            if f.get("key") == "hist":
+                sub = ttk.Frame(cell); sub.pack(anchor="w", pady=(2, 0))
+                ttk.Label(sub, text="циклів IMPRES:", foreground="#b9bd86").pack(side="left")
+                self.eRpCyc = self._rp_entry(sub, 7,
+                                             str(p["cycUser"]) if p.get("cycUser", -1) >= 0 else "")
+                ttk.Label(sub, text="не-IMPRES:", foreground="#b9bd86").pack(side="left")
+                self.eRpNon = self._rp_entry(sub, 7,
+                                             str(p["nonUser"]) if p.get("nonUser", -1) >= 0 else "")
+                ttk.Label(cell, foreground="#6b6f58", justify="left", wraplength=460,
+                          text="зараз у чипі: IMPRES %s, не-IMPRES %s  ·  0 — «як новий»"
+                               % (p.get("cycNow") if p.get("cycNow", -1) >= 0 else "—",
+                                  p.get("nonNow") if p.get("nonNow", -1) >= 0 else "—")
+                          ).pack(anchor="w")
+
             for c, key, col in ((2, "tpl", "#9a9c82"), (3, "pack", "#e7e3d2"), (4, "use", "#c8b04a")):
                 ttk.Label(self.rpGrid, text=f.get(key, "—"), font=mono,
                           foreground=col if avail else "#6b6f58").grid(row=i, column=c, sticky="e", padx=4)

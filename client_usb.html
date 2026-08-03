@@ -137,6 +137,9 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 @keyframes dmflash{0%{color:var(--gold)}100%{color:inherit}}
 .dmwarn{margin-top:9px;font-size:.82em;padding:8px 10px;border-radius:8px;background:#4a1512;color:#ff9b8f;display:none}
 .badge{padding:2px 8px;border-radius:20px;font-size:.85em}.bo{background:#123d24;color:var(--grn)}.bb{background:#4a1512;color:#ff9b8f}
+.rpg{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:6px;margin-top:6px}
+.rpf{display:flex;align-items:center;gap:6px;justify-content:space-between}
+.rpf span{color:#9a9c82;font-size:.9em}
 .subnav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
 .subtab{padding:7px 13px;border:1px solid #3c4530;border-radius:8px;background:#252b1c;
         color:#9a9c82;cursor:pointer;font-size:.9em;user-select:none}
@@ -1382,10 +1385,11 @@ function rpRender(){
     if(f.key==='rated')  extra=rpRatedBox(p);
     if(f.key==='rsense') extra=rpRsBox(p);
     if(f.key==='crypt')  extra=rpMfgBox(p);
+    if(f.key==='hist')   extra=rpHistBox(p);
     h+='<tr class="'+cls+'"><td>'+
        (f.avail?'<input type="checkbox" data-k="'+f.key+'"'+(f.on?' checked':'')+' onchange="rpApply()">':'—')+
        '</td><td><b>'+wesc(f.title)+'</b> <span class="chipb">пише в '+wesc(f.chipsText)+'</span>'+
-       '<div class="det">'+wesc(f.detail)+(f.avail||f.key==='rated'||f.key==='rsense'||f.key==='crypt'?'':' <b>Джерела немає</b> — мікросхема не читається або поле порожнє.')+'</div>'+
+       '<div class="det">'+wesc(f.detail)+(f.avail||f.key==='rated'||f.key==='rsense'||f.key==='crypt'||f.key==='hist'?'':' <b>Джерела немає</b> — мікросхема не читається або поле порожнє.')+'</div>'+
        extra+'</td>'+
        '<td class="num dim">'+wesc(f.tpl)+'</td><td class="num">'+wesc(f.pack)+'</td>'+
        '<td class="use">'+wesc(f.use)+'</td></tr>';
@@ -1440,30 +1444,45 @@ function rpMfgBox(p){
   if(!p.haveRom) return '<div class="det"><b>ROM чипа невідомий</b> — правка можлива '+
     'лише на живому чипі (для дампа з файлу ключ узяти нізвідки).</div>';
   const dt=v=>v?(''+v).replace(/^(\d{4})(\d{2})(\d{2})$/,'$1-$2-$3'):'—';
-  const hp=v=>v?(v+' %'):'—';
+  const nn=v=>(v>=0?v:'—');
   let w;
   if(p.cryptWrong)
-    w='⚠️ Вміст зашифровано <b>чужим ключем</b>: рація читає дату <b>'+dt(p.mfgSeen)+
-      '</b> і знос <b>'+hp(p.hpSeen)+'</b>, насправді це <b>'+dt(p.mfgReal)+'</b> і <b>'+
-      hp(p.hpReal)+'</b>.';
+    w='⚠️ Вміст зашифровано <b>чужим ключем</b>: рація читає вигот. <b>'+dt(p.mfgSeen)+
+      '</b>, запуск <b>'+dt(p.useSeen)+'</b>, знос <b>'+nn(p.hpSeen)+' %</b>. Насправді: <b>'+
+      dt(p.mfgReal)+'</b>, <b>'+dt(p.useReal)+'</b>, <b>'+nn(p.hpReal)+' %</b>.';
   else if(p.cryptUnknown)
-    w='⚠️ Вміст <b>ні з чим не узгоджений</b> — яким ключем його писали, визначити не '+
-      'вдається. Рація читає дату <b>'+dt(p.mfgSeen)+'</b>, знос <b>'+hp(p.hpSeen)+
-      '</b>. Перенести звідси нічого не можна, але <b>дату й знос можна вписати вручну</b>.';
+    w='⚠️ Вміст <b>ні з чим не узгоджений</b> — ключ визначити не вдається. Рація читає '+
+      'вигот. <b>'+dt(p.mfgSeen)+'</b>, запуск <b>'+dt(p.useSeen)+'</b>. Перенести звідси '+
+      'нічого не можна, але поля нижче <b>можна вписати вручну</b>.';
   else
-    w='Ключ вмісту збігається з ROM цього чипа. Знос усе одно можна вписати вручну.';
-  return '<div class="det">'+w+
-    '<br>Дата виготовлення: <input type="date" id="rpMfg" value="'+(p.mfgUser?dt(p.mfgUser):'')+
-    '" onchange="rpApply()" style="margin-top:4px">'+
-    '&nbsp;&nbsp;Знос, %: <input type="number" id="rpHp" min="1" max="100" step="1" '+
-    'placeholder="як є" value="'+(p.hpUser>0?p.hpUser:'')+'" onchange="rpApply()" '+
-    'style="width:80px;margin-top:4px">'+
-    '<div class="dim" style="margin-top:4px">Знос рахується від ефективних шунта й паспортної '+
-    'ємності. '+(p.hpUser>0?('Буде записано CTS = '+p.ctsUse+'.'):'Порожньо — лишити як є.')+
-    '</div></div>';
+    w='Ключ вмісту збігається з ROM цього чипа. Поля нижче все одно можна вписати вручну.';
+  return '<div class="det">'+w+'<div class="rpg">'+
+    rpF('Дата виготовлення','<input type="date" id="rpMfg" value="'+(p.mfgUser?dt(p.mfgUser):'')+
+        '" onchange="rpApply()">')+
+    rpF('Дата першого запуску','<input type="date" id="rpUse" value="'+(p.useUser?dt(p.useUser):'')+
+        '" onchange="rpApply()">')+
+    rpF('Знос, %','<input type="number" id="rpHp" min="1" max="100" placeholder="як є" value="'+
+        (p.hpUser>0?p.hpUser:'')+'" onchange="rpApply()" style="width:80px">')+
+    rpF('Калібрувань','<input type="number" id="rpCal" min="0" max="65535" placeholder="як є" value="'+
+        (p.calUser>=0?p.calUser:'')+'" onchange="rpApply()" style="width:80px">')+
+    '</div><div class="dim" style="margin-top:4px">Порожнє поле — лишити як є.'+
+    (p.hpUser>0?(' Знос запишеться як CTS = '+p.ctsUse+'.'):'')+'</div></div>';
 }
+function rpHistBox(p){
+  const nn=v=>(v>=0?v:'—');
+  return '<div class="det">Зараз у чипі: IMPRES <b>'+nn(p.cycNow)+'</b>, не-IMPRES <b>'+
+    nn(p.nonNow)+'</b>. Читаються без ключа — фірмове ПЗ показує саме їх.<div class="rpg">'+
+    rpF('Циклів заряду (IMPRES)','<input type="number" id="rpCyc" min="0" max="65535" '+
+        'placeholder="як є" value="'+(p.cycUser>=0?p.cycUser:'')+'" onchange="rpApply()" style="width:80px">')+
+    rpF('Циклів не-IMPRES','<input type="number" id="rpNon" min="0" max="65535" '+
+        'placeholder="як є" value="'+(p.nonUser>=0?p.nonUser:'')+'" onchange="rpApply()" style="width:80px">')+
+    '</div><div class="dim" style="margin-top:4px">0 — «пакет як новий». Порожньо — лишити як є.</div></div>';
+}
+function rpF(lab,inp){return '<div class="rpf"><span>'+lab+'</span>'+inp+'</div>';}
 function rpMfg(){const e=$('rpMfg');return e&&e.value?e.value.replace(/-/g,''):'';}
 function rpHp(){const e=$('rpHp');return e&&e.value?e.value:'';}
+function rpUse(){const e=$('rpUse');return e&&e.value?e.value.replace(/-/g,''):'';}
+function rpNum(id){const e=$(id);return e&&e.value!==''?e.value:'';}
 // Режим навченого хвоста: «свіжий» скелет чи стирання в 0xFF (див. картку).
 function restTail(){const e=$('restTail');return e&&e.value?e.value:'fresh';}
 function rpKeys(){
@@ -1473,7 +1492,8 @@ function rpKeys(){
   // бути (рядок був недоступним, поки поле стояло порожнім).
   if(rpRated()&&k.indexOf('rated')<0)k.push('rated');
   if((rpRs()||rpRsModel())&&k.indexOf('rsense')<0)k.push('rsense');
-  if((rpMfg()||rpHp())&&k.indexOf('crypt')<0)k.push('crypt');
+  if((rpMfg()||rpHp()||rpUse()||rpNum('rpCal'))&&k.indexOf('crypt')<0)k.push('crypt');
+  if((rpNum('rpCyc')||rpNum('rpNon'))&&k.indexOf('hist')<0)k.push('hist');
   return k.join(',');
 }
 function rpRated(){const e=$('rpRated');return e&&e.value?e.value:'';}
@@ -1481,7 +1501,11 @@ function rpArgs(){
   // Модель із бібліотеки й ручне число взаємно виключні — так само, як у полях.
   return ' FIXES='+rpKeys()+(rpRated()?(' RATED='+rpRated()):'')+
          (rpRsModel()?(' RSMODEL='+rpRsModel()):(rpRs()?(' RSENSE='+rpRs()):''))+
-         (rpMfg()?(' MFG='+rpMfg()):'')+(rpHp()?(' HEALTH='+rpHp()):'');
+         (rpMfg()?(' MFG='+rpMfg()):'')+(rpHp()?(' HEALTH='+rpHp()):'')+
+         (rpUse()?(' USE='+rpUse()):'')+
+         (rpNum('rpCal')?(' CAL='+rpNum('rpCal')):'')+
+         (rpNum('rpCyc')?(' CYC='+rpNum('rpCyc')):'')+
+         (rpNum('rpNon')?(' NONIMP='+rpNum('rpNon')):'');
 }
 // Перерахунок робить ПРИСТРІЙ: паливомір залежить від того, який шунт опиниться
 // в чипі, і рахувати це вдруге тут означало б завести другу формулу, яка одного

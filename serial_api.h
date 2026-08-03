@@ -35,12 +35,12 @@
 //   DISCHARGE STOP       -> зупинити розряд;  DISCHARGE ? -> стан розряду
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
 //   RESTORE <MODEL> [VERBATIM] [FIXES=..] [RATED=мАг] [RSENSE=мОм*100|RSMODEL=..] [MFG=..]
-//            [TAIL=FRESH|ERASE] [HEALTH=%] -> відновити модельну
+//            [TAIL=FRESH|ERASE] [HEALTH=%] [USE=РРРРММДД] [CAL=] [CYC=] [NONIMP=] -> відновити модельну
 //                          частину еталона (без чужого навченого хвоста), з
 //                          правками під цей пакет; VERBATIM — байт-у-байт
-//   RESTOREPLAN <MODEL> [NOREAD] [FIXES=..] [RATED=мАг] [RSENSE=..|RSMODEL=..] [MFG=..] [HEALTH=%] -> що саме буде
+//   RESTOREPLAN <MODEL> [NOREAD] [FIXES=..] [RATED=мАг] [RSENSE=..|RSMODEL=..] [MFG=..] [HEALTH=%] [USE=РРРРММДД] [CAL=] [CYC=] [NONIMP=] -> що саме буде
 //                          виправлено в еталоні під цей пакет (нічого не пише)
-//   FIXES <MODEL> [FIXES=..] [RATED=мАг] [RSENSE=..|RSMODEL=..] [MFG=..] [HEALTH=%] -> записати ЛИШЕ правки до того, що вже
+//   FIXES <MODEL> [FIXES=..] [RATED=мАг] [RSENSE=..|RSMODEL=..] [MFG=..] [HEALTH=%] [USE=РРРРММДД] [CAL=] [CYC=] [NONIMP=] -> записати ЛИШЕ правки до того, що вже
 //                          в чипах; еталон і навчена калібровка не чіпаються
 //   WIZARD               -> Майстер: зчитати + аналіз/проблеми/план (JSON)
 //   WIZSTEP <idx> [MODEL]-> Майстер: виконати крок плану (model для відновлення)
@@ -337,16 +337,17 @@ static String serSound(const String &argIn) {
 
 // Хвіст команд RESTORE / RESTOREPLAN: «<МОДЕЛЬ> [VERBATIM] [NOREAD] [FIXES=a,b]
 // [RATED=мАг] [RSENSE=мОм*100] [RSMODEL=МОДЕЛЬ] [MFG=РРРРММДД] [TAIL=FRESH|ERASE]
-// [HEALTH=%]». RSENSE/RSMODEL — шунт, коли в
+// [HEALTH=%] [USE=РРРРММДД] [CAL=] [CYC=] [NONIMP=]». RSENSE/RSMODEL — шунт, коли в
 // пакеті свого немає: числом або з бібліотеки еталонів.
 // Одна функція на обидві команди — щоб вони не розійшлися в тому, що вважають
 // моделлю, а що прапорцем. Модель — перше слово, яке не є прапорцем; регістр
 // моделі й прапорців не має значення, а от ключі правок завжди малими.
 struct SerRestoreArgs { String model, fixes, rsModel; bool verbatim, reread, haveFixes;
-                       long rated, rsense, mfg; int tail, health; };
+                       long rated, rsense, mfg, useDate; int tail, health, cal, cyc, nonImp; };
 static SerRestoreArgs serParseRestore(const String &argIn) {
     SerRestoreArgs a; a.verbatim = false; a.reread = true; a.haveFixes = false;
     a.rated = -1; a.rsense = -1; a.mfg = -1; a.tail = 0 /* RTAIL_FRESH */; a.health = -1;
+    a.useDate = -1; a.cal = -1; a.cyc = -1; a.nonImp = -1;
     String rest = argIn; rest.trim();
     while (rest.length()) {
         int s = rest.indexOf(' ');
@@ -368,6 +369,12 @@ static SerRestoreArgs serParseRestore(const String &argIn) {
         else if (up.startsWith("TAIL="))    a.tail = (up.substring(5) == "ERASE") ? 1 : 0;
         // HEALTH=80 — знос (здоров'я) у відсотках; 0 прибирає ручне значення.
         else if (up.startsWith("HEALTH="))  a.health = up.substring(7).toInt();
+        // USE=РРРРММДД — дата першого запуску; CAL/CYC/NONIMP — лічильники,
+        // у них 0 є повноцінним значенням, тож «не вписували» — це відсутність.
+        else if (up.startsWith("USE="))     a.useDate = up.substring(4).toInt();
+        else if (up.startsWith("CAL="))     a.cal    = up.substring(4).toInt();
+        else if (up.startsWith("CYC="))     a.cyc    = up.substring(4).toInt();
+        else if (up.startsWith("NONIMP="))  a.nonImp = up.substring(7).toInt();
         else if (!a.model.length())       a.model = up;
     }
     return a;
@@ -377,7 +384,8 @@ static SerRestoreArgs serParseRestore(const String &argIn) {
 // паливомір, тож двома незалежними кроками ми показали б проміжне число.
 static void serApplyPlanArgs(RestorePlan &p, const SerRestoreArgs &a) {
     restorePlanOverride(p, a.haveFixes ? a.fixes.c_str() : nullptr,
-                        a.rated, a.rsense, a.rsModel.c_str(), a.mfg, a.health);
+                        a.rated, a.rsense, a.rsModel.c_str(), a.mfg, a.health,
+                        a.useDate, a.cal, a.cyc, a.nonImp);
 }
 
 // Каталог операцій (operations.h) — щоб десктопний клієнт малював той самий
@@ -548,7 +556,7 @@ static void serialExec(const String &line) {
                                          if (e) { String r = "{\"ok\":false,\"err\":\""; r += e; r += "\"}"; sResp(r); }
                                          else sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); } }
     else if (cmd == "WIZARD")   { sResp(wizStart()); }
-    // WIZSTEP <idx> [MODEL] [FIXES=…] [RATED=…] [RSENSE=…|RSMODEL=…] [MFG=…] [HEALTH=…]
+    // WIZSTEP <idx> [MODEL] [FIXES=…] [RATED=…] [RSENSE=…|RSMODEL=…] [MFG=…] [HEALTH=…] [USE=…] [CAL=…] [CYC=…] [NONIMP=…]
     else if (cmd == "WIZSTEP")  { int s2 = arg.indexOf(' ');
                                   String si = (s2 < 0) ? arg : arg.substring(0, s2);
                                   String rest = (s2 < 0) ? String("") : arg.substring(s2 + 1);
@@ -556,7 +564,8 @@ static void serialExec(const String &line) {
                                   SerRestoreArgs wa = serParseRestore(rest);
                                   sResp(wizExecStep(si.toInt(), wa.model, wa.fixes, wa.rated,
                                                     wa.rsense, wa.rsModel, wa.mfg, wa.tail,
-                                                    wa.health)); }
+                                                    wa.health, wa.useDate, wa.cal,
+                                                    wa.cyc, wa.nonImp)); }
     else if (cmd == "WIZRESET") { wizJournalClear(); sResp("{\"ok\":true}"); }
     else if (cmd == "WIZLIST")  { sResp(wizJournalListJson()); }
     else if (cmd == "WIZDEL")   { String s = arg; s.trim(); s.toUpperCase();

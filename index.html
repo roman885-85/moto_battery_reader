@@ -82,6 +82,10 @@
         .note.w{background:#3a2a10;color:#f0c274;border-color:var(--warn)}
         /* Під-вкладки всередині «Ремонту»: сторінка була на 18 карток в один
            скрол, і знайти потрібну можна було лише прокруткою. */
+        /* Сітка полів усередині рядка правок — щоб чотири поля не тікали в рядок. */
+        .rpg{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:6px;margin-top:6px}
+        .rpf{display:flex;align-items:center;gap:6px;justify-content:space-between}
+        .rpf span{color:var(--dim);font-size:.9em}
         .subnav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px}
         .subtab{padding:8px 14px;border:1px solid var(--line);border-radius:8px;
                 background:var(--card2);color:var(--dim);cursor:pointer;font-size:.92em;
@@ -1179,7 +1183,9 @@ async function wizNext(){
         const body={password:pw,idx:idx,model:model};
         if(rpPlan){body.fixes=rpKeys();body.rated=rpRated()||'0';
                    body.rsense=rpRs()||'-1';body.rsmodel=rpRsModel();
-                   body.mfg=rpMfg()||'-1';body.health=rpHp()||'-1';}
+                   body.mfg=rpMfg()||'-1';body.health=rpHp()||'-1';
+                          body.use=rpUse()||'-1';body.cal=rpNum('rpCal')||'-1';
+                          body.cyc=rpNum('rpCyc')||'-1';body.nonimp=rpNum('rpNon')||'-1';}
         body.tail=restTail();
         const res=await postForm('/api/wizard/step',body);
         wizState=res;
@@ -1731,10 +1737,11 @@ function rpRender(){
         if(f.key==='rated')  extra=rpRatedBox(p);
         if(f.key==='rsense') extra=rpRsBox(p);
         if(f.key==='crypt')  extra=rpMfgBox(p);
+        if(f.key==='hist')   extra=rpHistBox(p);
         h+='<tr class="'+cls+'"><td>'+
            (f.avail?'<input type="checkbox" data-k="'+f.key+'"'+(f.on?' checked':'')+' onchange="rpApply()">':'—')+
            '</td><td><b>'+esc(f.title)+'</b> <span class="chipb">пише в '+esc(f.chipsText)+'</span>'+
-           '<div class="det">'+esc(f.detail)+(f.avail||f.key==='rated'||f.key==='rsense'||f.key==='crypt'?'':' <b>Джерела немає</b> — мікросхема не читається або поле порожнє.')+'</div>'+
+           '<div class="det">'+esc(f.detail)+(f.avail||f.key==='rated'||f.key==='rsense'||f.key==='crypt'||f.key==='hist'?'':' <b>Джерела немає</b> — мікросхема не читається або поле порожнє.')+'</div>'+
            extra+'</td>'+
            '<td class="num dim">'+esc(f.tpl)+'</td><td class="num">'+esc(f.pack)+'</td>'+
            '<td class="use">'+esc(f.use)+'</td></tr>';
@@ -1798,35 +1805,54 @@ function rpMfgBox(p){
         'лише на живому чипі (для дампа з файлу ключ узяти нізвідки).</div>';
     const dt=v=>v?(''+v).replace(/^(\d{4})(\d{2})(\d{2})$/,'$1-$2-$3'):'—';
     const hp=v=>v?(v+' %'):'—';
+    const nn=v=>(v>=0?v:'—');
     let w;
     if(p.cryptWrong)
-        w='⚠️ Вміст зашифровано <b>чужим ключем</b>: рація читає дату виготовлення як <b>'+
-          dt(p.mfgSeen)+'</b> і знос <b>'+hp(p.hpSeen)+'</b>, насправді це <b>'+dt(p.mfgReal)+
-          '</b> і <b>'+hp(p.hpReal)+'</b>. Правка перенесе ті самі числа під ROM цього чипа.';
+        w='⚠️ Вміст зашифровано <b>чужим ключем</b>: рація читає вигот. <b>'+dt(p.mfgSeen)+
+          '</b>, запуск <b>'+dt(p.useSeen)+'</b>, знос <b>'+hp(p.hpSeen)+'</b>, калібрувань <b>'+
+          nn(p.calSeen)+'</b>. Насправді: <b>'+dt(p.mfgReal)+'</b>, <b>'+dt(p.useReal)+
+          '</b>, <b>'+hp(p.hpReal)+'</b>, <b>'+nn(p.calReal)+'</b>.';
     else if(p.cryptUnknown)
-        w='⚠️ Вміст <b>ні з чим не узгоджений</b> — визначити, яким ключем його писали, '+
-          'не вдається. Рація читає дату <b>'+dt(p.mfgSeen)+'</b>, знос <b>'+hp(p.hpSeen)+
-          '</b>. Перенести звідси нічого не можна, але <b>дату й знос можна вписати '+
-          'вручну</b> — вони запишуться ключем цього чипа.';
+        w='⚠️ Вміст <b>ні з чим не узгоджений</b> — яким ключем його писали, визначити не '+
+          'вдається. Рація читає вигот. <b>'+dt(p.mfgSeen)+'</b>, запуск <b>'+dt(p.useSeen)+
+          '</b>, знос <b>'+hp(p.hpSeen)+'</b>. Перенести звідси нічого не можна, але всі '+
+          'ці поля <b>можна вписати вручну</b>.';
     else
-        w='Ключ вмісту збігається з ROM цього чипа — перешифровувати нічого. Знос усе одно '+
-          'можна вписати вручну.';
-    return '<div class="det">'+w+
-        '<br>Дата виготовлення: <input type="date" id="rpMfg" value="'+(p.mfgUser?dt(p.mfgUser):'')+
-        '" onchange="rpApply()" style="padding:5px;border-radius:6px;border:1px solid var(--line);'+
-        'background:var(--card2);color:var(--text);margin-top:4px">'+
-        '&nbsp;&nbsp;Знос (здоров\'я), %: <input type="number" id="rpHp" min="1" max="100" step="1" '+
-        'placeholder="як є" value="'+(p.hpUser>0?p.hpUser:'')+'" onchange="rpApply()" '+
-        'style="width:80px;padding:5px;border-radius:6px;border:1px solid var(--line);'+
-        'background:var(--card2);color:var(--text);margin-top:4px">'+
-        '<div class="dim" style="margin-top:4px">Знос рахується від ЕФЕКТИВНИХ шунта й '+
-        'паспортної ємності — тих, що підуть у чип після всіх правок. '+
-        (p.hpUser>0?('Буде записано CTS = '+p.ctsUse+'.'):'Порожньо — лишити як є.')+'</div></div>';
+        w='Ключ вмісту збігається з ROM цього чипа. Поля нижче все одно можна вписати вручну.';
+    return '<div class="det">'+w+'<div class="rpg">'+
+        rpF('Дата виготовлення','<input type="date" id="rpMfg" value="'+(p.mfgUser?dt(p.mfgUser):'')+
+            '" onchange="rpApply()" '+RPIN+'>')+
+        rpF('Дата першого запуску','<input type="date" id="rpUse" value="'+(p.useUser?dt(p.useUser):'')+
+            '" onchange="rpApply()" '+RPIN+'>')+
+        rpF('Знос (здоров\'я), %','<input type="number" id="rpHp" min="1" max="100" step="1" '+
+            'placeholder="як є" value="'+(p.hpUser>0?p.hpUser:'')+'" onchange="rpApply()" '+RPIN+'>')+
+        rpF('Калібрувань пройдено','<input type="number" id="rpCal" min="0" max="65535" step="1" '+
+            'placeholder="як є" value="'+(p.calUser>=0?p.calUser:'')+'" onchange="rpApply()" '+RPIN+'>')+
+        '</div><div class="dim" style="margin-top:4px">Порожнє поле — лишити як є. '+
+        (p.hpUser>0?('Знос запишеться як CTS = '+p.ctsUse+'. '):'')+
+        'Дата запуску зберігається як «стільки діб від виготовлення», тож рахується від тієї '+
+        'дати виготовлення, яка піде в чип.</div></div>';
 }
+// Цикли ключа не потребують — окремий рядок правок.
+function rpHistBox(p){
+    const nn=v=>(v>=0?v:'—');
+    return '<div class="det">Зараз у чипі: IMPRES <b>'+nn(p.cycNow)+'</b>, не-IMPRES <b>'+
+        nn(p.nonNow)+'</b>. Ці числа читаються без ключа — фірмове ПЗ показує саме їх.'+
+        '<div class="rpg">'+
+        rpF('Циклів заряду (IMPRES)','<input type="number" id="rpCyc" min="0" max="65535" step="1" '+
+            'placeholder="як є" value="'+(p.cycUser>=0?p.cycUser:'')+'" onchange="rpApply()" '+RPIN+'>')+
+        rpF('Циклів не-IMPRES','<input type="number" id="rpNon" min="0" max="65535" step="1" '+
+            'placeholder="як є" value="'+(p.nonUser>=0?p.nonUser:'')+'" onchange="rpApply()" '+RPIN+'>')+
+        '</div><div class="dim" style="margin-top:4px">0 — «пакет як новий». Порожньо — лишити як є.</div></div>';
+}
+function rpF(lab,inp){return '<div class="rpf"><span>'+lab+'</span>'+inp+'</div>';}
 // У пристрій дата йде одним числом YYYYMMDD — так само, як лежить у плані.
 function rpMfg(){const e=$('rpMfg');return e&&e.value?e.value.replace(/-/g,''):'';}
 // Знос у відсотках; порожньо — не чіпати.
 function rpHp(){const e=$('rpHp');return e&&e.value?e.value:'';}
+function rpUse(){const e=$('rpUse');return e&&e.value?e.value.replace(/-/g,''):'';}
+// У лічильниках 0 — повноцінне значення, тож «не вписували» — це порожнє поле.
+function rpNum(id){const e=$(id);return e&&e.value!==''?e.value:'';}
 // Режим навченого хвоста: «свіжий» скелет чи стирання в 0xFF (див. картку).
 function restTail(){const e=$('restTail');return e&&e.value?e.value:'fresh';}
 function rpKeys(){
@@ -1836,7 +1862,8 @@ function rpKeys(){
     // бути (рядок був недоступним, поки поле стояло порожнім).
     if(rpRated()&&k.indexOf('rated')<0)k.push('rated');
     if((rpRs()||rpRsModel())&&k.indexOf('rsense')<0)k.push('rsense');
-    if((rpMfg()||rpHp())&&k.indexOf('crypt')<0)k.push('crypt');
+    if((rpMfg()||rpHp()||rpUse()||rpNum('rpCal'))&&k.indexOf('crypt')<0)k.push('crypt');
+    if((rpNum('rpCyc')||rpNum('rpNon'))&&k.indexOf('hist')<0)k.push('hist');
     return k.join(',');
 }
 // Спільний хвіст запиту: план, запис еталона й «лише правки» мусять слати
@@ -1847,7 +1874,11 @@ function rpQuery(){
            '&rsense='+encodeURIComponent(rpRs()||'-1')+
            '&rsmodel='+encodeURIComponent(rpRsModel())+
            '&mfg='+encodeURIComponent(rpMfg()||'-1')+
-           '&health='+encodeURIComponent(rpHp()||'-1');
+           '&health='+encodeURIComponent(rpHp()||'-1')+
+           '&use='+encodeURIComponent(rpUse()||'-1')+
+           '&cal='+encodeURIComponent(rpNum('rpCal')||'-1')+
+           '&cyc='+encodeURIComponent(rpNum('rpCyc')||'-1')+
+           '&nonimp='+encodeURIComponent(rpNum('rpNon')||'-1');
 }
 function rpRated(){const e=$('rpRated');return e&&e.value?e.value:'';}
 // Перерахунок робить ПРИСТРІЙ: паливомір залежить від того, який шунт
@@ -1888,7 +1919,9 @@ async function rpWrite(){
         const r=await postForm('/api/restore/fixes',
                                {password:$('pwRest').value,model:model,fixes:rpKeys(),
                                 rated:rpRated()||'0',rsense:rpRs()||'-1',rsmodel:rpRsModel(),
-                                mfg:rpMfg()||'-1',health:rpHp()||'-1'});
+                                mfg:rpMfg()||'-1',health:rpHp()||'-1',
+                                use:rpUse()||'-1',cal:rpNum('rpCal')||'-1',
+                                cyc:rpNum('rpCyc')||'-1',nonimp:rpNum('rpNon')||'-1'});
         if(r.status==='success'){
             if(r.plan){rpPlan=r.plan;rpRender();}
             toast('✅ Правки записано ('+on.length+')','ok');
@@ -1920,7 +1953,9 @@ async function restoreBattery(){
         const body={password:pw,model:model,verbatim:verb?'1':'0',tail:restTail()};
         if(!verb&&rpPlan){body.fixes=rpKeys();body.rated=rpRated()||'0';
                           body.rsense=rpRs()||'-1';body.rsmodel=rpRsModel();
-                          body.mfg=rpMfg()||'-1';body.health=rpHp()||'-1';}
+                          body.mfg=rpMfg()||'-1';body.health=rpHp()||'-1';
+                          body.use=rpUse()||'-1';body.cal=rpNum('rpCal')||'-1';
+                          body.cyc=rpNum('rpCyc')||'-1';body.nonimp=rpNum('rpNon')||'-1';}
         const r=await postForm('/api/restore',body);
         if(r.status==='success'){
             if(r.plan){rpPlan=r.plan;rpRender();}

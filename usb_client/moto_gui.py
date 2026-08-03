@@ -2214,6 +2214,38 @@ class App:
             return 0
         return y * 10000 + m * 100 + d
 
+    def _rp_seed(self):
+        """Заповнити поля правок тим, що ЗАРАЗ прочитано з пакета.
+
+        Підставляємо лише справді відоме: якщо ключ вмісту не визначається,
+        зашифровані числа — сміття, і записати його назад уже під правильним
+        ключем було б гірше, ніж лишити поле порожнім. Лічильники циклів ключа
+        не потребують, тож ідуть завжди."""
+        p = self.rpPlan or {}
+        def put(attr, val):
+            e = getattr(self, attr, None)
+            if e is None or val in ("", None):
+                return 0
+            e.delete(0, "end"); e.insert(0, str(val))
+            return 1
+        n = 0
+        if p.get("cryptSrcOk"):
+            if p.get("mfgReal"):        n += put("eRpMfg", _dnum(p["mfgReal"]))
+            if p.get("useReal"):        n += put("eRpUse", _dnum(p["useReal"]))
+            if p.get("hpReal", 0) > 0:  n += put("eRpHp",  p["hpReal"])
+            if p.get("calReal", -1) >= 0: n += put("eRpCal", p["calReal"])
+        if p.get("cycNow", -1) >= 0: n += put("eRpCyc", p["cycNow"])
+        if p.get("nonNow", -1) >= 0: n += put("eRpNon", p["nonNow"])
+        self.status("Підставлено з акумулятора: %d пол." % n if n else "Підставляти нема чого")
+        self._rp_recalc()
+
+    def _rp_seed_clear(self):
+        for attr in ("eRpMfg", "eRpUse", "eRpHp", "eRpCal", "eRpCyc", "eRpNon"):
+            e = getattr(self, attr, None)
+            if e is not None:
+                e.delete(0, "end")
+        self._rp_recalc()
+
     def _rp_entry(self, parent, width, value=""):
         """Поле правки: створити, заповнити й підписати на перерахунок плану."""
         e = ttk.Entry(parent, width=width)
@@ -2478,6 +2510,11 @@ class App:
                                    % (_dnum(p.get("useSeen", 0)),
                                       p.get("calSeen") if p.get("calSeen", -1) >= 0 else "—")
                               ).pack(anchor="w")
+                    bar = ttk.Frame(cell); bar.pack(anchor="w", pady=(3, 0))
+                    ttk.Button(bar, text="📥 Узяти з акумулятора",
+                               command=self._rp_seed).pack(side="left", padx=2)
+                    ttk.Button(bar, text="✖ Очистити поля",
+                               command=self._rp_seed_clear).pack(side="left", padx=2)
                     ttk.Label(cell, foreground="#6b6f58", justify="left", wraplength=460,
                               text=("рація зараз читає знос %s; буде записано CTS = %d"
                                     % (("%d %%" % p["hpSeen"]) if p.get("hpSeen") else "—",

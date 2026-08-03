@@ -10,7 +10,7 @@ Moto IMPRES USB — нативний графічний клієнт (Tkinter, �
 Запуск із коду:  python moto_gui.py
 Збірка .exe:     build.bat
 """
-import sys, os, re, time, json, math, queue, threading
+import sys, os, re, time, json, math, queue, threading, datetime
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from tkinter import font as tkfont
@@ -190,6 +190,8 @@ class SerialWorker(threading.Thread):
 RP_RS_MANUAL = "— вручну —"
 # Режим навченого хвоста 0x18A..0x1FF; порядок важливий — [0] типовий, [1] стирання.
 TAIL_MODES = ("Свіжий (скелет + нулі)", "Стерти в 0xFF")
+# Звідки брати наробіток; порядок важливий — [0] свій, [1] із дати запуску.
+RP_ETM_SRC = ("наробіток самого пакета", "порахувати з дати першого запуску")
 
 
 def _dnum(v):
@@ -2234,6 +2236,9 @@ class App:
             if p.get("useReal"):        n += put("eRpUse", _dnum(p["useReal"]))
             if p.get("hpReal", 0) > 0:  n += put("eRpHp",  p["hpReal"])
             if p.get("calReal", -1) >= 0: n += put("eRpCal", p["calReal"])
+        c = getattr(self, "cbRpEtm", None)
+        if p.get("useReal") and c is not None:
+            c.set(RP_ETM_SRC[1])
         if p.get("cycNow", -1) >= 0: n += put("eRpCyc", p["cycNow"])
         if p.get("nonNow", -1) >= 0: n += put("eRpNon", p["nonNow"])
         self.status("Підставлено з акумулятора: %d пол." % n if n else "Підставляти нема чого")
@@ -2246,14 +2251,19 @@ class App:
                 e.delete(0, "end")
         self._rp_recalc()
 
-    def _rp_entry(self, parent, width, value=""):
-        """Поле правки: створити, заповнити й підписати на перерахунок плану."""
+    def _rp_entry(self, parent, width, value="", on=None):
+        """Поле правки: створити, заповнити й підписати на перерахунок плану.
+
+        on — що робити замість простого перерахунку (наприклад, ще й перевести
+        наробіток на вписану дату). Другою прив'язкою це зробити не можна:
+        вона спрацювала б уже ПІСЛЯ того, як план перерахували."""
         e = ttk.Entry(parent, width=width)
         e.pack(side="left", padx=4)
         if value:
             e.insert(0, value)
-        e.bind("<Return>", lambda _e: self._rp_recalc())
-        e.bind("<FocusOut>", lambda _e: self._rp_recalc())
+        h = on or self._rp_recalc
+        e.bind("<Return>", lambda _e: h())
+        e.bind("<FocusOut>", lambda _e: h())
         return e
 
     def _rp_int(self, attr):
@@ -2295,6 +2305,25 @@ class App:
             return 0
         return v if 1 <= v <= 100 else 0
 
+    def _rp_today(self):
+        """Сьогоднішня дата як YYYYMMDD. Годинника в пристрої немає — шле клієнт."""
+        d = datetime.date.today()
+        return d.year * 10000 + d.month * 100 + d.day
+
+    def _rp_use_typed(self):
+        """Дату запуску вписали — наробіток рахуємо з неї (див. рядок «наробіток»)."""
+        c = getattr(self, "cbRpEtm", None)
+        if c is not None and self._rp_use():
+            c.set(RP_ETM_SRC[1])
+        self._rp_recalc()
+
+    def _rp_etm_src(self):
+        """USE — рахувати наробіток із дати запуску, PACK — лишити свій; "" — не чіпати."""
+        c = getattr(self, "cbRpEtm", None)
+        if c is None:
+            return ""
+        return "USE" if c.get() == RP_ETM_SRC[1] else "PACK"
+
     def _rp_keys(self):
         k = [key for key, v in self.rpVars.items() if v.get()]
         # Вписана ємність — це вже згода її записати, галочки для неї може ще
@@ -2308,6 +2337,8 @@ class App:
             k.append("crypt")
         if (self._rp_int("eRpCyc") >= 0 or self._rp_int("eRpNon") >= 0) and "hist" not in k:
             k.append("hist")
+        if self._rp_etm_src() == "USE" and "etm" not in k:
+            k.append("etm")
         return ",".join(k)
 
     def _rp_args(self):
@@ -2322,7 +2353,9 @@ class App:
                 (" USE=%d" % self._rp_use() if self._rp_use() else "") +
                 (" CAL=%d" % self._rp_int("eRpCal") if self._rp_int("eRpCal") >= 0 else "") +
                 (" CYC=%d" % self._rp_int("eRpCyc") if self._rp_int("eRpCyc") >= 0 else "") +
-                (" NONIMP=%d" % self._rp_int("eRpNon") if self._rp_int("eRpNon") >= 0 else ""))
+                (" NONIMP=%d" % self._rp_int("eRpNon") if self._rp_int("eRpNon") >= 0 else "") +
+                (" TODAY=%d" % self._rp_today()) +
+                (" ETMSRC=%s" % self._rp_etm_src() if self._rp_etm_src() else ""))
 
     def _rp_fixes_arg(self):
         if self.rpPlan is None:
@@ -2363,7 +2396,10 @@ class App:
             self.rpPlan = None
             self.frRp.pack_forget()
             return
-        arg = f"RESTOREPLAN {model}" + ("" if reread else " NOREAD")
+        # TODAY шлемо навіть на «чистому» читанні: без сьогоднішньої дати
+        # наробіток із дати першого запуску порахувати нема з чого.
+        arg = (f"RESTOREPLAN {model}" + ("" if reread else " NOREAD") +
+               " TODAY=%d" % self._rp_today())
         self.cmd(arg, 20.0, cb=self._on_plan)
 
     def _rp_rs_pick(self):
@@ -2398,6 +2434,9 @@ class App:
         for w in self.rpGrid.winfo_children():
             w.destroy()
         self.rpVars = {}
+        # Віджети щойно знищено, а посилання лишились: звертатись до них — це
+        # TclError. Рядок наробітку є не завжди, тож гасимо посилання явно.
+        self.cbRpEtm = None
         hdr = ("", "Що саме", "Еталон (донор)", "Цей пакет", "Буде записано")
         for c, t in enumerate(hdr):
             ttk.Label(self.rpGrid, text=t, foreground="#9a9c82").grid(row=0, column=c, sticky="w", padx=4, pady=(0, 3))
@@ -2500,8 +2539,12 @@ class App:
                     sub2 = ttk.Frame(cell); sub2.pack(anchor="w", pady=(2, 0))
                     ttk.Label(sub2, text="дата запуску (РРРР-ММ-ДД):",
                               foreground="#b9bd86").pack(side="left")
+                    # Вписали дату запуску — одразу переводимо на неї й наробіток:
+                    # інакше рація показала б свою дату (зі старого наробітку
+                    # монітора), а фірмове ПЗ — нашу.
                     self.eRpUse = self._rp_entry(sub2, 11, _dnum(p.get("useUser", 0))
-                                                 if p.get("useUser") else "")
+                                                 if p.get("useUser") else "",
+                                                 on=self._rp_use_typed)
                     ttk.Label(sub2, text="калібрувань:", foreground="#b9bd86").pack(side="left")
                     self.eRpCal = self._rp_entry(sub2, 6,
                                                  str(p["calUser"]) if p.get("calUser", -1) >= 0 else "")
@@ -2519,6 +2562,28 @@ class App:
                               text=("рація зараз читає знос %s; буде записано CTS = %d"
                                     % (("%d %%" % p["hpSeen"]) if p.get("hpSeen") else "—",
                                        p.get("ctsUse", 0)))).pack(anchor="w")
+            # Наробіток. Рація показує «дату першого користування» як «зараз
+            # мінус наробіток» — числа з DS2433 для цього рядка вона не читає.
+            # Тому дату треба продублювати наробітком, інакше рація покаже свою
+            # дату, а фірмове ПЗ — нашу. Рахує пристрій; «сьогодні» шле ПК, бо
+            # годинника в приладі немає.
+            if f.get("key") == "etm" and avail:
+                sub = ttk.Frame(cell); sub.pack(anchor="w", pady=(2, 0))
+                ttk.Label(sub, text="звідки брати:", foreground="#b9bd86").pack(side="left")
+                self.cbRpEtm = ttk.Combobox(sub, values=list(RP_ETM_SRC), state="readonly", width=34)
+                self.cbRpEtm.set(RP_ETM_SRC[1] if p.get("etmFromUse") else RP_ETM_SRC[0])
+                self.cbRpEtm.pack(side="left", padx=4)
+                self.cbRpEtm.bind("<<ComboboxSelected>>", lambda _e: self._rp_recalc())
+                dd = lambda v: int(round(v / 86400.0))
+                if p.get("etmUseDate"):
+                    t = ("від дати запуску %s до сьогодні (%s) — %d діб"
+                         % (_dnum(p["etmUseDate"]), _dnum(p.get("today", 0)), dd(p.get("etmCalc", 0))))
+                else:
+                    t = "порахувати нема з чого: невідома дата першого запуску"
+                ttk.Label(cell, foreground="#6b6f58", justify="left", wraplength=460,
+                          text="у пакеті зараз %s  ·  %s"
+                               % (("%d діб" % dd(p["etmPack"])) if p.get("etmPack") else "немає", t)
+                          ).pack(anchor="w")
             # Цикли ключа не потребують — окремий рядок із двома полями.
             if f.get("key") == "hist":
                 sub = ttk.Frame(cell); sub.pack(anchor="w", pady=(2, 0))

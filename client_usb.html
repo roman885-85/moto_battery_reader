@@ -1386,6 +1386,7 @@ function rpRender(){
     if(f.key==='rsense') extra=rpRsBox(p);
     if(f.key==='crypt')  extra=rpMfgBox(p);
     if(f.key==='hist')   extra=rpHistBox(p);
+    if(f.key==='etm'&&f.avail) extra=rpEtmBox(p);
     h+='<tr class="'+cls+'"><td>'+
        (f.avail?'<input type="checkbox" data-k="'+f.key+'"'+(f.on?' checked':'')+' onchange="rpApply()">':'—')+
        '</td><td><b>'+wesc(f.title)+'</b> <span class="chipb">пише в '+wesc(f.chipsText)+'</span>'+
@@ -1460,7 +1461,7 @@ function rpMfgBox(p){
     rpF('Дата виготовлення','<input type="date" id="rpMfg" value="'+(p.mfgUser?dt(p.mfgUser):'')+
         '" onchange="rpApply()">')+
     rpF('Дата першого запуску','<input type="date" id="rpUse" value="'+(p.useUser?dt(p.useUser):'')+
-        '" onchange="rpApply()">')+
+        '" onchange="rpUseTyped()">')+
     rpF('Знос, %','<input type="number" id="rpHp" min="1" max="100" placeholder="як є" value="'+
         (p.hpUser>0?p.hpUser:'')+'" onchange="rpApply()" style="width:80px">')+
     rpF('Калібрувань','<input type="number" id="rpCal" min="0" max="65535" placeholder="як є" value="'+
@@ -1477,6 +1478,27 @@ function rpHistBox(p){
     rpF('Циклів не-IMPRES','<input type="number" id="rpNon" min="0" max="65535" '+
         'placeholder="як є" value="'+(p.nonUser>=0?p.nonUser:'')+'" onchange="rpApply()" style="width:80px">')+
     '</div><div class="dim" style="margin-top:4px">0 — «пакет як новий». Порожньо — лишити як є.</div></div>';
+}
+// Наробіток. Рація показує «дату першого користування» як «зараз мінус
+// наробіток» — числа з DS2433 для цього рядка вона не читає. Тому дату треба
+// продублювати наробітком, інакше рація покаже свою дату, а фірмове ПЗ — нашу.
+// Рахує пристрій; «сьогодні» шле ПК, бо годинника в приладі немає.
+function rpEtmBox(p){
+  const dt=v=>v?(''+v).replace(/^(\d{4})(\d{2})(\d{2})$/,'$1-$2-$3'):'—';
+  const dd=v=>Math.round(v/86400);
+  const sel=p.etmFromUse?'1':'0';
+  const w=p.etmUseDate
+    ? ('Від дати першого запуску <b>'+dt(p.etmUseDate)+'</b> до сьогодні ('+dt(p.today)+
+       ') — <b>'+dd(p.etmCalc)+' діб</b>. Саме стільки рація й покаже.')
+    : 'Порахувати нема з чого: невідома дата першого запуску. Впишіть її вище.';
+  return '<div class="det">У пакеті зараз <b>'+(p.etmPack?dd(p.etmPack)+' діб':'немає')+
+    '</b>. '+w+'<div class="rpg">'+
+    rpF('Звідки брати наробіток','<select id="rpEtmSrc" onchange="rpApply()">'+
+        '<option value="0"'+(sel==='0'?' selected':'')+'>наробіток самого пакета</option>'+
+        '<option value="1"'+(sel==='1'?' selected':'')+
+        '>порахувати з дати першого запуску</option></select>')+
+    '</div><div class="dim" style="margin-top:4px">Правку знято — лічильник почнеться '+
+    'з нуля (пакет із новими елементами — новий).</div></div>';
 }
 function rpF(lab,inp){return '<div class="rpf"><span>'+lab+'</span>'+inp+'</div>';}
 // «Узяти з акумулятора» заповнює поля тим, що ЗАРАЗ прочитано з пакета.
@@ -1502,6 +1524,7 @@ function rpSeed(){
     if(p.hpReal>0){ set('rpHp',p.hpReal); n++; }
     if(p.calReal>=0){ set('rpCal',p.calReal); n++; }
   }
+  if(p.useReal&&$('rpEtmSrc')) $('rpEtmSrc').value='1';
   if(p.cycNow>=0){ set('rpCyc',p.cycNow); n++; }
   if(p.nonNow>=0){ set('rpNon',p.nonNow); n++; }
   toast(n?('Підставлено з акумулятора: '+n+' пол.'):'Підставляти нема чого');
@@ -1514,6 +1537,13 @@ function rpSeedClear(){
 function rpMfg(){const e=$('rpMfg');return e&&e.value?e.value.replace(/-/g,''):'';}
 function rpHp(){const e=$('rpHp');return e&&e.value?e.value:'';}
 function rpUse(){const e=$('rpUse');return e&&e.value?e.value.replace(/-/g,''):'';}
+// Вписали дату запуску — одразу переводимо на неї й наробіток: інакше рація
+// показала б свою дату (зі старого наробітку), а фірмове ПЗ — нашу.
+function rpUseTyped(){const e=$('rpEtmSrc'); if(e&&rpUse()) e.value='1'; rpApply();}
+// Сьогоднішня дата: годинника в пристрої немає, тож її завжди шле клієнт.
+function rpToday(){const d=new Date();
+  return ''+d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');}
+function rpEtmSrc(){const e=$('rpEtmSrc');return e&&e.value?e.value:'';}
 function rpNum(id){const e=$(id);return e&&e.value!==''?e.value:'';}
 // Режим навченого хвоста: «свіжий» скелет чи стирання в 0xFF (див. картку).
 function restTail(){const e=$('restTail');return e&&e.value?e.value:'fresh';}
@@ -1526,6 +1556,7 @@ function rpKeys(){
   if((rpRs()||rpRsModel())&&k.indexOf('rsense')<0)k.push('rsense');
   if((rpMfg()||rpHp()||rpUse()||rpNum('rpCal'))&&k.indexOf('crypt')<0)k.push('crypt');
   if((rpNum('rpCyc')||rpNum('rpNon'))&&k.indexOf('hist')<0)k.push('hist');
+  if(rpEtmSrc()==='1'&&k.indexOf('etm')<0)k.push('etm');
   return k.join(',');
 }
 function rpRated(){const e=$('rpRated');return e&&e.value?e.value:'';}
@@ -1537,7 +1568,9 @@ function rpArgs(){
          (rpUse()?(' USE='+rpUse()):'')+
          (rpNum('rpCal')?(' CAL='+rpNum('rpCal')):'')+
          (rpNum('rpCyc')?(' CYC='+rpNum('rpCyc')):'')+
-         (rpNum('rpNon')?(' NONIMP='+rpNum('rpNon')):'');
+         (rpNum('rpNon')?(' NONIMP='+rpNum('rpNon')):'')+
+         ' TODAY='+rpToday()+
+         (rpEtmSrc()?(' ETMSRC='+(rpEtmSrc()==='1'?'USE':'PACK')):'');
 }
 // Перерахунок робить ПРИСТРІЙ: паливомір залежить від того, який шунт опиниться
 // в чипі, і рахувати це вдруге тут означало б завести другу формулу, яка одного
@@ -1550,7 +1583,7 @@ async function rpApply(){
 async function rpLoad(reread){
   const model=$('restModel').value;
   if(!model||!connected){rpPlan=null;$('rpBox').style.display='none';return;}
-  const r=await cmd('RESTOREPLAN '+model+(reread?'':' NOREAD'),20000);
+  const r=await cmd('RESTOREPLAN '+model+(reread?'':' NOREAD')+' TODAY='+rpToday(),20000);
   if(r&&r.ok&&r.plan){rpPlan=r.plan;rpRender();}
   else {rpPlan=null;$('rpBox').style.display='none';}
 }

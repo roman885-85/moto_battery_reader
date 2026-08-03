@@ -337,17 +337,20 @@ static String serSound(const String &argIn) {
 
 // Хвіст команд RESTORE / RESTOREPLAN: «<МОДЕЛЬ> [VERBATIM] [NOREAD] [FIXES=a,b]
 // [RATED=мАг] [RSENSE=мОм*100] [RSMODEL=МОДЕЛЬ] [MFG=РРРРММДД] [TAIL=FRESH|ERASE]
-// [HEALTH=%] [USE=РРРРММДД] [CAL=] [CYC=] [NONIMP=]». RSENSE/RSMODEL — шунт, коли в
+// [HEALTH=%] [USE=РРРРММДД] [CAL=] [CYC=] [NONIMP=] [TODAY=РРРРММДД]
+// [ETMSRC=USE|PACK]». RSENSE/RSMODEL — шунт, коли в
 // пакеті свого немає: числом або з бібліотеки еталонів.
 // Одна функція на обидві команди — щоб вони не розійшлися в тому, що вважають
 // моделлю, а що прапорцем. Модель — перше слово, яке не є прапорцем; регістр
 // моделі й прапорців не має значення, а от ключі правок завжди малими.
 struct SerRestoreArgs { String model, fixes, rsModel; bool verbatim, reread, haveFixes;
-                       long rated, rsense, mfg, useDate; int tail, health, cal, cyc, nonImp; };
+                       long rated, rsense, mfg, useDate, today;
+                       int tail, health, cal, cyc, nonImp, etmSrc; };
 static SerRestoreArgs serParseRestore(const String &argIn) {
     SerRestoreArgs a; a.verbatim = false; a.reread = true; a.haveFixes = false;
     a.rated = -1; a.rsense = -1; a.mfg = -1; a.tail = 0 /* RTAIL_FRESH */; a.health = -1;
     a.useDate = -1; a.cal = -1; a.cyc = -1; a.nonImp = -1;
+    a.today = -1; a.etmSrc = -1;
     String rest = argIn; rest.trim();
     while (rest.length()) {
         int s = rest.indexOf(' ');
@@ -375,6 +378,11 @@ static SerRestoreArgs serParseRestore(const String &argIn) {
         else if (up.startsWith("CAL="))     a.cal    = up.substring(4).toInt();
         else if (up.startsWith("CYC="))     a.cyc    = up.substring(4).toInt();
         else if (up.startsWith("NONIMP="))  a.nonImp = up.substring(7).toInt();
+        // TODAY=РРРРММДД — сьогоднішня дата від клієнта: годинника в пристрої
+        // немає, а без «сьогодні» наробіток із дати першого запуску не порахувати.
+        // ETMSRC=USE — рахувати наробіток із дати запуску, ETMSRC=PACK — лишити свій.
+        else if (up.startsWith("TODAY="))   a.today = up.substring(6).toInt();
+        else if (up.startsWith("ETMSRC="))  a.etmSrc = (up.substring(7) == "USE") ? 1 : 0;
         else if (!a.model.length())       a.model = up;
     }
     return a;
@@ -385,7 +393,7 @@ static SerRestoreArgs serParseRestore(const String &argIn) {
 static void serApplyPlanArgs(RestorePlan &p, const SerRestoreArgs &a) {
     restorePlanOverride(p, a.haveFixes ? a.fixes.c_str() : nullptr,
                         a.rated, a.rsense, a.rsModel.c_str(), a.mfg, a.health,
-                        a.useDate, a.cal, a.cyc, a.nonImp);
+                        a.useDate, a.cal, a.cyc, a.nonImp, a.today, a.etmSrc);
 }
 
 // Каталог операцій (operations.h) — щоб десктопний клієнт малював той самий
@@ -556,7 +564,7 @@ static void serialExec(const String &line) {
                                          if (e) { String r = "{\"ok\":false,\"err\":\""; r += e; r += "\"}"; sResp(r); }
                                          else sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); } }
     else if (cmd == "WIZARD")   { sResp(wizStart()); }
-    // WIZSTEP <idx> [MODEL] [FIXES=…] [RATED=…] [RSENSE=…|RSMODEL=…] [MFG=…] [HEALTH=…] [USE=…] [CAL=…] [CYC=…] [NONIMP=…]
+    // WIZSTEP <idx> [MODEL] [FIXES=…] [RATED=…] [RSENSE=…|RSMODEL=…] [MFG=…] [HEALTH=…] [USE=…] [CAL=…] [CYC=…] [NONIMP=…] [TODAY=…] [ETMSRC=USE|PACK]
     else if (cmd == "WIZSTEP")  { int s2 = arg.indexOf(' ');
                                   String si = (s2 < 0) ? arg : arg.substring(0, s2);
                                   String rest = (s2 < 0) ? String("") : arg.substring(s2 + 1);
@@ -565,7 +573,8 @@ static void serialExec(const String &line) {
                                   sResp(wizExecStep(si.toInt(), wa.model, wa.fixes, wa.rated,
                                                     wa.rsense, wa.rsModel, wa.mfg, wa.tail,
                                                     wa.health, wa.useDate, wa.cal,
-                                                    wa.cyc, wa.nonImp)); }
+                                                    wa.cyc, wa.nonImp,
+                                                    wa.today, wa.etmSrc)); }
     else if (cmd == "WIZRESET") { wizJournalClear(); sResp("{\"ok\":true}"); }
     else if (cmd == "WIZLIST")  { sResp(wizJournalListJson()); }
     else if (cmd == "WIZDEL")   { String s = arg; s.trim(); s.toUpperCase();

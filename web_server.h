@@ -2016,6 +2016,13 @@ static String restorePlanJson(const RestorePlan &p) {
     j += ",\"cycUser\":";   j += p.cycUser;
     j += ",\"nonNow\":";    j += p.nonNow;
     j += ",\"nonUser\":";   j += p.nonUser;
+    // Наробіток: свій (у моніторі), порахований із дати першого запуску, від
+    // якої дати рахували і яку «сьогодні» нам передав клієнт.
+    j += ",\"etmPack\":";   j += p.etmPack;
+    j += ",\"etmCalc\":";   j += p.etmCalc;
+    j += ",\"etmUseDate\":";j += p.etmUseDate;
+    j += ",\"etmFromUse\":";j += p.etmFromUse ? "true" : "false";
+    j += ",\"today\":";     j += restoreDateNum(p.todayY, p.todayM, p.todayD);
     j += ",\"rsLib\":[";
     bool first = true;
     for (int i = 0; i < BATTERY_TEMPLATE_COUNT; i++) {
@@ -2064,8 +2071,13 @@ static String restorePlanJson(const RestorePlan &p) {
 static void restorePlanOverride(RestorePlan &p, const char *fixes, long rated,
                                 long rsRaw, const char *rsModel, long mfg = -1,
                                 int health = -1, long useDate = -1, int cal = -1,
-                                int cyc = -1, int nonImp = -1) {
+                                int cyc = -1, int nonImp = -1, long today = -1,
+                                int etmSrc = -1) {
     if (rated >= 0) restorePlanSetRated(p, rated);
+    // Сьогоднішню дату ставимо ПЕРШОЮ: від неї залежить наробіток, а той
+    // перераховується при кожній наступній правці.
+    if (today >= 0) restorePlanSetToday(p, (int)(today / 10000),
+                                        (int)((today / 100) % 100), (int)(today % 100));
     // Дата виготовлення — одним числом YYYYMMDD (0 прибирає ручне значення).
     if (mfg >= 0) restorePlanSetMfg(p, (int)(mfg / 10000), (int)((mfg / 100) % 100),
                                     (int)(mfg % 100));
@@ -2094,7 +2106,14 @@ static void restorePlanOverride(RestorePlan &p, const char *fixes, long rated,
         if (uy > 0 && (m & (1UL << RPF_CRYPT))) restorePlanSetUse(p, uy, um, ud);
         if (ca >= 0 && (m & (1UL << RPF_CRYPT))) restorePlanSetCal(p, ca);
         if ((cy >= 0 || ni >= 0) && (m & (1UL << RPF_HIST))) restorePlanSetCycles(p, cy, ni);
+        // Вписана дата запуску сама вмикає правку наробітку — але останнє слово
+        // за клієнтом: галочка в його таблиці має означати те, що показує.
+        p.fx[RPF_ETM].on = p.fx[RPF_ETM].avail && (m & (1UL << RPF_ETM));
+        restorePlanRecalc(p);          // «буде записано» рахується з on
     }
+    // Джерело наробітку — останнім: воно не має скидатись ані маскою, ані
+    // датами, які ми щойно повернули на місце.
+    if (etmSrc >= 0) restorePlanSetEtmSource(p, etmSrc != 0);
 }
 
 // GET /api/restore/plan?model=XXX[&fixes=a,b][&read=0]
@@ -2114,7 +2133,9 @@ static void applyPlanArgs(RestorePlan &p) {
         server.hasArg("use")    ? server.arg("use").toInt()    : -1,
         server.hasArg("cal")    ? server.arg("cal").toInt()    : -1,
         server.hasArg("cyc")    ? server.arg("cyc").toInt()    : -1,
-        server.hasArg("nonimp") ? server.arg("nonimp").toInt() : -1);
+        server.hasArg("nonimp") ? server.arg("nonimp").toInt() : -1,
+        server.hasArg("today")  ? server.arg("today").toInt()  : -1,
+        server.hasArg("etmsrc") ? server.arg("etmsrc").toInt() : -1);
 }
 
 void handleRestorePlan() {
@@ -2490,7 +2511,9 @@ void handleWizardStep() {
                             server.hasArg("use")    ? server.arg("use").toInt()    : -1,
                             server.hasArg("cal")    ? server.arg("cal").toInt()    : -1,
                             server.hasArg("cyc")    ? server.arg("cyc").toInt()    : -1,
-                            server.hasArg("nonimp") ? server.arg("nonimp").toInt() : -1));
+                            server.hasArg("nonimp") ? server.arg("nonimp").toInt() : -1,
+                            server.hasArg("today")  ? server.arg("today").toInt()  : -1,
+                            server.hasArg("etmsrc") ? server.arg("etmsrc").toInt() : -1));
 }
 // POST /api/wizard/reset — скинути журнал продовження ПОТОЧНОГО АКБ (під паролем).
 void handleWizardReset() {

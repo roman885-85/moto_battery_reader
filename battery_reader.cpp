@@ -37,19 +37,33 @@ bool BatteryReader::findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr) {
     memset(ds2433_addr, 0, 8);
     memset(ds2438_addr, 0, 8);
 
-    // Вмикаємо підтяжку перед пошуком
+    // Вмикаємо підтяжку перед пошуком.
     digitalWrite(_pullupPin, HIGH);
-    
-    _ow->reset_search();
-    while (_ow->search(addr)) {
-        if (addr[0] == DS2433_ID && !found2433) {
-            memcpy(ds2433_addr, addr, 8);
-            found2433 = true;
-            Serial.println("DS2433 found!");
-        } else if (addr[0] == DS2438_ID && !found2438) {
-            memcpy(ds2438_addr, addr, 8);
-            found2438 = true;
-            Serial.println("DS2438 found!");
+    // ⚑ ПАУЗА НА ЖИВЛЕННЯ. Після кожної операції ми гасимо підтяжку
+    // (pullupOff), тож обидва чипи знеструмлюються, і КОЖЕН пошук — холодний
+    // старт шини. Без паузи Search ROM іде по ще не піднятій лінії: чип, який
+    // прокидається повільніше (зазвичай DS2438 — у нього ще й аналогова
+    // частина), у пошук не потрапляє. Саме звідси скарга «з першого разу
+    // показує не все, з другого — все»: на другому натисканні ROM уже в кеші
+    // (див. fallback нижче), і читання проходить.
+    delay(DS_BUS_SETTLE_MS);
+
+    // Пошук повторюємо, поки не знайдено ОБИДВА чипи. Search ROM на цій шині
+    // нестабільний (див. коментар про кеш нижче), а коштує спроба одиниці
+    // мілісекунд — дешевше, ніж віддати нагору половину даних.
+    for (int attempt = 0; attempt < DS_SEARCH_TRIES && !(found2433 && found2438); attempt++) {
+        if (attempt) delay(DS_BUS_SETTLE_MS);
+        _ow->reset_search();
+        while (_ow->search(addr)) {
+            if (addr[0] == DS2433_ID && !found2433) {
+                memcpy(ds2433_addr, addr, 8);
+                found2433 = true;
+                Serial.printf("DS2433 found! (спроба %d)\n", attempt + 1);
+            } else if (addr[0] == DS2438_ID && !found2438) {
+                memcpy(ds2438_addr, addr, 8);
+                found2438 = true;
+                Serial.printf("DS2438 found! (спроба %d)\n", attempt + 1);
+            }
         }
     }
 
@@ -498,9 +512,44 @@ bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
         }
     }
 
+    // --- Фаза 3: окремо звіряємо НАРОБІТОК (ETM, сторінка 1, байти 0..3).
+    // Сторінку 1 не можна звіряти побайтово — чіп сам крутить лічильник далі,
+    // — але саме через це її мовчазний пропуск і був небезпечним: невдалий
+    // запис ETM не помічав ніхто, а виявлявся він аж на рації, неправильною
+    // «датою першого користування». Тому звіряємо з допуском: за час між
+    // записом і читанням чіп встигає натікати одиниці секунд, не більше.
+    {
+        _ow->reset();
+        _ow->select(ds2438_addr);
+        _ow->write(DS2438_RECALL_MEMORY);
+        _ow->write((uint8_t)1);
+        _ow->reset();
+        _ow->select(ds2438_addr);
+        _ow->write(DS2438_READ_SCRATCH);
+        _ow->write((uint8_t)1);
+        uint8_t rb[9];
+        for (int i = 0; i < 9; i++) rb[i] = _ow->read();
+        if (OneWire::crc8(rb, 8) == rb[8]) {
+            uint32_t want = (uint32_t)buffer[8] | ((uint32_t)buffer[9] << 8) |
+                            ((uint32_t)buffer[10] << 16) | ((uint32_t)buffer[11] << 24);
+            uint32_t got  = (uint32_t)rb[0] | ((uint32_t)rb[1] << 8) |
+                            ((uint32_t)rb[2] << 16) | ((uint32_t)rb[3] << 24);
+            uint32_t diff = (got > want) ? (got - want) : (want - got);
+            if (diff > DS2438_ETM_TOLERANCE_S) {
+                Serial.printf("ERROR: DS2438 ETM NOT persisted. want %lu got %lu (різниця %lu с)\n",
+                              (unsigned long)want, (unsigned long)got, (unsigned long)diff);
+                ok = false;
+            } else {
+                Serial.printf("DS2438 ETM verified: %lu c\n", (unsigned long)got);
+            }
+        } else {
+            Serial.println("WARN: DS2438 ETM verify CRC noise — skip");
+        }
+    }
+
     _ow->reset();
     pullupOff();
-    Serial.println(ok ? "DS2438 write completed (calib pages 3-6 verified)"
-                      : "DS2438 write: calibration pages did NOT persist");
+    Serial.println(ok ? "DS2438 write completed (calib pages 3-6 + ETM verified)"
+                      : "DS2438 write: something did NOT persist (див. вище)");
     return ok;
 }

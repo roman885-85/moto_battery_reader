@@ -1335,6 +1335,20 @@ class App:
         self.btnChgAuto.pack(side="left", padx=2)
         ttk.Button(cf, text="💾 Записати заряд %", command=self.set_charge_pct).pack(side="left", padx=2)
 
+        # Знос — те число, яке рація й фірмове ПЗ справді показують (поле CTS у
+        # зашифрованому блоці RECOND). Байт заводської таблиці 0x129 — не воно;
+        # він лишився в «Ручному режимі» для аналізу.
+        b5h = ttk.LabelFrame(p_val, text="🩺 Знос / здоров'я  ·  пише в DS2433 (CTS у блоці RECOND)",
+                             padding=8); b5h.pack(fill="x", pady=4)
+        ttk.Label(b5h, text="Після заміни елементів виправляти треба саме це число. Знос залежить і від\n"
+                            "ШУНТА, і від ПАСПОРТНОЇ ЄМНОСТІ: 100 % — це «вся паспортна», тож спершу\n"
+                            "задайте ємність нових банок у «Ремонті». Ключ — з ROM-ID чипа DS2433.",
+                  foreground="#b9bd86", justify="left").pack(anchor="w")
+        self.lblHpNow = ttk.Label(b5h, text="зараз у чипі: —", foreground="#c8b04a")
+        self.lblHpNow.pack(anchor="w", pady=(2, 0))
+        self.eHp = self._row(b5h, "Знос, % (1..100):", lambda fr: self._entry(fr, 10, ""))
+        ttk.Button(b5h, text="💾 Записати знос", command=self.set_health).pack(anchor="w", pady=2)
+
         b5c = ttk.LabelFrame(p_val, text="Дата першого використання (рація рахує як «час − ETM»)  ·  пише в DS2438", padding=8); b5c.pack(fill="x", pady=4)
         self.eEtmDate = self._row(b5c, "Дата (YYYY-MM-DD):", lambda fr: self._entry(fr, 12))
         ttk.Button(b5c, text="📅 Записати дату (ETM)", command=self.set_etm).pack(anchor="w", pady=2)
@@ -1851,6 +1865,11 @@ class App:
         self.dSerial33.config(text=d.get("serial33") or "—")
         self._render_bms(d.get("bms"))
         b = d.get("bms") or {}
+        # Поточний знос — одразу в картку правки, щоб не звірятись з іншою вкладкою.
+        if getattr(self, "lblHpNow", None) is not None:
+            h = b.get("health") if b.get("haveKey") else None
+            self.lblHpNow.config(text=("зараз у чипі: %d %% (≈%s мА·год)" % (h, b.get("potentialMah")))
+                                 if h is not None else "зараз у чипі: — (ключ не визначено)")
         # Справжня дата з чипа має пріоритет над оцінкою «сьогодні − ETM».
         if b.get("firstUseDate"):
             self.dFirst.config(text=b["firstUseDate"] + " (з чипа)", foreground="")
@@ -1882,8 +1901,11 @@ class App:
         etm_d = etm_sec // 86400
         if etm_d > age + self.ETM_AGE_SLACK_D:
             self.bWarn.config(text=("⚠️ Напрацювання ETM (%d діб) більше за вік пакета "
-                                    "(%d діб від %s). DS2438 майже напевно не від цього АКБ — "
-                                    "перечитайте монітор. Доти струм, залишок і знос неправильні."
+                                    "(%d діб від %s). Або монітор не від цього АКБ "
+                                    "(перечитайте DS2438 — доти струм, залишок і знос "
+                                    "неправильні), або пакет пройшов цикл на станції: ЗП "
+                                    "переписує ETM своїм числом. Тому наробіток правлять "
+                                    "ПІСЛЯ калібрування, а не до нього."
                                     % (etm_d, age, mfg)))
             self.bWarn.grid()
         else:
@@ -2673,6 +2695,23 @@ class App:
         if not messagebox.askyesno("Здоров'я", f"Записати ємність {v}%?"):
             return
         self.maybe_auth(lambda: self.cmd(f"SETCAP {v}", 15.0, cb=lambda r: self._after_write(r, "✅ Записано")))
+
+    def set_health(self):
+        """Знос окремою дією. Рахує ПРИСТРІЙ (той самий restore_plan.h, що й у
+        плані правок): друга формула тут одного дня розійшлася б із прошивкою."""
+        if not self.need_conn():
+            return
+        try:
+            v = int((self.eHp.get() or "").strip())
+        except ValueError:
+            messagebox.showwarning("Знос", "Вкажіть 1..100"); return
+        if not (1 <= v <= 100):
+            messagebox.showwarning("Знос", "Знос має бути 1..100 %"); return
+        if not messagebox.askyesno("Знос", "Записати знос %d %%?\n\n"
+                                           "Пишеться поле CTS у блок RECOND (DS2433)." % v):
+            return
+        self.maybe_auth(lambda: self.cmd("SETHEALTH %d" % v, 20.0,
+            cb=lambda r: self._after_write(r, "✅ Знос %d %%" % v)))
 
     def set_etm(self):
         if not self.need_conn():

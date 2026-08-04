@@ -29,6 +29,7 @@
 //   SETMAH <мА·год>      -> змінити залишкову ємність (регістр ICA)
 //   SETMODEL <NAME>      -> ручний запис моделі (part number, 3..9 A-Z0-9)
 //   SETETM <сек>         -> ETM (наробіток) -> «дата першого користування» у рації
+//   SETHEALTH <1..100>   -> знос/здоров'я, % (пише CTS у зашифрований блок RECOND)
 //   TEMPLATES            -> список вшитих моделей для ініціалізації (без пароля)
 //   OPS                  -> каталог операцій (спільний для екрана/веба/клієнта)
 //   CLOCK [РРРРММДД]     -> системна дата пристрою (без аргументу — прочитати).
@@ -563,6 +564,32 @@ static void serialExec(const String &line) {
     // CLOCK — яку дату пристрій вважає сьогоднішньою; CLOCK РРРРММДД — завести
     // годинник. Годинника реального часу в ESP32 немає, а NTP недосяжний:
     // пристрій сам є точкою доступу. Ту саму дату несе TODAY= у RESTORE/FIXES.
+    // SETHEALTH <1..100> — знос одним рухом (те саме, що правка «знос» у плані).
+    else if (cmd == "SETHEALTH"){ String h = arg; h.trim();
+                                  int pct = h.toInt();
+                                  if (!hasDump)        sResp("{\"ok\":false,\"err\":\"спочатку READ\"}");
+                                  else if (!hasSN2433) sResp("{\"ok\":false,\"err\":\"ROM DS2433 невідомий\"}");
+                                  else if (pct < 1 || pct > 100) sResp("{\"ok\":false,\"err\":\"знос 1..100\"}");
+                                  else {
+                                      char md[16] = ""; decodeModel(md, sizeof(md));
+                                      RestorePlan hp;
+                                      if (!md[0] || !buildRestorePlanFor(md, hp, false))
+                                          sResp("{\"ok\":false,\"err\":\"немає еталона моделі\"}");
+                                      else {
+                                          restorePlanSetHealth(hp, pct);
+                                          if (!hp.fx[RPF_CRYPT].on)
+                                              sResp("{\"ok\":false,\"err\":\"блок RECOND не читається\"}");
+                                          else {
+                                              restorePlanApply(hp, batteryDump, nullptr, true);
+                                              bool w = battery.writeBattery(batteryDump, DUMP_SIZE);
+                                              if (w) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+                                              String r = "{\"ok\":"; r += w ? "true" : "false";
+                                              r += ",\"health\":"; r += pct;
+                                              r += ",\"cts\":";    r += (int)hp.ctsUse;
+                                              sResp(r + "}");
+                                          }
+                                      }
+                                  } }
     else if (cmd == "CLOCK")    { String a3 = arg; a3.trim();
                                   if (a3.length() && !deviceClockSetNum(a3.toInt()))
                                       sResp("{\"ok\":false,\"err\":\"потрібна дата РРРРММДД\"}");

@@ -1,0 +1,123 @@
+#ifndef IMPRES_AUDIT_H
+#define IMPRES_AUDIT_H
+// ===========================================================================
+//  АУДИТ ЗМІСТУ ПРОШИВКИ: шифрування й узгодженість даних
+// ---------------------------------------------------------------------------
+//  Майстер довго дивився лише на СТРУКТУРУ: суми заголовка, запис моделі,
+//  дзеркало, навчений хвіст. Але найчастіша скарга — «рація пише невідомий
+//  акумулятор» — народжується не з поламаної структури, а зі ЗМІСТУ:
+//
+//    * поля зашифровані ключем ЧУЖОГО чипа (еталон знято з іншого пакета);
+//    * ключ не визначається взагалі — вміст ні з чим не узгоджений;
+//    * побита сума блока, у якому лежать дати чи лічильники;
+//    * дата виготовлення неправдоподібна;
+//    * наробіток більший за вік пакета — монітор від іншого АКБ;
+//    * пакет позначено як увімкнений, але жодного разу не заряджений.
+//
+//  Структурно такий дамп бездоганний, і Майстер про нього мовчав.
+//
+//  Файл — чиста арифметика без вводу-виводу, щоб той самий код виконувався і в
+//  прошивці, і в тестах на корпусі дампів. Друга реалізація цих перевірок
+//  однієї днини розійшлася б із першою, і Майстер почав би лікувати не те.
+// ===========================================================================
+#include <stdint.h>
+#include <string.h>
+#include "impres_format.h"
+#include "impres_bms.h"
+#include "impres_crypt.h"
+
+// Знахідки аудиту. Розрядність збігається з ISS_* у recovery.h не випадково:
+// Майстер просто переносить біти, не перекладаючи їх по одному.
+enum {
+    AUD_CRYPT_WRONG   = 1u << 0,  // вміст зашифровано ЧУЖИМ ключем
+    AUD_CRYPT_UNKNOWN = 1u << 1,  // ключ вмісту не визначається
+    AUD_BLOCK_SUM     = 1u << 2,  // побита сума блока BMS
+    AUD_DATE_INSANE   = 1u << 3,  // неправдоподібна дата виготовлення
+    AUD_ETM_FOREIGN   = 1u << 4,  // наробіток більший за вік пакета
+    AUD_USE_BEFORE_CHG= 1u << 5,  // «вмикали», але жодного разу не заряджали
+};
+
+// Допуск для «наробіток більший за вік»: лічильник стартує до того, як у чип
+// запишуть дату, тож невелике перевищення нормальне. На 31 рідній парі з
+// dumps/ воно не перевищувало 44 діб.
+#define AUD_ETM_SLACK_D 180
+
+// Блоки, чиї суми має сенс перевіряти й лагодити. Заголовок, профіль моделі й
+// запис моделі сюди НЕ входять: у них своя логіка ремонту (див. repairDumps).
+static const int AUD_BLOCKS[] = {
+    BMS_V_DATE, BMS_V_CYCLE, BMS_V_RECOND, BMS_V_ADDED,
+    BMS_V_REMAIN, BMS_V_NONSMART, BMS_V_EOS, BMS_V_RWEIGHT, BMS_V_ERRORS,
+};
+#define AUD_BLOCK_COUNT ((int)(sizeof(AUD_BLOCKS) / sizeof(AUD_BLOCKS[0])))
+
+// Полагодити суми блоків BMS. Потрібне окремо від загального ремонту: той іде
+// ЛАНЦЮГОМ записів від 0x120, а більшість блоків лежить НИЖЧЕ — до них ланцюг
+// не доходить узагалі. Тут адреса відома з вектора, довжина — перший байт
+// блока, тож угадувати нічого не треба. Повертає, скільки сум виправлено.
+inline int impresAuditFixSums(uint8_t *d33) {
+    if (!d33) return 0;
+    int n = 0;
+    for (int k = 0; k < AUD_BLOCK_COUNT; k++) {
+        uint16_t a = impresBmsVector(d33, AUD_BLOCKS[k]);
+        if (a == BMS_INVALID) continue;
+        int len = d33[a];
+        // len < 4 — або порожньо, або блок прапорців ЗП, який суми не має.
+        if (len < 4 || (int)a + len > (int)DUMP_SIZE) continue;
+        if (!impresBmsBlockOk(d33, a)) {
+            impresFixRecord(d33, a, (uint8_t)len);
+            n++;
+        }
+    }
+    return n;
+}
+
+// Перевірити зміст. rom33 — ROM-ID DS2433 (nullptr, якщо дамп із файлу: тоді
+// про «чужий ключ» судити не можна, бо невідомо, який мав би бути свій).
+// ty/tm/td — сьогоднішня дата (0 — невідома, тоді вік пакета не рахуємо).
+inline uint32_t impresAudit(const uint8_t *d33, const uint8_t *d38,
+                            const uint8_t *rom33, int ty, int tm, int td) {
+    uint32_t f = 0;
+    if (!d33) return f;
+
+    // Суми блоків.
+    for (int k = 0; k < AUD_BLOCK_COUNT; k++) {
+        uint16_t a = impresBmsVector(d33, AUD_BLOCKS[k]);
+        if (a == BMS_INVALID) continue;
+        if (d33[a] < 4) continue;
+        if (!impresBmsBlockOk(d33, a)) { f |= AUD_BLOCK_SUM; break; }
+    }
+
+    // Ключ. Питання не «який ключ підійде», а «чи не чужим зашифровано».
+    if (rom33) {
+        uint8_t sk1, sk2;
+        if (!impresCryptSourceKey(d33, d38, &sk1, &sk2, rom33)) {
+            // Ключ не визначається — але це поломка лише тоді, коли блок дат
+            // узагалі є. Інакше це просто «свіжий» пакет, а не побитий.
+            if (impresCryptBlockUsable(d33, impresCryptAddr(d33, BMS_V_DATE), 6))
+                f |= AUD_CRYPT_UNKNOWN;
+        } else if (impresCryptKeyDiffers(sk1, sk2, rom33[1], rom33[6])) {
+            f |= AUD_CRYPT_WRONG;
+        }
+    }
+
+    // Зміст: дата й узгодженість «вмикали / заряджали».
+    ImpresBms b;
+    if (!impresBmsParse(d33, d38, rom33, 0.0f, &b)) return f;
+    if (b.haveKey) impresBmsDecrypt(d33, &b);
+    if (!b.ok || !b.haveKey) return f;
+
+    bool dateOk = impresBmsDateSane(b.mfgY, b.mfgM, b.mfgD);
+    if (!dateOk) f |= AUD_DATE_INSANE;
+    // Пакет, який уже вмикали, не міг жодного разу заряджатися.
+    if (b.dayInitialUse > 0 && b.dayLastCharge == 0) f |= AUD_USE_BEFORE_CHG;
+    // Наробіток більший за вік: або монітор чужий, або пакет щойно пройшов
+    // цикл на ЗП — станція пише в ETM своє число (dumps/13, dumps/06).
+    if (d38 && dateOk && ty > 0) {
+        long age  = impresBmsToDays(ty, tm, td) - impresBmsToDays(b.mfgY, b.mfgM, b.mfgD);
+        long etmD = (long)(impresEtm(d38) / 86400UL);
+        if (age > 0 && etmD > age + AUD_ETM_SLACK_D) f |= AUD_ETM_FOREIGN;
+    }
+    return f;
+}
+
+#endif // IMPRES_AUDIT_H

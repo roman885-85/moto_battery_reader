@@ -43,6 +43,18 @@ enum {
     ISS_TAIL_FOREIGN = 1u << 9,  // ⚑ навчена калібровка ЧУЖОГО пакета (див. нижче)
     ISS_TAIL_ERASED  = 1u << 10, // ⛔ хвіст стерто у 0xFF — ЗП не зможе відкалібрувати
     ISS_NEVER_CALIB  = 1u << 11, // пакет жодного разу не калібрувався (CTS = 0)
+    // ── шифрування й узгодженість даних ────────────────────────────────────
+    //  Досі Майстер дивився лише на СТРУКТУРУ: суми, модель, дзеркало, хвіст.
+    //  Але найчастіша скарга («невідомий акумулятор») народжується не з
+    //  поламаної структури, а зі ЗМІСТУ: поля зашифровані ключем чужого чипа,
+    //  дати суперечать одна одній, монітор від іншого пакета. Структурно такий
+    //  дамп бездоганний — і Майстер мовчав.
+    ISS_CRYPT_WRONG  = 1u << 12, // вміст зашифровано ЧУЖИМ ключем (рація бачить сміття)
+    ISS_CRYPT_UNKNOWN= 1u << 13, // ключ вмісту не визначається взагалі
+    ISS_BLOCK_SUM    = 1u << 14, // побита сума одного з блоків BMS
+    ISS_DATE_INSANE  = 1u << 15, // дата виготовлення неправдоподібна
+    ISS_ETM_FOREIGN  = 1u << 16, // наробіток більший за вік пакета -> чужий DS2438
+    ISS_USE_BEFORE_CHG = 1u << 17,// пакет «вмикали», але жодного разу не заряджали
 };
 
 // ---- Дії Майстра ----------------------------------------------------------
@@ -57,6 +69,7 @@ enum {
     ACT_CLEAN,           // очистка історії
     ACT_SETCHARGE_AUTO,  // виставити заряд із напруги
     ACT_CHARGE_STATION,  // ЗОВНІШНІЙ крок: калібрування на IMPRES-ЗП
+    ACT_CRYPT,           // перешифрувати дати й лічильники під ROM цього чипа
     ACT_VERIFY,          // фінальна перевірка
 };
 
@@ -84,6 +97,18 @@ static const RecoveryRule RECOVERY_RULES[] = {
     { ISS_NO_2438,      1, "DS2438 (монітор) відсутній/не читається",         "Перевірте чіп; відновлення DS2433 можливе окремо" },
     { ISS_NEVER_CALIB,  1, "Пакет жодного разу не калібрувався (потенційна ємність = 0)",
                            "Повний цикл на IMPRES-ЗП — саме він виміряє банки" },
+    { ISS_CRYPT_WRONG,  2, "Дати й лічильники зашифровані ЧУЖИМ ключем — рація читає сміття",
+                           "Перешифрувати під ROM цього чипа (числа ті самі, читати їх зможе рація)" },
+    { ISS_CRYPT_UNKNOWN,2, "Ключ зашифрованих полів не визначається — вміст ні з чим не узгоджений",
+                           "Вписати дату виготовлення й знос вручну; далі перешифрувати під ROM чипа" },
+    { ISS_BLOCK_SUM,    2, "Побита контрольна сума блока даних BMS",
+                           "Ремонт цілісності (перерахунок сум блоків)" },
+    { ISS_DATE_INSANE,  1, "Неправдоподібна дата виготовлення",
+                           "Вписати дату вручну в «Ремонті» — вона піде під ключем цього чипа" },
+    { ISS_ETM_FOREIGN,  2, "Наробіток більший за вік пакета — DS2438 не від цього АКБ",
+                           "Перечитайте монітор; якщо пакет щойно був на ЗП — правте наробіток ПІСЛЯ калібрування" },
+    { ISS_USE_BEFORE_CHG, 1, "Пакет позначено як увімкнений, але жодного разу не заряджений",
+                           "Перешифрувати під ROM цього чипа — запис приведе поля до несуперечливого стану" },
 };
 static const int RECOVERY_RULE_COUNT = sizeof(RECOVERY_RULES) / sizeof(RECOVERY_RULES[0]);
 
@@ -113,6 +138,7 @@ static void wizActionMeta(uint8_t a, const char **title, const char **detail,
             case ACT_RECAL:
             case ACT_RECAL_DEEP:
             case ACT_CLEAN:          *chips = OPC_BOTH; break;
+            case ACT_CRYPT:          *chips = OPC_33;   break;
             case ACT_RESET:
             case ACT_SETCHARGE_AUTO: *chips = OPC_38;   break;
             default:                 *chips = OPC_NONE; break;  // читання/зовнішні
@@ -135,6 +161,12 @@ static void wizActionMeta(uint8_t a, const char **title, const char **detail,
                           *detail = "Стерти історію/статистику, лишити ідентичність і калібрування."; break;
         case ACT_SETCHARGE_AUTO: *title = "Заряд із напруги";
                           *detail = "Виставити паливомір за поточною напругою (" BATTERY_SCALE_TXT ")."; break;
+        case ACT_CRYPT:   *title = "Перешифрувати під ROM чипа";
+                          *detail = "Дати й лічильники зашифровані ключем із ROM-ID самого чипа. "
+                                    "Якщо вміст прийшов від іншого пакета, рація розшифрує його "
+                                    "своїм ключем і побачить сміття. Крок переписує ТІ САМІ числа "
+                                    "під ключем цього чипа — значення не міняються, міняється лише "
+                                    "те, хто здатен їх прочитати."; break;
         case ACT_CHARGE_STATION: *title = "Калібрування на ЗП"; *external = true;
                           *detail = "Поставте АКБ на IMPRES-зарядну станцію на повний цикл (заряд/розряд/заряд). Майстер продовжить після повернення."; break;
         case ACT_VERIFY:  *title = "Перевірка результату";
@@ -277,6 +309,24 @@ static void wizAnalyze(BatteryDiag &d) {
         if (cb.ok && cb.haveKey && cb.cts == 0) d.issues |= ISS_NEVER_CALIB;
     }
 
+    // ── ШИФРУВАННЯ Й УЗГОДЖЕНІСТЬ ЗМІСТУ ──────────────────────────────────
+    //  Сама перевірка — в impres_audit.h: чиста арифметика без вводу-виводу,
+    //  щоб той самий код ганявся й на корпусі дампів у тестах. Тут лише
+    //  переносимо біти: розрядність AUD_* і ISS_* узгоджена навмисно.
+    if (hasDump && !(d.issues & ISS_BLANK33)) {
+        int ty = 0, tm = 0, td = 0;
+        deviceClockToday(&ty, &tm, &td);          // 0 — годинник не заведено
+        uint32_t a = impresAudit(batteryDump,
+                                 hasDump2438 ? batteryDump2438 : nullptr,
+                                 hasSN2433 ? chipSN2433 : nullptr, ty, tm, td);
+        if (a & AUD_CRYPT_WRONG)    d.issues |= ISS_CRYPT_WRONG;
+        if (a & AUD_CRYPT_UNKNOWN)  d.issues |= ISS_CRYPT_UNKNOWN;
+        if (a & AUD_BLOCK_SUM)      d.issues |= ISS_BLOCK_SUM;
+        if (a & AUD_DATE_INSANE)    d.issues |= ISS_DATE_INSANE;
+        if (a & AUD_ETM_FOREIGN)    d.issues |= ISS_ETM_FOREIGN;
+        if (a & AUD_USE_BEFORE_CHG) d.issues |= ISS_USE_BEFORE_CHG;
+    }
+
     bool structOk = d.hdrOk && !(d.issues & (ISS_BLANK33 | ISS_NO_MODEL));
     if (structOk && hasDump2438) {
         uint8_t ica = batteryDump2438[12];
@@ -296,7 +346,14 @@ static void wizComputeActions(const BatteryDiag &d) {
     if (is & ISS_NO_CHIP) { add(ACT_READ); return; }
 
     if (is & (ISS_BLANK33 | ISS_NO_MODEL))       add(ACT_RESTORE);
-    else if (is & (ISS_HDR_BAD | ISS_MIRROR_BAD)) add(ACT_REPAIR);
+    else if (is & (ISS_HDR_BAD | ISS_MIRROR_BAD | ISS_BLOCK_SUM)) add(ACT_REPAIR);
+
+    // Перешифрування — ПІСЛЯ ремонту структури (він може полагодити суми
+    // блоків) і ДО калібрування: на ЗП має їхати пакет, чиї поля рація вже
+    // читає правильно. Відновлення еталона робить це саме, тож після нього
+    // окремий крок зайвий.
+    if (!(is & (ISS_BLANK33 | ISS_NO_MODEL)) &&
+        (is & (ISS_CRYPT_WRONG | ISS_USE_BEFORE_CHG))) add(ACT_CRYPT);
 
     // ЧУЖА навчена калібровка — головна причина «невідомого акумулятора» після
     // заміни елементів. Прибираємо її ПЕРШОЮ, далі обов'язково цикл на ЗП.
@@ -420,6 +477,7 @@ static const char *wizActionName(uint8_t a) {
         case ACT_RECAL_DEEP: return "recaldeep";
         case ACT_RESET: return "reset";          case ACT_CLEAN: return "clean";
         case ACT_SETCHARGE_AUTO: return "charge";case ACT_CHARGE_STATION: return "station";
+        case ACT_CRYPT: return "crypt";
         case ACT_VERIFY: return "verify";        default: return "none";
     }
 }
@@ -617,6 +675,35 @@ static String wizExecStep(int idx, const String &model, const String &fixes = St
             displayShow("НА ЗАРЯДНУ СТ.");
             return wizStatusJson("Поставте АКБ на IMPRES-ЗП. Майстер продовжить після повернення.", true);
         }
+        // Перешифрування під ROM цього чипа. Робимо ТИМ САМИМ кодом, що й правка
+        // «crypt» у плані «Ремонту»: друга реалізація одного дня розійшлася б.
+        case ACT_CRYPT: {
+            if (!hasDump)   { ok = false; msg = "Спочатку зчитайте DS2433"; break; }
+            if (!hasSN2433) { ok = false; msg = "ROM-ID чипа невідомий — ключ узяти нізвідки"; break; }
+            char cm[16] = "";
+            if (!decodeModel(cm, sizeof(cm)) || !cm[0]) {
+                if (g_wizJ.model[0]) strncpy(cm, g_wizJ.model, sizeof(cm) - 1);
+            }
+            RestorePlan cp;
+            if (!cm[0] || !buildRestorePlanFor(cm, cp, /*refresh=*/false)) {
+                ok = false; msg = "Немає вшитого еталона моделі — перешифрувати нема від чого";
+                break;
+            }
+            if (!cp.fx[RPF_CRYPT].avail) {
+                // Ключ уже свій і поля несуперечливі — крок не потрібен.
+                ok = true; msg = "Перешифрування не потрібне: ключ уже свій";
+                break;
+            }
+            cp.fx[RPF_CRYPT].on = true;
+            restorePlanApply(cp, batteryDump, nullptr, /*onlyEnabled=*/true);
+            ledSet(LED_WRITE); displayShow("ПЕРЕШИФРУВАННЯ");
+            ok = battery.writeBattery(batteryDump, DUMP_SIZE);
+            if (ok) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+            displayShow(ok ? "ШИФР OK" : "ШИФР ЗБІЙ");
+            ledSet(ok ? LED_OK : LED_ERROR);
+            msg = ok ? "Дати й лічильники перешифровано під ROM цього чипа"
+                     : "Збій запису DS2433";
+        } break;
         case ACT_VERIFY: {
             bool a, b; readAllChips(a, b);
             BatteryDiag d2; wizAnalyze(d2);

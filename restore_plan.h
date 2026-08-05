@@ -442,7 +442,12 @@ inline void restorePlanRecalc(RestorePlan &p) {
     // Правку пропонуємо у двох випадках: ключ відомий і чужий (тоді
     // перешифруємо все) або ключ не визначається (тоді єдине, що можна
     // осмислено записати, — вписана вручну дата).
-    cr.avail  = p.haveRom && (p.cryptWrong || p.cryptUnknown);
+    // ⚑ Третій випадок — і саме його бракувало: ключ ПРАВИЛЬНИЙ, лагодити
+    // нічого, але людина хоче ЗМІНИТИ поле (знос після заміни банок, дату,
+    // калібрування). Писати його теж можна лише через перешифрування, тож без
+    // цієї умови вписане число мовчки нікуди не йшло — картка обіцяла «поля
+    // нижче все одно можна вписати вручну», а правка лишалась недоступною.
+    cr.avail  = p.haveRom && (p.cryptWrong || p.cryptUnknown || anyCryptUser);
     cr.tplVal = restoreDateNum(p.seenY, p.seenM, p.seenD);   // що бачить рація зараз
     cr.packVal = haveUserDate ? restoreDateNum(p.mfgUserY, p.mfgUserM, p.mfgUserD)
                               : restoreDateNum(p.mfgY, p.mfgM, p.mfgD);

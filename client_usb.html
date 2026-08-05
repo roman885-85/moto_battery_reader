@@ -464,12 +464,21 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <button class="btn b-warn" onclick="setEtm()">📅 ЗАПИСАТИ ДАТУ (ETM)</button>
     </div>
 <div class="card">
-      <h2>🩺 Знос/здоров'я (0–100 %) <span class="chipb">пише в DS2433</span></h2>
-      <div class="note w">⚠️ Це байт <b>заводської таблиці моделі</b> (<code>0x129</code>), однаковий у всіх
-        екземплярів моделі — показань рації правка тут не змінить. Справжній знос — у картці
-        <b>«Штатні лічильники Motorola»</b> на вкладці «Дані».</div>
-      <div class="row"><span class="k">Ємність, %</span><input type="number" id="capv" min="0" max="100" value="100" style="width:90px;text-align:center"></div>
-      <button class="btn b-warn" onclick="setCap()">💾 ЗАПИСАТИ %</button>
+      <h2>🩺 Знос/здоров'я <span class="chipb">пише в DS2433</span></h2>
+      <div class="note i">Те число, яке рація й фірмове ПЗ показують як знос: поле <code>CTS</code>
+        у зашифрованому блоці <code>RECOND</code>. Після заміни елементів виправляти треба саме
+        його. Зараз у чипі: <b id="hpNow">—</b>.</div>
+      <div class="row"><span class="k">Знос, % (1..100)</span><input type="number" id="hpv" min="1" max="100" placeholder="напр. 100" style="width:90px;text-align:center"></div>
+      <button class="btn b-ok" onclick="setHealth()">💾 ЗАПИСАТИ ЗНОС</button>
+      <div class="note i">Знос залежить і від <b>шунта</b>, і від <b>паспортної ємності</b>: 100 % —
+        це «вся паспортна». Тому спершу задайте ємність нових банок у «Ремонті». Ключ шифрування —
+        з ROM-ID чипа DS2433, тож правка можлива лише на живому чипі.</div>
+      <details style="margin-top:8px">
+        <summary style="cursor:pointer;opacity:.8">Заводський байт 0x129 (для аналізу)</summary>
+        <div class="note w">⚠️ Однаковий у всіх екземплярів моделі — показань рації правка тут не змінить.</div>
+        <div class="row"><span class="k">Ємність, %</span><input type="number" id="capv" min="0" max="100" value="100" style="width:90px;text-align:center"></div>
+        <button class="btn b-warn" onclick="setCap()">💾 ЗАПИСАТИ %</button>
+      </details>
     </div>
 <div class="card">
       <h2>🧹 Очистити (крім критичних) <span class="chipb">пише в DS2433 + DS2438</span></h2>
@@ -828,6 +837,13 @@ async function refresh(){
   if(d.rsense!==undefined)$('dRs').textContent=(d.rsense*1000).toFixed(2)+' мОм'+
     (d.rsenseChip?' (з чипа)':' (з налаштувань — у чипі поля немає)');
   renderBms(d.bms);
+  // Поточний знос — одразу в картку правки, щоб не звірятись з іншою вкладкою.
+  if($('hpNow')){
+    const h=(d.bms&&d.bms.haveKey)?d.bms.health:null;
+    $('hpNow').textContent=(h!==null&&h!==undefined)
+      ? (h+' % (≈'+d.bms.potentialMah+' мА·год)') : '— (ключ не визначено)';
+    if($('hpv')&&!$('hpv').value&&h) $('hpv').placeholder='зараз '+h;
+  }
   if(d.hex38)$('h38').textContent=hexDump(d.hex38);
   if(d.hex33)$('h33').textContent=hexDump(d.hex33);
 }
@@ -838,6 +854,18 @@ async function refresh(){
 // струм, залишок і знос виходять неправильні. Допуск 180 діб: на 31 рідній
 // парі з dumps/ перевищення сягало щонайбільше 44 діб.
 const ETM_AGE_SLACK_D = 180;
+// Знос окремою дією. Рахує ПРИСТРІЙ (той самий restore_plan.h, що й у плані):
+// знос залежить від шунта й паспортної ємності, і друга формула тут одного дня
+// розійшлася б із прошивкою.
+async function setHealth(){
+  if(!connected){toast('Підключіться');return;}
+  const v=$('hpv').value;
+  if(!v||+v<1||+v>100){toast('Знос має бути 1..100 %');return;}
+  if(!confirm('💾 Записати знос '+v+' %?\n\nПишеться поле CTS у блок RECOND (DS2433).'))return;
+  const r=await cmd('SETHEALTH '+v,20000);
+  if(r&&r.ok){toast('Знос '+r.health+' % записано (CTS '+r.cts+')');await refresh();}
+  else toast('Помилка: '+((r&&r.err)||'збій запису'));
+}
 function warnForeign2438(d, etmSec){
   const w=$('warn2438'); if(!w) return;
   const mfg=d.bms&&d.bms.mfgDate;
@@ -846,8 +874,10 @@ function warnForeign2438(d, etmSec){
   const etmD=Math.floor(etmSec/86400);
   if(etmD>ageD+ETM_AGE_SLACK_D){
     w.style.display='';
-    w.textContent='⚠️ Напрацювання ETM ('+etmD+' діб) більше за вік пакета ('+ageD+' діб від '+mfg+
-      '). DS2438 майже напевно не від цього АКБ — перечитайте монітор. Доти струм, залишок і знос неправильні.';
+    w.innerHTML='⚠️ Напрацювання ETM (<b>'+etmD+' діб</b>) більше за вік пакета ('+ageD+' діб від '+mfg+
+      '). Або монітор <b>не від цього АКБ</b> (перечитайте DS2438 — доти струм, залишок і знос '+
+      'неправильні), або пакет пройшов <b>цикл на станції</b>: ЗП переписує ETM своїм числом. '+
+      'Тому наробіток правлять <b>ПІСЛЯ</b> калібрування, а не до нього.';
   } else w.style.display='none';
 }
 

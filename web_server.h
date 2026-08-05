@@ -2396,6 +2396,70 @@ static String soundFullJson() {
     return j;
 }
 
+// ── ЗНОС / ЗДОРОВ'Я ОКРЕМОЮ ДІЄЮ ───────────────────────────────────────────
+//  POST /api/sethealth?pct=80
+//  Те саме, що правка «знос» у «Ремонті», але одним рухом: після заміни банок
+//  міняти доводиться саме це число, і заради нього щоразу відкривати план
+//  зайве. Рахунок і запис — тим самим кодом (restore_plan.h), щоб два входи не
+//  розійшлися: знос залежить і від шунта, і від паспортної ємності, і власна
+//  копія формули одного дня дала б інший CTS.
+void handleSetHealth() {
+    if (!requireAdmin()) return;
+    if (!hasDump) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Спочатку зчитайте АКБ\"}");
+        return;
+    }
+    // Знос лежить у зашифрованому блоці RECOND, а ключ береться з ROM-ID чипа
+    // DS2433. Для дампа з файлу ROM узяти нізвідки — писати наосліп не будемо.
+    if (!hasSN2433) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"ROM чипа DS2433 невідомий — знос шифрується ключем із нього. Перечитайте АКБ на пристрої.\"}");
+        return;
+    }
+    int pct = server.hasArg("pct") ? server.arg("pct").toInt() : 0;
+    if (pct < 1 || pct > 100) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Знос має бути 1..100 %\"}");
+        return;
+    }
+    char model[16] = "";
+    decodeModel(model, sizeof(model));
+    RestorePlan p;
+    if (!model[0] || !buildRestorePlanFor(model, p, /*refresh=*/false)) {
+        String m = "{\"status\":\"error\",\"message\":\"Немає вшитого еталона для моделі '";
+        m += model[0] ? model : "?";
+        m += "' — без нього не порахувати знос. Скористайтесь планом у «Ремонті».\"}";
+        server.send(400, "application/json", m);
+        return;
+    }
+    restorePlanSetHealth(p, pct);
+    if (!p.fx[RPF_CRYPT].on) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Блок RECOND не читається — знос писати нікуди\"}");
+        return;
+    }
+    // d38 = nullptr: знос живе тільки в DS2433, монітор чіпати немає за що.
+    restorePlanApply(p, batteryDump, nullptr, /*onlyEnabled=*/true);
+
+    ledSet(LED_WRITE); displayShow("ЗАПИС ЗНОСУ");
+    bool ok = battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (ok) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+    displayShow(ok ? "ЗНОС OK" : "ЗНОС ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    if (!ok) {
+        server.send(500, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Помилка запису DS2433\"}");
+        return;
+    }
+    String j = "{\"status\":\"success\",\"health\":"; j += pct;
+    j += ",\"cts\":";    j += (int)p.ctsUse;
+    j += ",\"ratedMah\":"; j += p.ratedMah;
+    j += ",\"mah\":";    j += (long)(p.ratedMah * (long)pct / 100);
+    j += "}";
+    server.send(200, "application/json", j);
+}
+
 // ── СИСТЕМНА ДАТА ПРИСТРОЮ ──────────────────────────────────────────────────
 //  GET  /api/clock              — яку дату пристрій вважає сьогоднішньою
 //  POST /api/clock?today=…      — завести годинник (те саме роблять і всі
@@ -2665,6 +2729,7 @@ void setupWebServer() {
     server.on("/api/reboot", HTTP_POST, handleReboot);           // перезавантаження ESP32
     server.on("/api/templates", HTTP_GET, handleTemplates);      // список вшитих моделей
     server.on("/api/ops", HTTP_GET, handleOps);                  // каталог операцій (operations.h)
+    server.on("/api/sethealth", HTTP_POST, handleSetHealth);     // знос/здоров'я одним рухом
     server.on("/api/clock", HTTP_GET, handleClockGet);           // системна дата пристрою
     server.on("/api/clock", HTTP_POST, handleClockSet);          // завести годинник
     server.on("/api/sound", HTTP_GET, handleSoundGet);           // налаштування звуку

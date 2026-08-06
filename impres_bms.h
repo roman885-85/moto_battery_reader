@@ -343,27 +343,49 @@ inline void impresBmsDecrypt(const uint8_t *d33, ImpresBms *o) {
 //     • еквівалентні цикли з CCA <= лічильника циклів;
 //     • потенційна ємність у межах 20..125 % паспортної.
 //  Повертає кількість варіантів, що пройшли (0 — не вдалось, 1 — однозначно).
+// Чи правдоподібний вміст, розшифрований ключем k1: числа мають узгоджуватись
+// між собою і з тим, що ключа НЕ потребує (цикли з гістограми, CCA, шунт).
+// Одна функція на два входи — підбір ключа й пряму перевірку ключа з ROM;
+// двома копіями цих умов вони одного дня розійшлися б.
+//
+// ⚑ dayInitialUse > dayLastCharge раніше означало «не може бути»: пакет, який
+// уже вмикали, мусив хоч раз заряджатися. Але після заміни елементів дату
+// першого запуску вписують РУКАМИ, а день останнього заряду лишається
+// нульовим — і цілком правильний вміст відкидався як сміття. Тому нуль тут
+// окремо: «ще не заряджали» — законний стан, а не суперечність.
+inline bool impresBmsKeyPlausible(const uint8_t *d33, const ImpresBms *o,
+                                  const ImpresBms *t, long dayLim) {
+    (void)d33;
+    if (t->cyclesEnc > o->cycles || t->reverts > t->cyclesEnc ||
+        t->calCycles > t->cyclesEnc) return false;
+    if (t->dayLastCharge > dayLim || t->dayLastRecond > dayLim) return false;
+    if (t->dayLastCharge > 0 && t->dayInitialUse > t->dayLastCharge) return false;
+    if (o->ccaCycles > 0 && o->ccaCycles > t->cyclesEnc + t->cyclesEnc / 5) return false;
+    // CTS == 0 — законний стан «пакет ще не калібрувався», не відкидаємо.
+    if (o->ratedMah > 0 && t->cts > 0 &&
+        (t->potentialMah * 5 < o->ratedMah || t->potentialMah * 4 > o->ratedMah * 5))
+        return false;
+    return true;
+}
+
+// Ліміт «скільки діб пакет узагалі міг прожити» — від наробітку монітора.
+inline long impresBmsDayLimit(const ImpresBms *o) {
+    long etmDays = (long)(o->etmSec / 86400UL);
+    return (etmDays > 0 ? etmDays : 1) * 11 / 10 + 60;
+}
+
 inline int impresBmsFindKey(const uint8_t *d33, const uint8_t *d38, ImpresBms *o) {
     (void)d38;   // дані DS2438 вже враховано в o (ETM, CCA, шунт)
     if (!o->ok || o->cycles < 0) return 0;
     int found = 0;
     uint8_t bestK1 = 0, bestK2 = 0;
-    long etmDays = (long)(o->etmSec / 86400UL);
-    long dayLim  = (etmDays > 0 ? etmDays : 1) * 11 / 10 + 60;
+    long dayLim = impresBmsDayLimit(o);
 
     for (int k1 = 0; k1 < 16; k1++) {
         ImpresBms t = *o;
         t.key1 = (uint8_t)k1; t.key2 = 0x50; t.haveKey = true;
         impresBmsDecrypt(d33, &t);
-        if (t.cyclesEnc > o->cycles || t.reverts > t.cyclesEnc ||
-            t.calCycles > t.cyclesEnc) continue;
-        if (t.dayLastCharge > dayLim || t.dayLastRecond > dayLim ||
-            t.dayInitialUse > t.dayLastCharge) continue;
-        if (o->ccaCycles > 0 && o->ccaCycles > t.cyclesEnc + t.cyclesEnc / 5) continue;
-        // CTS == 0 — законний стан «пакет ще не калібрувався», не відкидаємо.
-        if (o->ratedMah > 0 && t.cts > 0 &&
-            (t.potentialMah * 5 < o->ratedMah || t.potentialMah * 4 > o->ratedMah * 5))
-            continue;
+        if (!impresBmsKeyPlausible(d33, o, &t, dayLim)) continue;
         found++;
         bestK1 = (uint8_t)k1;
         // Верхній нібл key2 впливає ТІЛЬКИ на дату. Беремо той, що дає осмислену

@@ -192,6 +192,10 @@ RP_RS_MANUAL = "— вручну —"
 TAIL_MODES = ("Свіжий (скелет + нулі)", "Стерти в 0xFF")
 # Звідки брати наробіток; порядок важливий — [0] свій, [1] із дати запуску.
 RP_ETM_SRC = ("наробіток самого пакета", "порахувати з дати першого запуску")
+# Типові шунти для режиму копії: коли в дампі шунта немає, беруть один із них.
+# Перший пункт означає «лишити той, що в дампі».
+CLONE_SHUNTS = ("— з дампа копії —", "4565 — 45.65 мОм (родина 4409)",
+                "2490 — 24.90 мОм (4488/4493)", "2500 — 25.00 мОм (4809)")
 
 
 def _dnum(v):
@@ -1259,6 +1263,12 @@ class App:
                    command=lambda: self.simple_op("RECAL DEEP", "Глибока чистка?\nДодатково стирає навчені записи ємності (0x153–0x189) і журнал використання.\nВмикайте, лише якщо після звичайного ремонту ЗП тримається за стару ємність.", 25.0)).pack(anchor="w", pady=3)
         ttk.Button(b2b, text="🛠 Ремонт цілісності (контрольні суми + дзеркало)",
                    command=lambda: self.simple_op("REPAIR", "Відновити цілісність і записати?")).pack(anchor="w", pady=3)
+        ttk.Label(b2b, text="🔌 Якщо чіп стертий, а зарядна станція WPLN4226A сама встигла дописати\n"
+                            "дзеркало заголовка з DS2438 (суму не виправила) — кнопка нижче добудовує\n"
+                            "рівно це; профіль і модель цим не відновлюються.",
+                  foreground="#b9bd86", justify="left").pack(anchor="w", pady=(4, 0))
+        ttk.Button(b2b, text="🔌 Добудувати заголовок після станції",
+                   command=self.hdr_fix).pack(anchor="w", pady=3)
 
         b2d = ttk.LabelFrame(p_cal, text="Розряд перед калібруванням (навантаження MOSFET)  ·  пише в DS2438", padding=8); b2d.pack(fill="x", pady=4)
         ttk.Label(b2d, text="Розряд — це приймальний контроль після перепайки: він міряє реальну ємність нових\n"
@@ -1404,6 +1414,12 @@ class App:
         ttk.Button(b4r, text="🧪 Байт-у-байт (ручний режим, для аналізу)", command=self.restore_battery_verbatim).pack(anchor="w", pady=2)
 
         b4 = ttk.LabelFrame(p_id, text="🆕 Новий акумулятор (порожній чип)  ·  пише в DS2433 + DS2438", padding=8); b4.pack(fill="x", pady=4)
+        ttk.Label(b4, text="З еталона береться лише МОДЕЛЬНА частина. Ідентичність не копіюється, а\n"
+                           "ГЕНЕРУЄТЬСЯ з ROM-ID саме цього чипа: зашифровані поля еталона зашифровані\n"
+                           "ROM-ом донора, і рація прочитала б їх як сміття («невідомий акумулятор»).\n"
+                           "Дата виготовлення — сьогоднішня, пакет ще не ввімкнений. Чип має бути\n"
+                           "ПРОЧИТАНИЙ: без ROM-ID генерувати нема з чого.",
+                  foreground="#b9bd86", justify="left").pack(anchor="w")
         self.cbInit = self._row(b4, "Модель-еталон:", lambda fr: self._combo(fr, 18))
         self.eInitMah = self._row(b4, "Заряд, мА·год:", lambda fr: self._entry(fr, 10, "1000"))
         ttk.Button(b4, text="🆕 Записати новий АКБ (DS2433+DS2438)", command=self.init_battery).pack(anchor="w", pady=2)
@@ -1415,12 +1431,65 @@ class App:
         self.eCap = self._row(b8, "Байт заводської таблиці, %:", lambda fr: self._entry(fr, 10, "100"))
         ttk.Button(b8, text="💾 Записати %", command=self.set_cap).pack(anchor="w", pady=2)
 
+        # Крайній засіб: відновлення за зразком копії. У копій уся потрібна рації
+        # інформація живе в DS2438 (сторінки 3..6 — дзеркало заголовка DS2433, і
+        # серед них байт паспортної ємності), тому вони працюють із порожнім
+        # DS2433. Повторюємо це.
+        bcl = ttk.LabelFrame(p_dang, text="🧬 Відновлення за зразком копії  ·  крайній засіб",
+                             padding=8); bcl.pack(fill="x", pady=4)
+        ttk.Label(bcl, text="Коли жодна інша спроба не вдалася. Монітор пишеться зі зразка копії,\n"
+                            "лічильники в нуль, паливомір — із поточної напруги, DS2433 стирається.\n"
+                            "Ідентичність у DS2433 — окремою галочкою й лише як ЕКСПЕРИМЕНТ: каркас\n"
+                            "береться з еталона родини 4409, а дані шифруються ключем із ROM цього чипа.",
+                  foreground="#d08a3a", justify="left").pack(anchor="w")
+        self.cbClSample = self._row(bcl, "Вбудований зразок:", lambda fr: self._combo(fr, 32))
+        self.cbClSample["values"] = ["— свій файл —"]
+        self.cbClSample.set("— свій файл —")
+        self.cbClSample.bind("<<ComboboxSelected>>", lambda _e: self._clone_sample_pick())
+        cf = ttk.Frame(bcl); cf.pack(fill="x", pady=2)
+        ttk.Button(cf, text="📂 Обрати дамп DS2438 (64 Б)",
+                   command=self.clone_pick).pack(side="left", padx=3)
+        self.lblClone = ttk.Label(cf, text="не обрано", foreground="#b9bd86")
+        self.lblClone.pack(side="left", padx=4)
+        self.eClRated = self._row(bcl, "Ємність, мА·год:", lambda fr: self._entry(fr, 10, ""))
+        self.cbClRs = self._row(bcl, "Шунт:", lambda fr: self._combo(fr, 26))
+        self.cbClRs["values"] = list(CLONE_SHUNTS)
+        self.cbClRs.set(CLONE_SHUNTS[0])
+        self.eClModel = self._row(bcl, "Модель:", lambda fr: self._entry(fr, 12, ""))
+        self.eClMfg = self._row(bcl, "Дата виготовлення (РРРР-ММ-ДД):", lambda fr: self._entry(fr, 12, ""))
+        self.eClUse = self._row(bcl, "Дата першого запуску:", lambda fr: self._entry(fr, 12, ""))
+        self.eClHp = self._row(bcl, "Знос, %:", lambda fr: self._entry(fr, 6, ""))
+        self.vClZero = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bcl, text="Скинути лічильники (наробіток, CCA, DCA) — числа копії до ваших банок не стосуються",
+                        variable=self.vClZero).pack(anchor="w")
+        self.vClRecheck = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bcl, text="Перевірити заряд після запису — до запису в чипі стояв шунт копії",
+                        variable=self.vClRecheck).pack(anchor="w")
+        self.vClId33 = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bcl, text="Записати ЕКСПЕРИМЕНТАЛЬНУ ідентичність у DS2433 (каркас 4409)",
+                        variable=self.vClId33).pack(anchor="w", pady=(2, 0))
+        ttk.Button(bcl, text="🧬 Відновити за зразком копії",
+                   command=self.clone_restore).pack(anchor="w", pady=2)
+
         b6 = ttk.LabelFrame(p_dang, text="⛔ Небезпечна зона (незворотно!)  ·  стирає обрану мікросхему повністю", padding=8); b6.pack(fill="x", pady=4)
         rf = ttk.Frame(b6); rf.pack(fill="x", pady=2)
         ttk.Button(rf, text="📤 Записати DS2433 з .bin (512 Б)", command=lambda: self.write_file(512, "WRITE33")).pack(side="left", padx=3)
         ttk.Button(rf, text="🔬 DS2438 з .bin (64 Б)", command=lambda: self.write_file(64, "WRITE38")).pack(side="left", padx=3)
         ttk.Button(b6, text="🔥 ПОВНЕ стирання DS2433", command=self.wipe33).pack(anchor="w", pady=2)
         ttk.Button(b6, text="🔥 ПОВНЕ стирання DS2438", command=self.wipe38).pack(anchor="w", pady=2)
+
+        # Дата пристрою. Годинника реального часу немає, NTP недосяжний (пристрій
+        # сам — точка доступу), тож єдине джерело — цей ПК. Показуємо, що
+        # пристрій думає, і даємо виправити одним рухом.
+        bclk = ttk.LabelFrame(p_cfg, text="🕐 Дата пристрою  ·  в АКБ не пише", padding=8)
+        bclk.pack(fill="x", pady=4)
+        ttk.Label(bclk, text="З неї рахується наробіток там, де клієнта немає — у меню самого\n"
+                             "приладу й у Майстрі з екрана. Зберігається й переживає перезавантаження.",
+                  foreground="#b9bd86", justify="left").pack(anchor="w")
+        self.lblClk = ttk.Label(bclk, text="пристрій вважає, що сьогодні: —", foreground="#c8b04a")
+        self.lblClk.pack(anchor="w", pady=(2, 0))
+        ttk.Button(bclk, text="🕐 Синхронізувати з цим ПК",
+                   command=self.clock_sync).pack(anchor="w", pady=2)
 
         self._build_sound(p_cfg)
 
@@ -1765,7 +1834,9 @@ class App:
             self.connected = True
             self.btnConn.config(text="⏏ Відключити")
             self.status("Підключено (" + r.get("port", "") + ")", True)
-            self.cmd("PING", 3.0, cb=lambda _: (self.load_templates(), self.sound_load(), self.refresh()))
+            self.cmd("PING", 3.0, cb=lambda _: (self.load_templates(), self.sound_load(),
+                                                 self.clock_load(), self.clone_samples_load(),
+                                                 self.refresh()))
         else:
             self.status("Помилка порту: " + r.get("err", ""), False)
 
@@ -2015,7 +2086,23 @@ class App:
         if not messagebox.askyesno("Новий АКБ", f"Ініціалізувати чип як НОВИЙ {model} ({mah} мА·год)?\nПерезапише ОБИДВІ мікросхеми. Лише для порожнього чипа."):
             return
         self.maybe_auth(lambda: (self.status("Запис нового АКБ..."),
-                                 self.cmd(f"INITBAT {model} {mah}", 25.0, cb=lambda r: self._after_write(r, f"✅ Новий {model} записано"))))
+                                 self.cmd(f"INITBAT {model} {mah}", 25.0,
+                                          cb=lambda r: self._after_init(r, model))))
+
+    def _after_init(self, r, model):
+        """identity=False означає, що ROM чипа не знайшли й у пам'яті лишилась
+        шифровка донора — рація прочитає її як сміття. Мовчати про це не можна."""
+        if isinstance(r, dict) and r.get("ok") and not r.get("identity", True):
+            messagebox.showwarning(
+                "Новий АКБ",
+                "%s записано, але ROM-ID чипа DS2433 невідомий — ідентичність НЕ згенеровано.\n\n"
+                "У чипі лишилась зашифрована частина донора: рація розшифрує її своїм ключем\n"
+                "і побачить сміття («невідомий акумулятор»). Перечитайте АКБ і повторіть." % model)
+            self._after_write(r, "⚠️ %s записано без згенерованої ідентичності" % model)
+            return
+        dt = _dnum((r or {}).get("mfgDate", 0)) if isinstance(r, dict) else ""
+        self._after_write(r, "✅ Новий %s записано%s"
+                          % (model, (", ідентичність із ROM, дата " + dt) if dt and dt != "—" else ""))
 
     # ---- керований розряд ---------------------------------------------
     def _dis_show(self, r):
@@ -2695,6 +2782,124 @@ class App:
         if not messagebox.askyesno("Здоров'я", f"Записати ємність {v}%?"):
             return
         self.maybe_auth(lambda: self.cmd(f"SETCAP {v}", 15.0, cb=lambda r: self._after_write(r, "✅ Записано")))
+
+    CLK_SRC = {"client": "від клієнта (точна)",
+               "saved":  "відновлена після перезавантаження — відстає",
+               "none":   "не заведено"}
+
+    def clock_load(self):
+        """Спитати, яку дату пристрій вважає сьогоднішньою."""
+        if not self.connected:
+            return
+        self.cmd("CLOCK", 8.0, cb=self._clock_show)
+
+    def _clock_show(self, r):
+        if not isinstance(r, dict) or not r.get("ok"):
+            return
+        src = self.CLK_SRC.get(r.get("src", ""), r.get("src", "—"))
+        self.lblClk.config(text="пристрій вважає, що сьогодні: %s  ·  %s"
+                                % (_dnum(r.get("today", 0)), src))
+
+    def clock_sync(self):
+        if not self.need_conn():
+            return
+        self.cmd("CLOCK %d" % self._rp_today(), 8.0,
+                 cb=lambda r: (self.status("✅ Дату пристрою синхронізовано"), self.clock_load()))
+
+    def clone_samples_load(self):
+        """Вбудовані зразки моніторів копій — щоб не носити файл із собою."""
+        if not self.connected:
+            return
+        self.cmd("SAMPLES", 8.0, cb=self._clone_samples_show)
+
+    def _clone_samples_show(self, r):
+        if not isinstance(r, dict) or not r.get("ok"):
+            return
+        self._clSamples = r.get("samples", []) or []
+        self.cbClSample["values"] = ["— свій файл —"] + [s.get("name", "?") for s in self._clSamples]
+
+    def _clone_sample_pick(self):
+        i = self.cbClSample.current() - 1        # 0 = «свій файл»
+        subs = getattr(self, "_clSamples", [])
+        if i < 0 or i >= len(subs):
+            return
+        self._cloneHex = subs[i].get("hex", "")
+        self.lblClone.config(text="%s · %d мА·год" % (subs[i].get("note", ""), subs[i].get("rated", 0)))
+
+    def hdr_fix(self):
+        """Добудова заголовка DS2433, яку почала (але не завершила) станція
+        WPLN4226A: дзеркало з DS2438 уже на місці, суму вона не виправила."""
+        if not self.need_conn():
+            return
+        if not messagebox.askyesno("Добудова заголовка",
+                "Добудувати заголовок із дзеркала DS2438?\n\n"
+                "Профіль і модель цим не відновлюються — лише заголовок стане структурно валідним."):
+            return
+        self.maybe_auth(lambda: (self.status("Добудова..."),
+                                 self.cmd("HDRFIX", 15.0, cb=self._hdrfix_show)))
+
+    def _hdrfix_show(self, r):
+        ok = isinstance(r, dict) and r.get("ok")
+        note = (r or {}).get("note", "")
+        self.status(("✅ " + note) if ok and note else ("✅ Готово" if ok else "Помилка: " + note), ok)
+        if not ok:
+            messagebox.showerror("Добудова заголовка", note or "Збій запису")
+        self.refresh()
+
+    def clone_pick(self):
+        """Обрати дамп DS2438 копії — рівно 64 байти."""
+        p = filedialog.askopenfilename(title="Дамп DS2438 копії (64 Б)",
+                                       filetypes=[("Дамп", "*.bin"), ("Усі файли", "*.*")])
+        if not p:
+            return
+        try:
+            with open(p, "rb") as f:
+                d = f.read()
+        except OSError as e:
+            messagebox.showerror("Дамп", str(e)); return
+        if len(d) != 64:
+            messagebox.showwarning("Дамп", "Дамп DS2438 має бути рівно 64 байти (зараз %d)" % len(d))
+            return
+        self._cloneHex = d.hex()
+        self.lblClone.config(text="%s (64 Б)" % os.path.basename(p))
+
+    def clone_restore(self):
+        if not self.need_conn():
+            return
+        hx = getattr(self, "_cloneHex", "")
+        if len(hx) != 128:
+            messagebox.showwarning("Режим копії", "Спершу оберіть дамп DS2438 копії (64 байти)")
+            return
+        id33 = self.vClId33.get()
+        if not messagebox.askyesno("Режим копії",
+                "Відновити за зразком копії?\n\n"
+                "DS2438 — зі зразка, лічильники в нуль, паливомір із поточної напруги.\n"
+                "DS2433 %s\n\nЦе крайній засіб. Продовжити?"
+                % ("отримає ЕКСПЕРИМЕНТАЛЬНУ ідентичність на каркасі 4409."
+                   if id33 else "буде СТЕРТО.")):
+            return
+        def dn(e):
+            t = (e.get() or "").strip().replace(".", "-").replace("/", "-")
+            try:
+                y, m, d = (int(x) for x in t.split("-"))
+                return y * 10000 + m * 100 + d
+            except (ValueError, tk.TclError):
+                return 0
+        rs = self.cbClRs.get()
+        rsv = "".join(ch for ch in rs.split(" ")[0] if ch.isdigit()) if rs != CLONE_SHUNTS[0] else ""
+        a = " " + hx
+        if (self.eClRated.get() or "").strip(): a += " RATED=" + self.eClRated.get().strip()
+        if rsv:                                 a += " RSENSE=" + rsv
+        if (self.eClModel.get() or "").strip(): a += " MODEL=" + self.eClModel.get().strip().upper()
+        if dn(self.eClMfg):                     a += " MFG=%d" % dn(self.eClMfg)
+        if dn(self.eClUse):                     a += " USE=%d" % dn(self.eClUse)
+        if (self.eClHp.get() or "").strip():    a += " HEALTH=" + self.eClHp.get().strip()
+        if id33:                                a += " ID33=1"
+        if not self.vClZero.get():              a += " ZERO=0"
+        if not self.vClRecheck.get():           a += " RECHECK=0"
+        self.maybe_auth(lambda: (self.status("Режим копії..."),
+                                 self.cmd("CLONE" + a, 30.0,
+                                          cb=lambda r: self._after_write(r, "✅ Відновлено за зразком копії"))))
 
     def set_health(self):
         """Знос окремою дією. Рахує ПРИСТРІЙ (той самий restore_plan.h, що й у

@@ -38,6 +38,14 @@
 //   DISCHARGE [мВ]       -> почати керований розряд (типово до 7200 мВ)
 //   DISCHARGE STOP       -> зупинити розряд;  DISCHARGE ? -> стан розряду
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
+//   HDRFIX               -> добудувати заголовок DS2433 із дзеркала DS2438
+//                          (коли зарядна станція сама почала, але не завершила)
+//   SAMPLES              -> вбудовані зразки моніторів копій (для CLONE)
+//   CLONE <hex128> [RATED=] [RSENSE=] [MODEL=] [MFG=] [USE=] [HEALTH=] [ID33=1]
+//                  [ZERO=0] [RECHECK=0]
+//                        -> КРАЙНІЙ ЗАСІБ: відновлення за зразком китайської
+//                           копії — монітор зі зразка, DS2433 стерто; ID33=1
+//                           додатково пише ЕКСПЕРИМЕНТАЛЬНУ ідентичність
 //   RESTORE <MODEL> [VERBATIM] [FIXES=..] [RATED=мАг] [RSENSE=мОм*100|RSMODEL=..] [MFG=..]
 //            [TAIL=FRESH|ERASE] [HEALTH=%] [USE=РРРРММДД] [CAL=] [CYC=] [NONIMP=]
 //            [TODAY=РРРРММДД] [ETMSRC=USE|PACK] -> відновити модельну
@@ -510,8 +518,16 @@ static void serialExec(const String &line) {
                                   if (findTemplate(md.c_str()) < 0) sResp("{\"ok\":false,\"err\":\"немає шаблону моделі\"}");
                                   else if (mah <= 0)                sResp("{\"ok\":false,\"err\":\"вкажіть мА·год (INITBAT <модель> <мАг>)\"}");
                                   else { bool ok = performInitBattery(md.c_str(), mah);
-                                         sResp(ok ? (String("{\"ok\":true,\"model\":\"") + md + "\"}")
-                                                  : "{\"ok\":false,\"err\":\"збій запису\"}"); } }
+                                         if (!ok) sResp("{\"ok\":false,\"err\":\"збій запису\"}");
+                                         else {
+                                             // identity=false означає, що ROM чипа не знайшли
+                                             // й у пам'яті лишилась шифровка донора.
+                                             String r = "{\"ok\":true,\"model\":\""; r += md;
+                                             r += "\",\"identity\":";
+                                             r += g_initIdentityGen ? "true" : "false";
+                                             r += ",\"mfgDate\":"; r += g_initIdentityDate;
+                                             sResp(r + "}");
+                                         } } }
     // RESTOREPLAN <модель> [NOREAD] [FIXES=...] — що саме буде виправлено в
     // еталоні під ЦЕЙ пакет. Нічого не пише. Типово перечитує чипи, щоб заряд
     // був свіжий; NOREAD — перерахувати на вже прочитаних даних (клієнт смикає
@@ -565,6 +581,64 @@ static void serialExec(const String &line) {
     // годинник. Годинника реального часу в ESP32 немає, а NTP недосяжний:
     // пристрій сам є точкою доступу. Ту саму дату несе TODAY= у RESTORE/FIXES.
     // SETHEALTH <1..100> — знос одним рухом (те саме, що правка «знос» у плані).
+    // HDRFIX — добудувати заголовок DS2433 із дзеркала DS2438 (див. ISS_CHARGER_PARTIAL).
+    else if (cmd == "HDRFIX")   { String note; bool ok = performHeaderComplete(&note);
+                                  String r = "{\"ok\":"; r += ok ? "true" : "false";
+                                  r += ",\"note\":\""; r += note; r += "\"}";
+                                  sResp(r); }
+    // CLONE <hex128> [RATED=] [RSENSE=] [MODEL=] [MFG=] [USE=] [HEALTH=] [ID33=1]
+    // Крайній засіб: відновлення за зразком китайської копії. Перший токен —
+    // дамп DS2438 копії (64 Б = 128 hex-символів), решта — ручні значення.
+    // SAMPLES — вбудовані зразки моніторів копій (без пароля, нічого не пише).
+    else if (cmd == "SAMPLES")  { String j = "{\"ok\":true,\"samples\":[";
+                                  for (int i = 0; i < CLONE_SAMPLE_COUNT; i++) {
+                                      if (i) j += ",";
+                                      j += "{\"name\":\""; j += CLONE_SAMPLES[i].name;
+                                      j += "\",\"note\":\""; j += CLONE_SAMPLES[i].note;
+                                      j += "\",\"rated\":"; j += impresCloneRatedFrom38(CLONE_SAMPLES[i].d38);
+                                      j += ",\"hex\":\"";
+                                      char b2[3];
+                                      for (int k = 0; k < DS2438_MEM_SIZE; k++) {
+                                          sprintf(b2, "%02X", CLONE_SAMPLES[i].d38[k]); j += b2; }
+                                      j += "\"}";
+                                  }
+                                  sResp(j + "]}"); }
+    else if (cmd == "CLONE")    { String rest = arg; rest.trim();
+                                  int sp = rest.indexOf(' ');
+                                  String hx = (sp < 0) ? rest : rest.substring(0, sp);
+                                  String tail = (sp < 0) ? String("") : rest.substring(sp + 1);
+                                  uint8_t src[DS2438_MEM_SIZE];
+                                  if (hexToBytes(hx, src, DS2438_MEM_SIZE) != DS2438_MEM_SIZE)
+                                      sResp("{\"ok\":false,\"err\":\"потрібно рівно 64 байти DS2438\"}");
+                                  else {
+                                      long rt = 0, rs = 0, mf = 0, us = 0; int hp = 0; bool id33 = false;
+                                      bool zc = true, rc = true;   // скидати лічильники, перевіряти заряд
+                                      String md;
+                                      while (tail.length()) {
+                                          int q = tail.indexOf(' ');
+                                          String tok = (q < 0) ? tail : tail.substring(0, q);
+                                          tail = (q < 0) ? String("") : tail.substring(q + 1);
+                                          tail.trim();
+                                          String up = tok; up.toUpperCase();
+                                          if      (up.startsWith("RATED="))  rt = up.substring(6).toInt();
+                                          else if (up.startsWith("RSENSE=")) rs = up.substring(7).toInt();
+                                          else if (up.startsWith("MFG="))    mf = up.substring(4).toInt();
+                                          else if (up.startsWith("USE="))    us = up.substring(4).toInt();
+                                          else if (up.startsWith("HEALTH=")) hp = up.substring(7).toInt();
+                                          else if (up.startsWith("MODEL="))  md = up.substring(6);
+                                          else if (up.startsWith("ID33="))   id33 = (up.substring(5) == "1");
+                                          else if (up.startsWith("ZERO="))   zc = (up.substring(5) != "0");
+                                          else if (up.startsWith("RECHECK=")) rc = (up.substring(8) != "0");
+                                      }
+                                      String note;
+                                      bool ok = performCloneRestore(src, (int)rt, rs, id33, md.c_str(),
+                                                    (int)(mf / 10000), (int)((mf / 100) % 100), (int)(mf % 100),
+                                                    (int)(us / 10000), (int)((us / 100) % 100), (int)(us % 100),
+                                                    hp, &note, zc, rc);
+                                      String r = "{\"ok\":"; r += ok ? "true" : "false";
+                                      r += ",\"note\":\""; r += note; r += "\"}";
+                                      sResp(r);
+                                  } }
     else if (cmd == "SETHEALTH"){ String h = arg; h.trim();
                                   int pct = h.toInt();
                                   if (!hasDump)        sResp("{\"ok\":false,\"err\":\"спочатку READ\"}");

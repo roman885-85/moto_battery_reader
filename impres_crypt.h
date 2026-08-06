@@ -126,8 +126,23 @@ inline void impresCryptRead(const uint8_t *d33, uint8_t k1, uint8_t k2,
 // Записати ті самі поля ключем k1/k2 і полагодити суми блоків. Пишемо лише те,
 // що справді прочиталось: інакше «перешифрування» тихо заповнило б нулями
 // блок, якого ми не бачили.
+// Привести поля до внутрішньо несуперечливого стану ПЕРЕД записом. Пакет, який
+// уже вмикали, не міг жодного разу заряджатись: день останнього заряду не може
+// бути меншим за день першого запуску. Раніше ми лишали його нульовим — і
+// власний же підбір ключа згодом вважав такий вміст сміттям.
+inline void impresCryptNormalize(ImpresCryptFields *f) {
+    if (!f) return;
+    if (f->dayInitialUse > 0 && f->dayLastCharge < f->dayInitialUse)
+        f->dayLastCharge = f->dayInitialUse;
+    if (f->dayInitialUse2 && f->dayInitialUse2 != f->dayInitialUse)
+        f->dayInitialUse2 = f->dayInitialUse;   // поле-близнюк іде разом
+}
+
 inline void impresCryptWrite(uint8_t *d33, uint8_t k1, uint8_t k2,
-                             const ImpresCryptFields *f) {
+                             const ImpresCryptFields *fIn) {
+    ImpresCryptFields tmp = *fIn;
+    impresCryptNormalize(&tmp);
+    const ImpresCryptFields *f = &tmp;
     uint16_t aCyc = impresCryptAddr(d33, BMS_V_CYCLE);
     uint16_t aRec = impresCryptAddr(d33, BMS_V_RECOND);
     uint16_t aDat = impresCryptAddr(d33, BMS_V_DATE);
@@ -153,6 +168,48 @@ inline void impresCryptWrite(uint8_t *d33, uint8_t k1, uint8_t k2,
             impresCryptPutBE(d33, aDat + 5, impresCryptEncInt(f->dayInitialUse2, 2, k1));
         impresFixRecord(d33, aDat, d33[aDat]);
     }
+}
+
+// ═══════════════════ ІДЕНТИЧНІСТЬ ІЗ ROM САМОГО ЧИПА ═══════════════════════
+//  Вшитий еталон — побайтова копія ОДНОГО реального пакета, а його зашифровані
+//  блоки (дати, знос, калібрування) зашифровані ROM-ом ДОНОРА. Записати їх на
+//  порожній чип означає віддати новому пакету числа, які рація розшифрує СВОЇМ
+//  ключем — і побачить сміття. Саме так і виглядає «невідомий акумулятор»
+//  (dumps/16-verbatim-4409a-chuzhyi-kliuch).
+//
+//  Тому для порожнього чипа ідентичність не копіюють, а ГЕНЕРУЮТЬ: беруть
+//  ROM-ID цього чипа (він і є серійним номером — окремого поля-серійника в
+//  пам'яті DS2433 немає), із нього — ключі (key1 = ROM[1], key2 = ROM[6]), і
+//  під цим ключем пишуть свіжі значення: дата виготовлення = сьогодні, пакет
+//  ще не вмикали, лічильники нульові, потенційна ємність = паспортна.
+//
+//  Рік 0 у даті означає «дати немає» — тоді блок DATE не чіпаємо взагалі:
+//  краще лишити його, ніж записати завідомо неправдиву дату (годинник
+//  пристрою може бути не заведений).
+inline void impresIdentityFresh(ImpresCryptFields *f, int y, int m, int d, uint8_t cts) {
+    memset(f, 0, sizeof(*f));
+    f->haveCyc = true;                  // цикли/повернення/дозаряди — з нуля
+    f->haveRec = true;
+    f->cts      = cts;                  // потенційна ємність
+    f->firstUse = cts;                  // на початку вона ж і була
+    if (y > 0) {
+        f->haveDat = true;
+        f->mfgY = y; f->mfgM = m; f->mfgD = d;
+        f->dayInitialUse = f->dayInitialUse2 = 0;   // ще не вмикали
+    }
+}
+
+// Записати згенеровану ідентичність під ROM ЦЬОГО чипа. rom33 — 8 байт
+// лазерного ROM-ID DS2433; nullptr означає «ключ невідомий», і тоді нічого не
+// пишемо: наосліп вийде та сама чужа шифровка, лише з іншим підписом.
+// Повертає true, якщо ідентичність згенеровано.
+inline bool impresIdentityWrite(uint8_t *d33, const uint8_t *rom33,
+                                int y, int m, int d, uint8_t cts) {
+    if (!d33 || !rom33) return false;
+    ImpresCryptFields f;
+    impresIdentityFresh(&f, y, m, d, cts);
+    impresCryptWrite(d33, rom33[1], rom33[6], &f);
+    return true;
 }
 
 // ═══════════════════ ЛІЧИЛЬНИКИ ЦИКЛІВ (БЕЗ ШИФРУВАННЯ) ═══════════════════
@@ -196,9 +253,31 @@ inline bool impresNonImpresWrite(uint8_t *d33, int cycles) {
 // підробити результат неможливо). Повертає false, якщо ключ не визначається:
 // тоді перешифровувати нема чого — ми не знаємо, що саме там записано.
 inline bool impresCryptSourceKey(const uint8_t *d33, const uint8_t *d38,
-                                 uint8_t *k1, uint8_t *k2) {
+                                 uint8_t *k1, uint8_t *k2,
+                                 const uint8_t *rom33 = nullptr) {
     ImpresBms o;
     if (!impresBmsParse(d33, d38, nullptr, 0.0f, &o)) return false;
+    // ⚑ Якщо ROM цього чипа відомий — його ключ перевіряємо ПЕРШИМ і прямо, а
+    // не шукаємо наосліп. Підбір вимагає, щоб кандидат лишився РІВНО один, і на
+    // щойно записаному пакеті (лічильники нульові, дату вписали руками) жоден
+    // кандидат не проходив — картка правок показувала прочерк, хоча вкладка
+    // «Дані», яка читає прямо ROM-ом, показувала все правильно.
+    // Питання, на яке тут відповідають, — не «який ключ підійде», а «чи не
+    // зашифровано вміст ЧУЖИМ ключем». Із відомим ROM його вирішує сама дата:
+    // правильний ключ дає правдоподібну дату виготовлення, чужий — сміття на
+    // кшталт 2107-13-21 (dumps/16). Звірку лічильників тут НЕ застосовуємо: вона
+    // потрібна, щоб розрізнити 16 кандидатів наосліп, а ROM неоднозначності не
+    // лишає. Саме на ній і горіло: щойно записаний пакет має нульові лічильники,
+    // тоді як CCA монітора вже ненульове, — і власний ключ відкидався як чужий.
+    if (rom33) {
+        ImpresBms t = o;
+        t.key1 = rom33[1]; t.key2 = rom33[6]; t.haveKey = true;
+        impresBmsDecrypt(d33, &t);
+        if (impresBmsDateSane(t.mfgY, t.mfgM, t.mfgD)) {
+            *k1 = rom33[1]; *k2 = rom33[6];
+            return true;
+        }
+    }
     if (impresBmsFindKey(d33, d38, &o) != 1) return false;
     *k1 = o.key1; *k2 = o.key2;
     return true;

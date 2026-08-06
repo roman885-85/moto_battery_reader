@@ -70,6 +70,19 @@ bool BatteryReader::findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr) {
     // Скидаємо пошук для наступного разу
     _ow->reset_search();
 
+    // ⚑ ПАКЕТ ЗМІНИЛИ — КЕШ НЕДІЙСНИЙ. ROM-ID це не просто серійник для показу:
+    // з нього беруться ключі шифрування дат і лічильників. Якщо новий пакет
+    // знайшовся лише одним чипом, а другий підставився з кешу від ПОПЕРЕДНЬОГО,
+    // ми зашифрували б дані цього пакета чужим ключем — рівно та біда, від якої
+    // лікуємо. Обидва чипи живуть в одному пакеті, тож зміна будь-якого з ROM
+    // означає, що пакет інший, і другий кеш теж треба викинути.
+    bool swapped = (found2433 && _haveRom2433 && memcmp(_rom2433, ds2433_addr, 8) != 0) ||
+                   (found2438 && _haveRom2438 && memcmp(_rom2438, ds2438_addr, 8) != 0);
+    if (swapped) {
+        Serial.println("1-Wire: ROM змінився -> інший пакет, кеш ROM скинуто");
+        _haveRom2433 = _haveRom2438 = false;
+    }
+
     // Запам’ятовуємо ROM-ID (серійники) знайдених чипів
     if (found2433) { memcpy(_rom2433, ds2433_addr, 8); _haveRom2433 = true; }
     if (found2438) { memcpy(_rom2438, ds2438_addr, 8); _haveRom2438 = true; }
@@ -96,7 +109,12 @@ bool BatteryReader::findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr) {
                 Serial.println("DS2438: using cached ROM");
             }
         } else {
-            Serial.println("1-Wire: no presence pulse -> bus empty, cached ROM NOT used");
+            // Шина порожня — пакет зняли. Кеш ROM після цього нічого не
+            // означає: наступним поставлять інший пакет, і підставити йому
+            // ключ від попереднього — найгірше, що можна зробити.
+            Serial.println("1-Wire: no presence pulse -> bus empty, "
+                           "cached ROM NOT used and cleared");
+            _haveRom2433 = _haveRom2438 = false;
         }
     }
 
@@ -143,14 +161,48 @@ bool BatteryReader::readBattery(uint8_t *buffer, size_t size) {
         return false;
     }
 
-    _ow->reset();
-    _ow->select(ds2433_addr);
-    _ow->write(0xF0); // Команда читання пам'яті
-    _ow->write(0x00); // Адреса (молодший байт)
-    _ow->write(0x00); // Адреса (старший байт)
-
-    for (size_t i = 0; i < size; i++) {
-        buffer[i] = _ow->read();
+    // ⚑ ЧИТАННЯ ПОСТОРІНКОВО, а не одним суцільним потоком на 512 байт.
+    // DS2433 живиться від САМОГО ПАКЕТА (Vcc береться через ту саму шину, що
+    // й дані) — окремого джерела живлення для нього тут немає. При сильній
+    // розбалансировці банок пакет може «просісти» під навантаженням посеред
+    // довгої транзакції: чіп втрачає живлення, і 1-Wire read() після цього
+    // повертає не дані, а плаваючу лінію (як правило суцільні 0xFF). Раніше
+    // функція про це не дізнавалась узагалі — читала до кінця буфера і
+    // ПОВЕРТАЛА true, навіть якщо половина буфера вже сміття. Саме так
+    // виглядала скарга «вичитує тільки початок мікросхеми».
+    //
+    // Тепер кожна сторінка (32 Б, як і при записі) — своя транзакція: Reset +
+    // Match ROM + Read Memory з власною адресою. Reset() перед кожною
+    // сторінкою — це заразом і перевірка presence-pulse: якщо пакет просів і
+    // чіп не відповів, ми дізнаємось відразу на тій сторінці, де це сталось,
+    // а не постфактум по 500 байтах сміття. Даємо йому DS_READ_RECOVER_MS на
+    // відновлення напруги й повторюємо ЛИШЕ цю сторінку, до DS_READ_PAGE_TRIES
+    // разів. Якщо й після цього сторінка недоступна — чесно повертаємо false,
+    // а не вдаваний успіх із діркою в даних.
+    for (size_t offset = 0; offset < size; offset += DS2433_PAGE_SIZE) {
+        size_t chunk = (offset + DS2433_PAGE_SIZE <= size) ? DS2433_PAGE_SIZE : (size - offset);
+        bool pageOk = false;
+        for (int attempt = 0; attempt < DS_READ_PAGE_TRIES && !pageOk; attempt++) {
+            if (attempt) {
+                delay(DS_READ_RECOVER_MS);
+                Serial.printf("readBattery: presence lost @0x%03X, повтор (спроба %d) — "
+                              "пакет просів під навантаженням?\n", (unsigned)offset, attempt + 1);
+            }
+            if (!_ow->reset()) continue;         // немає presence-pulse — пакет ще не відновився
+            _ow->select(ds2433_addr);
+            _ow->write(0xF0);                    // Команда читання пам'яті
+            _ow->write((uint8_t)(offset & 0xFF));        // Адреса (молодший байт)
+            _ow->write((uint8_t)((offset >> 8) & 0xFF)); // Адреса (старший байт)
+            for (size_t i = 0; i < chunk; i++) buffer[offset + i] = _ow->read();
+            pageOk = true;
+        }
+        if (!pageOk) {
+            Serial.printf("Error: DS2433 page @0x%03X недоступна — шина/живлення нестабільні "
+                          "(можлива сильна розбалансировка банок)\n", (unsigned)offset);
+            _ow->reset();
+            pullupOff();
+            return false;
+        }
     }
 
     _ow->reset();

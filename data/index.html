@@ -454,6 +454,11 @@
                 профіль моделі <b id="intProf">—</b>, COPYRIGHT <b id="intCp">—</b>.</div>
             <input type="password" class="pw" id="pwRep" placeholder="🔑 Пароль адміністратора">
             <button class="btn btn-warn" style="width:100%" onclick="repairFw()">🛠 ВІДНОВИТИ ЦІЛІСНІСТЬ</button>
+            <div class="note i" style="margin-top:8px">🔌 Якщо чіп стертий, а зарядна станція <b>WPLN4226A</b>
+                сама встигла дописати в нього дзеркало заголовка з DS2438 (перевірте вище — заголовок
+                «навчений», хоч чіп мав бути порожнім) — тут вона зупинилась, суму не виправила. Кнопка
+                нижче добудовує РІВНО те, що почала станція; профіль і модель цим не відновлюються.</div>
+            <button class="btn btn-info" style="width:100%" onclick="hdrFix()">🔌 ДОБУДУВАТИ ЗАГОЛОВОК ПІСЛЯ СТАНЦІЇ</button>
         </div>
     </div>
     <div class="sub" id="fw-cal">
@@ -710,10 +715,15 @@
         </div>
 <div class="card" style="border-color:var(--ok)">
             <h2>🆕 Новий акумулятор (ініціалізація порожнього чипа) <span class="chipb">пише в DS2433 + DS2438</span></h2>
-            <div class="note i">Для <b>порожнього / стертого / невідомого</b> чипа: записує повний еталон обраної
-                моделі (DS2433 + DS2438 — ідентичність, калібрування, автентифікація), обнуляє історію/лічильники,
-                ставить здоров'я 100%, а вказану ємність пише як поточний заряд (ICA). Прошивка прив'язана до
-                <b>моделі</b>, тож серійник не потрібен.</div>
+            <div class="note i">Для <b>порожнього / стертого / невідомого</b> чипа: з еталона береться
+                <b>модельна частина</b> (крива, автентифікація, запис моделі), історія й лічильники обнуляються,
+                здоров'я — 100 %, а вказана ємність іде як поточний заряд (ICA).</div>
+            <div class="note i">🔑 <b>Ідентичність не копіюється, а генерується</b> з ROM-ID саме цього чипа.
+                Зашифровані поля еталона (дати, знос, калібрування) зашифровані ROM-ом <b>донора</b>, і рація,
+                розшифрувавши їх своїм ключем, побачила б сміття — це і є «невідомий акумулятор». Тому ключі
+                (<code>ROM[1]</code>, <code>ROM[6]</code>) беруться з цього чипа, дата виготовлення — сьогоднішня
+                (із годинника пристрою), пакет позначається як <b>ще не ввімкнений</b>.
+                Тож чип має бути <b>прочитаний</b>: без ROM-ID генерувати нема з чого.</div>
             <div class="row"><span class="k">Модель</span>
                 <select id="initModel" style="border-radius:8px;border:none;padding:6px;min-width:150px"></select></div>
             <div class="row"><span class="k">Ємність, мА·год</span>
@@ -775,6 +785,55 @@
     <div class="sub" id="fw-dang">
         <div class="subintro">Незворотні операції. Після них АКБ не працюватиме, доки не запишете еталон моделі.</div>
 <div class="card" style="border-color:#e74c3c">
+            <h2>🧬 Відновлення за зразком копії <span class="chipb">пише в DS2433 + DS2438</span></h2>
+            <div class="note w">⚠️ <b>Крайній засіб</b> — коли жодна інша спроба не вдалася.
+                Копії влаштовані так, що вся потрібна рації інформація живе в <b>DS2438</b>:
+                сторінки 3–6 — це дзеркало заголовка DS2433, і серед них байт паспортної ємності.
+                Тому копія працює з <b>порожнім DS2433</b>. Ми повторюємо це: пишемо монітор зі
+                зразка, лічильники обнуляємо, паливомір беремо з поточної напруги, а DS2433 стираємо.</div>
+            <div class="row"><span class="k">Вбудований зразок</span>
+                <select id="clSample" onchange="clPick()" style="min-width:260px"></select></div>
+            <div class="note i" id="clSampleNote" style="display:none"></div>
+            <div class="row"><span class="k">або свій дамп DS2438 (64 Б)</span>
+                <input type="file" id="clFile" accept=".bin"></div>
+            <div class="note i">або вставте 128 hex-символів:
+                <input type="text" id="clHex" placeholder="0F 48 18 22 …" style="width:100%;margin-top:4px;
+                       padding:6px;border-radius:6px;border:1px solid var(--line);background:var(--card2);color:var(--text)"></div>
+            <div class="rpg">
+                <div class="rpf"><span>Паспортна ємність, мА·год</span>
+                    <input type="number" id="clRated" min="1000" max="6000" step="25" placeholder="з дзеркала" style="width:110px"></div>
+                <div class="rpf"><span>Шунт</span>
+                    <select id="clRs" style="width:200px">
+                        <option value="">— з дампа копії —</option>
+                        <option value="4565">45.65 мОм (родина 4409)</option>
+                        <option value="2490">24.90 мОм (4488/4493)</option>
+                        <option value="2500">25.00 мОм (4809)</option>
+                    </select></div>
+                <div class="rpf"><span>Модель</span>
+                    <input type="text" id="clModel" maxlength="9" placeholder="PMNN4409A" style="width:140px"></div>
+                <div class="rpf"><span>Дата виготовлення</span>
+                    <input type="date" id="clMfg" style="width:150px"></div>
+                <div class="rpf"><span>Дата першого запуску</span>
+                    <input type="date" id="clUse" style="width:150px"></div>
+                <div class="rpf"><span>Знос, %</span>
+                    <input type="number" id="clHp" min="1" max="100" placeholder="100" style="width:80px"></div>
+            </div>
+            <label style="display:block;margin:6px 0"><input type="checkbox" id="clZero" checked>
+                <b>Скинути лічильники</b> — наробіток, CCA і DCA у нуль. Числа копії до ваших банок
+                стосунку не мають, тож типово так. Знявши галочку, лічильники зі зразка лишаться як є.</label>
+            <label style="display:block;margin:6px 0"><input type="checkbox" id="clRecheck" checked>
+                <b>Перевірити заряд після запису</b> — паливомір рахується з напруги, виміряної <b>до</b>
+                запису, коли в чипі ще стояли шунт і OFFSET копії. Після запису шунт уже ваш, і той самий
+                АЦП дає інше число, тож монітор перечитується і відсоток рахується ще раз.</label>
+            <label style="display:block;margin:8px 0"><input type="checkbox" id="clId33">
+                <b>Записати ідентичність у DS2433</b> — <b>ЕКСПЕРИМЕНТАЛЬНО</b>. У справжньої копії
+                DS2433 порожній; тут каркас береться з еталона <b>родини 4409</b>, а модель, дати
+                й знос шифруються ключем із ROM-ID <b>цього</b> чипа. Без галочки DS2433 лишається
+                стертим — рація бачитиме лише ємність і рахуватиме заряд.</label>
+            <input type="password" class="pw" id="pwClone" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-danger" style="width:100%" onclick="cloneRestore()">🧬 ВІДНОВИТИ ЗА ЗРАЗКОМ КОПІЇ</button>
+        </div>
+<div class="card" style="border-color:#e74c3c">
             <h2>🔥 ПОВНЕ стирання DS2433 (крайній випадок) <span class="chipb">пише в DS2433</span></h2>
             <div class="note w">🛑 Стирає <b>ВЕСЬ</b> чіп DS2433 у 0xFF, разом з моделлю, серійним/ID та
                 калібруванням! Після цього АКБ <b>НЕ ПРАЦЮЄ</b>, доки не запишете еталонний дамп тієї ж
@@ -788,6 +847,17 @@
 </div>
 <div class="page" id="cfg">
     <div class="subintro">Налаштування самого пристрою. В акумулятор нічого не пишеться.</div>
+<div class="card">
+            <h2>🕐 Дата пристрою <span class="nochip">в АКБ не пише</span></h2>
+            <div class="note i">Годинника реального часу тут немає, а NTP недосяжний: пристрій сам —
+                точка доступу. Тому дату йому <b>приносить клієнт</b> — кожен запит плану чи запису
+                вже несе сьогоднішню. Вона зберігається й переживає перезавантаження, і саме з неї
+                рахується наробіток там, де клієнта немає: у меню самого приладу й у Майстрі з екрана.</div>
+            <div class="row"><span class="k">Пристрій вважає, що сьогодні</span>
+                <b id="clkNow">—</b></div>
+            <div class="row"><span class="k">Звідки взято</span><b id="clkSrc">—</b></div>
+            <button class="btn btn-info" style="width:100%" onclick="clockSync()">🕐 СИНХРОНІЗУВАТИ З ЦИМ ПРИСТРОЄМ</button>
+        </div>
 <div class="card">
             <h2>🔊 Налаштування звуку <span class="nochip">в АКБ не пише</span></h2>
             <div class="note i">Нічого не пише в акумулятор — це налаштування самого пристрою; воно
@@ -849,6 +919,9 @@ function showTab(el){
     document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
     document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
     el.classList.add('active'); $(el.dataset.p).classList.add('active');
+    // Дату пристрою питаємо при вході на «Налаштування»: тримати її свіжою
+    // постійним опитуванням немає сенсу, вона міняється раз на добу.
+    if(el.dataset.p==='cfg') clockLoad();
     window.scrollTo(0,0);
 }
 // Під-вкладки «Ремонту». Картка «Відновити еталон» показує план правок, і його
@@ -1097,6 +1170,95 @@ async function setHealth(){
             toast('Знос '+r.health+' % записано (CTS '+r.cts+', ≈'+r.mah+' мА·год)','ok');
             await refreshAll();
         } else toast('Помилка: '+r.message,'err');
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+// Дата пристрою. Годинника реального часу тут немає, тож єдине джерело —
+// клієнт; показуємо, що пристрій думає, і даємо виправити одним рухом.
+const CLK_SRC={client:'від клієнта (точна)',
+               saved:'відновлена після перезавантаження — відстає',
+               none:'не заведено'};
+async function clockLoad(){
+    try{
+        const r=await(await fetch('/api/clock')).json();
+        const dt=r.today?(''+r.today).replace(/^(\d{4})(\d{2})(\d{2})$/,'$1-$2-$3'):'—';
+        if($('clkNow'))$('clkNow').textContent=dt;
+        if($('clkSrc'))$('clkSrc').textContent=CLK_SRC[r.src]||r.src||'—';
+    }catch(e){}
+}
+async function clockSync(){
+    try{
+        const r=await postForm('/api/clock',{today:rpToday()});
+        if(r.status==='success'){toast('Дату пристрою синхронізовано','ok');await clockLoad();}
+        else toast('Помилка: '+r.message,'err');
+    }catch(e){toast('Помилка: '+e.message,'err')}
+}
+// Крайній засіб: відновлення за зразком копії. Уся інформація, потрібна рації,
+// живе в DS2438 (дзеркало заголовка несе ємність), тож DS2433 лишаємо стертим.
+// Ідентичність у DS2433 — окремою галочкою й тільки як експеримент.
+// Вбудовані зразки моніторів копій: щоб не носити файл із собою.
+let clSamples=[];
+async function clLoadSamples(){
+    try{
+        const r=await(await fetch('/api/clone/samples')).json();
+        clSamples=r.samples||[];
+        const sel=$('clSample'); if(!sel)return;
+        sel.innerHTML='<option value="">— свій файл або hex —</option>'+
+            clSamples.map((s,i)=>'<option value="'+i+'">'+esc(s.name)+'</option>').join('');
+    }catch(e){}
+}
+function clPick(){
+    const i=$('clSample').value, n=$('clSampleNote');
+    if(i===''||!clSamples[i]){n.style.display='none';return}
+    const s=clSamples[i];
+    n.style.display=''; n.textContent=s.note+' · ємність із дзеркала '+s.rated+' мА·год';
+    if(!$('clRated').value)$('clRated').placeholder=s.rated+' (зі зразка)';
+}
+async function clRead38(){
+    const i=$('clSample')?$('clSample').value:'';
+    if(i!=='' && clSamples[i]) return clSamples[i].hex;
+    const f=$('clFile').files[0];
+    if(f){
+        if(f.size!==64){toast('Дамп DS2438 має бути рівно 64 байти (зараз '+f.size+')','err');return null}
+        const b=new Uint8Array(await f.arrayBuffer());
+        return Array.from(b).map(x=>x.toString(16).padStart(2,'0')).join('');
+    }
+    const e=$('clHex'); const h=e&&e.value?e.value.replace(/[^0-9A-Fa-f]/g,''):'';
+    if(h.length!==128){toast('Потрібно 64 байти: файл або 128 hex-символів','err');return null}
+    return h;
+}
+async function cloneRestore(){
+    const hex=await clRead38(); if(!hex)return;
+    const dnum=id=>{const e=$(id);return e&&e.value?e.value.replace(/-/g,''):'0'};
+    const id33=$('clId33').checked;
+    if(!confirm('🧬 Відновити за зразком копії?\n\nDS2438 буде записано зі зразка, лічильники '+
+                'обнулено, паливомір — із поточної напруги.\nDS2433 '+
+                (id33?'отримає ЕКСПЕРИМЕНТАЛЬНУ ідентичність на каркасі 4409.':'буде СТЕРТО.')+
+                '\n\nЦе крайній засіб. Продовжити?'))return;
+    prog(true,'Режим копії...');
+    try{
+        const r=await postForm('/api/clone',{password:$('pwClone').value,hex38:hex,
+            rated:$('clRated').value||'0', rsense:$('clRs').value||'0',
+            model:($('clModel').value||'').toUpperCase(), mfg:dnum('clMfg'), use:dnum('clUse'),
+            health:$('clHp').value||'0', id33:id33?'1':'0',
+            zero:$('clZero').checked?'1':'0', recheck:$('clRecheck').checked?'1':'0'});
+        if(r.status==='success'){toast('✅ '+r.message,'ok');await refreshAll();}
+        else toast('Помилка: '+r.message,'err');
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+// Добудова заголовка DS2433 після зарядної станції WPLN4226A: вона сама
+// копіює дзеркало з DS2438, але не виправляє суму й на цьому зупиняється.
+async function hdrFix(){
+    if(!confirm('🔌 Добудувати заголовок із дзеркала DS2438?\n\nПрофіль і модель цим не '+
+                'відновлюються — лише заголовок стане структурно валідним.'))return;
+    prog(true,'Добудова...');
+    try{
+        const r=await postForm('/api/hdrfix',{password:$('pwRep').value});
+        if(r.status==='success'){toast('✅ '+r.message,'ok');await refreshAll();}
+        else toast('Помилка: '+r.message,'err');
     }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);
 }
@@ -2098,8 +2260,12 @@ async function initBattery(){
     prog(true,'Запис нового АКБ...');
     try{
         const r=await postForm('/api/initbattery',{password:pw,model:model,mah:mah});
-        toast(r.status==='success'?('✅ Новий '+model+' записано ('+mah+' мА·год)'):('Помилка: '+r.message),r.status==='success'?'ok':'err');
-        if(r.status==='success')await refreshAll();
+        // Кажемо прямо, чи згенеровано ідентичність: без ROM у чипі лишається
+        // шифровка донора, і рація прочитає її як сміття.
+        if(r.status==='success'){
+            toast(r.message||('✅ Новий '+model+' записано'), r.identity===false?'info':'ok');
+            await refreshAll();
+        } else toast('Помилка: '+r.message,'err');
     }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);
 }
@@ -2179,7 +2345,7 @@ async function sndReset(){
     }catch(e){ toast('Не вдалось скинути','err'); }
 }
 
-window.onload=function(){refreshAll();loadTemplates();sndLoad();setInterval(refreshAll,10000)};
+window.onload=function(){refreshAll();loadTemplates();sndLoad();clLoadSamples();setInterval(refreshAll,10000)};
 </script>
 </body>
 </html>

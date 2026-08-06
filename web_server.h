@@ -12,6 +12,8 @@
 #include "operations.h"        // єдиний каталог операцій для всіх поверхонь
 #include "restore_plan.h"      // правки еталона під конкретний пакет перед записом
 #include "device_clock.h"     // системна дата пристрою (джерело «сьогодні»)
+#include "impres_audit.h"     // аудит змісту: шифрування й узгодженість даних
+#include "impres_clone.h"     // крайній засіб: відновлення за зразком копії
 #include "discharge.h"         // керований розряд навантаженням (MOSFET)
 #include "leds.h"
 #include "display.h"
@@ -165,13 +167,23 @@ bool readAllChips(bool &ok2433, bool &ok2438) {
 
     // Серійні номери чипів (лазерні ROM-ID). ROM DS2433 — це ще й ключ до
     // зашифрованих лічильників і дат у прошивці АКБ (див. impres_bms.h).
+    // ⚑ Дзеркалимо стан драйвера ОБОМА гілками. Раніше «else» не було, і
+    // серійник лишався від ПОПЕРЕДНЬОГО пакета, якщо цей не визначився. Для
+    // показу це дрібниця, а для шифрування — ні: ROM DS2433 і є ключем, і
+    // старий ROM означав би, що дані цього пакета зашифровано чужим.
     if (battery.hasRom2438()) {
         memcpy(chipSN2438, battery.rom2438(), 8);
         hasSN2438 = true;
+    } else {
+        hasSN2438 = false;
+        memset(chipSN2438, 0, sizeof(chipSN2438));
     }
     if (battery.hasRom2433()) {
         memcpy(chipSN2433, battery.rom2433(), 8);
         hasSN2433 = true;
+    } else {
+        hasSN2433 = false;
+        memset(chipSN2433, 0, sizeof(chipSN2433));
     }
 
     char st[40];
@@ -1282,6 +1294,13 @@ void repairDumps() {
         // правили суму випадковому запису. Тепер ідемо ЛАНЦЮГОМ від 0x120
         // (заводська таблиця + модель + навчені записи) і перераховуємо суму
         // лише тим записам, які її мають і в яких вона зараз хибна.
+        // ⚑ Блоки BMS (дати, цикли, калібрування, гістограми) лежать за
+        // адресами з ТАБЛИЦІ ВЕКТОРІВ, і більшість із них — НИЖЧЕ 0x120, куди
+        // ланцюг нижче не заходить узагалі. Правимо їх спільним кодом
+        // (impres_audit.h), яким і Майстер їх виявляє.
+        int nb = impresAuditFixSums(batteryDump);
+        if (nb) Serial.printf("repair: BMS block checksums fixed: %d\n", nb);
+
         int i = 0x120;
         while (i < (int)DUMP_SIZE) {
             if (batteryDump[i] == 0xFF) { i++; continue; }
@@ -1302,6 +1321,57 @@ void repairDumps() {
 // відновлення стертого DS2433 робиться завантаженням еталонного дампа той же
 // моделі (вкладка «Прошивка» → запис).
 // Ядро ремонту без HTTP — викликається і з веб-обробника, і з меню дисплея.
+// ── ДОБУДОВА ПІСЛЯ ЗАРЯДНОЇ СТАНЦІЇ ──────────────────────────────────────
+//  Одномісний IMPRES-зарядний WPLN4226A, отримавши пакет зі стертим DS2433,
+//  сам записує в нього дзеркало заголовка з DS2438 (26 байт: DS2433[0x01..0x1A]
+//  = DS2438[0x18..0x31]) — але НЕ виправляє контрольну суму, і на цьому
+//  зупиняється: профіль, модель і блоки лишаються 0xFF. Заголовок після цього
+//  структурно НЕВАЛІДНИЙ, хоча дані в ньому вже правильні.
+//
+//  Ця функція добудовує РІВНО те, що почала станція: копіює дзеркало (якщо
+//  ще не скопійоване — safe навіть коли вже скопійоване) і виправляє суму.
+//  Профіль, модель і блоки цим НЕ відновлюються — для них потрібен «Відновити
+//  еталон» (модель відома) або режим копії (модель невідома, але DS2438 несе
+//  достатньо даних — див. impres_clone.h).
+bool performHeaderComplete(String *note) {
+    if (!hasDump) { if (note) *note = "Спочатку зчитайте АКБ"; return false; }
+    if (!hasDump2438 || !mirrorSourceValid(batteryDump2438)) {
+        if (note) *note = "DS2438 не читається або дзеркала в ньому немає — добудовувати нічим";
+        return false;
+    }
+    bool already = mirrorOk(batteryDump, batteryDump2438);
+    syncMirrorFrom2438(batteryDump, batteryDump2438);
+    ledSet(LED_WRITE); displayShow("ДОБУДОВА...");
+    bool ok = battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (ok) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+    displayShow(ok ? "ДОБУДОВА OK" : "ДОБУДОВА ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    if (note) {
+        String n = already
+            ? "Заголовок добудовано: дзеркало вже було на місці, виправлено лише суму."
+            : "Заголовок добудовано з дзеркала DS2438.";
+        // Чесно кажемо, чого цей крок НЕ вирішує — інакше виглядало б, що
+        // пакет уже готовий, хоча профілю й моделі в ньому й досі немає.
+        char md[16] = "";
+        if (!decodeModel(md, sizeof(md)) || !md[0])
+            n += " Модель і профіль ще відсутні: далі — «Відновити еталон» (якщо модель "
+                 "відома) або режим копії в «Небезпечній зоні» (якщо ні).";
+        *note = n;
+    }
+    Serial.printf("HDRFIX: mirror %s, write %s\n", already ? "already ok" : "restored",
+                  ok ? "OK" : "FAIL");
+    return ok;
+}
+
+// POST /api/hdrfix
+void handleHeaderComplete() {
+    if (!requireAdmin()) return;
+    String note;
+    bool ok = performHeaderComplete(&note);
+    server.send(ok ? 200 : 400, "application/json",
+                String("{\"status\":\"") + (ok ? "success" : "error") + "\",\"message\":\"" + note + "\"}");
+}
+
 bool performRepair() {
     if (!hasDump && !hasDump2438) { displayShow("СПОЧАТКУ ЧИТАЙ"); return false; }
     ledSet(LED_WRITE); displayShow("РЕМОНТ...");
@@ -1751,6 +1821,25 @@ static bool fillMissingRsense(uint8_t *d38, const uint8_t *tpl38) {
 // (як заводська очистка), ставимо здоров'я 100%, а введену вручну ємність у
 // мА·год пишемо в ICA (поточний заряд). Дзеркало калібрування DS2438<->DS2433
 // у шаблоні вже узгоджене. Пишемо ОБИДВІ мікросхеми.
+// Чи був чип ПОРОЖНІЙ до відновлення: усе 0xFF (стертий) або все 0x00 (новий /
+// не читався). Тільки в цьому випадку ідентичність можна генерувати наново — на
+// пакеті з даними це знищило б його справжню історію.
+static bool dumpIsBlank(const uint8_t *d33) {
+    if (!d33) return true;
+    bool allFF = true, all00 = true;
+    for (int i = 0; i < DUMP_SIZE; i++) {
+        if (d33[i] != 0xFF) allFF = false;
+        if (d33[i] != 0x00) all00 = false;
+        if (!allFF && !all00) return false;
+    }
+    return true;
+}
+
+// Чи згенерувалась ідентичність під ROM цього чипа в останньому «новому АКБ» —
+// щоб клієнт міг це показати, а не лише Serial-лог.
+static bool g_initIdentityGen = false;
+static int  g_initIdentityDate = 0;      // РРРРММДД, 0 — годинник не заведено
+
 bool performInitBattery(const char *model, long mah) {
     int t = findTemplate(model);
     if (t < 0) { displayShow("НЕМА ШАБЛОНУ"); return false; }
@@ -1791,10 +1880,40 @@ bool performInitBattery(const char *model, long mah) {
     factoryCleanData();
     impresFixHeader(batteryDump);
 
+    // ⚑ ІДЕНТИЧНІСТЬ ГЕНЕРУЄМО, А НЕ КОПІЮЄМО. Зашифровані блоки еталона
+    // (дати, знос, калібрування) зашифровані ROM-ом ДОНОРА: рація розшифрує їх
+    // СВОЇМ ключем і побачить сміття — це і є «невідомий акумулятор»
+    // (dumps/16-verbatim-4409a-chuzhyi-kliuch). Тому беремо ROM-ID цього чипа
+    // (він і є серійним номером пакета), із нього — ключі, і під ними пишемо
+    // свіжі числа: дата виготовлення = сьогодні, пакет ще не вмикали,
+    // лічильники нульові, потенційна ємність = паспортна.
+    int gy = 0, gm = 0, gd = 0;
+    deviceClockToday(&gy, &gm, &gd);          // 0, якщо годинник не заведено
+    int ratedNew = impresRatedMahFor(batteryDump, model);
+    uint8_t ctsNew = restoreCtsFromHealth(100, ratedNew, impresBmsRsense(batteryDump2438));
+    g_initIdentityGen = false;
+    g_initIdentityDate = 0;
+    if (hasSN2433 && impresIdentityWrite(batteryDump, chipSN2433, gy, gm, gd, ctsNew)) {
+        g_initIdentityGen = true;
+        g_initIdentityDate = (int)restoreDateNum(gy, gm, gd);
+        Serial.printf("INIT: ідентичність згенеровано під ROM %02X%02X…: ключі %02X/%02X, "
+                      "дата %04d-%02d-%02d, CTS %u\n",
+                      chipSN2433[0], chipSN2433[1], chipSN2433[1], chipSN2433[6],
+                      gy, gm, gd, (unsigned)ctsNew);
+        if (!gy) Serial.println("INIT: годинник не заведено — блок DATE лишено як є");
+    } else {
+        Serial.println("INIT: ROM DS2433 невідомий — ідентичність НЕ згенеровано, "
+                       "у чипі лишились зашифровані поля донора (рація побачить сміття)");
+    }
+    // Лічильники циклів ключа не потребують — обнуляємо їх окремо, інакше
+    // новий пакет успадкував би гістограму донора.
+    impresCyclesWrite(batteryDump, 0);
+    impresNonImpresWrite(batteryDump, 0);
+    impresFixHeader(batteryDump);
+
     // Монітор — у стан «новий пакет» (конфіг/поріг/дзеркало зберігаються).
     // Введена ємність (поточний заряд) у мА·год -> регістр ICA DS2438.
-    long ica = impresIcaFromMahRs(mah, impresRatedMahFor(batteryDump, model),
-                                  impresBmsRsense(batteryDump2438));
+    long ica = impresIcaFromMahRs(mah, ratedNew, impresBmsRsense(batteryDump2438));
     impresResetMonitor(batteryDump2438, batteryDump, (uint8_t)ica);
 
     ledSet(LED_WRITE); displayShow("НОВИЙ АКБ...");
@@ -1866,6 +1985,9 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
     uint8_t was38[DS2438_MEM_SIZE];
     bool had38 = hasDump2438;
     if (had38) memcpy(was38, batteryDump2438, DS2438_MEM_SIZE);
+    // Чи був чип порожній — питаємо ДО того, як шаблон затре буфер: після
+    // memcpy_P там уже лежить еталон, і відповідь була б завжди «ні».
+    bool wasBlank33 = !hasDump || dumpIsBlank(batteryDump);
 
     // ⚑ План складаємо ДО того, як шаблон затре буфери: після memcpy_P у
     // batteryDump2438 лежить монітор ДОНОРА, і все, пораховане з нього, буде
@@ -1924,6 +2046,25 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
         if (touch38) impresResetMonitor(batteryDump2438, batteryDump, plan->icaUse);
         // Правки — ПІСЛЯ скидання монітора: воно обнуляє наробіток і паливомір.
         restorePlanApply(*plan, batteryDump, touch38 ? batteryDump2438 : nullptr);
+        // ⚑ Порожній чип: ідентичність ГЕНЕРУЄМО з його ROM, а не лишаємо
+        // донорську. Інакше зашифровані блоки еталона лишились би під ключем
+        // донора, і рація, розшифрувавши їх своїм, побачила б сміття —
+        // «невідомий акумулятор» (dumps/16). На пакеті З ДАНИМИ так робити не
+        // можна: це знищило б його справжню історію, тож умова строга —
+        // порожньо було до відновлення.
+        if (wasBlank33 && hasSN2433) {
+            int gy = 0, gm = 0, gd = 0;
+            deviceClockToday(&gy, &gm, &gd);
+            uint8_t cts = restoreCtsFromHealth(100, impresRatedMahFor(batteryDump, model),
+                                               impresBmsRsense(batteryDump2438));
+            impresIdentityWrite(batteryDump, chipSN2433, gy, gm, gd, cts);
+            impresCyclesWrite(batteryDump, 0);
+            impresNonImpresWrite(batteryDump, 0);
+            impresFixHeader(batteryDump);
+            Serial.printf("Restore: чип був порожній -> ідентичність згенеровано під ROM "
+                          "(ключі %02X/%02X, дата %04d-%02d-%02d, CTS %u)\n",
+                          chipSN2433[1], chipSN2433[6], gy, gm, gd, (unsigned)cts);
+        }
         char pl[96] = "";
         for (int i = 0, k = 0; i < RPF_COUNT; i++)
             if (plan->fx[i].on) k += snprintf(pl + k, sizeof(pl) - k, "%s%s",
@@ -2658,9 +2799,198 @@ void handleInitBattery() {
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Ємність має бути > 0 мА·год\"}"); return;
     }
     bool ok = performInitBattery(model.c_str(), mah);
-    server.send(ok ? 200 : 500, "application/json",
-        ok ? (String("{\"status\":\"success\",\"message\":\"Новий АКБ ") + model + " записано\"}")
-           : "{\"status\":\"error\",\"message\":\"Збій запису (див. Serial-лог)\"}");
+    if (!ok) {
+        server.send(500, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Збій запису (див. Serial-лог)\"}");
+        return;
+    }
+    // Кажемо прямо, чи згенеровано ідентичність: без ROM у чипі лишається
+    // шифровка донора, і рація прочитає її як сміття — про це треба знати.
+    String m = "Новий АКБ "; m += model; m += " записано. ";
+    if (g_initIdentityGen) {
+        m += "Ідентичність згенеровано з ROM-ID цього чипа";
+        if (g_initIdentityDate) {
+            char d[16];
+            snprintf(d, sizeof(d), "%04d-%02d-%02d", g_initIdentityDate / 10000,
+                     (g_initIdentityDate / 100) % 100, g_initIdentityDate % 100);
+            m += ", дата виготовлення "; m += d;
+        } else {
+            m += " (дату виготовлення не записано: годинник пристрою не заведено)";
+        }
+        m += ".";
+    } else {
+        m += "⚠️ ROM-ID чипа невідомий — ідентичність НЕ згенеровано, у чипі лишились "
+             "зашифровані поля донора. Перечитайте АКБ і повторіть.";
+    }
+    String j = "{\"status\":\"success\",\"identity\":";
+    j += g_initIdentityGen ? "true" : "false";
+    j += ",\"mfgDate\":"; j += g_initIdentityDate;
+    j += ",\"message\":\""; j += m; j += "\"}";
+    server.send(200, "application/json", j);
+}
+
+// ── ВІДНОВЛЕННЯ ЗА ЗРАЗКОМ КИТАЙСЬКОЇ КОПІЇ — КРАЙНІЙ ЗАСІБ ────────────────
+//  Коли жодна спроба відновлення не вдалася. Копії влаштовані так, що вся
+//  потрібна рації інформація живе в DS2438 (дзеркало заголовка несе паспортну
+//  ємність, поруч — шунт і OFFSET), а DS2433 у них порожній і не пишеться.
+//  Повторюємо це: пишемо монітор зі зразка, а DS2433 стираємо.
+//
+//  ⚑ Запис ідентичності в DS2433 (модель, дати, знос) — ОКРЕМИЙ і
+//  ЕКСПЕРИМЕНТАЛЬНИЙ крок за бажанням власника: у справжньої копії цього немає
+//  взагалі. Каркас беремо з еталона родини 4409 — саме її шунт (45.65 мОм)
+//  несуть монітори копій. Шифроване пишеться ключем із ROM ЦЬОГО чипа.
+bool performCloneRestore(const uint8_t *src38, int ratedMah, long rsRaw,
+                         bool write33, const char *model,
+                         int mfgY, int mfgM, int mfgD,
+                         int useY, int useM, int useD, int healthPct,
+                         String *note, bool zeroCounters = true,
+                         bool recheckCharge = true) {
+    if (!src38) return false;
+
+    // Паливомір — із РЕАЛЬНОЇ напруги цього пакета, а не з чисел копії.
+    int pct = chargePctFromVoltage();
+    int rated = ratedMah > 0 ? ratedMah : impresCloneRatedFrom38(src38);
+    if (rated <= 0) rated = 2150;                       // родина 4409 за умовчанням
+    long rsUse = rsRaw > 0 ? rsRaw : (long)(src38[56] | (src38[57] << 8));
+    uint8_t ica = (pct >= 0)
+        ? impresIcaFromPercentRs(pct, rated, rsUse > 0 ? rsUse / 100000.0f : DS2438_RSENSE_OHM)
+        : src38[12];
+
+    impresCloneBuild38(batteryDump2438, src38, ratedMah, rsRaw, ica, zeroCounters);
+    hasDump2438 = true;
+
+    // DS2433 — у 0xFF, як у копії.
+    memset(batteryDump, 0xFF, DUMP_SIZE);
+    hasDump = true;
+    String n = "Монітор записано за зразком копії; DS2433 стерто.";
+
+    if (write33) {
+        // ЕКСПЕРИМЕНТ: каркас 4409 + ручна ідентичність під ROM цього чипа.
+        int t = findTemplate(model && *model ? model : "PMNN4409A");
+        if (t < 0) t = findTemplate("PMNN4409A");
+        if (t < 0) {
+            n += " Каркаса 4409 немає — ідентичність не записано.";
+        } else if (!hasSN2433) {
+            n += " ROM чипа невідомий — ідентичність НЕ записано (шифрувати нічим).";
+        } else {
+            memcpy_P(batteryDump, BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
+            int cleared = applyFreshTail(BATTERY_TEMPLATES[t].fresh);
+            if (cleared < 0) impresEraseTail(batteryDump);
+            if (ratedMah > 0)
+                batteryDump[IMPRES_RATED_BYTE] = (uint8_t)(ratedMah / IMPRES_RATED_STEP);
+            if (model && *model) applyModel(model);
+            uint8_t cts = restoreCtsFromHealth(healthPct > 0 ? healthPct : 100, rated,
+                                               rsUse > 0 ? rsUse / 100000.0f : DS2438_RSENSE_OHM);
+            // Ключ — ТІЛЬКИ з ROM цього чипа (див. tools/client_audit.py).
+            impresIdentityWrite(batteryDump, chipSN2433, mfgY, mfgM, mfgD, cts);
+            // Дата першого запуску зберігається як «діб від виготовлення».
+            if (useY > 0 && mfgY > 0) {
+                ImpresCryptFields f;
+                impresCryptRead(batteryDump, chipSN2433[1], chipSN2433[6], &f);
+                f.dayInitialUse = f.dayInitialUse2 =
+                    restoreDaysBetween(mfgY, mfgM, mfgD, useY, useM, useD);
+                impresCryptWrite(batteryDump, chipSN2433[1], chipSN2433[6], &f);
+            }
+            impresCyclesWrite(batteryDump, 0);
+            impresNonImpresWrite(batteryDump, 0);
+            impresFixHeader(batteryDump);
+            n = "Монітор за зразком копії; у DS2433 записано ЕКСПЕРИМЕНТАЛЬНУ "
+                "ідентичність на каркасі 4409 під ROM цього чипа.";
+        }
+    }
+
+    ledSet(LED_WRITE); displayShow("РЕЖИМ КОПІЇ");
+    bool ok = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (ok) ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (ok) {
+        saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+        saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+    }
+    // ⚑ КОРЕКЦІЯ ЗАРЯДУ ПІСЛЯ ЗАПИСУ. Паливомір ми порахували з напруги, яку
+    // виміряли ДО запису — а вимірював її чіп, у якому ще стояли шунт і OFFSET
+    // копії. Після запису шунт уже наш, і той самий АЦП дає інше число. Тому
+    // перечитуємо монітор і рахуємо заряд ще раз, уже за новими константами;
+    // інакше в пакет лишився б відсоток, порахований за чужим шунтом.
+    if (ok && recheckCharge) {
+        delay(50);                                   // дати вимірюванню осісти
+        uint8_t re[DS2438_MEM_SIZE];
+        if (battery.readDS2438(re, DS2438_MEM_SIZE)) {
+            memcpy(batteryDump2438, re, DS2438_MEM_SIZE);
+            int p2 = impresPercentFromMv(impresVoltageMv(batteryDump2438));
+            if (p2 >= 0) {
+                float rsNow = impresBmsRsense(batteryDump2438);
+                uint8_t ica2 = impresIcaFromPercentRs(p2, rated,
+                                   rsNow > 0.0f ? rsNow : DS2438_RSENSE_OHM);
+                if (ica2 != batteryDump2438[12]) {
+                    batteryDump2438[12] = ica2;
+                    if (battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE)) {
+                        saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+                        Serial.printf("Clone: заряд перераховано після запису -> %d %% (ICA %u)\n",
+                                      p2, ica2);
+                    }
+                }
+                n += " Заряд перевірено після запису: ";
+                n += p2; n += " %.";
+            }
+        }
+    }
+    displayShow(ok ? "КОПІЯ OK" : "КОПІЯ ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    if (note) *note = n;
+    Serial.printf("Clone restore: rated=%d rs=%ld ica=%u id33=%d -> %s\n",
+                  rated, rsUse, ica, write33 ? 1 : 0, ok ? "OK" : "FAIL");
+    return ok;
+}
+
+// GET /api/clone/samples — вбудовані зразки моніторів копій.
+void handleCloneSamples() {
+    String j = "{\"status\":\"success\",\"samples\":[";
+    for (int i = 0; i < CLONE_SAMPLE_COUNT; i++) {
+        if (i) j += ",";
+        j += "{\"name\":\""; j += CLONE_SAMPLES[i].name;
+        j += "\",\"note\":\""; j += CLONE_SAMPLES[i].note;
+        j += "\",\"rated\":"; j += impresCloneRatedFrom38(CLONE_SAMPLES[i].d38);
+        j += ",\"rsense\":"; j += (int)(CLONE_SAMPLES[i].d38[56] | (CLONE_SAMPLES[i].d38[57] << 8));
+        j += ",\"hex\":\"";
+        char b[3];
+        for (int k = 0; k < DS2438_MEM_SIZE; k++) { sprintf(b, "%02X", CLONE_SAMPLES[i].d38[k]); j += b; }
+        j += "\"}";
+    }
+    j += "]}";
+    server.send(200, "application/json", j);
+}
+
+// POST /api/clone — hex38 (64 Б), rated, rsense, id33, model, mfg, use, health
+void handleCloneRestore() {
+    if (!requireAdmin()) return;
+    String hx = server.arg("hex38");
+    uint8_t src[DS2438_MEM_SIZE];
+    if (hexToBytes(hx, src, DS2438_MEM_SIZE) != DS2438_MEM_SIZE) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Потрібен дамп DS2438 — рівно 64 байти\"}");
+        return;
+    }
+    long mfg = server.hasArg("mfg") ? server.arg("mfg").toInt() : 0;
+    long use = server.hasArg("use") ? server.arg("use").toInt() : 0;
+    String md = server.arg("model"); md.trim(); md.toUpperCase();
+    String note;
+    bool ok = performCloneRestore(src,
+        server.hasArg("rated")  ? server.arg("rated").toInt()  : 0,
+        server.hasArg("rsense") ? server.arg("rsense").toInt() : 0,
+        server.hasArg("id33") && server.arg("id33") == "1",
+        md.c_str(),
+        (int)(mfg / 10000), (int)((mfg / 100) % 100), (int)(mfg % 100),
+        (int)(use / 10000), (int)((use / 100) % 100), (int)(use % 100),
+        server.hasArg("health") ? server.arg("health").toInt() : 0, &note,
+        !server.hasArg("zero")    || server.arg("zero") != "0",
+        !server.hasArg("recheck") || server.arg("recheck") != "0");
+    if (!ok) {
+        server.send(500, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Збій запису (див. Serial-лог)\"}");
+        return;
+    }
+    server.send(200, "application/json",
+                String("{\"status\":\"success\",\"message\":\"") + note + "\"}");
 }
 
 // Перезавантаження ESP32 (під паролем). Корисно після серії операцій або якщо
@@ -2730,6 +3060,7 @@ void setupWebServer() {
     server.on("/api/templates", HTTP_GET, handleTemplates);      // список вшитих моделей
     server.on("/api/ops", HTTP_GET, handleOps);                  // каталог операцій (operations.h)
     server.on("/api/sethealth", HTTP_POST, handleSetHealth);     // знос/здоров'я одним рухом
+    server.on("/api/hdrfix", HTTP_POST, handleHeaderComplete);   // добудова заголовка після станції
     server.on("/api/clock", HTTP_GET, handleClockGet);           // системна дата пристрою
     server.on("/api/clock", HTTP_POST, handleClockSet);          // завести годинник
     server.on("/api/sound", HTTP_GET, handleSoundGet);           // налаштування звуку
@@ -2739,6 +3070,8 @@ void setupWebServer() {
     server.on("/api/discharge/start", HTTP_POST, handleDischargeStart);  // почати розряд
     server.on("/api/discharge/stop", HTTP_POST, handleDischargeStop);    // зупинити розряд
     server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
+    server.on("/api/clone", HTTP_POST, handleCloneRestore);      // крайній засіб: режим копії
+    server.on("/api/clone/samples", HTTP_GET, handleCloneSamples); // вбудовані зразки копій
     server.on("/api/restore", HTTP_POST, handleRestore);         // відновлення еталона verbatim
     server.on("/api/restore/plan", HTTP_GET, handleRestorePlan); // правки еталона під цей пакет
     server.on("/api/restore/fixes", HTTP_POST, handleApplyFixes); // лише правки, без еталона

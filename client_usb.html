@@ -949,7 +949,7 @@ async function clLoadSamples(){
   clSamples=r.samples||[];
   const sel=$('clSample'); if(!sel) return;
   sel.innerHTML='<option value="">— свій файл або hex —</option>'+
-    clSamples.map((s,i)=>'<option value="'+i+'">'+esc(s.name)+'</option>').join('');
+    clSamples.map((s,i)=>'<option value="'+i+'">'+wesc(s.name)+'</option>').join('');
 }
 function clPick(){
   const i=$('clSample').value, n=$('clSampleNote');

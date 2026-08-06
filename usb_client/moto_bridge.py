@@ -134,7 +134,8 @@ INJECT = """
       var sel=$('bridgePort'); var pq=(sel&&sel.value)?('?port='+encodeURIComponent(sel.value)):'';
       var r=await (await fetch('/open'+pq)).json();
       if(r.ok){ connected=true; $('dot').classList.add('on'); $('btnConn').textContent='\\u23CF \\u0412\\u0456\\u0434\\u043A\\u043B\\u044E\\u0447\\u0438\\u0442\\u0438';
-        $('st').textContent='\\u041F\\u0456\\u0434\\u043A\\u043B\\u044E\\u0447\\u0435\\u043D\\u043E ('+r.port+')'; await refresh(); await loadTemplates(); }
+        $('st').textContent='\\u041F\\u0456\\u0434\\u043A\\u043B\\u044E\\u0447\\u0435\\u043D\\u043E ('+r.port+')';
+        await refresh(); await loadTemplates(); await sndLoad(); await clLoadSamples(); await disTick(); }
       else { $('st').textContent='\\u041F\\u043E\\u043C\\u0438\\u043B\\u043A\\u0430: '+(r.err||''); }
     }catch(e){ $('st').textContent='\\u041C\\u0456\\u0441\\u0442 \\u043D\\u0435\\u0434\\u043E\\u0441\\u0442\\u0443\\u043F\\u043D\\u0438\\u0439: '+e.message; }
   };

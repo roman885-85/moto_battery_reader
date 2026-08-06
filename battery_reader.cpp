@@ -161,14 +161,48 @@ bool BatteryReader::readBattery(uint8_t *buffer, size_t size) {
         return false;
     }
 
-    _ow->reset();
-    _ow->select(ds2433_addr);
-    _ow->write(0xF0); // Команда читання пам'яті
-    _ow->write(0x00); // Адреса (молодший байт)
-    _ow->write(0x00); // Адреса (старший байт)
-
-    for (size_t i = 0; i < size; i++) {
-        buffer[i] = _ow->read();
+    // ⚑ ЧИТАННЯ ПОСТОРІНКОВО, а не одним суцільним потоком на 512 байт.
+    // DS2433 живиться від САМОГО ПАКЕТА (Vcc береться через ту саму шину, що
+    // й дані) — окремого джерела живлення для нього тут немає. При сильній
+    // розбалансировці банок пакет може «просісти» під навантаженням посеред
+    // довгої транзакції: чіп втрачає живлення, і 1-Wire read() після цього
+    // повертає не дані, а плаваючу лінію (як правило суцільні 0xFF). Раніше
+    // функція про це не дізнавалась узагалі — читала до кінця буфера і
+    // ПОВЕРТАЛА true, навіть якщо половина буфера вже сміття. Саме так
+    // виглядала скарга «вичитує тільки початок мікросхеми».
+    //
+    // Тепер кожна сторінка (32 Б, як і при записі) — своя транзакція: Reset +
+    // Match ROM + Read Memory з власною адресою. Reset() перед кожною
+    // сторінкою — це заразом і перевірка presence-pulse: якщо пакет просів і
+    // чіп не відповів, ми дізнаємось відразу на тій сторінці, де це сталось,
+    // а не постфактум по 500 байтах сміття. Даємо йому DS_READ_RECOVER_MS на
+    // відновлення напруги й повторюємо ЛИШЕ цю сторінку, до DS_READ_PAGE_TRIES
+    // разів. Якщо й після цього сторінка недоступна — чесно повертаємо false,
+    // а не вдаваний успіх із діркою в даних.
+    for (size_t offset = 0; offset < size; offset += DS2433_PAGE_SIZE) {
+        size_t chunk = (offset + DS2433_PAGE_SIZE <= size) ? DS2433_PAGE_SIZE : (size - offset);
+        bool pageOk = false;
+        for (int attempt = 0; attempt < DS_READ_PAGE_TRIES && !pageOk; attempt++) {
+            if (attempt) {
+                delay(DS_READ_RECOVER_MS);
+                Serial.printf("readBattery: presence lost @0x%03X, повтор (спроба %d) — "
+                              "пакет просів під навантаженням?\n", (unsigned)offset, attempt + 1);
+            }
+            if (!_ow->reset()) continue;         // немає presence-pulse — пакет ще не відновився
+            _ow->select(ds2433_addr);
+            _ow->write(0xF0);                    // Команда читання пам'яті
+            _ow->write((uint8_t)(offset & 0xFF));        // Адреса (молодший байт)
+            _ow->write((uint8_t)((offset >> 8) & 0xFF)); // Адреса (старший байт)
+            for (size_t i = 0; i < chunk; i++) buffer[offset + i] = _ow->read();
+            pageOk = true;
+        }
+        if (!pageOk) {
+            Serial.printf("Error: DS2433 page @0x%03X недоступна — шина/живлення нестабільні "
+                          "(можлива сильна розбалансировка банок)\n", (unsigned)offset);
+            _ow->reset();
+            pullupOff();
+            return false;
+        }
     }
 
     _ow->reset();

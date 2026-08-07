@@ -350,7 +350,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         але не відкаліброваним → рація приймає, ЗП запускає повний цикл.</div>
       <div class="note w">⚠️ Фізичну калібровку не замінює — далі обов'язково на IMPRES-зарядку.</div>
       <button class="btn b-warn" onclick="op('RECAL','🔧 Ремонт після заміни елементів?\nСтирає навчений хвіст DS2433 (0x18A–0x1FF) і обнуляє лічильники DS2438.\nМодель, крива й ідентичність лишаються.',20000)">🔧 РЕМОНТ ПІСЛЯ ЗАМІНИ ЕЛЕМЕНТІВ</button>
-      <button class="btn" onclick="op('RECAL DEEP','🔧 Глибока чистка?\nДодатково стирає навчені записи ємності (0x153–0x189) і журнал використання.\nВмикайте, лише якщо після звичайного ремонту ЗП тримається за стару ємність.',20000)">🧹 Глибока чистка</button>
+      <button class="btn b-inf" onclick="op('RECAL DEEP','🔧 Глибока чистка?\nДодатково стирає навчені записи ємності (0x153–0x189) і журнал використання.\nВмикайте, лише якщо після звичайного ремонту ЗП тримається за стару ємність.',20000)">🧹 Глибока чистка</button>
     </div>
 <div class="card">
       <h2>🛠 Ремонт цілісності <span class="chipb">пише в DS2433 + DS2438</span></h2>
@@ -546,7 +546,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         </div>
       </div>
       <button class="btn b-warn" onclick="restoreBattery(false)">🛠️ ВІДНОВИТИ ЕТАЛОН</button>
-      <button class="btn" onclick="restoreBattery(true)">🧪 Байт-у-байт (ручний режим, для аналізу)</button>
+      <button class="btn b-inf" onclick="restoreBattery(true)">🧪 Байт-у-байт (ручний режим, для аналізу)</button>
     </div>
 <div class="card" style="border-color:var(--grn)">
       <h2>🆕 Новий акумулятор (порожній чип) <span class="chipb">пише в DS2433 + DS2438</span></h2>
@@ -1672,9 +1672,9 @@ function rpSeedBar(p){
   const no = !p.cryptSrcOk
     ? ' <span class="dim">(зашифровані поля не підставляться: ключ вмісту не визначається)</span>' : '';
   return '<div style="margin-top:6px">'+
-    '<button class="btn" style="padding:5px 10px;font-size:.85em" onclick="rpSeed()">'+
+    '<button class="btn b-inf" style="padding:5px 10px;font-size:.85em" onclick="rpSeed()">'+
     '📥 Узяти з акумулятора</button> '+
-    '<button class="btn" style="padding:5px 10px;font-size:.85em" onclick="rpSeedClear()">'+
+    '<button class="btn b-inf" style="padding:5px 10px;font-size:.85em" onclick="rpSeedClear()">'+
     '✖ Очистити поля</button>'+no+'</div>';
 }
 // Підставляємо лише те, що справді відоме: сміття із чужим ключем заповнювати

@@ -47,6 +47,14 @@ void setup() {
 #ifdef LOAD_PIN
     pinMode(LOAD_PIN, OUTPUT);   digitalWrite(LOAD_PIN, LOW);
 #endif
+#ifdef CHARGE_PIN
+    pinMode(CHARGE_PIN, OUTPUT);
+  #ifdef CHARGE_PWM_INVERT
+    digitalWrite(CHARGE_PIN, HIGH);   // «закрито» для інвертованої полярності
+  #else
+    digitalWrite(CHARGE_PIN, LOW);    // «закрито» типово
+  #endif
+#endif
     pinMode(PULLUP_PIN, OUTPUT); digitalWrite(PULLUP_PIN, LOW);
 
     Serial.println("\n\nMotorola Battery Reader Web Server (AP Mode)");
@@ -128,6 +136,8 @@ void setup() {
     
     // Розрядне навантаження — у безпечний стан ДО всього іншого.
     dischargeInit();
+    // Зарядний DC/DC — так само, у безпечний стан ДО всього іншого.
+    chargeInit();
 
     // Запускаємо веб-сервер
     setupWebServer();
@@ -163,10 +173,17 @@ void loop() {
     // відсічки спрацьовували з мінімальною затримкою.
     dischargeTask();
 
-    // Зняти утримання сигналу enable після зупинки розряду. Робиться тут, а не
-    // в dischargeStop(), щоб discharge.h не залежав від драйвера 1-Wire:
-    // зупинку викликають і з веба, і з USB, і з кнопки на пристрої.
+    // Керований заряд: та сама логіка опитування й запобіжників, окремий стан
+    // (charge.h). Заряд і розряд не можуть іти одночасно — обидва старти
+    // взаємно перевіряють стан одне одного (chargeStart()/dischargeStart()).
+    chargeTask();
+
+    // Зняти утримання сигналу enable після зупинки розряду/заряду. Робиться
+    // тут, а не в dischargeStop()/chargeStop(), щоб ці файли не залежали від
+    // драйвера 1-Wire: зупинку викликають і з веба, і з USB, і з кнопки на
+    // пристрої.
     if (dischargeConsumeReleaseEnable()) battery.holdEnable(false);
+    if (chargeConsumeReleaseEnable())    battery.holdEnable(false);
 
     // Дисплей у цьому проєкті перемальовується ПО ПОДІЯХ, а розряд — процес
     // фоновий: без цього рядка показання лишалися б статичними до наступного

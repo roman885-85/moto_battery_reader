@@ -12,13 +12,15 @@
 // Одноразові сигнали OK/ERROR автоматично повертаються в попередній режим.
 // ---------------------------------------------------------------------------
 enum LedMode {
-    LED_BOOT,      // старт: обидва вимкнені
-    LED_IDLE,      // очікування: короткий зелений «пульс» раз на 3 с
-    LED_READ,      // читання чипа: зелений блимає ~3 Гц
-    LED_WRITE,     // запис чипа: червоний+зелений почергово (увага!)
-    LED_OK,        // успіх: зелений горить ~1.2 с, потім повернення в idle
-    LED_ERROR,     // помилка: 4 швидких червоних блимання, потім повернення в idle
-    LED_DISCHARGE  // розряд навантаженням: ПЛАВНЕ дихання помаранчевим (зел.+черв.)
+    LED_BOOT,        // старт: обидва вимкнені
+    LED_IDLE,        // очікування: короткий зелений «пульс» раз на 3 с
+    LED_READ,        // читання чипа: зелений блимає ~3 Гц
+    LED_WRITE,       // запис чипа: червоний+зелений почергово (увага!)
+    LED_OK,          // успіх: зелений горить ~1.2 с, потім повернення в idle
+    LED_ERROR,       // помилка: 4 швидких червоних блимання, потім повернення в idle
+    LED_DISCHARGE,   // розряд навантаженням: ПЛАВНЕ дихання помаранчевим (зел.+черв.)
+    LED_CHARGE,      // заряд, <95 %: повільне зелене блимання
+    LED_CHARGE_TAPER // заряд, 95..100 %: часте зелене блимання (майже готово)
 };
 
 static LedMode  g_ledMode = LED_BOOT;   // поточний режим
@@ -172,6 +174,8 @@ inline void btnLedByMode(LedMode m, bool phase) {
         case LED_BOOT:  on = false; break;   // старт — темно
         case LED_OK:    on = true;  break;   // успіх — рівне світіння
         case LED_DISCHARGE: on = phase; break; // розряд — повільне дихання разом із LED
+        case LED_CHARGE:       on = phase; break; // заряд <95 % — повільне блимання разом із LED
+        case LED_CHARGE_TAPER: on = phase; break; // заряд 95..100 % — часте блимання разом із LED
         case LED_IDLE:
         default:        on = true;  break;   // готовий — рівне світіння (підсвітка)
     }
@@ -238,6 +242,16 @@ inline void ledTask() {
             // 4 швидких червоних блимання (~1.6 c), потім повернення
             if (now - g_ledLast > 200) { g_ledPhase = !g_ledPhase; g_ledLast = now; ledWrite(false, g_ledPhase); }
             if (now - g_ledT0 > 1600) ledSet(g_ledBase);
+            break;
+
+        case LED_CHARGE:
+            // повільне зелене блимання — заряд іде, до фінального відрізка ще далеко
+            if (now - g_ledLast > 700) { g_ledPhase = !g_ledPhase; g_ledLast = now; ledWrite(g_ledPhase, false); }
+            break;
+
+        case LED_CHARGE_TAPER:
+            // часте зелене блимання — заряд майже завершено (95..100 %)
+            if (now - g_ledLast > 150) { g_ledPhase = !g_ledPhase; g_ledLast = now; ledWrite(g_ledPhase, false); }
             break;
     }
 

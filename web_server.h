@@ -15,6 +15,7 @@
 #include "impres_audit.h"     // аудит змісту: шифрування й узгодженість даних
 #include "impres_clone.h"     // крайній засіб: відновлення за зразком копії
 #include "discharge.h"         // керований розряд навантаженням (MOSFET)
+#include "charge.h"            // керований заряд через DC/DC (P-канальний MOSFET)
 #include "leds.h"
 #include "display.h"
 #include "templates.h"
@@ -1031,6 +1032,7 @@ static bool dischargeSample(uint16_t *mv, int16_t *ma, int16_t *tC10) {
 const char *dischargeStart(uint16_t targetMv) {
     if (!dischargeAvailable()) return "Розряд не налаштовано: задайте LOAD_PIN у settings.h";
     if (dischargeRunning())    return "Розряд уже виконується";
+    if (chargeRunning())       return "Спочатку зупиніть заряд";
     if (!targetMv) targetMv = DISCHARGE_TARGET_MV;
 
     // Ціль обирає користувач, тож затискаємо її в межі, де розряд узагалі має
@@ -1252,6 +1254,164 @@ static String dischargeJson() {
     j += ",\"tgtMinMv\":" + String(DISCHARGE_TARGET_MIN_MV);
     j += ",\"tgtMaxMv\":" + String(DISCHARGE_TARGET_MAX_MV);
     j += ",\"tgtDefMv\":" + String(DISCHARGE_TARGET_MV);
+    j += "}";
+    return j;
+}
+
+// ===========================================================================
+//  КЕРОВАНИЙ ЗАРЯД — опитування й запобіжники (тут, бо потрібен battery/дампи;
+//  сам регулятор і стан машини — у charge.h, детальний опис різниці з
+//  розрядом — на початку того файлу).
+// ===========================================================================
+
+// Старт заряду. Повертає nullptr при успіху, інакше — текст причини відмови.
+const char *chargeStart() {
+    if (!chargeAvailable()) return "Заряд не налаштовано: задайте CHARGE_PIN у settings.h";
+    if (chargeRunning())    return "Заряд уже виконується";
+    if (dischargeRunning()) return "Спочатку зупиніть розряд";
+
+    uint16_t mv; int16_t ma, t;
+    if (!dischargeSample(&mv, &ma, &t)) {   // те саме читання DS2438, напрямок ролі не грає
+        chargeOff();
+        return "DS2438 не читається — заряд наосліп заборонено";
+    }
+    if (mv >= CHARGE_TARGET_MV)         return "Пакет уже заряджений до цілі";
+    if (mv >= CHARGE_HARD_MAX_MV)       return "Напруга вже вище аварійної межі — заряд не почато";
+    if (t >= CHARGE_MAX_TEMP_C * 10)    return "Пакет гарячий — дайте охолонути";
+
+    memset(&g_chg, 0, sizeof(g_chg));
+    g_chg.state    = CHG_RUN;
+    g_chg.reason   = CHGR_NONE;
+    g_chg.startMv  = g_chg.lastMv = mv;
+    g_chg.lastMa   = ma;
+    g_chg.lastTempC10 = t;
+    g_chg.startMs  = g_chg.lastPollMs = millis();
+    g_chg.startCca = g_chg.lastCca = impresCca(batteryDump2438);
+    g_chg.startIca = g_chg.lastIca = batteryDump2438[12];
+    g_chg.lastPct  = (uint8_t)impresPercentFromMv(mv);
+    g_chg.rsense   = impresBmsRsense(batteryDump2438);
+
+    battery.holdEnable(true);        // enable — так само, як і розряд, ще ДО подачі струму
+    chargeWatchdog(true);
+
+    // ⚑ SOFT-START: шпаруватість ЗАВЖДИ з нуля, жодних початкових оцінок «на
+    // око» (детальніше — коментар на початку charge.h). Регулятор сам виведе
+    // її на потрібний рівень протягом кількох секунд.
+    g_chg.setMa   = chargeSetpointMaForPct(g_chg.lastPct);
+    g_chg.dutyPct = 0;
+    chargeDuty(0);
+
+    ledSet(g_chg.lastPct >= 95 ? LED_CHARGE_TAPER : LED_CHARGE);
+    chargeMarkDirty(2);
+    Serial.printf("\n=== Charge started: %u mV (%u%%), setpoint %u mA%s ===\n",
+                  mv, g_chg.lastPct, g_chg.setMa, chargePwmOk() ? "" : ", PWM UNAVAILABLE");
+    return nullptr;
+}
+
+// Викликати часто з loop(). Реальна робота — раз на CHARGE_POLL_MS.
+inline void chargeTask() {
+    if (g_chg.state != CHG_RUN) return;
+    unsigned long now = millis();
+
+    if ((now - g_chg.startMs) / 60000UL >= (unsigned long)CHARGE_MAX_MIN) {
+        chargeStop(CHGR_TIMEOUT);
+        Serial.println("=== Charge ABORT: timeout ===");
+        return;
+    }
+    chargeWatchdogFeed();
+    if (now - g_chg.lastPollMs < CHARGE_POLL_MS) return;
+
+    unsigned long dtMs = now - g_chg.lastPollMs;
+    g_chg.lastPollMs = now;
+
+    // ── СТОРОЖ (програмна половина) — той самий принцип, що й розряд:
+    // довга затримка між опитуваннями = ключ побув відкритим без нагляду.
+    if (dtMs > CHARGE_STALL_MS) {
+        chargeStop(CHGR_STALL);
+        Serial.printf("=== Charge ABORT: main loop stalled for %lu ms ===\n", dtMs);
+        return;
+    }
+    g_chg.elapsedS = (now - g_chg.startMs) / 1000UL;
+
+    // Інтеграл ємності за інтервал, що ЩОЙНО минув — на чинному (до цього
+    // опитування) струмі, а не на щойно виміряному.
+    g_chg.mahX1000 += ((uint32_t)(g_chg.lastMa < 0 ? -g_chg.lastMa : g_chg.lastMa) * dtMs) / 3600UL;
+
+    // Один вимір під ЧИННОЮ шпаруватістю — на відміну від розряду, тут не
+    // потрібне окреме «зняття піка» (див. charge.h): струм читаємо просто на
+    // тому режимі, в якому перетворювач зараз і працює.
+    uint16_t mv = 0; int16_t ma = 0, t = 0;
+    bool ok = dischargeSample(&mv, &ma, &t);
+    if (!ok) {
+        if (++g_chg.readFails >= CHARGE_MAX_READ_FAILS) {
+            chargeStop(CHGR_NOREAD);
+            Serial.println("=== Charge ABORT: DS2438 unreadable ===");
+        }
+        return;
+    }
+    g_chg.readFails = 0;
+    g_chg.polls++;
+
+    int pct = impresPercentFromMv(mv);
+    g_chg.lastPct = (uint8_t)pct;
+    g_chg.setMa   = chargeSetpointMaForPct(pct);
+    g_chg.dutyPct = chargeNextDuty(g_chg.dutyPct, ma, g_chg.setMa);
+    chargeDuty(g_chg.dutyPct);
+
+    g_chg.lastMv = mv;
+    g_chg.lastMa = ma;               // додатний = заряджаємо (те саме DS2438[5..6], що й розряд)
+    g_chg.lastTempC10 = t;
+    g_chg.lastCca = impresCca(batteryDump2438);
+    g_chg.lastIca = batteryDump2438[12];
+
+    Serial.printf("charge: %u mV (%d%%), %d mA (set %u, duty %u%%), %.1f W, %.1f C, "
+                  "%lu mAh (CCA %lu), ICA %u, %lus\n",
+                  mv, pct, g_chg.lastMa, g_chg.setMa, g_chg.dutyPct,
+                  chargeWattsX10(mv, g_chg.lastMa) / 10.0f, t / 10.0f,
+                  (unsigned long)chargeMah(), (unsigned long)chargeCcaMah(),
+                  g_chg.lastIca, (unsigned long)g_chg.elapsedS);
+    chargeMarkDirty(1);
+    ledSet(pct >= 95 ? LED_CHARGE_TAPER : LED_CHARGE);
+
+    if (mv >= CHARGE_HARD_MAX_MV) {
+        chargeStop(CHGR_HARD_MAX);
+        Serial.println("=== Charge ABORT: above hard maximum ===");
+    } else if (t >= CHARGE_MAX_TEMP_C * 10) {
+        chargeStop(CHGR_TEMP);
+        Serial.println("=== Charge ABORT: overheat ===");
+    } else if (mv >= CHARGE_TARGET_MV) {
+        chargeStop(CHGR_TARGET);
+        Serial.printf("=== Charge DONE: %lu mAh in %lus ===\n",
+                      (unsigned long)chargeMah(), (unsigned long)g_chg.elapsedS);
+    }
+}
+
+// Стан заряду у JSON — для веб-моніторингу й USB-клієнта.
+static String chargeJson() {
+    String j = "{\"available\":" + String(chargeAvailable() ? "true" : "false");
+    j += ",\"state\":\"" + String(g_chg.state == CHG_RUN ? "run"
+                               : g_chg.state == CHG_DONE ? "done"
+                               : g_chg.state == CHG_ABORT ? "abort" : "idle") + "\"";
+    j += ",\"reason\":\""; j += chargeReasonText(g_chg.reason); j += "\"";
+    j += ",\"targetMv\":" + String(CHARGE_TARGET_MV);
+    j += ",\"startMv\":"  + String(g_chg.startMv);
+    j += ",\"mv\":"       + String(g_chg.lastMv);
+    j += ",\"ma\":"       + String(g_chg.lastMa);
+    j += ",\"pct\":"      + String(g_chg.lastPct);
+    j += ",\"tempC\":"    + String(g_chg.lastTempC10 / 10.0f, 1);
+    j += ",\"mah\":"      + String((unsigned long)chargeMah());
+    j += ",\"watts\":"    + String(chargeWattsX10(g_chg.lastMv, g_chg.lastMa) / 10.0f, 1);
+    j += ",\"ccaMah\":"   + String((unsigned long)chargeCcaMah());
+    j += ",\"ccaDelta\":" + String((int)(uint16_t)(g_chg.lastCca - g_chg.startCca));
+    j += ",\"ica\":"      + String(g_chg.lastIca);
+    j += ",\"icaStart\":" + String(g_chg.startIca);
+    j += ",\"elapsedS\":" + String((unsigned long)g_chg.elapsedS);
+    j += ",\"polls\":"    + String(g_chg.polls);
+    j += ",\"setMa\":"    + String(g_chg.setMa);
+    j += ",\"duty\":"     + String(g_chg.dutyPct);
+    j += ",\"dutyMax\":"  + String(CHARGE_DUTY_MAX_PCT);
+    j += ",\"pwm\":"      + String(chargePwmOk() ? "true" : "false");
+    j += ",\"hardMaxMv\":"+ String(CHARGE_HARD_MAX_MV);
     j += "}";
     return j;
 }
@@ -2441,6 +2601,29 @@ void handleDischargeStatus() {
     server.send(200, "application/json", dischargeJson());
 }
 
+// Заряд: старт/зупинка/стан. Так само, як розряд — небезпечна операція,
+// тому старт вимагає явного підтвердження з клієнта.
+void handleChargeStart() {
+    if (!requireAdmin()) return;
+    const char *err = chargeStart();
+    if (err) {
+        String j = "{\"status\":\"error\",\"message\":\""; j += err; j += "\"}";
+        server.send(400, "application/json", j);
+        return;
+    }
+    server.send(200, "application/json",
+        String("{\"status\":\"success\",\"message\":\"Заряд почато\",\"charge\":") + chargeJson() + "}");
+}
+void handleChargeStop() {
+    if (!requireAdmin()) return;
+    chargeStop(CHGR_USER);
+    server.send(200, "application/json",
+        String("{\"status\":\"success\",\"message\":\"Заряд зупинено\",\"charge\":") + chargeJson() + "}");
+}
+void handleChargeStatus() {
+    server.send(200, "application/json", chargeJson());
+}
+
 // ===========================================================================
 //  НАЛАШТУВАННЯ ЗВУКУ
 //
@@ -3069,6 +3252,9 @@ void setupWebServer() {
     server.on("/api/discharge", HTTP_GET, handleDischargeStatus);        // стан розряду
     server.on("/api/discharge/start", HTTP_POST, handleDischargeStart);  // почати розряд
     server.on("/api/discharge/stop", HTTP_POST, handleDischargeStop);    // зупинити розряд
+    server.on("/api/charge", HTTP_GET, handleChargeStatus);              // стан заряду
+    server.on("/api/charge/start", HTTP_POST, handleChargeStart);        // почати заряд
+    server.on("/api/charge/stop", HTTP_POST, handleChargeStop);          // зупинити заряд
     server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
     server.on("/api/clone", HTTP_POST, handleCloneRestore);      // крайній засіб: режим копії
     server.on("/api/clone/samples", HTTP_GET, handleCloneSamples); // вбудовані зразки копій

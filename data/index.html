@@ -63,8 +63,10 @@
         .pill-bad{background:#3a1414;color:var(--accent);border:1px solid var(--accent)}
         /* buttons */
         .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+        /* Базовий фон — щоб кнопка без модифікатора (.btn-*) не лишалась білою з
+           білим (невидимим) написом, як траплялося з кнопками «seed» плану правок. */
         .btn{padding:12px 20px;border:none;border-radius:10px;cursor:pointer;font-size:.95em;
-             font-weight:600;transition:.2s;color:#fff}
+             font-weight:600;transition:.2s;color:#fff;background:var(--info)}
         .btn:active{transform:scale(.96)}
         .btn-primary{background:var(--ua-blue)} .btn-primary:hover{background:#0a67d0}
         .btn-ok{background:var(--ok);color:#0b1a10} .btn-info{background:var(--info)}
@@ -2085,9 +2087,9 @@ function rpSeedBar(p){
         ? ' <span class="dim">(зашифровані поля не підставляться: ключ вмісту не визначається)</span>'
         : '';
     return '<div style="margin-top:6px">'+
-        '<button class="btn" style="padding:5px 10px;font-size:.85em" onclick="rpSeed()">'+
+        '<button class="btn btn-info" style="padding:5px 10px;font-size:.85em" onclick="rpSeed()">'+
         '📥 Узяти з акумулятора</button> '+
-        '<button class="btn" style="padding:5px 10px;font-size:.85em" onclick="rpSeedClear()">'+
+        '<button class="btn btn-info" style="padding:5px 10px;font-size:.85em" onclick="rpSeedClear()">'+
         '✖ Очистити поля</button>'+no+'</div>';
 }
 // Підставляємо ЛИШЕ те, що справді відоме: якщо ключ вмісту не визначається,

@@ -1329,9 +1329,12 @@ inline int pollButtonRaw(bool pressed, BtnState &b, unsigned long longMs) {
 
 #ifdef MENU_BTN_ADC_PIN
 // Три кнопки на одному ADC-піні — див. докладний коментар у display.h.
+// НЕ analogReadMilliVolts(): вона потребує апаратної eFuse-калібровки ADC,
+// якої немає на частині клон-плат (ESP-IDF валить "default vref didn't
+// set" і повертає невалідні мВ) — analogRead() калібрування не потребує.
 static bool g_btnAdcEnter = false, g_btnAdcLeft = false, g_btnAdcRight = false;
 inline void btnAdcRefresh() {
-    int mv = analogReadMilliVolts(MENU_BTN_ADC_PIN);
+    int mv = analogRead(MENU_BTN_ADC_PIN) * 3300 / 4095;
     g_btnAdcEnter = mv < MENU_BTN_ADC_TH_ENTER;
     g_btnAdcLeft  = !g_btnAdcEnter && mv < MENU_BTN_ADC_TH_LEFT;
     g_btnAdcRight = !g_btnAdcEnter && !g_btnAdcLeft && mv < MENU_BTN_ADC_TH_RIGHT;

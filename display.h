@@ -1109,13 +1109,22 @@ inline int pollButtonRaw(bool pressed, BtnState &b, unsigned long longMs) {
 
 #ifdef MENU_BTN_ADC_PIN
 // Три кнопки на одному ADC-піні (див. settings.h: MENU_BTN_ADC_*). Один
-// analogReadMilliVolts() на весь прохід displayHandleButton() — не по разу на
-// кожну логічну кнопку: три окремі зчитування могли б потрапити на різні
-// миттєві значення шуму й дати суперечливий («і праворуч, і ввід одночасно»)
-// результат біля порогу, хай навіть це малоймовірно з таким запасом (500+ мВ).
+// зчит на весь прохід displayHandleButton() — не по разу на кожну логічну
+// кнопку: три окремі зчитування могли б потрапити на різні миттєві значення
+// шуму й дати суперечливий («і праворуч, і ввід одночасно») результат біля
+// порогу, хай навіть це малоймовірно з таким запасом (500+ мВ).
+//
+// ⚠️ НЕ analogReadMilliVolts(): вона апаратно калібрується через eFuse
+// (Two-Point/Vref), а на частині безіменних/клон-плат ця калібровка не
+// прошита — ESP-IDF тоді валить у Serial «adc_cali: ... default vref
+// didn't set» НА КОЖНОМУ виклику (тобто на кожен прохід loop()) і повертає
+// невалідні мВ. Це саме й давало «кнопки не працюють» і самовільне
+// перемикання сторінок при старті. analogRead() калібрування не потребує
+// взагалі — рахуємо мВ лінійно самі (0..4095 -> 0..3300); похибка від
+// нелінійності ADC — десятки мВ, а між порогами — сотні мВ запасу.
 static bool g_btnAdcEnter = false, g_btnAdcLeft = false, g_btnAdcRight = false;
 inline void btnAdcRefresh() {
-    int mv = analogReadMilliVolts(MENU_BTN_ADC_PIN);
+    int mv = analogRead(MENU_BTN_ADC_PIN) * 3300 / 4095;
     g_btnAdcEnter = mv < MENU_BTN_ADC_TH_ENTER;
     g_btnAdcLeft  = !g_btnAdcEnter && mv < MENU_BTN_ADC_TH_LEFT;
     g_btnAdcRight = !g_btnAdcEnter && !g_btnAdcLeft && mv < MENU_BTN_ADC_TH_RIGHT;

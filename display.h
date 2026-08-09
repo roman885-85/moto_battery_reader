@@ -1057,10 +1057,16 @@ inline void displayFlip() {
 }
 
 inline void displayButtonSetup() {
+#ifdef MENU_BTN_ADC_PIN
+    // Аналогова драбинка: підтяжка ЗОВНІШНЯ (резистор на платі), внутрішню
+    // підтяжку ESP32 НЕ вмикаємо — вона спотворить розрахунок порогів.
+    pinMode(MENU_BTN_ADC_PIN, INPUT);
+#else
     pinMode(MENU_BTN_PIN, INPUT_PULLUP);
     pinMode(MENU_BTN2_PIN, INPUT_PULLUP);
-#ifdef MENU_BTN3_PIN
+  #ifdef MENU_BTN3_PIN
     pinMode(MENU_BTN3_PIN, INPUT_PULLUP);
+  #endif
 #endif
 }
 
@@ -1073,10 +1079,14 @@ struct BtnState {
     bool longFired = false;
 };
 
-// Опитування кнопки. Повертає: 0 — нічого, 1 — коротке (по відпусканню),
-// 2 — довге (при утриманні longMs). longMs=0 вимикає довге натискання.
-inline int pollButton(int pin, BtnState &b, unsigned long longMs) {
-    bool raw = digitalRead(pin);
+// Опитування кнопки за вже зчитаним сирим станом (true = натиснуто). Та сама
+// логіка антидребезгу/довгого натискання, що й раніше — лише відокремлена
+// від того, ЯК саме зчитується «натиснуто», щоб працювати і з окремими GPIO,
+// і з аналоговою драбинкою (див. btn1Raw/btn2Raw/btn3Raw нижче).
+// Повертає: 0 — нічого, 1 — коротке (по відпусканню), 2 — довге (при
+// утриманні longMs). longMs=0 вимикає довге натискання.
+inline int pollButtonRaw(bool pressed, BtnState &b, unsigned long longMs) {
+    bool raw = pressed ? LOW : HIGH;   // та сама полярність, що й INPUT_PULLUP
     unsigned long now = millis();
     if (raw != b.lastRaw) { b.lastRaw = raw; b.tChange = now; }
 
@@ -1096,6 +1106,32 @@ inline int pollButton(int pin, BtnState &b, unsigned long longMs) {
     }
     return ev;
 }
+
+#ifdef MENU_BTN_ADC_PIN
+// Три кнопки на одному ADC-піні (див. settings.h: MENU_BTN_ADC_*). Один
+// analogReadMilliVolts() на весь прохід displayHandleButton() — не по разу на
+// кожну логічну кнопку: три окремі зчитування могли б потрапити на різні
+// миттєві значення шуму й дати суперечливий («і праворуч, і ввід одночасно»)
+// результат біля порогу, хай навіть це малоймовірно з таким запасом (500+ мВ).
+static bool g_btnAdcEnter = false, g_btnAdcLeft = false, g_btnAdcRight = false;
+inline void btnAdcRefresh() {
+    int mv = analogReadMilliVolts(MENU_BTN_ADC_PIN);
+    g_btnAdcEnter = mv < MENU_BTN_ADC_TH_ENTER;
+    g_btnAdcLeft  = !g_btnAdcEnter && mv < MENU_BTN_ADC_TH_LEFT;
+    g_btnAdcRight = !g_btnAdcEnter && !g_btnAdcLeft && mv < MENU_BTN_ADC_TH_RIGHT;
+}
+// BTN1="Вперед"->Вправо, BTN2="Назад"->Вліво, BTN3="OK/Дія"->Ввід — той самий
+// розподіл ролей, що й був на трьох окремих GPIO.
+inline bool btn1Raw() { return g_btnAdcRight; }
+inline bool btn2Raw() { return g_btnAdcLeft; }
+inline bool btn3Raw() { return g_btnAdcEnter; }
+#else
+inline bool btn1Raw() { return digitalRead(MENU_BTN_PIN) == LOW; }
+inline bool btn2Raw() { return digitalRead(MENU_BTN2_PIN) == LOW; }
+  #ifdef MENU_BTN3_PIN
+inline bool btn3Raw() { return digitalRead(MENU_BTN3_PIN) == LOW; }
+  #endif
+#endif
 
 // true один раз після того, як кнопка провернула меню на повний коло.
 inline bool displayConsumeReadRequest() {
@@ -1118,17 +1154,20 @@ inline void displayHandleButton() {
 #ifdef MENU_BTN3_PIN
     static BtnState b3;
 #endif
+#ifdef MENU_BTN_ADC_PIN
+    btnAdcRefresh();   // один аналоговий зчит на весь прохід нижче
+#endif
 
     // ── РЕЖИМ РОЗРЯДУ ──────────────────────────────────────────────────────
     // Поки навантаження увімкнене, кнопки НЕ гортають меню: на екрані
     // моніторинг, а зміна сторінки «у фоні» лише збиває з пантелику.
     //   коротке натискання — оновити показання; довге — АВАРІЙНА ЗУПИНКА.
     if (dischargeScreenActive()) {
-        int d1 = pollButton(MENU_BTN_PIN,  b1, 800);
-        int d2 = pollButton(MENU_BTN2_PIN, b2, 800);
+        int d1 = pollButtonRaw(btn1Raw(), b1, 800);
+        int d2 = pollButtonRaw(btn2Raw(), b2, 800);
         int d3 = 0;
 #ifdef MENU_BTN3_PIN
-        d3 = pollButton(MENU_BTN3_PIN, b3, 800);
+        d3 = pollButtonRaw(btn3Raw(), b3, 800);
 #endif
         if (!dischargeRunning()) {
             // Показано ПІДСУМОК завершеного розряду: будь-яке натискання прибирає
@@ -1147,13 +1186,13 @@ inline void displayHandleButton() {
 #ifdef MENU_BTN3_PIN
     // 3 кнопки: BTN1 — ЧИСТА навігація ВПЕРЕД (жодного «довгого» читання; читання
     // акумулятора на BTN3, головна сторінка). longMs=0 -> «довгих» подій немає.
-    int e1 = pollButton(MENU_BTN_PIN, b1, 0);
+    int e1 = pollButtonRaw(btn1Raw(), b1, 0);
     if (e1 == 1) {                                   // коротке -> наступна сторінка
         g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
         displayFlip();
     }
 #else
-    int e1 = pollButton(MENU_BTN_PIN, b1, 800);
+    int e1 = pollButtonRaw(btn1Raw(), b1, 800);
     if (e1 == 2) {                                   // довге -> перечитати
         g_readRequested = true;
         displaySetStatus("ЗЧИТУВАННЯ...");
@@ -1164,7 +1203,7 @@ inline void displayHandleButton() {
     }
 #endif
 
-    int e2 = pollButton(MENU_BTN2_PIN, b2, 800);
+    int e2 = pollButtonRaw(btn2Raw(), b2, 800);
 #ifdef MENU_BTN3_PIN
     // 3 кнопки: BTN2 — ЧИСТА «назад» на ВСІХ сторінках. Вибір/аналіз/виконання
     // повністю на BTN3, тож «назад» більше не робить того, що третя кнопка.
@@ -1191,7 +1230,7 @@ inline void displayHandleButton() {
     //  «Дії»    : коротко = наступна операція, довго = ВИКОНАТИ;
     //  «Майстер»: коротко = аналіз,           довго = наступний крок;
     //  інші     : коротко = у «Майстер»,      довго = на головну («додому»).
-    int e3 = pollButton(MENU_BTN3_PIN, b3, 800);
+    int e3 = pollButtonRaw(btn3Raw(), b3, 800);
     if (g_displayPage == RESET_PAGE) {
         if (e3 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRender(); }
         else if (e3 == 2) { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); }

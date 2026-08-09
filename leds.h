@@ -19,8 +19,8 @@ enum LedMode {
     LED_OK,          // успіх: зелений горить ~1.2 с, потім повернення в idle
     LED_ERROR,       // помилка: 4 швидких червоних блимання, потім повернення в idle
     LED_DISCHARGE,   // розряд навантаженням: ПЛАВНЕ дихання помаранчевим (зел.+черв.)
-    LED_CHARGE,      // заряд, <95 %: повільне зелене блимання
-    LED_CHARGE_TAPER // заряд, 95..100 %: часте зелене блимання (майже готово)
+    LED_CHARGE,      // заряд, <90 %: ПЛАВНЕ дихання зеленим (той самий механізм, лише без червоного)
+    LED_CHARGE_TAPER // заряд, 90..100 %: часте зелене блимання 2 Гц (майже готово)
 };
 
 static LedMode  g_ledMode = LED_BOOT;   // поточний режим
@@ -60,7 +60,7 @@ inline void ledWrite(bool g, bool r) {
     digitalWrite(LED_RED_PIN,   r ? HIGH : LOW);
 }
 
-// --- ПЛАВНЕ помаранчеве «дихання» для режиму розряду --------------------
+// --- ПЛАВНЕ дихання для розряду (помаранчеве) і заряду (зелене) ---------
 // Помаранчевий = зелений + червоний разом. Щоб яскравість наростала й спадала
 // плавно, обидва світлодіоди керуються ШІМ-ом (LEDC). Канали окремі від буззера
 // (той на BUZZER_LEDC_CH) і від підсвітки кнопок.
@@ -125,29 +125,33 @@ inline void ledPwmDetach() {
 // червоним.
 #define LED_BREATH_RED(v) ((v) * 2 / 3)
 
+// withRed=true — помаранчеве дихання розряду (зелений+червоний разом);
+// withRed=false — чисто зелене дихання заряду (червоний тримається погашеним,
+// PWM-канал лишається прикріпленим, щоб не смикати pinMode посеред дихання).
 #if LED_BREATH_HW_FADE
 // Запустити півхвилю: контролер сам веде шпаруватість від краю до краю.
-inline void ledBreathLeg(unsigned long now) {
+inline void ledBreathLeg(unsigned long now, bool withRed) {
     uint32_t mx = (1UL << LED_BREATH_BITS) - 1;
     uint32_t a  = g_breathUp ? 0 : mx;
     uint32_t b  = g_breathUp ? mx : 0;
     int ms = (int)(LED_BREATH_MS / 2);
     ledcFade(LED_GREEN_PIN, a, b, ms);
-    ledcFade(LED_RED_PIN, LED_BREATH_RED(a), LED_BREATH_RED(b), ms);
+    if (withRed) ledcFade(LED_RED_PIN, LED_BREATH_RED(a), LED_BREATH_RED(b), ms);
+    else         ledcFade(LED_RED_PIN, 0, 0, ms);
     g_breathUntil = now + LED_BREATH_MS / 2;
 }
-inline void ledBreathe(unsigned long now) {
+inline void ledBreathe(unsigned long now, bool withRed) {
     ledPwmAttach();
     if (!g_breathArmed) {                       // вхід у режим — почати знизу вгору
-        g_breathUp = true; g_breathArmed = true; ledBreathLeg(now); return;
+        g_breathUp = true; g_breathArmed = true; ledBreathLeg(now, withRed); return;
     }
     // Перевертаємо напрямок на кінці півхвилі. Порівняння через різницю зі
     // знаком — коректне й після переповнення millis().
-    if ((long)(now - g_breathUntil) >= 0) { g_breathUp = !g_breathUp; ledBreathLeg(now); }
+    if ((long)(now - g_breathUntil) >= 0) { g_breathUp = !g_breathUp; ledBreathLeg(now, withRed); }
 }
 #else
 // Запасний варіант: трикутна хвиля 0..max..0, рахується в кожному виклику.
-inline void ledBreathe(unsigned long now) {
+inline void ledBreathe(unsigned long now, bool withRed) {
     ledPwmAttach();
     unsigned long ph = now % LED_BREATH_MS;
     unsigned long half = LED_BREATH_MS / 2;
@@ -155,7 +159,7 @@ inline void ledBreathe(unsigned long now) {
     uint32_t lvl = (ph < half) ? (uint32_t)(ph * maxv / half)
                                : (uint32_t)((LED_BREATH_MS - ph) * maxv / half);
     ledcWrite(LED_GREEN_PIN, lvl);
-    ledcWrite(LED_RED_PIN,   LED_BREATH_RED(lvl));
+    ledcWrite(LED_RED_PIN,   withRed ? LED_BREATH_RED(lvl) : 0);
     g_breathUp = (ph < half);
     g_breathArmed = true;
 }
@@ -174,8 +178,8 @@ inline void btnLedByMode(LedMode m, bool phase) {
         case LED_BOOT:  on = false; break;   // старт — темно
         case LED_OK:    on = true;  break;   // успіх — рівне світіння
         case LED_DISCHARGE: on = phase; break; // розряд — повільне дихання разом із LED
-        case LED_CHARGE:       on = phase; break; // заряд <95 % — повільне блимання разом із LED
-        case LED_CHARGE_TAPER: on = phase; break; // заряд 95..100 % — часте блимання разом із LED
+        case LED_CHARGE:       on = phase; break; // заряд <90 % — плавне дихання разом із LED
+        case LED_CHARGE_TAPER: on = phase; break; // заряд 90..100 % — часте блимання разом із LED
         case LED_IDLE:
         default:        on = true;  break;   // готовий — рівне світіння (підсвітка)
     }
@@ -188,7 +192,11 @@ inline void btnLedByMode(LedMode m, bool phase) {
 // індикатор застрягав би в миготінні читання/запису і не повертався в спокій).
 inline void ledSet(LedMode m) {
     if (m == g_ledMode) return;
-    if (g_ledPwmOn && m != LED_DISCHARGE) ledPwmDetach();   // повернути піни у звичайний режим
+    // PWM лишається прикріпленим, якщо НАСТУПНИЙ режим теж дихає (розряд і
+    // заряд <90 % — обидва через ledBreathe()); інакше повертаємо піни у
+    // звичайний digitalWrite-режим.
+    bool willBreathe = (m == LED_DISCHARGE || m == LED_CHARGE);
+    if (g_ledPwmOn && !willBreathe) ledPwmDetach();
     if (m == LED_IDLE || m == LED_BOOT) g_ledBase = m;
     g_ledMode = m;
     g_ledT0 = g_ledLast = millis();
@@ -211,7 +219,7 @@ inline void ledTask() {
         case LED_DISCHARGE:
             // Плавне помаранчеве дихання — процес довгий (десятки хвилин),
             // тож індикація має читатись як «іде робота», а не як помилка.
-            ledBreathe(now);
+            ledBreathe(now, true);
             // Підсвітка кнопок іде В ТАКТ із хвилею, а не за власним таймером:
             // окремий таймер після кожного застрягання loop() розходився з
             // дихінням, і два індикатори блимали врозбіг.
@@ -245,13 +253,16 @@ inline void ledTask() {
             break;
 
         case LED_CHARGE:
-            // повільне зелене блимання — заряд іде, до фінального відрізка ще далеко
-            if (now - g_ledLast > 700) { g_ledPhase = !g_ledPhase; g_ledLast = now; ledWrite(g_ledPhase, false); }
+            // Плавне ЗЕЛЕНЕ дихання (той самий механізм, що й розряд, лише без
+            // червоного) — заряд іде, до фінального відрізка ще далеко.
+            ledBreathe(now, false);
+            g_ledPhase = g_breathUp;             // підсвітка кнопок у такт хвилі
             break;
 
         case LED_CHARGE_TAPER:
-            // часте зелене блимання — заряд майже завершено (95..100 %)
-            if (now - g_ledLast > 150) { g_ledPhase = !g_ledPhase; g_ledLast = now; ledWrite(g_ledPhase, false); }
+            // Часте зелене блимання 2 Гц (період 500 мс: 250 увімк./250 вимк.) —
+            // заряд майже завершено (90..100 %).
+            if (now - g_ledLast > 250) { g_ledPhase = !g_ledPhase; g_ledLast = now; ledWrite(g_ledPhase, false); }
             break;
     }
 

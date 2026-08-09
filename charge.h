@@ -278,10 +278,12 @@ inline void chargeInit() {
     Serial.printf("CHARGE: pin=%d LEDC ch=%d freq=%d bits=%d attach=%s%s\n",
                   (int)CHARGE_CTRL_PIN, (int)CHARGE_LEDC_CH, (int)CHARGE_PWM_FREQ,
                   (int)CHARGE_PWM_BITS, g_chgPwmOk ? "OK" : "FAIL",
-                  g_chgPwmOk ? "" : " — ймовірно, вичерпано апаратні таймери LEDC "
-                  "(їх ділять підсвітка/світлодіоди/зумер/розряд); спробуйте інший "
-                  "CHARGE_LEDC_CH або звільніть таймер, знизивши кількість інших "
-                  "джерел ШІМ");
+                  g_chgPwmOk ? "" : " — або CHARGE_PWM_FREQ/CHARGE_PWM_BITS "
+                  "недосяжні для дільника LEDC (макс. частота = джерело/2^bits — "
+                  "деталі в рядку 'ledc: requested frequency ... can not be "
+                  "achieved' вище), або вичерпано вільні таймери (їх ділять "
+                  "підсвітка/світлодіоди/зумер/розряд) — спробуйте інший "
+                  "CHARGE_LEDC_CH чи знизьте CHARGE_PWM_BITS");
     chargeSetOutputMv(0);
 #endif
     g_chg.state = CHG_IDLE;

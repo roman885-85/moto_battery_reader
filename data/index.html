@@ -1859,7 +1859,7 @@ async function chgPoll(){
     const ma=Math.abs(d.ma), scale=Math.max(d.setMa*1.25,ma*1.05,1);
     $('chgCurBar').style.width=Math.min(100,ma*100/scale)+'%';
     $('chgLim').textContent=d.pwm?('уставка '+d.setMa+' мА · зараз '+d.ma+' мА')
-                                 :'⚠ керування недоступне';
+                                 :'⚠ ШІМ недоступний';
     $('chgLim').style.color=d.pwm?'var(--ok)':'var(--accent)';
     $('chgDutyBar').style.width=(d.pwm?(d.outMv*100/d.outMaxMv):100)+'%';
     $('chgDutyTxt').textContent=d.pwm?((d.outMv/1000).toFixed(2)+' В (стеля '+(d.outMaxMv/1000).toFixed(1)+' В)'):'керування недоступне';
@@ -1875,8 +1875,8 @@ async function chgPoll(){
     const warn=$('chgWarn');
     if(!d.pwm&&(run||d.state==='done')){
         warn.style.display='block';
-        warn.textContent='Керування недоступне — перевірте CHARGE_CTRL_PIN '
-                        +'(має бути ЦАП, GPIO 25 або 26) у settings.h.';
+        warn.textContent='ШІМ недоступний: каналу LEDC не знайшлося, ключ керується грубо (є/нема), '
+                        +'струм НЕ обмежується — вимкніть заряд і перевірте CHARGE_LEDC_CH у settings.h.';
     } else warn.style.display='none';
 
     chgLast=d; chgLastAt=Date.now();

@@ -561,8 +561,8 @@ class ChargeMonitor(ttk.Frame):
         self.tileVars["t"].config(text=str(d.get("tempC", 0)))
         self.tileVars["ica"].config(text=str(d.get("ica", 0)))
         if not pwm and (run or state == "done"):
-            self.lblWarn.config(text="Керування недоступне: перевірте CHARGE_CTRL_PIN "
-                                      "(має бути ЦАП, GPIO 25 або 26) у settings.h.")
+            self.lblWarn.config(text="Керування недоступне: каналу LEDC не знайшлося — "
+                                      "вимкніть заряд і перевірте CHARGE_LEDC_CH у settings.h.")
         else:
             self.lblWarn.config(text="")
         self.lblClock.config(text=self._fmt_t(d.get("elapsedS", 0)))

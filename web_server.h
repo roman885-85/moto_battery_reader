@@ -1305,7 +1305,7 @@ const char *chargeStart() {
     battery.holdEnable(true);        // enable пакета — так само, як і розряд, ще ДО подачі струму
     chargeWatchdog(true);
 
-    ledSet(g_chg.lastPct >= 95 ? LED_CHARGE_TAPER : LED_CHARGE);
+    ledSet(g_chg.lastPct >= CHARGE_LED_TAPER_PCT ? LED_CHARGE_TAPER : LED_CHARGE);
     chargeMarkDirty(2);
     Serial.printf("\n=== Charge started: %u mV (%u%%), setpoint %u mA%s ===\n",
                   mv, g_chg.lastPct, g_chg.setMa, chargePwmOk() ? "" : ", PWM UNAVAILABLE");
@@ -1375,7 +1375,7 @@ inline void chargeTask() {
                   (unsigned long)chargeMah(), (unsigned long)chargeCcaMah(),
                   g_chg.lastIca, (unsigned long)g_chg.elapsedS);
     chargeMarkDirty(1);
-    ledSet(pct >= 95 ? LED_CHARGE_TAPER : LED_CHARGE);
+    ledSet(pct >= CHARGE_LED_TAPER_PCT ? LED_CHARGE_TAPER : LED_CHARGE);
 
     if (mv >= CHARGE_HARD_MAX_MV) {
         chargeStop(CHGR_HARD_MAX);

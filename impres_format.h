@@ -513,6 +513,14 @@ inline int impresPercentFromMv(int mv) {
     if (p > 100) p = 100;
     return (int)p;
 }
+// Обернена функція — потрібна для вибору ЦІЛІ заряду відсотком (керований
+// заряд через DC/DC, charge.h): відсоток -> напруга. Та сама лінійна шкала,
+// просто в інший бік.
+inline int impresMvFromPercent(int pct) {
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    return IMPRES_EMPTY_MV + (int)((long)pct * (IMPRES_FULL_MV - IMPRES_EMPTY_MV) / 100);
+}
 // ICA, що відповідає заданому відсотку. Шкала АПАРАТНА (див. блок нижче), тож
 // 100 % — це не 255, а стільки одиниць, скільки важить повний пакет:
 // ratedMah * Rsense / 0.4882. Без відомого шунта лишається стара шкала 0..255.

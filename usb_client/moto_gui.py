@@ -1389,12 +1389,24 @@ class App:
 
         b2e = ttk.LabelFrame(p_cal, text="Заряд через DC/DC (готова плата на TL494)  ·  пише в DS2438", padding=8); b2e.pack(fill="x", pady=4)
         ttk.Label(b2e, text="Керований заряд: enable-каскад + аналогове керування вихідною напругою (ШІМ+RC).\n"
-                            "Профіль струму 200→500→1000→1500 мА, ступінчастий спад до 100 мА після 95 %, ціль 8.25 В.\n"
+                            "Профіль струму масштабується під обрану ціль — заряд завжди закінчується плавним\n"
+                            "спадом струму перед самою ціллю, хай яку обрано.\n"
                             "Пакет не прийме струм, доки не піднято enable-сигнал (та сама лінія, що й для читання/\n"
                             "запису пам'яті) — прошивка тримає його сама весь час заряду.\n"
-                            "Аварійна зупинка: напруга вище межі, перегрів 45 °C, стеля часу 6 год, втрата зв'язку\n"
-                            "з монітором. Заряд і розряд не можуть іти одночасно.",
+                            "Аварійна зупинка: напруга вище межі ОБРАНОЇ цілі, перегрів 45 °C, стеля часу 6 год,\n"
+                            "втрата зв'язку з монітором. Заряд і розряд не можуть іти одночасно.",
                   foreground="#b9bd86", justify="left").pack(anchor="w")
+        # Ціль заряду у % — той самий принцип, що й ціль розряду (self.disTarget),
+        # лише пресети у відсотках замість мілівольт.
+        tfc = ttk.Frame(b2e); tfc.pack(anchor="w", pady=(4, 0))
+        ttk.Label(tfc, text="Заряджати до:").pack(side="left")
+        self.chgTarget = tk.IntVar(value=100)
+        for pct in (100, 95, 90, 85, 80):
+            ttk.Radiobutton(tfc, text="%d%%" % pct, value=pct,
+                            variable=self.chgTarget).pack(side="left", padx=2)
+        ttk.Label(tfc, text="або, %:").pack(side="left", padx=(8, 2))
+        self.eChgTarget = ttk.Entry(tfc, width=4)
+        self.eChgTarget.pack(side="left")
         cf = ttk.Frame(b2e); cf.pack(anchor="w", pady=3)
         ttk.Button(cf, text="🔋 Почати заряд", command=self.charge_start).pack(side="left", padx=2)
         ttk.Button(cf, text="⏹ Зупинити", command=self.charge_stop).pack(side="left", padx=2)
@@ -2330,9 +2342,20 @@ class App:
             return
         self.cmd("DISCHARGE STOP", 10.0, cb=lambda r: (self.status("Розряд зупинено"), self._dis_show(r)))
 
-    # --- ЗАРЯД через DC/DC (CHARGE ?/CHARGE/CHARGE STOP) --------------------
-    # Ціль фіксована (CHARGE_TARGET_MV) — на відміну від розряду тут немає
-    # перемикача цілі, тож і логіка простіша.
+    # --- ЗАРЯД через DC/DC (CHARGE ?/CHARGE [%]/CHARGE STOP) -----------------
+    # Ціль обирається у відсотках (50..100); профіль струму (точки перегину
+    # 10/50/80/95 %) масштабується під неї на пристрої — тут лише вибір цілі.
+    chgTargetBounds = {"min": 50, "max": 100, "def": 100}
+
+    def _chg_target_pct(self):
+        """Ціль: поле «або, %» має пріоритет над кнопками; затиснута в межі."""
+        raw = (self.eChgTarget.get() or "").strip() if hasattr(self, "eChgTarget") else ""
+        try:
+            pct = int(raw) if raw else int(self.chgTarget.get())
+        except (ValueError, tk.TclError):
+            pct = self.chgTargetBounds["def"]
+        return max(self.chgTargetBounds["min"], min(self.chgTargetBounds["max"], pct))
+
     def _chg_show(self, r):
         self._chgBusy = False
         d = (r or {}).get("charge") if isinstance(r, dict) else None
@@ -2361,11 +2384,13 @@ class App:
     def charge_start(self):
         if not self.need_conn():
             return
+        pct = self._chg_target_pct()
         if not messagebox.askyesno("Заряд",
-                "Почати заряд через DC/DC до 8.25 В?\n\n"
-                "Струм керується за профілем 200→1500→100 мА.\n"
+                "Почати заряд через DC/DC до %d%%?\n\n"
+                "Профіль струму (200→1500→100 мА) масштабується під цю ціль, тож заряд "
+                "і так закінчиться плавним спадом струму перед самою ціллю.\n"
                 "Переконайтесь, що керування ПЕРЕВІРЕНЕ мультиметром (enable=LOW безпечно).\n"
-                "Не лишайте пристрій без нагляду."):
+                "Не лишайте пристрій без нагляду." % pct):
             return
         def done(r):
             if isinstance(r, dict) and r.get("ok"):
@@ -2373,7 +2398,7 @@ class App:
             else:
                 self._chgBusy = False
                 self.status("Помилка: " + str((r or {}).get("err", "")))
-        self.maybe_auth(lambda: self.cmd("CHARGE", 15.0, cb=done))
+        self.maybe_auth(lambda: self.cmd("CHARGE %d" % pct, 15.0, cb=done))
 
     def charge_stop(self):
         if not self.need_conn():

@@ -399,7 +399,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         </div>
         <div class="dmwarn" id="disWarn"></div>
       </div>
-      <div class="row" style="margin-top:10px"><span class="k">Розряджати до</span>
+      <div class="row" id="disTgtRow" style="margin-top:10px"><span class="k">Розряджати до</span>
         <span>
           <button type="button" class="tgtb" onclick="disSetTarget(7800)">7.80 В</button>
           <button type="button" class="tgtb" onclick="disSetTarget(7600)">7.60 В</button>
@@ -432,9 +432,9 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
     <div class="card" style="border-color:var(--blu)">
       <h2>🔋 Заряд через DC/DC <span class="chipb">пише в DS2438</span></h2>
       <div class="note i">Керований заряд через готову плату на TL494: enable-каскад + аналогове керування
-        вихідною напругою. Профіль струму 200→500→1000→1500 мА, ступінчастий спад до 100 мА після 95 %,
-        ціль 8.25 В. Пакет не прийме струм, доки не піднято enable-сигнал (та сама лінія, що й для читання/запису
-        пам'яті) — прошивка тримає його сама весь час заряду.</div>
+        вихідною напругою. Профіль струму масштабується під ОБРАНУ ціль — заряд завжди закінчується
+        плавним спадом струму перед самою ціллю, хай яку обрано. Пакет не прийме струм, доки не піднято
+        enable-сигнал (та сама лінія, що й для читання/запису пам'яті) — прошивка тримає його сама.</div>
       <div class="note w">⚠️ Аварійна зупинка: напруга вище межі, перегрів 45 °C, стеля часу 6 год, втрата
         зв'язку з монітором. Заряд і розряд не можуть іти одночасно.</div>
       <div class="dm" id="chgMon">
@@ -458,6 +458,16 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         </div>
         <div class="dmwarn" id="chgWarn"></div>
       </div>
+      <div class="row" id="chgTgtRow" style="margin-top:10px"><span class="k">Заряджати до</span>
+        <span>
+          <button type="button" class="tgtb" onclick="chgSetTarget(100)">100%</button>
+          <button type="button" class="tgtb" onclick="chgSetTarget(95)">95%</button>
+          <button type="button" class="tgtb" onclick="chgSetTarget(90)">90%</button>
+          <button type="button" class="tgtb" onclick="chgSetTarget(85)">85%</button>
+          <button type="button" class="tgtb" onclick="chgSetTarget(80)">80%</button>
+          <input type="number" id="chgTarget" value="100" min="50" max="100" step="5"
+                 oninput="this.dataset.touched=1;chgTargetPaint()" style="width:90px"> <span style="opacity:.7">%</span>
+        </span></div>
       <button class="btn b-ok" id="btnChgStart" onclick="chgStart()">🔋 ПОЧАТИ ЗАРЯД</button>
       <button class="btn b-dng" onclick="chgStop()">⏹ ЗУПИНИТИ</button>
       <button class="btn b-inf" onclick="chgStatus()">🔄 Оновити зараз</button>
@@ -1524,7 +1534,7 @@ function disRamp(){
   if(n)n.innerHTML='Струм веде за напругою: <b>'+c.maHi+' мА</b> на '+(c.rampHiMv/1000).toFixed(2)+
       ' В → <b>'+c.maLo+' мА</b> рівно на цілі '+(t/1000).toFixed(2)+' В. '+
       'Малий струм у кінці дає чесніший вимір ємності й щадить банки.';
-  document.querySelectorAll('.tgtb').forEach(b=>{
+  document.querySelectorAll('#disTgtRow .tgtb').forEach(b=>{
     const m=/([\d.]+)\s*В/.exec(b.textContent);
     b.classList.toggle('on', !!m && Math.round(parseFloat(m[1])*1000)===t);
   });
@@ -1622,13 +1632,32 @@ setInterval(()=>{ if(!chgLast||chgLast.state!=='run')return;
   $('chgEl').textContent=disFmtT(chgLast.elapsedS+Math.floor((Date.now()-chgLastAt)/1000)); },1000);
 chgSchedule(30000);
 async function chgStatus(){ if(!connected){toast('Підключіться');return;} await chgTick(); }
+// Ціль заряду у % — пресети 100/95/90/85/80 і власне поле, той самий принцип,
+// що й ціль розряду (disTargetMv/disSetTarget), лише у відсотках.
+function chgTargetPct(){
+  let t=parseInt($('chgTarget').value)||100;
+  return Math.max(50,Math.min(100,t));
+}
+function chgSetTarget(pct){
+  const e=$('chgTarget'); e.value=pct; e.dataset.touched=1;
+  chgTargetPaint();
+}
+function chgTargetPaint(){
+  const t=chgTargetPct();
+  document.querySelectorAll('#chgTgtRow .tgtb').forEach(b=>{
+    const m=/(\d+)%/.exec(b.textContent);
+    b.classList.toggle('on', !!m && parseInt(m[1])===t);
+  });
+}
+chgTargetPaint();
 async function chgStart(){
   if(!connected){toast('Підключіться');return;}
-  if(!confirm('🔋 Почати заряд через DC/DC до 8.25 В?\n\nСтрум керується за профілем 200→1500→100 мА. '
+  const t=chgTargetPct();
+  if(!confirm('🔋 Почати заряд через DC/DC до '+t+'%?\n\nСтрум керується за профілем, масштабованим під цю ціль. '
             +'Переконайтесь, що керування ПЕРЕВІРЕНЕ мультиметром (enable=LOW безпечно).\n'
             +'Не лишайте пристрій без нагляду.'))return;
   await ensureAuth();
-  const r=await cmd('CHARGE',15000);
+  const r=await cmd('CHARGE '+t,15000);
   if(r&&r.ok){toast('✅ Заряд почато');chgShow(r.charge);} else toast('Помилка: '+((r&&r.err)||''),'err');
 }
 async function chgStop(){

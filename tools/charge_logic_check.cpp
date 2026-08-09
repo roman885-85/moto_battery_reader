@@ -9,25 +9,52 @@
 #define CHARGE_MA_TAPER   100
 #define CHARGE_DEADBAND_MA   30
 #define CHARGE_OUT_STEP_MV   20
+#define CHARGE_TARGET_PCT_MIN 50
 
 #define CHARGE_CAL_CTRL_MV  {1760, 1770, 1780, 1800, 1860, 1880, 1930}
 #define CHARGE_CAL_OUT_MV   {   0, 2500, 4100, 5200, 7200, 7600, 8600}
 #define CHARGE_CAL_POINTS   7
 #define CHARGE_CAL_OUT_MAX  8600
 
-// --- скопійовано дослівно з charge.h (щоб перевірити ізольовано) ----------
-uint16_t chargeSetpointMaForPct(int pct) {
+#define IMPRES_EMPTY_MV 6350
+#define IMPRES_FULL_MV  8250
+
+// --- скопійовано дослівно з charge.h/impres_format.h (щоб перевірити ізольовано) ---
+int impresMvFromPercent(int pct) {
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
-    if (pct == 0)   return CHARGE_MA_START;
-    if (pct < 10)   return (uint16_t)(CHARGE_MA_START +
-                        (long)(CHARGE_MA_10 - CHARGE_MA_START) * pct / 10);
-    if (pct == 10)  return CHARGE_MA_10;
-    if (pct < 50)   return (uint16_t)(CHARGE_MA_10 +
-                        (long)(CHARGE_MA_50 - CHARGE_MA_10) * (pct - 10) / 40);
-    if (pct < 80)   return (uint16_t)(CHARGE_MA_50 +
-                        (long)(CHARGE_MA_80 - CHARGE_MA_50) * (pct - 50) / 30);
-    if (pct < 95)   return CHARGE_MA_80;
+    return IMPRES_EMPTY_MV + (int)((long)pct * (IMPRES_FULL_MV - IMPRES_EMPTY_MV) / 100);
+}
+int impresPercentFromMv(int mv) {
+    long p = ((long)mv - IMPRES_EMPTY_MV) * 100 / (IMPRES_FULL_MV - IMPRES_EMPTY_MV);
+    if (p < 0) p = 0;
+    if (p > 100) p = 100;
+    return (int)p;
+}
+uint16_t chargeSetpointMaForPct(int pct, int targetPct) {
+    if (targetPct < CHARGE_TARGET_PCT_MIN) targetPct = CHARGE_TARGET_PCT_MIN;
+    if (targetPct > 100) targetPct = 100;
+    if (pct < 0) pct = 0;
+    if (pct > targetPct) pct = targetPct;
+
+    long bp10 = 10L * targetPct / 100;
+    long bp50 = 50L * targetPct / 100;
+    long bp80 = 80L * targetPct / 100;
+    long bp95 = 95L * targetPct / 100;
+    if (bp10 < 1) bp10 = 1;
+    if (bp50 <= bp10) bp50 = bp10 + 1;
+    if (bp80 <= bp50) bp80 = bp50 + 1;
+    if (bp95 <= bp80) bp95 = bp80 + 1;
+
+    if (pct == 0)     return CHARGE_MA_START;
+    if (pct < bp10)   return (uint16_t)(CHARGE_MA_START +
+                          (long)(CHARGE_MA_10 - CHARGE_MA_START) * pct / bp10);
+    if (pct == bp10)  return CHARGE_MA_10;
+    if (pct < bp50)   return (uint16_t)(CHARGE_MA_10 +
+                          (long)(CHARGE_MA_50 - CHARGE_MA_10) * (pct - bp10) / (bp50 - bp10));
+    if (pct < bp80)   return (uint16_t)(CHARGE_MA_50 +
+                          (long)(CHARGE_MA_80 - CHARGE_MA_50) * (pct - bp50) / (bp80 - bp50));
+    if (pct < bp95)   return CHARGE_MA_80;
     return CHARGE_MA_TAPER;
 }
 uint16_t chargeCtrlMvForOutputMv(uint16_t outMv) {
@@ -63,35 +90,76 @@ static int fails = 0;
 static void bad(const char *m) { printf("   ЗБІЙ  %s\n", m); fails++; }
 
 int main() {
-    printf("1) контрольні точки профілю струму\n");
+    printf("1) контрольні точки профілю струму (ціль 100%% — як і раніше, до переходу на вибір цілі)\n");
     struct { int pct; int want; } pts[] = {
         {0,200},{5,350},{10,500},{30,750},{50,1000},{65,1250},{80,1500},
         {85,1500},{94,1500},{95,100},{97,100},{100,100}
     };
     for (auto &p : pts) {
-        int got = chargeSetpointMaForPct(p.pct);
+        int got = chargeSetpointMaForPct(p.pct, 100);
         printf("   %3d%% -> %d мА (очікую %d)\n", p.pct, got, p.want);
-        if (got != p.want) bad("не збігається з очікуваним профілем");
+        if (got != p.want) bad("не збігається з очікуваним профілем при цілі 100%");
     }
 
-    printf("\n2) монотонність профілю струму (крім ступінчастого падіння на 95%%)\n");
-    int prev = chargeSetpointMaForPct(0);
+    printf("\n2) монотонність профілю струму при цілі 100%% (крім ступінчастого падіння на 95%%)\n");
+    int prev = chargeSetpointMaForPct(0, 100);
     for (int pct = 1; pct < 95; pct++) {
-        int cur = chargeSetpointMaForPct(pct);
+        int cur = chargeSetpointMaForPct(pct, 100);
         if (cur < prev) bad("струм впав там, де мав лише зростати/триматись (0..94%)");
         prev = cur;
     }
-    if (chargeSetpointMaForPct(95) >= chargeSetpointMaForPct(94))
+    if (chargeSetpointMaForPct(95, 100) >= chargeSetpointMaForPct(94, 100))
         bad("на 95% мав бути ступінчастий СПАД, а не зростання/плато");
     for (int pct = 95; pct <= 100; pct++)
-        if (chargeSetpointMaForPct(pct) != CHARGE_MA_TAPER)
+        if (chargeSetpointMaForPct(pct, 100) != CHARGE_MA_TAPER)
             bad("95..100% мають триматися рівно на CHARGE_MA_TAPER");
 
     printf("\n3) вихід профілю струму ніколи не виходить за межі [CHARGE_MA_TAPER..CHARGE_MA_80]\n");
     for (int pct = 0; pct <= 100; pct++) {
-        int v = chargeSetpointMaForPct(pct);
+        int v = chargeSetpointMaForPct(pct, 100);
         if (v < CHARGE_MA_TAPER || v > CHARGE_MA_80) bad("вихід поза розумними межами");
     }
+
+    printf("\n3б) перерахунок профілю під ЗАНИЖЕНУ ціль (80%%) — точки перегину масштабуються\n");
+    {
+        // При цілі 80% точки перегину: bp10=8, bp50=40, bp80=64, bp95=76.
+        struct { int pct; int want; } pts80[] = {
+            {0,200},{8,500},{40,1000},{64,1500},{70,1500},{75,1500},{76,100},{79,100},{80,100}
+        };
+        for (auto &p : pts80) {
+            int got = chargeSetpointMaForPct(p.pct, 80);
+            printf("   ціль 80%%: %3d%% -> %d мА (очікую %d)\n", p.pct, got, p.want);
+            if (got != p.want) bad("перерахунок профілю під ціль 80% не збігається з очікуваним");
+        }
+        // Монотонність до останнього відрізка й плавний спад перед самою ціллю —
+        // головна вимога запиту власника: заряд має закінчуватись м'яко, а не
+        // обриватись на повному струмі, хай яку ціль обрано.
+        if (chargeSetpointMaForPct(79, 80) != CHARGE_MA_TAPER)
+            bad("останній відрізок перед ЗАНИЖЕНОЮ ціллю має триматись на малому струмі (плавний фініш)");
+        if (chargeSetpointMaForPct(64, 80) != CHARGE_MA_80)
+            bad("на 64% (=80% від цілі 80%) має початись плато повного струму");
+    }
+
+    printf("\n3в) ціль нижче CHARGE_TARGET_PCT_MIN затискається, вироджень (ділення на нуль) немає\n");
+    for (int t = 0; t <= CHARGE_TARGET_PCT_MIN; t++) {
+        for (int pct = 0; pct <= 100; pct += 7) {
+            uint16_t v = chargeSetpointMaForPct(pct, t);   // не повинно падати/зависати
+            if (v < CHARGE_MA_TAPER || v > CHARGE_MA_80) { bad("вихід поза межами на крайній цілі"); break; }
+        }
+    }
+
+    printf("\n3г) обернена функція impresMvFromPercent — узгоджена з impresPercentFromMv\n");
+    for (int pct = 0; pct <= 100; pct += 5) {
+        int mv = impresMvFromPercent(pct);
+        int back = impresPercentFromMv(mv);
+        // Цілочисельне округлення дає похибку щонайбільше в 1% в обидва боки.
+        if (back < pct - 1 || back > pct + 1) {
+            printf("   %d%% -> %d мВ -> %d%% (розбіжність)\n", pct, mv, back);
+            bad("обернена функція розходиться з прямою більш ніж на 1%");
+        }
+    }
+    if (impresMvFromPercent(0) != IMPRES_EMPTY_MV) bad("0% має дорівнювати IMPRES_EMPTY_MV рівно");
+    if (impresMvFromPercent(100) != IMPRES_FULL_MV) bad("100% має дорівнювати IMPRES_FULL_MV рівно");
 
     printf("\n4) інтерполяція калібрувальної таблиці — точний збіг у ВСІХ 7 точках\n");
     {

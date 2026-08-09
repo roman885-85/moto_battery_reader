@@ -47,7 +47,8 @@
 //    • enable знімається ПЕРШОЮ дією у будь-якому сценарії завершення, до
 //      будь-якої зміни керуючої напруги;
 //    • типовий стан при старті/скиданні пристрою — «закритий» (chargeInit());
-//    • аварійна зупинка за: напругою ВИЩЕ CHARGE_HARD_MAX_MV, температурою,
+//    • аварійна зупинка за: напругою ВИЩЕ цілі сеансу + CHARGE_HARD_MAX_HEADROOM_MV,
+//      температурою,
 //      стелею часу, кількома невдалими читаннями DS2438 поспіль;
 //    • заряд «наосліп» неможливий: не читаємо монітор — зупиняємось;
 //    • ОДИН активний заряд на пристрій, повторний старт відхиляється;
@@ -90,6 +91,8 @@ struct ChargeState {
     uint8_t  state;          // CHG_*
     uint8_t  reason;         // CHGR_*
     uint16_t startMv, lastMv;
+    uint16_t targetMv;        // ціль ЦЬОГО сеансу, мВ (з обраного відсотка)
+    uint8_t  targetPct;       // той самий відсоток — для перерахунку профілю струму
     int16_t  lastMa;         // струм заряду (додатний = заряджаємо)
     int16_t  lastTempC10;    // температура ×10
     uint32_t startMs, lastPollMs;
@@ -181,20 +184,64 @@ inline void chargeOff() {
     chargeSetOutputMv(0);
 }
 
-// Уставка струму за відсотком заряду (див. таблицю в settings.h).
-inline uint16_t chargeSetpointMaForPct(int pct) {
+// Уставка струму за відсотком заряду, ПЕРЕРАХОВАНА під обрану ЦІЛЬ
+// (targetPct). Заводська таблиця (settings.h) задає форму профілю у
+// відсотках від ПОВНОГО заряду (0/10/50/80/95/100 %) — якщо заряджати не до
+// 100 %, а, скажімо, до 80 %, усі точки перегину масштабуються ПРОПОРЦІЙНО
+// до нової цілі (10->8, 50->40, 80->64, 95->76 при цілі 80 %). Так профіль
+// зберігає ту саму форму (розгін -> крейсерський струм -> плавний спад перед
+// самим кінцем) незалежно від того, до яких відсотків заряджаємо — і заряд
+// завжди закінчується м'яко, а не обривається на повному струмі просто тому,
+// що ціль опинилась нижче за колишню фіксовану позначку 95 %.
+inline uint16_t chargeSetpointMaForPct(int pct, int targetPct) {
+    if (targetPct < CHARGE_TARGET_PCT_MIN) targetPct = CHARGE_TARGET_PCT_MIN;
+    if (targetPct > 100) targetPct = 100;
     if (pct < 0) pct = 0;
-    if (pct > 100) pct = 100;
-    if (pct == 0)   return CHARGE_MA_START;
-    if (pct < 10)   return (uint16_t)(CHARGE_MA_START +
-                        (long)(CHARGE_MA_10 - CHARGE_MA_START) * pct / 10);
-    if (pct == 10)  return CHARGE_MA_10;
-    if (pct < 50)   return (uint16_t)(CHARGE_MA_10 +
-                        (long)(CHARGE_MA_50 - CHARGE_MA_10) * (pct - 10) / 40);
-    if (pct < 80)   return (uint16_t)(CHARGE_MA_50 +
-                        (long)(CHARGE_MA_80 - CHARGE_MA_50) * (pct - 50) / 30);
-    if (pct < 95)   return CHARGE_MA_80;             // плато 80..95 % (див. коментар у settings.h)
-    return CHARGE_MA_TAPER;                          // 95..100 % — ступінчастий спад, без лінійки
+    if (pct > targetPct) pct = targetPct;
+
+    long bp10 = 10L * targetPct / 100;
+    long bp50 = 50L * targetPct / 100;
+    long bp80 = 80L * targetPct / 100;
+    long bp95 = 95L * targetPct / 100;
+    // Захист від виродження на дуже малих цілях (нижче CHARGE_TARGET_PCT_MIN
+    // не пускаємо взагалі, але межі рахуємо з long і на всяк випадок не ділимо
+    // на нуль): кожен відрізок — щонайменше 1.
+    if (bp10 < 1) bp10 = 1;
+    if (bp50 <= bp10) bp50 = bp10 + 1;
+    if (bp80 <= bp50) bp80 = bp50 + 1;
+    if (bp95 <= bp80) bp95 = bp80 + 1;
+
+    if (pct == 0)     return CHARGE_MA_START;
+    if (pct < bp10)   return (uint16_t)(CHARGE_MA_START +
+                          (long)(CHARGE_MA_10 - CHARGE_MA_START) * pct / bp10);
+    if (pct == bp10)  return CHARGE_MA_10;
+    if (pct < bp50)   return (uint16_t)(CHARGE_MA_10 +
+                          (long)(CHARGE_MA_50 - CHARGE_MA_10) * (pct - bp10) / (bp50 - bp10));
+    if (pct < bp80)   return (uint16_t)(CHARGE_MA_50 +
+                          (long)(CHARGE_MA_80 - CHARGE_MA_50) * (pct - bp50) / (bp80 - bp50));
+    if (pct < bp95)   return CHARGE_MA_80;           // плато (див. коментар у settings.h)
+    return CHARGE_MA_TAPER;                          // останній відрізок перед ціллю — плавний спад
+}
+
+// ── ЦІЛЬ ЗАРЯДУ у ВІДСОТКАХ, обрана на пристрої ─────────────────────────────
+// У вебі й в exe ціль набирають полем/повзунком, а на самому пристрої поля
+// немає — тут вона перемикається по колу окремим пунктом меню (той самий
+// принцип, що dischargeCycleTarget() у discharge.h). Живе до перезавантаження.
+static const uint8_t CHARGE_TARGET_PRESETS_PCT[] = { 100, 95, 90, 85, 80 };
+#define CHARGE_TARGET_PRESET_N \
+    ((int)(sizeof(CHARGE_TARGET_PRESETS_PCT) / sizeof(CHARGE_TARGET_PRESETS_PCT[0])))
+
+static uint8_t g_chgTargetPct = 100;
+
+inline uint8_t chargeTargetPct() { return g_chgTargetPct; }
+
+inline uint8_t chargeCycleTarget() {
+    int i = 0;
+    for (; i < CHARGE_TARGET_PRESET_N; i++)
+        if (CHARGE_TARGET_PRESETS_PCT[i] == g_chgTargetPct) break;
+    i = (i + 1) % CHARGE_TARGET_PRESET_N;          // не знайшли -> станемо на перший
+    g_chgTargetPct = CHARGE_TARGET_PRESETS_PCT[i];
+    return g_chgTargetPct;
 }
 
 // Наступний крок ЦІЛЬОВОЇ вихідної напруги: МАЛЕНЬКИЙ крок у бік уставки за

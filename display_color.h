@@ -1056,8 +1056,8 @@ inline void drawPageCharge() {
         y += 18;
     };
 
-    snprintf(b, sizeof(b), "ціль %u.%02u В  (%d%%)",
-             (unsigned)(CHARGE_TARGET_MV / 1000), (unsigned)((CHARGE_TARGET_MV % 1000) / 10), c.lastPct);
+    snprintf(b, sizeof(b), "ціль %u.%02u В (%u%%)",
+             c.targetMv / 1000, (c.targetMv % 1000) / 10, c.targetPct);
     row(b, C_TEXT);
 
     // Струм і потужність — з ВБУДОВАНОГО датчика струму DS2438 (той самий
@@ -1252,7 +1252,12 @@ inline void displayAnimTick() {
     int fx = g_battX + 3, fy = g_battY + 3, fh = g_battH - 6;
     int tx0 = g_pctTx, tx1 = g_pctTx + g_pctTw;   // рамка цифр % (оминаємо)
     int ty0 = g_pctTy, ty1 = g_pctTy + g_pctTh;
-    g_animPhase += ANIM_GRADIENT_SPEED;            // зсув фази -> градієнт «пливе»
+    // Напрямок «течії» градієнта: під час ЗАРЯДУ — у бік зростання (як
+    // заповнення прибуває), під час РОЗРЯДУ/спокою — у бік спадання (як
+    // заповнення витікає). Без цього градієнт завжди «тік» в один бік і під
+    // час заряду читався як «розряджається».
+    if (chargeScreenActive()) g_animPhase -= ANIM_GRADIENT_SPEED;
+    else                      g_animPhase += ANIM_GRADIENT_SPEED;
 
     // Малюємо заповнення вертикальними смугами по 4 px, яскравість кожної —
     // за синусом від позиції + фази. Виходить світло-темний градієнт, що плавно

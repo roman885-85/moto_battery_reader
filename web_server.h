@@ -1264,25 +1264,38 @@ static String dischargeJson() {
 //  розрядом — на початку того файлу).
 // ===========================================================================
 
-// Старт заряду. Повертає nullptr при успіху, інакше — текст причини відмови.
-const char *chargeStart() {
+// Старт заряду до обраного ВІДСОТКА (0 -> типово 100 %, повний заряд).
+// Повертає nullptr при успіху, інакше — текст причини відмови.
+const char *chargeStart(uint8_t targetPct) {
     if (!chargeAvailable()) return "Заряд не налаштовано: задайте CHARGE_PIN і CHARGE_CTRL_PIN у settings.h";
     if (chargeRunning())    return "Заряд уже виконується";
     if (dischargeRunning()) return "Спочатку зупиніть розряд";
+
+    if (!targetPct) targetPct = 100;
+    if (targetPct < CHARGE_TARGET_PCT_MIN) targetPct = CHARGE_TARGET_PCT_MIN;
+    if (targetPct > 100) targetPct = 100;
+    // Ціль завжди в межах [BATTERY_EMPTY_MV..CHARGE_TARGET_MV] — вище
+    // CHARGE_TARGET_MV (=100 % на шкалі) заряджати не можна ХАЙ ЯКИЙ
+    // targetPct прийшов ззовні (клієнт міг надіслати щось дивне).
+    uint16_t targetMv = (uint16_t)impresMvFromPercent(targetPct);
+    if (targetMv > CHARGE_TARGET_MV) targetMv = CHARGE_TARGET_MV;
+    uint16_t hardMaxMv = (uint16_t)(targetMv + CHARGE_HARD_MAX_HEADROOM_MV);
 
     uint16_t mv; int16_t ma, t;
     if (!dischargeSample(&mv, &ma, &t)) {   // те саме читання DS2438, напрямок ролі не грає
         chargeOff();
         return "DS2438 не читається — заряд наосліп заборонено";
     }
-    if (mv >= CHARGE_TARGET_MV)         return "Пакет уже заряджений до цілі";
-    if (mv >= CHARGE_HARD_MAX_MV)       return "Напруга вже вище аварійної межі — заряд не почато";
+    if (mv >= targetMv)                 return "Пакет уже заряджений до обраної цілі";
+    if (mv >= hardMaxMv)                return "Напруга вже вище аварійної межі — заряд не почато";
     if (t >= CHARGE_MAX_TEMP_C * 10)    return "Пакет гарячий — дайте охолонути";
 
     memset(&g_chg, 0, sizeof(g_chg));
     g_chg.state    = CHG_RUN;
     g_chg.reason   = CHGR_NONE;
     g_chg.startMv  = g_chg.lastMv = mv;
+    g_chg.targetMv  = targetMv;
+    g_chg.targetPct = targetPct;
     g_chg.lastMa   = ma;
     g_chg.lastTempC10 = t;
     g_chg.startMs  = g_chg.lastPollMs = millis();
@@ -1297,7 +1310,7 @@ const char *chargeStart() {
     // важливий: спершу керування в позицію «0 В», ПОТІМ enable силового
     // каскаду — щоб у момент увімкнення каскад уже «бачив» безпечну уставку,
     // а не випадкове значення з попереднього стану ШІМ.
-    g_chg.setMa = chargeSetpointMaForPct(g_chg.lastPct);
+    g_chg.setMa = chargeSetpointMaForPct(g_chg.lastPct, targetPct);
     g_chg.outMv = 0;
     chargeSetOutputMv(0);
     chargeEnable(true);
@@ -1307,8 +1320,8 @@ const char *chargeStart() {
 
     ledSet(g_chg.lastPct >= CHARGE_LED_TAPER_PCT ? LED_CHARGE_TAPER : LED_CHARGE);
     chargeMarkDirty(2);
-    Serial.printf("\n=== Charge started: %u mV (%u%%), setpoint %u mA%s ===\n",
-                  mv, g_chg.lastPct, g_chg.setMa, chargePwmOk() ? "" : ", PWM UNAVAILABLE");
+    Serial.printf("\n=== Charge started: %u mV (%u%%) -> ціль %u mV (%u%%), setpoint %u mA%s ===\n",
+                  mv, g_chg.lastPct, targetMv, targetPct, g_chg.setMa, chargePwmOk() ? "" : ", PWM UNAVAILABLE");
     return nullptr;
 }
 
@@ -1358,7 +1371,7 @@ inline void chargeTask() {
 
     int pct = impresPercentFromMv(mv);
     g_chg.lastPct = (uint8_t)pct;
-    g_chg.setMa   = chargeSetpointMaForPct(pct);
+    g_chg.setMa   = chargeSetpointMaForPct(pct, g_chg.targetPct);
     g_chg.outMv   = chargeNextOutMv(g_chg.outMv, ma, g_chg.setMa);
     chargeSetOutputMv(g_chg.outMv);
 
@@ -1377,13 +1390,13 @@ inline void chargeTask() {
     chargeMarkDirty(1);
     ledSet(pct >= CHARGE_LED_TAPER_PCT ? LED_CHARGE_TAPER : LED_CHARGE);
 
-    if (mv >= CHARGE_HARD_MAX_MV) {
+    if (mv >= (uint32_t)g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV) {
         chargeStop(CHGR_HARD_MAX);
         Serial.println("=== Charge ABORT: above hard maximum ===");
     } else if (t >= CHARGE_MAX_TEMP_C * 10) {
         chargeStop(CHGR_TEMP);
         Serial.println("=== Charge ABORT: overheat ===");
-    } else if (mv >= CHARGE_TARGET_MV) {
+    } else if (mv >= g_chg.targetMv) {
         chargeStop(CHGR_TARGET);
         Serial.printf("=== Charge DONE: %lu mAh in %lus ===\n",
                       (unsigned long)chargeMah(), (unsigned long)g_chg.elapsedS);
@@ -1397,7 +1410,12 @@ static String chargeJson() {
                                : g_chg.state == CHG_DONE ? "done"
                                : g_chg.state == CHG_ABORT ? "abort" : "idle") + "\"";
     j += ",\"reason\":\""; j += chargeReasonText(g_chg.reason); j += "\"";
-    j += ",\"targetMv\":" + String(CHARGE_TARGET_MV);
+    // targetMv/targetPct — ЦЕЙ сеанс (0, доки не стартував); targetPctMin —
+    // нижня межа для повзунка/полів клієнта (сама шкала пресетів 100/95/90/
+    // 85/80 % захардкожена в кожному клієнті, як і voltage-пресети розряду).
+    j += ",\"targetMv\":"  + String(g_chg.targetMv);
+    j += ",\"targetPct\":" + String(g_chg.targetPct);
+    j += ",\"targetPctMin\":" + String(CHARGE_TARGET_PCT_MIN);
     j += ",\"startMv\":"  + String(g_chg.startMv);
     j += ",\"mv\":"       + String(g_chg.lastMv);
     j += ",\"ma\":"       + String(g_chg.lastMa);
@@ -1415,7 +1433,7 @@ static String chargeJson() {
     j += ",\"outMv\":"    + String(g_chg.outMv);
     j += ",\"outMaxMv\":" + String(CHARGE_CAL_OUT_MAX);
     j += ",\"pwm\":"      + String(chargePwmOk() ? "true" : "false");
-    j += ",\"hardMaxMv\":"+ String(CHARGE_HARD_MAX_MV);
+    j += ",\"hardMaxMv\":"+ String((unsigned)g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV);
     j += "}";
     return j;
 }
@@ -2609,7 +2627,8 @@ void handleDischargeStatus() {
 // тому старт вимагає явного підтвердження з клієнта.
 void handleChargeStart() {
     if (!requireAdmin()) return;
-    const char *err = chargeStart();
+    uint8_t target = server.hasArg("target") ? (uint8_t)server.arg("target").toInt() : 0;
+    const char *err = chargeStart(target);
     if (err) {
         String j = "{\"status\":\"error\",\"message\":\""; j += err; j += "\"}";
         server.send(400, "application/json", j);

@@ -37,7 +37,8 @@
 //                          зберігається в SPIFFS і потрібна для наробітку
 //   DISCHARGE [мВ]       -> почати керований розряд (типово до 7200 мВ)
 //   DISCHARGE STOP       -> зупинити розряд;  DISCHARGE ? -> стан розряду
-//   CHARGE               -> почати керований заряд (DC/DC, ціль CHARGE_TARGET_MV)
+//   CHARGE [%]           -> почати керований заряд (DC/DC) до обраного відсотка
+//                           (типово 100, мінімум CHARGE_TARGET_PCT_MIN)
 //   CHARGE STOP          -> зупинити заряд;  CHARGE ? -> стан заряду
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
 //   HDRFIX               -> добудувати заголовок DS2433 із дзеркала DS2438
@@ -680,12 +681,12 @@ static void serialExec(const String &line) {
                                   else { const char *e = dischargeStart((uint16_t)a2.toInt());
                                          if (e) { String r = "{\"ok\":false,\"err\":\""; r += e; r += "\"}"; sResp(r); }
                                          else sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); } }
-    // CHARGE — почати заряд (ціль фіксована, CHARGE_TARGET_MV у settings.h);
+    // CHARGE [%] — почати заряд до обраного відсотка (без аргументу -> 100 %);
     // CHARGE STOP — зупинити; CHARGE ? — стан.
     else if (cmd == "CHARGE")   { String a3 = arg; a3.trim(); a3.toUpperCase();
                                   if (a3 == "STOP") { chargeStop(CHGR_USER); sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}"); }
                                   else if (a3 == "?" || a3 == "STATUS") sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}");
-                                  else { const char *e = chargeStart();
+                                  else { const char *e = chargeStart((uint8_t)a3.toInt());
                                          if (e) { String r = "{\"ok\":false,\"err\":\""; r += e; r += "\"}"; sResp(r); }
                                          else sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}"); } }
     else if (cmd == "WIZARD")   { sResp(wizStart()); }

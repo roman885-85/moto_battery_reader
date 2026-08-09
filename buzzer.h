@@ -243,7 +243,7 @@ static volatile uint8_t  g_bzAmp = 0;           // поточна ампліту
 // подвоєна частота) заради «дзвіночкового», не голого синусового тембру:
 // саме обертони, а не чистий тон, дають вухом впізнаваний «переливчастий»
 // звук на кшталт сигналів побутової техніки.
-inline void IRAM_ATTR buzzIsr() {
+static void IRAM_ATTR buzzIsr() {
     g_bzPhaseAcc += g_bzPhaseInc;
     uint8_t idx = (uint8_t)(g_bzPhaseAcc >> 24);
     int16_t mix = BZ_SINE[idx] + (BZ_SINE[(uint8_t)(idx * 2)] >> 2);

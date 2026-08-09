@@ -491,6 +491,83 @@ class DischargeMonitor(tk.Canvas):
             self._alive = False          # вікно закрилось під час перемальовки
 
 
+class ChargeMonitor(ttk.Frame):
+    """Панель стану заряду через DC/DC — простіша за DischargeMonitor: ціль
+    фіксована (CHARGE_TARGET_MV), тож немає що малювати «уставку струму за
+    напругою», графік історії не потрібен. Прості ttk-віджети замість Canvas.
+    """
+    def __init__(self, master):
+        super().__init__(master)
+        self.d = None
+        self.lblState = ttk.Label(self, text="—", font=fnt("Segoe UI", 11, "bold"))
+        self.lblState.grid(row=0, column=0, columnspan=3, sticky="w")
+        self.lblClock = ttk.Label(self, text="0:00:00", foreground=MIL["mut"])
+        self.lblClock.grid(row=0, column=3, sticky="e")
+        self.lblMv = ttk.Label(self, text="—", font=fnt("Consolas", 20, "bold"))
+        self.lblMv.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.lblSub = ttk.Label(self, text="—", foreground=MIL["mut"])
+        self.lblSub.grid(row=1, column=2, columnspan=2, sticky="e", pady=(4, 0))
+        self.bar = ttk.Progressbar(self, maximum=100, length=420)
+        self.bar.grid(row=2, column=0, columnspan=4, sticky="we", pady=(4, 4))
+        self.lblLim = ttk.Label(self, text="—")
+        self.lblLim.grid(row=3, column=0, columnspan=4, sticky="w")
+        self.lblOut = ttk.Label(self, text="—")
+        self.lblOut.grid(row=4, column=0, columnspan=4, sticky="w")
+        tiles = ttk.Frame(self); tiles.grid(row=5, column=0, columnspan=4, sticky="we", pady=(6, 0))
+        self.tileVars = {}
+        for i, (key, label) in enumerate([
+            ("mah", "отримано, мА·год"), ("cca", "CCA, мА·год"), ("ma", "струм, мА"),
+            ("w", "потужність, Вт"), ("t", "температура, °C"), ("ica", "паливомір ICA"),
+        ]):
+            f = ttk.Frame(tiles); f.grid(row=i // 3, column=i % 3, sticky="we", padx=3, pady=3)
+            ttk.Label(f, text=label, foreground=MIL["mut"], font=fnt("Segoe UI", 8)).pack(anchor="w")
+            v = ttk.Label(f, text="—", font=fnt("Consolas", 12, "bold")); v.pack(anchor="w")
+            self.tileVars[key] = v
+        self.lblWarn = ttk.Label(self, text="", foreground=MIL["maroon"], wraplength=420, justify="left")
+        self.lblWarn.grid(row=6, column=0, columnspan=4, sticky="w", pady=(4, 0))
+
+    def _fmt_t(self, s):
+        s = int(max(0, s))
+        return "%d:%02d:%02d" % (s // 3600, (s // 60) % 60, s % 60)
+
+    def update_state(self, d):
+        self.d = d
+        if not d:
+            self.lblState.config(text="—")
+            return
+        if not d.get("available"):
+            self.lblState.config(text="не налаштовано (CHARGE_PIN/CHARGE_CTRL_PIN)")
+            return
+        state = d.get("state", "idle")
+        run = state == "run"
+        txt = {"idle": "очікування", "run": "ІДЕ ЗАРЯД",
+               "done": "✅ ЗАРЯД ЗАВЕРШЕНО", "abort": "⛔ " + str(d.get("reason") or "аварія")}.get(state, state)
+        self.lblState.config(text=txt, foreground=(MIL["olive"] if run else MIL["fg"]))
+        mv, pct = d.get("mv", 0), d.get("pct", 0)
+        self.lblMv.config(text="%.2f В" % (mv / 1000.0))
+        self.lblSub.config(text="%d %% · старт %.2f В → ціль %.2f В"
+                                 % (pct, d.get("startMv", 0) / 1000.0, d.get("targetMv", 0) / 1000.0))
+        self.bar["value"] = max(0, min(100, pct))
+        ma, setMa, pwm = d.get("ma", 0), d.get("setMa", 0), d.get("pwm", False)
+        self.lblLim.config(text=("уставка %d мА · зараз %d мА" % (setMa, ma)) if pwm else "⚠ керування недоступне",
+                            foreground=MIL["olive"] if pwm else MIL["maroon"])
+        outMv, outMax = d.get("outMv", 0), d.get("outMaxMv", 1) or 1
+        self.lblOut.config(text=("ціль на виході ДС/ДС: %.2f В (стеля %.1f В)" % (outMv / 1000.0, outMax / 1000.0))
+                                 if pwm else "керування недоступне")
+        self.tileVars["mah"].config(text=str(d.get("mah", 0)))
+        self.tileVars["cca"].config(text=str(d.get("ccaMah", 0)))
+        self.tileVars["ma"].config(text=str(ma))
+        self.tileVars["w"].config(text=str(d.get("watts", 0)))
+        self.tileVars["t"].config(text=str(d.get("tempC", 0)))
+        self.tileVars["ica"].config(text=str(d.get("ica", 0)))
+        if not pwm and (run or state == "done"):
+            self.lblWarn.config(text="Керування недоступне: каналу LEDC не знайшлося — "
+                                      "вимкніть заряд і перевірте CHARGE_LEDC_CH у settings.h.")
+        else:
+            self.lblWarn.config(text="")
+        self.lblClock.config(text=self._fmt_t(d.get("elapsedS", 0)))
+
+
 class App:
     # Базовий розмір вікна = масштаб 100 %. Автомасштаб рахується як відношення
     # поточного розміру до цього — по МЕНШІЙ зі сторін, інакше широке й низьке
@@ -527,6 +604,7 @@ class App:
             pass
 
         self._disBusy = False
+        self._chgBusy = False
 
         self._build()
         self.attach_menus_all()
@@ -534,6 +612,7 @@ class App:
         self.refresh_ports()
         self.root.after(40, self._poll)
         self.root.after(1000, self._dis_tick)     # стан розряду тягнеться сам
+        self.root.after(1000, self._chg_tick)     # стан заряду тягнеться сам
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ---- контекстне меню для звичайних полів ---------------------------
@@ -1307,6 +1386,20 @@ class App:
         # Стан тягнеться сам (див. _dis_tick) — кнопка лишилась тільки щоб не
         # чекати періоду, коли й так стоїш біля пристрою.
         self.monDis = DischargeMonitor(b2d); self.monDis.pack(anchor="w", pady=(6, 0))
+
+        b2e = ttk.LabelFrame(p_cal, text="Заряд через DC/DC (готова плата на TL494)  ·  пише в DS2438", padding=8); b2e.pack(fill="x", pady=4)
+        ttk.Label(b2e, text="Керований заряд: enable-каскад + аналогове керування вихідною напругою (ШІМ+RC).\n"
+                            "Профіль струму 200→500→1000→1500 мА, ступінчастий спад до 100 мА після 95 %, ціль 8.25 В.\n"
+                            "Пакет не прийме струм, доки не піднято enable-сигнал (та сама лінія, що й для читання/\n"
+                            "запису пам'яті) — прошивка тримає його сама весь час заряду.\n"
+                            "Аварійна зупинка: напруга вище межі, перегрів 45 °C, стеля часу 6 год, втрата зв'язку\n"
+                            "з монітором. Заряд і розряд не можуть іти одночасно.",
+                  foreground="#b9bd86", justify="left").pack(anchor="w")
+        cf = ttk.Frame(b2e); cf.pack(anchor="w", pady=3)
+        ttk.Button(cf, text="🔋 Почати заряд", command=self.charge_start).pack(side="left", padx=2)
+        ttk.Button(cf, text="⏹ Зупинити", command=self.charge_stop).pack(side="left", padx=2)
+        ttk.Button(cf, text="🔄 Оновити зараз", command=self.charge_status).pack(side="left", padx=2)
+        self.monChg = ChargeMonitor(b2e); self.monChg.pack(anchor="w", pady=(6, 0))
 
         b2c = ttk.LabelFrame(p_cal, text="Крок 3 — калібрування на IMPRES-ЗП (обов'язково)", padding=8); b2c.pack(fill="x", pady=4)
         ttk.Label(b2c, text="Після ремонту навчена калібровка порожня — рація приймає пакет як фірмовий і просить\n"
@@ -2236,6 +2329,56 @@ class App:
         if not self.need_conn():
             return
         self.cmd("DISCHARGE STOP", 10.0, cb=lambda r: (self.status("Розряд зупинено"), self._dis_show(r)))
+
+    # --- ЗАРЯД через DC/DC (CHARGE ?/CHARGE/CHARGE STOP) --------------------
+    # Ціль фіксована (CHARGE_TARGET_MV) — на відміну від розряду тут немає
+    # перемикача цілі, тож і логіка простіша.
+    def _chg_show(self, r):
+        self._chgBusy = False
+        d = (r or {}).get("charge") if isinstance(r, dict) else None
+        self.monChg.update_state(d)
+
+    def _chg_tick(self):
+        """Автоопитування стану заряду — той самий принцип, що й _dis_tick:
+        раз на 3 с під час заряду, раз на 30 с у спокої (щоб побачити заряд,
+        запущений кнопкою на самому пристрої)."""
+        try:
+            d = self.monChg.d
+            run = bool(d) and d.get("state") == "run"
+            if self.connected and not self._chgBusy:
+                self._chgBusy = True
+                self.cmd("CHARGE ?", 8.0, cb=self._chg_show)
+            self.root.after(3000 if run else 30000, self._chg_tick)
+        except tk.TclError:
+            pass                      # вікно закрилось
+
+    def charge_status(self):
+        if not self.need_conn():
+            return
+        self._chgBusy = True
+        self.cmd("CHARGE ?", 8.0, cb=self._chg_show)
+
+    def charge_start(self):
+        if not self.need_conn():
+            return
+        if not messagebox.askyesno("Заряд",
+                "Почати заряд через DC/DC до 8.25 В?\n\n"
+                "Струм керується за профілем 200→1500→100 мА.\n"
+                "Переконайтесь, що керування ПЕРЕВІРЕНЕ мультиметром (enable=LOW безпечно).\n"
+                "Не лишайте пристрій без нагляду."):
+            return
+        def done(r):
+            if isinstance(r, dict) and r.get("ok"):
+                self.status("Заряд почато"); self._chg_show(r)
+            else:
+                self._chgBusy = False
+                self.status("Помилка: " + str((r or {}).get("err", "")))
+        self.maybe_auth(lambda: self.cmd("CHARGE", 15.0, cb=done))
+
+    def charge_stop(self):
+        if not self.need_conn():
+            return
+        self.cmd("CHARGE STOP", 10.0, cb=lambda r: (self.status("Заряд зупинено"), self._chg_show(r)))
 
     def restore_battery(self, verbatim=False):
         # verbatim=False — переносимо лише модельну частину еталона; навчений

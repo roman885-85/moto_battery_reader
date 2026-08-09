@@ -28,6 +28,7 @@
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — дії «Новий АКБ»
 #include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
 #include "discharge.h"    // стан керованого розряду для сторінки моніторингу
+#include "charge.h"       // стан керованого заряду для сторінки моніторингу
 
 // Стан, яке відображаємо (визначене в .ino / web_server.h).
 extern bool hasDump;
@@ -1023,6 +1024,79 @@ inline void drawPageDischarge() {
     tPut(EDGE, TFT_H - 8, foot);
 }
 
+// Сторінка МОНІТОРИНГУ ЗАРЯДУ (кольорова) — та сама схема, що й розряд вище,
+// але прогрес рахується у бік ЗРОСТАННЯ напруги (ціль вища за старт), і
+// показуємо ЦІЛЬОВУ вихідну напругу ДС/ДС замість шпаруватості (крива
+// керування нелінійна, див. charge.h/settings.h — сира напруга сама по собі
+// нічого не каже про очікуваний струм).
+inline void drawPageCharge() {
+    drawHeaderBar("ЗАРЯД");
+    const ChargeState &c = g_chg;
+
+    char b[56];
+    tft.fillRect(0, HDR_H + 4, TFT_W, 40, C_BG);
+    snprintf(b, sizeof(b), "%u.%02u В", c.lastMv / 1000, (c.lastMv % 1000) / 10);
+    tSet(FONT_MODEL, chargeColor(impresPercentFromMv(c.lastMv)));
+    tPut(EDGE, HDR_H + 36, b);
+
+    const char *csrc; int chargePct = batteryPercent(&csrc);
+    int by = HDR_H + 44, bh = 22;
+    int bx = EDGE, bw = TFT_W - 2 * EDGE - 6;
+    tft.fillRect(0, by - 2, TFT_W, bh + 4, C_BG);
+    drawBatteryBar(bx, by, bw, bh, chargePct, chargeColor(chargePct));
+    g_pctTx = g_pctTy = g_pctTw = g_pctTh = 0;
+
+    tSet(FONT_BODY, C_TEXT);
+    int y = by + bh + 18;
+    auto row = [&](const char *txt, uint16_t col) {
+        if (y > FOOT_Y - 4) return;
+        tft.fillRect(0, y - 12, TFT_W, 16, C_BG);
+        tSet(FONT_BODY, col);
+        tPut(EDGE, y, txt);
+        y += 18;
+    };
+
+    snprintf(b, sizeof(b), "ціль %u.%02u В  (%d%%)",
+             (unsigned)(CHARGE_TARGET_MV / 1000), (unsigned)((CHARGE_TARGET_MV % 1000) / 10), c.lastPct);
+    row(b, C_TEXT);
+
+    // Струм і потужність — з ВБУДОВАНОГО датчика струму DS2438 (той самий
+    // шунт, що й розряд).
+    int wx10 = chargeWattsX10(c.lastMv, c.lastMa);
+    snprintf(b, sizeof(b), "струм %d мА · %d.%d Вт", c.lastMa, wx10 / 10, wx10 % 10);
+    row(b, C_TEXT);
+
+    // Уставка й ЦІЛЬОВА вихідна напруга (не шпаруватість — див. коментар вище).
+    if (chargePwmOk()) {
+        snprintf(b, sizeof(b), "уст %u мА · вихід %u.%02u В", c.setMa, c.outMv / 1000, (c.outMv % 1000) / 10);
+        row(b, C_MUTED);
+    } else {
+        row("БЕЗ КЕРУВАННЯ: перевірте!", C_RED);
+    }
+
+    // Отримано: наш інтеграл по опитуваннях і апаратний лічильник CCA самого
+    // DS2438.
+    snprintf(b, sizeof(b), "отримано %lu мА·год", (unsigned long)chargeMah());
+    row(b, C_GREEN);
+    snprintf(b, sizeof(b), "CCA %lu мА·год · ICA %u", (unsigned long)chargeCcaMah(), c.lastIca);
+    row(b, C_MUTED);
+
+    snprintf(b, sizeof(b), "темп. %d.%d °C", c.lastTempC10 / 10, abs(c.lastTempC10 % 10));
+    row(b, c.lastTempC10 >= CHARGE_MAX_TEMP_C * 10 - 50 ? C_RED : C_TEXT);
+
+    unsigned long el = c.elapsedS;
+    snprintf(b, sizeof(b), "час  %lu:%02lu:%02lu", el / 3600, (el / 60) % 60, el % 60);
+    row(b, C_TEXT);
+
+    tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
+    tft.drawFastHLine(0, FOOT_Y, TFT_W, C_BLUE);
+    const char *foot = (c.state == CHG_RUN)  ? "[OK] тримати = ЗУПИНИТИ"
+                      : (c.state == CHG_DONE) ? "ГОТОВО"
+                      : chargeReasonText(c.reason);
+    tSet(FONT_SMALL, c.state == CHG_ABORT ? C_RED : C_MUTED, C_CARD);
+    tPut(EDGE, TFT_H - 8, foot);
+}
+
 // Сторінка Майстра відновлення (кольорова). Дані готує wizDeviceRefresh().
 inline void drawPageWizard() {
     drawHeaderBar("Майстер відновлення");
@@ -1093,7 +1167,10 @@ inline void displayRenderBody(bool clearBody) {
     // Поки навантаження увімкнене — примусово показуємо моніторинг розряду,
     // хоч би яку сторінку було обрано: це довга операція із запобіжниками, її
     // стан має бути на екрані завжди, а не за кілька натискань кнопки.
+    // Заряд і розряд не можуть іти одночасно, тож порядок цих двох перевірок
+    // не має значення.
     if (dischargeScreenActive()) { drawPageDischarge(); return; }
+    if (chargeScreenActive())    { drawPageCharge();    return; }
     switch (g_displayPage) {
         case 0:  drawPageMain();     break;
         case 1:  drawPageModel();    break;
@@ -1113,6 +1190,10 @@ inline void displayRender() { displayRenderBody(true); }
 // full=true — повна перемальовка: потрібна на вході в режим і на виході з нього,
 // інакше поверх моніторингу лишаються написи попередньої сторінки.
 inline void displayDischargeRefresh(bool full) {
+    if (full) displayRender(); else displayRenderBody(false);
+}
+// Те саме, для ЗАРЯДУ.
+inline void displayChargeRefresh(bool full) {
     if (full) displayRender(); else displayRenderBody(false);
 }
 
@@ -1157,7 +1238,7 @@ inline void displayAnimTick() {
     // Анімуємо на головній сторінці та на сторінці РОЗРЯДУ (там показник заряду
     // такий самий, і статична шкала під час довгої операції виглядала б як
     // «завис»).
-    if (!(g_displayPage == 0 || dischargeScreenActive()) || g_battW == 0) return;
+    if (!(g_displayPage == 0 || dischargeScreenActive() || chargeScreenActive()) || g_battW == 0) return;
     if (g_errTint) return;              // під час оповіщення про помилку — статичний
                                         // червоний екран (без руху градієнта)
     if (g_ledMode == LED_READ || g_ledMode == LED_WRITE)
@@ -1414,6 +1495,26 @@ inline void displayHandleButton() {
             dischargeStop(DISR_USER); displaySetStatus("РОЗРЯД СТОП"); displayRender();
         } else if (d1 == 1 || d2 == 1 || d3 == 1) {   // коротке = оновити показання
             displayDischargeRefresh(false);
+        }
+        return;
+    }
+
+    // ── РЕЖИМ ЗАРЯДУ — той самий принцип, що й розряд вище ─────────────────
+    if (chargeScreenActive()) {
+        int d1 = pollButtonRaw(btn1Raw(), b1, 800);
+        int d2 = pollButtonRaw(btn2Raw(), b2, 800);
+        int d3 = 0;
+#ifdef MENU_BTN3_PIN
+        d3 = pollButtonRaw(btn3Raw(), b3, 800);
+#endif
+        if (!chargeRunning()) {
+            if (d1 || d2 || d3) { chargeDismiss(); displayRender(); }
+            return;
+        }
+        if (d1 == 2 || d2 == 2 || d3 == 2) {          // довге = АВАРІЙНА ЗУПИНКА
+            chargeStop(CHGR_USER); displaySetStatus("ЗАРЯД СТОП"); displayRender();
+        } else if (d1 == 1 || d2 == 1 || d3 == 1) {   // коротке = оновити показання
+            displayChargeRefresh(false);
         }
         return;
     }

@@ -8,6 +8,7 @@
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — для дій «Новий АКБ» у меню
 #include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
 #include "discharge.h"    // стан керованого розряду для сторінки моніторингу
+#include "charge.h"       // стан керованого заряду для сторінки моніторингу
 
 // Стан, яке відображаємо (заповнюється з .ino і обробників веб-сервера).
 extern bool hasDump;
@@ -893,6 +894,51 @@ inline void drawPageDischarge() {
                            : dischargeReasonText(d.reason));
 }
 
+// Сторінка МОНІТОРИНГУ ЗАРЯДУ (монохром) — та сама схема, що й розряд вище,
+// але прогрес рахується у бік ЗРОСТАННЯ напруги (ціль вища за старт).
+inline void drawPageCharge() {
+    const ChargeState &c = g_chg;
+    char b[48];
+    snprintf(b, sizeof(b), "ЗАРЯД %d%%", c.lastPct);
+    drawHeader(b);
+
+    u8g2.setFont(u8g2_font_6x12_t_cyrillic);
+    snprintf(b, sizeof(b), "%u.%02u В %d мА", c.lastMv / 1000, (c.lastMv % 1000) / 10, c.lastMa);
+    u8g2.drawUTF8(0, HEAD_LINE + 13, b);
+    {
+        const char *csrc; int chargePct = batteryPercent(&csrc);
+        int iw = 22, ih = 10;
+        drawBatteryIcon(DISP_W - iw - 5, HEAD_LINE + 4, iw, ih, chargePct);
+    }
+
+    u8g2.setFont(BODY_FONT);
+    // Уставка струму й ЦІЛЬОВА вихідна напруга ДС/ДС (не шпаруватість — крива
+    // керування нелінійна, див. charge.h/settings.h): чинний струм тримається
+    // на уставці, а сама напруга видно для діагностики «регулятор рухається».
+    if (chargePwmOk()) {
+        snprintf(b, sizeof(b), "уст%uмА вих%u.%02uВ", c.setMa, c.outMv / 1000, (c.outMv % 1000) / 10);
+    } else {
+        snprintf(b, sizeof(b), "БЕЗ КЕРУВАННЯ!");
+    }
+    u8g2.drawUTF8(0, HEAD_LINE + 24, b);
+
+    // Наш інтеграл і апаратний лічильник CCA самого DS2438 — поруч, для звірки.
+    snprintf(b, sizeof(b), "%lu мА·год (CCA %lu)",
+             (unsigned long)chargeMah(), (unsigned long)chargeCcaMah());
+    u8g2.drawUTF8(0, HEAD_LINE + 33, b);
+
+    snprintf(b, sizeof(b), "ICA %u  %d.%dC  %lu:%02lu:%02lu",
+             c.lastIca, c.lastTempC10 / 10, abs(c.lastTempC10 % 10),
+             (unsigned long)(c.elapsedS / 3600), (unsigned long)((c.elapsedS / 60) % 60),
+             (unsigned long)(c.elapsedS % 60));
+    u8g2.drawUTF8(0, HEAD_LINE + 42, b);
+
+    u8g2.drawHLine(0, FOOT_HL, DISP_W);
+    u8g2.drawUTF8(0, FOOT_Y, c.state == CHG_RUN ? "трим=ЗУПИНИТИ"
+                           : c.state == CHG_DONE ? "ГОТОВО"
+                           : chargeReasonText(c.reason));
+}
+
 inline void drawPageActions() {
     // Назви/описи/небезпека — з operations.h (той самий каталог, що в кольоровому
     // екрані, вебі й USB-клієнті). Локального списку дій більше немає.
@@ -982,13 +1028,21 @@ inline void drawPageWizard() {
 // з кольоровою реалізацією.
 inline void displayRender();
 inline void displayDischargeRefresh(bool /*full*/) { displayRender(); }
+inline void displayChargeRefresh(bool /*full*/) { displayRender(); }
 
 inline void displayRender() {
     u8g2.clearBuffer();
-    // Поки навантаження увімкнене — примусово моніторинг розряду, хоч би яку
+    // Поки навантаження/заряд увімкнені — примусово моніторинг, хоч би яку
     // сторінку було обрано: довга операція із запобіжниками має бути видима.
+    // Заряд і розряд не можуть іти одночасно (взаємно перевіряють одне одного
+    // при старті), тож порядок цих двох перевірок не має значення.
     if (dischargeScreenActive()) {
         drawPageDischarge();
+        u8g2.sendBuffer();
+        return;
+    }
+    if (chargeScreenActive()) {
+        drawPageCharge();
         u8g2.sendBuffer();
         return;
     }
@@ -1010,9 +1064,9 @@ inline void displayRender() {
 // заряду плавно «дихає» (±2 px). Оновлює ЛИШЕ область іконки батареї — дешево
 // навіть для повільного SSD1327, решту екрана й шину не чіпає.
 inline void displayAnimTick() {
-    // Головна сторінка + сторінка РОЗРЯДУ: там показник заряду такий самий,
-    // і статична шкала під час довгої операції виглядала б як «завис».
-    if (!(g_displayPage == 0 || dischargeScreenActive()) || g_battW == 0) return;
+    // Головна сторінка + сторінки РОЗРЯДУ/ЗАРЯДУ: там показник заряду такий
+    // самий, і статична шкала під час довгої операції виглядала б як «завис».
+    if (!(g_displayPage == 0 || dischargeScreenActive() || chargeScreenActive()) || g_battW == 0) return;
     const char *src; int pct = batteryPercent(&src);
     if (pct < 0) return;
     g_animPhase++;
@@ -1188,6 +1242,26 @@ inline void displayHandleButton() {
             dischargeStop(DISR_USER); displaySetStatus("РОЗРЯД СТОП"); displayRender();
         } else if (d1 == 1 || d2 == 1 || d3 == 1) {   // коротке = оновити показання
             displayDischargeRefresh(false);
+        }
+        return;
+    }
+
+    // ── РЕЖИМ ЗАРЯДУ — той самий принцип, що й розряд вище ─────────────────
+    if (chargeScreenActive()) {
+        int d1 = pollButtonRaw(btn1Raw(), b1, 800);
+        int d2 = pollButtonRaw(btn2Raw(), b2, 800);
+        int d3 = 0;
+#ifdef MENU_BTN3_PIN
+        d3 = pollButtonRaw(btn3Raw(), b3, 800);
+#endif
+        if (!chargeRunning()) {
+            if (d1 || d2 || d3) { chargeDismiss(); displayRender(); }
+            return;
+        }
+        if (d1 == 2 || d2 == 2 || d3 == 2) {          // довге = АВАРІЙНА ЗУПИНКА
+            chargeStop(CHGR_USER); displaySetStatus("ЗАРЯД СТОП"); displayRender();
+        } else if (d1 == 1 || d2 == 1 || d3 == 1) {   // коротке = оновити показання
+            displayChargeRefresh(false);
         }
         return;
     }

@@ -3,6 +3,7 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <SPIFFS.h>
+#include <esp_system.h>
 #include "settings.h"
 #include "leds.h"
 #include "battery_reader.h"
@@ -31,6 +32,26 @@ bool hasSN2438 = false;
 uint8_t chipSN2433[8] = {0};
 bool hasSN2433 = false;
 
+// Людський опис причини останнього скидання ESP32 (esp_reset_reason()) —
+// друкується найпершим повідомленням у setup(), щоб «перезавантажується під
+// час заряду/розряду» одразу було видно як BROWNOUT/WDT/PANIC, а не
+// доводилось здогадуватись за непрямими ознаками.
+const char *resetReasonText(esp_reset_reason_t r) {
+    switch (r) {
+        case ESP_RST_POWERON:   return "подача живлення";
+        case ESP_RST_EXT:       return "зовнішній сигнал RESET";
+        case ESP_RST_SW:        return "програмний esp_restart()";
+        case ESP_RST_PANIC:     return "ПАНІКА/виключення — крах прошивки";
+        case ESP_RST_INT_WDT:   return "апаратний WDT переривань (ISR завис)";
+        case ESP_RST_TASK_WDT:  return "TASK WDT — головний цикл (loop) завис";
+        case ESP_RST_WDT:       return "інший сторожовий таймер";
+        case ESP_RST_DEEPSLEEP: return "вихід з глибокого сну";
+        case ESP_RST_BROWNOUT:  return "BROWNOUT — просадка живлення нижче порогу";
+        case ESP_RST_SDIO:      return "SDIO";
+        default:                return "невідома причина";
+    }
+}
+
 void setup() {
     // ПРИМІТКА: setRxBufferSize() тут НЕ викликаємо. Великі команди запису по USB
     // (WRITE33 ~1 КБ) надсилаються КЛІЄНТОМ частинами по ~200 Б із мікропаузами
@@ -58,6 +79,13 @@ void setup() {
 
     Serial.println("\n\nMotorola Battery Reader Web Server (AP Mode)");
     Serial.println("==============================================");
+    // Причина ЦЬОГО старту — щоб відрізнити подачу живлення від несподіваного
+    // скидання (BROWNOUT — просадка живлення під час вмикання силового
+    // каскаду заряду/розряду, TASK_WDT — завис головний цикл, PANIC — крах
+    // прошивки). Особливо важливо для скарг «перезавантажується під час
+    // заряду/розряду» — сама ця причина одразу відсікає половину гіпотез.
+    Serial.printf("RESET REASON: %s (код %d)\n",
+                  resetReasonText(esp_reset_reason()), (int)esp_reset_reason());
 
     // Ініціалізація дисплея і кнопок меню + стартова заставка
     displayInit();

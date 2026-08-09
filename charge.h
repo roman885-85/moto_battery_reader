@@ -1,43 +1,61 @@
 #ifndef CHARGE_H
 #define CHARGE_H
 // ===========================================================================
-//  charge.h — КЕРОВАНИЙ ЗАРЯД пакета через DC/DC (P-канальний MOSFET,
-//  дросель, діод — понижуючий/buck перетворювач ~14 В -> напруга пакета).
+//  charge.h — КЕРОВАНИЙ ЗАРЯД пакета через готову плату DC/DC на TL494.
 //
-//  Схема й ОБОВ'ЯЗКОВІ апаратні запобіжники (полярність керування, підтяжка
-//  затвора) — у settings.h, блок «КЕРОВАНИЙ ЗАРЯД». Прочитайте його ПЕРШИМ.
+//  Схема й ОБОВ'ЯЗКОВІ пороги/калібрування — у settings.h, блок «КЕРОВАНИЙ
+//  ЗАРЯД». Прочитайте його ПЕРШИМ.
+//
+//  ── ДВА КЕРУЮЧИХ СИГНАЛИ (замінили попередній однопіновий ШІМ на затвор) ──
+//    • CHARGE_PIN       — цифровий enable силового каскаду. LOW = безпечно
+//      (виходу немає), і саме це виставляється НАЙПЕРШИМ рядком setup().
+//    • CHARGE_CTRL_PIN  — аналогова напруга (ШІМ+RC на платі), що керує
+//      РЕГУЛЬОВАНОЮ ВИХІДНОЮ НАПРУГОЮ перетворювача, дуже нелінійно (див.
+//      таблицю CHARGE_CAL_* у settings.h). Регулятор нижче працює в термінах
+//      цільової ВИХІДНОЇ НАПРУГИ (chargeCtrlMvForOutputMv() перекладає її в
+//      сиру напругу на GPIO вже в останню чергу) — так крок регулювання має
+//      приблизно однаковий ЕФЕКТ по всьому діапазону, а не лише на пласкій
+//      ділянці кривої.
+//
+//  ── ТРЕТІЙ СИГНАЛ: enable САМОГО ПАКЕТА (не тут, а в web_server.h) ─────────
+//  Пакет фізично не прийме струм, доки не піднято той самий сигнал
+//  (PULLUP_PIN), що й для читання/запису пам'яті — battery.holdEnable(true).
+//  chargeStart() у web_server.h піднімає його ОДРАЗУ при старті заряду й
+//  тримає ввесь час (не лише на час 1-Wire операцій, як зазвичай); зняття —
+//  через g_chgReleaseEnable/chargeConsumeReleaseEnable() при chargeStop().
 //
 //  ── ЧОМУ РЕГУЛЯТОР ІНШИЙ, НІЖ У РОЗРЯДУ (discharge.h) ─────────────────────
 //  Розряд керує ключем НА РЕЗИСТОРІ: там шпаруватість 100 % — це просто
 //  «резистор без обмежень» (відомий, безпечний максимум ~1.7 А), тож можна
 //  раз на цикл відкрити ключ повністю, зняти ПІК і розрахувати потрібну
-//  шпаруватість алгебрично (уставка / пік).
+//  шпаруватість алгебрично.
 //
-//  Тут ключ керує ПОНИЖУЮЧИМ ПЕРЕТВОРЮВАЧЕМ: шпаруватість задає НАПРУГУ на
-//  дроселі (Vout ≈ Vin * duty), а не струм напряму. Шпаруватість 100 % — це
-//  спроба посадити вхідні ~14 В прямо на пакет ~8 В через дросель, тобто
-//  кидок струму, обмежений хіба що ESR дроселя й опором проводки. Міряти
-//  «пік на 100 %» так, як робить розряд, тут НЕБЕЗПЕЧНО.
+//  Тут перетворювач видає РЕГУЛЬОВАНУ напругу напряму (не шпаруватість на
+//  дроселі) — і повна вихідна напруга (8.6 В — верх калібрувальної таблиці)
+//  проти пакета ~8 В теж може дати кидок струму. Міряти «пік на максимумі»
+//  так, як робить розряд, тут НЕБЕЗПЕЧНО.
 //
 //  Тому регулятор — класичне ПОВІЛЬНЕ струмове регулювання: щопитання
 //  читаємо РЕАЛЬНИЙ струм (той самий шунт DS2438, що й у розряду) на чинній
-//  шпаруватості й підправляємо її МАЛЕНЬКИМ кроком (CHARGE_DUTY_STEP_PCT) у
-//  бік уставки. Старт — ЗАВЖДИ з шпаруватості 0 % (справжній soft-start):
-//  жодних початкових оцінок «на око».
+//  цільовій напрузі й підправляємо її МАЛЕНЬКИМ кроком (CHARGE_OUT_STEP_MV) у
+//  бік уставки. Старт — ЗАВЖДИ з 0 В (справжній soft-start): жодних
+//  початкових оцінок «на око».
 //
 //  ── БЕЗПЕКА ────────────────────────────────────────────────────────────────
 //  Заряд — операція, яка може ФІЗИЧНО зашкодити банкам (перезаряд/перегрів)
 //  сильніше, ніж розряд. Тому:
-//    • ключ вимикається ПЕРШОЮ дією у будь-якому сценарії завершення;
+//    • enable знімається ПЕРШОЮ дією у будь-якому сценарії завершення, до
+//      будь-якої зміни керуючої напруги;
 //    • типовий стан при старті/скиданні пристрою — «закритий» (chargeInit());
 //    • аварійна зупинка за: напругою ВИЩЕ CHARGE_HARD_MAX_MV, температурою,
 //      стелею часу, кількома невдалими читаннями DS2438 поспіль;
 //    • заряд «наосліп» неможливий: не читаємо монітор — зупиняємось;
 //    • ОДИН активний заряд на пристрій, повторний старт відхиляється;
-//    • стеля шпаруватості (CHARGE_DUTY_MAX_PCT) — апаратний бар'єр понад
-//      будь-яку помилку регулятора.
-//  Апаратна вимога (резистор/каскад, що гарантує «закрито» без живлення
-//  ESP32) — так само обов'язкова, як і для LOAD_PIN; подробиці в settings.h.
+//    • калібрувальна таблиця сама є стелею (CHARGE_CAL_OUT_MAX) — вище не
+//      екстраполюємо, це апаратний бар'єр понад будь-яку помилку регулятора.
+//  Апаратна вимога (силовий каскад плати дає повний прохід ~14 В БЕЗ
+//  керування — див. settings.h) означає, що CHARGE_PIN=LOW має виставлятись
+//  РАНІШЕ будь-якого іншого коду в setup(), так само як і LOAD_PIN.
 // ===========================================================================
 
 #include "settings.h"
@@ -85,15 +103,15 @@ struct ChargeState {
     uint16_t polls;
     uint8_t  lastPct;         // останній відсоток заряду (за напругою), для профілю струму
     uint16_t setMa;           // уставка струму зараз (за профілем), мА
-    uint8_t  dutyPct;         // чинна шпаруватість ключа, %
+    uint16_t outMv;           // чинна ЦІЛЬОВА вихідна напруга перетворювача, мВ
     float    rsense;          // вимірювальний резистор ЦЬОГО пакета, Ом
 };
 
 // Порожній ініціалізатор — value-initialization зануляє все (float -> 0.0f),
 // незалежно від точної кількості й порядку полів; CHG_IDLE/CHGR_NONE = 0 і
 // так за визначенням enum. Раніше тут стояв ручний список значень — рахунок
-// збився на одне поле, і 0.0f зсунувся в dutyPct (uint8_t): компілятор ESP32
-// впав на звуженні float->uint8_t (хостовий тест цього не міг зловити, бо
+// збився на одне поле, і 0.0f зсунувся в останнє ціле поле: компілятор ESP32
+// впав на звуженні float->ціле (хостовий тест цього не міг зловити, бо
 // перевіряв лише чисту логіку профілю/регулятора, без самої структури).
 static ChargeState g_chg = {};
 
@@ -106,32 +124,62 @@ inline uint8_t chargeConsumeDirty() { uint8_t d = g_chgDirty; g_chgDirty = 0; re
 static bool g_chgPwmOk = false;
 inline bool chargePwmOk() { return g_chgPwmOk; }
 
-// Встановити шпаруватість, %. 0 — ключ ЗАКРИТИЙ (типовий/безпечний стан).
-// Уся робота з піном — ТІЛЬКИ через цю функцію: жодних digitalWrite повз неї.
-inline void chargeDuty(uint8_t pct) {
-#ifdef CHARGE_PIN
-    if (pct > CHARGE_DUTY_MAX_PCT) pct = CHARGE_DUTY_MAX_PCT;
-    if (g_chgPwmOk) {
-        uint32_t maxDuty = (1u << CHARGE_PWM_BITS) - 1u;
-        uint32_t raw = (uint32_t)pct * maxDuty / 100u;
-#ifdef CHARGE_PWM_INVERT
-        raw = maxDuty - raw;
-#endif
-        ledcWrite(CHARGE_PIN, raw);
-    } else {
-        // Без ШІМ (немає вільного каналу LEDC) — грубий відкат «є/нема струму».
-        // Регулювання зникає, тож це деградований, а не штатний шлях.
-#ifdef CHARGE_PWM_INVERT
-        digitalWrite(CHARGE_PIN, pct ? LOW : HIGH);
-#else
-        digitalWrite(CHARGE_PIN, pct ? HIGH : LOW);
-#endif
+// Кусочно-лінійна інтерполяція за калібрувальною таблицею (settings.h):
+// цільова ВИХІДНА напруга перетворювача, мВ -> напруга керування на
+// CHARGE_CTRL_PIN (після RC-фільтра), мВ. Поза таблицею — НЕ екстраполює,
+// затискає до крайньої точки (0 знизу, CHARGE_CAL_OUT_MAX зверху).
+inline uint16_t chargeCtrlMvForOutputMv(uint16_t outMv) {
+    static const uint16_t calCtrl[] = CHARGE_CAL_CTRL_MV;
+    static const uint16_t calOut[]  = CHARGE_CAL_OUT_MV;
+    const int n = CHARGE_CAL_POINTS;
+    if (outMv <= calOut[0])     return calCtrl[0];
+    if (outMv >= calOut[n - 1]) return calCtrl[n - 1];
+    for (int i = 1; i < n; i++) {
+        if (outMv <= calOut[i]) {
+            uint16_t o0 = calOut[i - 1],  o1 = calOut[i];
+            uint16_t c0 = calCtrl[i - 1], c1 = calCtrl[i];
+            return (uint16_t)(c0 + (uint32_t)(c1 - c0) * (outMv - o0) / (o1 - o0));
+        }
     }
+    return calCtrl[n - 1];   // недосяжно (діапазон покрито циклом вище)
+}
+
+// Enable силового каскаду. LOW = безпечно (виходу немає) — саме цей стан
+// виставляє chargeInit() НАЙПЕРШИМ, і саме він знімається ПЕРШОЮ дією при
+// будь-якій зупинці (chargeOff()), ДО зміни керуючої напруги.
+inline void chargeEnable(bool on) {
+#ifdef CHARGE_PIN
+    digitalWrite(CHARGE_PIN, on ? HIGH : LOW);
 #else
-    (void)pct;
+    (void)on;
 #endif
 }
-inline void chargeOff() { chargeDuty(0); }
+
+// Встановити ЦІЛЬОВУ вихідну напругу перетворювача, мВ (0 — позиція «немає
+// виходу», відповідає нижній точці калібрувальної таблиці). Уся робота з
+// CHARGE_CTRL_PIN — ТІЛЬКИ через цю функцію: жодних ledcWrite повз неї.
+inline void chargeSetOutputMv(uint16_t outMv) {
+#ifdef CHARGE_CTRL_PIN
+    if (outMv > CHARGE_CAL_OUT_MAX) outMv = CHARGE_CAL_OUT_MAX;
+    if (g_chgPwmOk) {
+        uint16_t ctrlMv  = chargeCtrlMvForOutputMv(outMv);
+        uint32_t maxDuty = (1u << CHARGE_PWM_BITS) - 1u;
+        uint32_t raw     = (uint32_t)ctrlMv * maxDuty / 3300u;
+        if (raw > maxDuty) raw = maxDuty;
+        ledcWrite(CHARGE_CTRL_PIN, raw);
+    }
+#else
+    (void)outMv;
+#endif
+}
+
+// Повна зупинка виходу: СПЕРШУ знімаємо enable (миттєва безпека — вихід
+// падає незалежно від того, яка керуюча напруга зараз стоїть), і лише ПОТІМ
+// повертаємо керування в позицію «0 В» про запас на наступний старт.
+inline void chargeOff() {
+    chargeEnable(false);
+    chargeSetOutputMv(0);
+}
 
 // Уставка струму за відсотком заряду (див. таблицю в settings.h).
 inline uint16_t chargeSetpointMaForPct(int pct) {
@@ -149,41 +197,45 @@ inline uint16_t chargeSetpointMaForPct(int pct) {
     return CHARGE_MA_TAPER;                          // 95..100 % — ступінчастий спад, без лінійки
 }
 
-// Наступний крок шпаруватості: МАЛЕНЬКИЙ крок у бік уставки за РЕАЛЬНИМ
-// виміряним струмом — не розрахунок наосліп (див. коментар на початку файлу).
-inline uint8_t chargeNextDuty(uint8_t duty, int16_t measuredMa, uint16_t setMa) {
+// Наступний крок ЦІЛЬОВОЇ вихідної напруги: МАЛЕНЬКИЙ крок у бік уставки за
+// РЕАЛЬНИМ виміряним струмом — не розрахунок наосліп (див. коментар на
+// початку файлу). Крок саме у вихідній напрузі (не в сирій напрузі на
+// CHARGE_CTRL_PIN) — щоб ефект кроку був приблизно однаковим по всьому
+// діапазону, а не лише на пласкій ділянці калібрувальної кривої.
+inline uint16_t chargeNextOutMv(uint16_t outMv, int16_t measuredMa, uint16_t setMa) {
     int16_t meas = measuredMa < 0 ? -measuredMa : measuredMa;
     int32_t err  = (int32_t)setMa - meas;
     if (err > CHARGE_DEADBAND_MA) {
-        if (duty < CHARGE_DUTY_MAX_PCT) duty = (uint8_t)(duty + CHARGE_DUTY_STEP_PCT);
+        if (outMv + CHARGE_OUT_STEP_MV <= CHARGE_CAL_OUT_MAX) outMv = (uint16_t)(outMv + CHARGE_OUT_STEP_MV);
+        else outMv = CHARGE_CAL_OUT_MAX;
     } else if (err < -CHARGE_DEADBAND_MA) {
-        if (duty > 0) duty = (uint8_t)(duty - (duty < CHARGE_DUTY_STEP_PCT ? duty : CHARGE_DUTY_STEP_PCT));
+        outMv = (outMv > CHARGE_OUT_STEP_MV) ? (uint16_t)(outMv - CHARGE_OUT_STEP_MV) : 0;
     }
-    if (duty > CHARGE_DUTY_MAX_PCT) duty = CHARGE_DUTY_MAX_PCT;
-    return duty;
+    if (outMv > CHARGE_CAL_OUT_MAX) outMv = CHARGE_CAL_OUT_MAX;
+    return outMv;
 }
 
-// Викликати в setup() ДО всього іншого: пін у вихід і одразу в стан «закрито»,
-// щоб перетворювач гарантовано не працював одразу після подачі живлення чи
-// скидання.
+// Викликати в setup() ДО всього іншого: обидва піни у вихід і одразу в стан
+// «закрито» (enable LOW), щоб перетворювач гарантовано не працював одразу
+// після подачі живлення чи скидання — плата й так дає повний прохід ~14 В
+// БЕЗ керування (див. settings.h), тож саме enable=LOW і є запобіжником.
 inline void chargeInit() {
 #ifdef CHARGE_PIN
     pinMode(CHARGE_PIN, OUTPUT);
-#ifdef CHARGE_PWM_INVERT
-    digitalWrite(CHARGE_PIN, HIGH);      // «закрито» для інвертованої полярності
-#else
-    digitalWrite(CHARGE_PIN, LOW);       // «закрито» типово
+    digitalWrite(CHARGE_PIN, LOW);       // безпечний стан — миттєво, до всього іншого
 #endif
-    g_chgPwmOk = ledcAttachChannel(CHARGE_PIN, CHARGE_PWM_FREQ,
+#ifdef CHARGE_CTRL_PIN
+    pinMode(CHARGE_CTRL_PIN, OUTPUT);
+    g_chgPwmOk = ledcAttachChannel(CHARGE_CTRL_PIN, CHARGE_PWM_FREQ,
                                     CHARGE_PWM_BITS, CHARGE_LEDC_CH);
-    chargeOff();
+    chargeSetOutputMv(0);
 #endif
     g_chg.state = CHG_IDLE;
     g_chg.reason = CHGR_NONE;
 }
 
 inline bool chargeAvailable() {
-#ifdef CHARGE_PIN
+#if defined(CHARGE_PIN) && defined(CHARGE_CTRL_PIN)
     return true;
 #else
     return false;
@@ -233,7 +285,7 @@ inline void chargeWatchdogFeed() {
 inline void chargeStop(uint8_t reason) {
     chargeOff();
     chargeWatchdog(false);
-    g_chg.dutyPct = 0;
+    g_chg.outMv = 0;
     g_chgReleaseEnable = true;
     chargeMarkDirty(2);
     if (g_chg.state == CHG_RUN) {

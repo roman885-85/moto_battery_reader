@@ -7,9 +7,13 @@
 #define CHARGE_MA_50      1000
 #define CHARGE_MA_80      1500
 #define CHARGE_MA_TAPER   100
-#define CHARGE_DUTY_STEP_PCT 1
 #define CHARGE_DEADBAND_MA   30
-#define CHARGE_DUTY_MAX_PCT  75
+#define CHARGE_OUT_STEP_MV   20
+
+#define CHARGE_CAL_CTRL_MV  {1760, 1770, 1780, 1800, 1860, 1880, 1930}
+#define CHARGE_CAL_OUT_MV   {   0, 2500, 4100, 5200, 7200, 7600, 8600}
+#define CHARGE_CAL_POINTS   7
+#define CHARGE_CAL_OUT_MAX  8600
 
 // --- скопійовано дослівно з charge.h (щоб перевірити ізольовано) ----------
 uint16_t chargeSetpointMaForPct(int pct) {
@@ -26,16 +30,32 @@ uint16_t chargeSetpointMaForPct(int pct) {
     if (pct < 95)   return CHARGE_MA_80;
     return CHARGE_MA_TAPER;
 }
-uint8_t chargeNextDuty(uint8_t duty, int16_t measuredMa, uint16_t setMa) {
+uint16_t chargeCtrlMvForOutputMv(uint16_t outMv) {
+    static const uint16_t calCtrl[] = CHARGE_CAL_CTRL_MV;
+    static const uint16_t calOut[]  = CHARGE_CAL_OUT_MV;
+    const int n = CHARGE_CAL_POINTS;
+    if (outMv <= calOut[0])     return calCtrl[0];
+    if (outMv >= calOut[n - 1]) return calCtrl[n - 1];
+    for (int i = 1; i < n; i++) {
+        if (outMv <= calOut[i]) {
+            uint16_t o0 = calOut[i - 1],  o1 = calOut[i];
+            uint16_t c0 = calCtrl[i - 1], c1 = calCtrl[i];
+            return (uint16_t)(c0 + (uint32_t)(c1 - c0) * (outMv - o0) / (o1 - o0));
+        }
+    }
+    return calCtrl[n - 1];
+}
+uint16_t chargeNextOutMv(uint16_t outMv, int16_t measuredMa, uint16_t setMa) {
     int16_t meas = measuredMa < 0 ? -measuredMa : measuredMa;
     int32_t err  = (int32_t)setMa - meas;
     if (err > CHARGE_DEADBAND_MA) {
-        if (duty < CHARGE_DUTY_MAX_PCT) duty = (uint8_t)(duty + CHARGE_DUTY_STEP_PCT);
+        if (outMv + CHARGE_OUT_STEP_MV <= CHARGE_CAL_OUT_MAX) outMv = (uint16_t)(outMv + CHARGE_OUT_STEP_MV);
+        else outMv = CHARGE_CAL_OUT_MAX;
     } else if (err < -CHARGE_DEADBAND_MA) {
-        if (duty > 0) duty = (uint8_t)(duty - (duty < CHARGE_DUTY_STEP_PCT ? duty : CHARGE_DUTY_STEP_PCT));
+        outMv = (outMv > CHARGE_OUT_STEP_MV) ? (uint16_t)(outMv - CHARGE_OUT_STEP_MV) : 0;
     }
-    if (duty > CHARGE_DUTY_MAX_PCT) duty = CHARGE_DUTY_MAX_PCT;
-    return duty;
+    if (outMv > CHARGE_CAL_OUT_MAX) outMv = CHARGE_CAL_OUT_MAX;
+    return outMv;
 }
 // ---------------------------------------------------------------------------
 
@@ -43,7 +63,7 @@ static int fails = 0;
 static void bad(const char *m) { printf("   ЗБІЙ  %s\n", m); fails++; }
 
 int main() {
-    printf("1) контрольні точки профілю\n");
+    printf("1) контрольні точки профілю струму\n");
     struct { int pct; int want; } pts[] = {
         {0,200},{5,350},{10,500},{30,750},{50,1000},{65,1250},{80,1500},
         {85,1500},{94,1500},{95,100},{97,100},{100,100}
@@ -54,7 +74,7 @@ int main() {
         if (got != p.want) bad("не збігається з очікуваним профілем");
     }
 
-    printf("\n2) монотонність (крім ступінчастого падіння на 95%%)\n");
+    printf("\n2) монотонність профілю струму (крім ступінчастого падіння на 95%%)\n");
     int prev = chargeSetpointMaForPct(0);
     for (int pct = 1; pct < 95; pct++) {
         int cur = chargeSetpointMaForPct(pct);
@@ -67,48 +87,88 @@ int main() {
         if (chargeSetpointMaForPct(pct) != CHARGE_MA_TAPER)
             bad("95..100% мають триматися рівно на CHARGE_MA_TAPER");
 
-    printf("\n3) вихід ніколи не виходить за межі [CHARGE_MA_START..CHARGE_MA_80] за модулем\n");
+    printf("\n3) вихід профілю струму ніколи не виходить за межі [CHARGE_MA_TAPER..CHARGE_MA_80]\n");
     for (int pct = 0; pct <= 100; pct++) {
         int v = chargeSetpointMaForPct(pct);
         if (v < CHARGE_MA_TAPER || v > CHARGE_MA_80) bad("вихід поза розумними межами");
     }
 
-    printf("\n4) регулятор шпаруватості: soft-start з нуля, збіжність до уставки\n");
+    printf("\n4) інтерполяція калібрувальної таблиці — точний збіг у ВСІХ 7 точках\n");
     {
-        uint8_t duty = 0;
-        uint16_t setMa = 1000;
-        int16_t measured = 0;   // емулюємо: струм лінійно росте з духом ~ duty (спрощено)
-        int steps = 0;
-        for (; steps < 500; steps++) {
-            // проста модель "плант": струм = duty * 20 (мА на % шпаруватості)
-            measured = (int16_t)(duty * 20);
-            uint8_t next = chargeNextDuty(duty, measured, setMa);
-            if (next == duty) break;   // збіглись (у межах мертвої зони)
-            duty = next;
+        static const uint16_t calCtrl[] = CHARGE_CAL_CTRL_MV;
+        static const uint16_t calOut[]  = CHARGE_CAL_OUT_MV;
+        for (int i = 0; i < CHARGE_CAL_POINTS; i++) {
+            uint16_t got = chargeCtrlMvForOutputMv(calOut[i]);
+            printf("   вихід %u мВ -> керування %u мВ (очікую %u)\n", calOut[i], got, calCtrl[i]);
+            if (got != calCtrl[i]) bad("калібрувальна точка не відтворюється точно");
         }
-        printf("   збіжність за %d кроків, duty=%u%%, струм~%d мА (ціль %u)\n", steps, duty, measured, setMa);
-        if (steps >= 500) bad("регулятор не збігся за розумний час");
-        if (duty == 0) bad("шпаруватість застрягла на нулі — заряд не піде взагалі");
+    }
+
+    printf("\n5) інтерполяція монотонна й НЕ екстраполює за межі таблиці\n");
+    {
+        uint16_t prevC = chargeCtrlMvForOutputMv(0);
+        for (uint32_t o = 0; o <= CHARGE_CAL_OUT_MAX; o += 37) {   // непарний крок — щоб зачепити міжточкові
+            uint16_t c = chargeCtrlMvForOutputMv((uint16_t)o);
+            if (c < prevC) bad("керуюча напруга впала там, де вихід лише зростав — крива має бути монотонною");
+            prevC = c;
+        }
+        uint16_t below = chargeCtrlMvForOutputMv(0);
+        uint16_t above = chargeCtrlMvForOutputMv(60000);   // явно поза таблицею (переповнення теж перевіряє затиск)
+        printf("   нижче таблиці (0 мВ) -> %u мВ, вище (>стелі) -> %u мВ\n", below, above);
+        if (below != 1760) bad("нижня межа має дорівнювати першій калібрувальній точці (1760 мВ)");
+        if (above != 1930) bad("верхня межа має дорівнювати останній калібрувальній точці (1930 мВ), без екстраполяції");
+    }
+
+    printf("\n6) регулятор вихідної напруги: soft-start з нуля, збіжність до уставки\n");
+    {
+        uint16_t outMv = 0;
+        uint16_t setMa = 1000;
+        int16_t measured = 0;   // проста модель "плант": струм ~ outMv (спрощено, не калібрувальна крива)
+        int steps = 0;
+        for (; steps < 2000; steps++) {
+            measured = (int16_t)(outMv / 4);   // умовний коефіцієнт плант-моделі
+            uint16_t next = chargeNextOutMv(outMv, measured, setMa);
+            if (next == outMv) break;   // збіглись (у межах мертвої зони)
+            outMv = next;
+        }
+        printf("   збіжність за %d кроків, outMv=%u мВ, струм~%d мА (ціль %u)\n", steps, outMv, measured, setMa);
+        if (steps >= 2000) bad("регулятор не збігся за розумний час");
+        if (outMv == 0) bad("вихідна напруга застрягла на нулі — заряд не піде взагалі");
         int16_t err = (int16_t)setMa - measured;
         if (err < 0) err = -err;
-        if (err > CHARGE_DEADBAND_MA + 20) bad("збіжність далеко за межами мертвої зони");
+        if (err > CHARGE_DEADBAND_MA + CHARGE_OUT_STEP_MV / 4 + 5) bad("збіжність далеко за межами мертвої зони");
     }
 
-    printf("\n5) регулятор ніколи не перевищує CHARGE_DUTY_MAX_PCT, навіть якщо струму завжди мало\n");
+    printf("\n7) регулятор ніколи не перевищує CHARGE_CAL_OUT_MAX, навіть якщо струму завжди мало\n");
     {
-        uint8_t duty = 0;
-        for (int i = 0; i < 200; i++) duty = chargeNextDuty(duty, 0, 5000);  // недосяжна уставка
-        printf("   duty після 200 кроків недосяжної уставки: %u%% (стеля %d)\n", duty, CHARGE_DUTY_MAX_PCT);
-        if (duty > CHARGE_DUTY_MAX_PCT) bad("шпаруватість перевищила апаратну стелю!");
-        if (duty != CHARGE_DUTY_MAX_PCT) bad("мала впертись рівно у стелю при постійно недосяжній уставці");
+        uint16_t outMv = 0;
+        for (int i = 0; i < 1000; i++) outMv = chargeNextOutMv(outMv, 0, 5000);  // недосяжна уставка
+        printf("   outMv після 1000 кроків недосяжної уставки: %u мВ (стеля %d)\n", outMv, CHARGE_CAL_OUT_MAX);
+        if (outMv > CHARGE_CAL_OUT_MAX) bad("вихідна напруга перевищила апаратну стелю!");
+        if (outMv != CHARGE_CAL_OUT_MAX) bad("мала впертись рівно у стелю при постійно недосяжній уставці");
     }
 
-    printf("\n6) регулятор опускає шпаруватість до нуля, якщо струм завжди забагато\n");
+    printf("\n8) регулятор опускає вихідну напругу до нуля, якщо струм завжди забагато\n");
     {
-        uint8_t duty = 50;
-        for (int i = 0; i < 200; i++) duty = chargeNextDuty(duty, 9000, 100);  // завжди сильно забагато
-        printf("   duty після 200 кроків надлишкового струму: %u%%\n", duty);
-        if (duty != 0) bad("шпаруватість мала впасти рівно до нуля при постійному надструмі");
+        uint16_t outMv = 5000;
+        for (int i = 0; i < 1000; i++) outMv = chargeNextOutMv(outMv, 9000, 100);  // завжди сильно забагато
+        printf("   outMv після 1000 кроків надлишкового струму: %u мВ\n", outMv);
+        if (outMv != 0) bad("вихідна напруга мала впасти рівно до нуля при постійному надструмі");
+    }
+
+    printf("\n9) найкрутіша ділянка таблиці (1760->1780 мВ, 0->4100 мВ виходу) — крок керування\n"
+           "   не має бути грубішим за роздільність ШІМ (перевіряємо лише, що інтерполяція\n"
+           "   в цій зоні дає РІЗНІ значення на дрібних кроках виходу, а не «сходинку в один стрибок»)\n");
+    {
+        int distinct = 0;
+        uint16_t last = 0xFFFF;
+        for (uint16_t o = 0; o <= 4100; o += 100) {
+            uint16_t c = chargeCtrlMvForOutputMv(o);
+            if (c != last) distinct++;
+            last = c;
+        }
+        printf("   %d різних значень керування на 42 кроках виходу по 100 мВ у крутій зоні\n", distinct);
+        if (distinct < 10) bad("замало розрізнення в крутій зоні — регулювання там буде занадто грубим");
     }
 
     printf("\n%s (помилок: %d)\n", fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

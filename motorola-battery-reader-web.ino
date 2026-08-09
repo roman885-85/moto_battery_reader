@@ -48,12 +48,11 @@ void setup() {
     pinMode(LOAD_PIN, OUTPUT);   digitalWrite(LOAD_PIN, LOW);
 #endif
 #ifdef CHARGE_PIN
+    // CHARGE_PIN — enable силового каскаду готової TL494-плати: LOW=безпечно
+    // (підтверджено власником — БЕЗ керування плата дає повний прохід ~14 В,
+    // тож саме LOW і мусить стояти тут, найпершим, а не після дисплея/Wi-Fi).
     pinMode(CHARGE_PIN, OUTPUT);
-  #ifdef CHARGE_PWM_INVERT
-    digitalWrite(CHARGE_PIN, HIGH);   // «закрито» для інвертованої полярності
-  #else
-    digitalWrite(CHARGE_PIN, LOW);    // «закрито» типово
-  #endif
+    digitalWrite(CHARGE_PIN, LOW);
 #endif
     pinMode(PULLUP_PIN, OUTPUT); digitalWrite(PULLUP_PIN, LOW);
 

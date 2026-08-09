@@ -15,7 +15,7 @@
 #include "impres_audit.h"     // аудит змісту: шифрування й узгодженість даних
 #include "impres_clone.h"     // крайній засіб: відновлення за зразком копії
 #include "discharge.h"         // керований розряд навантаженням (MOSFET)
-#include "charge.h"            // керований заряд через DC/DC (P-канальний MOSFET)
+#include "charge.h"            // керований заряд через DC/DC (готова плата на TL494)
 #include "leds.h"
 #include "display.h"
 #include "templates.h"
@@ -1266,7 +1266,7 @@ static String dischargeJson() {
 
 // Старт заряду. Повертає nullptr при успіху, інакше — текст причини відмови.
 const char *chargeStart() {
-    if (!chargeAvailable()) return "Заряд не налаштовано: задайте CHARGE_PIN у settings.h";
+    if (!chargeAvailable()) return "Заряд не налаштовано: задайте CHARGE_PIN і CHARGE_CTRL_PIN у settings.h";
     if (chargeRunning())    return "Заряд уже виконується";
     if (dischargeRunning()) return "Спочатку зупиніть розряд";
 
@@ -1291,15 +1291,19 @@ const char *chargeStart() {
     g_chg.lastPct  = (uint8_t)impresPercentFromMv(mv);
     g_chg.rsense   = impresBmsRsense(batteryDump2438);
 
-    battery.holdEnable(true);        // enable — так само, як і розряд, ще ДО подачі струму
-    chargeWatchdog(true);
+    // ⚑ SOFT-START: цільова вихідна напруга ЗАВЖДИ з нуля, жодних початкових
+    // оцінок «на око» (детальніше — коментар на початку charge.h). Регулятор
+    // сам виведе її на потрібний рівень протягом кількох секунд. Порядок
+    // важливий: спершу керування в позицію «0 В», ПОТІМ enable силового
+    // каскаду — щоб у момент увімкнення каскад уже «бачив» безпечну уставку,
+    // а не випадкове значення з попереднього стану ШІМ.
+    g_chg.setMa = chargeSetpointMaForPct(g_chg.lastPct);
+    g_chg.outMv = 0;
+    chargeSetOutputMv(0);
+    chargeEnable(true);
 
-    // ⚑ SOFT-START: шпаруватість ЗАВЖДИ з нуля, жодних початкових оцінок «на
-    // око» (детальніше — коментар на початку charge.h). Регулятор сам виведе
-    // її на потрібний рівень протягом кількох секунд.
-    g_chg.setMa   = chargeSetpointMaForPct(g_chg.lastPct);
-    g_chg.dutyPct = 0;
-    chargeDuty(0);
+    battery.holdEnable(true);        // enable пакета — так само, як і розряд, ще ДО подачі струму
+    chargeWatchdog(true);
 
     ledSet(g_chg.lastPct >= 95 ? LED_CHARGE_TAPER : LED_CHARGE);
     chargeMarkDirty(2);
@@ -1355,8 +1359,8 @@ inline void chargeTask() {
     int pct = impresPercentFromMv(mv);
     g_chg.lastPct = (uint8_t)pct;
     g_chg.setMa   = chargeSetpointMaForPct(pct);
-    g_chg.dutyPct = chargeNextDuty(g_chg.dutyPct, ma, g_chg.setMa);
-    chargeDuty(g_chg.dutyPct);
+    g_chg.outMv   = chargeNextOutMv(g_chg.outMv, ma, g_chg.setMa);
+    chargeSetOutputMv(g_chg.outMv);
 
     g_chg.lastMv = mv;
     g_chg.lastMa = ma;               // додатний = заряджаємо (те саме DS2438[5..6], що й розряд)
@@ -1364,9 +1368,9 @@ inline void chargeTask() {
     g_chg.lastCca = impresCca(batteryDump2438);
     g_chg.lastIca = batteryDump2438[12];
 
-    Serial.printf("charge: %u mV (%d%%), %d mA (set %u, duty %u%%), %.1f W, %.1f C, "
+    Serial.printf("charge: %u mV (%d%%), %d mA (set %u, out %u mV), %.1f W, %.1f C, "
                   "%lu mAh (CCA %lu), ICA %u, %lus\n",
-                  mv, pct, g_chg.lastMa, g_chg.setMa, g_chg.dutyPct,
+                  mv, pct, g_chg.lastMa, g_chg.setMa, g_chg.outMv,
                   chargeWattsX10(mv, g_chg.lastMa) / 10.0f, t / 10.0f,
                   (unsigned long)chargeMah(), (unsigned long)chargeCcaMah(),
                   g_chg.lastIca, (unsigned long)g_chg.elapsedS);
@@ -1408,8 +1412,8 @@ static String chargeJson() {
     j += ",\"elapsedS\":" + String((unsigned long)g_chg.elapsedS);
     j += ",\"polls\":"    + String(g_chg.polls);
     j += ",\"setMa\":"    + String(g_chg.setMa);
-    j += ",\"duty\":"     + String(g_chg.dutyPct);
-    j += ",\"dutyMax\":"  + String(CHARGE_DUTY_MAX_PCT);
+    j += ",\"outMv\":"    + String(g_chg.outMv);
+    j += ",\"outMaxMv\":" + String(CHARGE_CAL_OUT_MAX);
     j += ",\"pwm\":"      + String(chargePwmOk() ? "true" : "false");
     j += ",\"hardMaxMv\":"+ String(CHARGE_HARD_MAX_MV);
     j += "}";

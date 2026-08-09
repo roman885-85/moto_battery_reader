@@ -227,6 +227,11 @@ void loop() {
                                             snprintf(m, sizeof(m), "ЦІЛЬ %.2f В",
                                                      dischargeCycleTarget() / 1000.0);
                                             displayShow(m); ledSet(LED_IDLE); }
+        // Заряд через DC/DC — ціль фіксована (CHARGE_TARGET_MV), на відміну
+        // від розряду перемикача цілі не потребує.
+        else if (act == OP_CHARGE_DCDC)   { const char *e = chargeStart();
+                                            if (e) { Serial.println(e); displayShow("ЗАРЯД: ЗБІЙ");
+                                                     ledSet(LED_ERROR); } }
         // «Модель <X>» — модельна частина еталона, БЕЗ навченого хвоста донора.
         else if (tm >= 0)                 performRestoreTemplate(BATTERY_TEMPLATES[tm].name);
         // «Новий <X>» — порожній чіп -> робочий АКБ; заряд 50 % ємності моделі.

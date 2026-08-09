@@ -1610,7 +1610,7 @@ function chgShow(d){
 
   const w=$('chgWarn');
   if(!d.pwm&&(run||d.state==='done')){w.style.display='block';
-    w.textContent='Керування недоступне: каналу LEDC не знайшлося — вимкніть заряд і перевірте CHARGE_LEDC_CH у settings.h.';}
+    w.textContent='Керування недоступне: перевірте CHARGE_CTRL_PIN (має бути ЦАП, GPIO 25 або 26) у settings.h.';}
   else w.style.display='none';
 
   chgLast=d; chgLastAt=Date.now();

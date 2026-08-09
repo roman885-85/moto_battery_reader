@@ -1270,6 +1270,15 @@ const char *chargeStart(uint8_t targetPct) {
     if (!chargeAvailable()) return "Заряд не налаштовано: задайте CHARGE_PIN і CHARGE_CTRL_PIN у settings.h";
     if (chargeRunning())    return "Заряд уже виконується";
     if (dischargeRunning()) return "Спочатку зупиніть розряд";
+    // На відміну від розряду (де відмова ШІМ безпечно відкочується на
+    // digitalWrite — ключ повністю відкритий, струм лише ЗРОСТАЄ понад
+    // задане), тут відкочуватись нема куди: без ШІМ керуюча напруга на
+    // CHARGE_CTRL_PIN лишається в НЕКАЛІБРОВАНІЙ ділянці (нижче нижньої
+    // точки таблиці, 1.76 В), а поведінка готової TL494-плати там
+    // невідома. enable, який реально відкриває каскад, працює НЕЗАЛЕЖНО
+    // від ШІМ — тому «мовчазний» провал ledcAttachChannel() інакше
+    // призводив би до заряду з непідконтрольною вихідною напругою.
+    if (!chargePwmOk())     return "Керування недоступне: каналу LEDC не знайшлося — заряд заборонено, перевірте CHARGE_LEDC_CH у settings.h";
 
     if (!targetPct) targetPct = 100;
     if (targetPct < CHARGE_TARGET_PCT_MIN) targetPct = CHARGE_TARGET_PCT_MIN;

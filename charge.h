@@ -275,6 +275,13 @@ inline void chargeInit() {
     pinMode(CHARGE_CTRL_PIN, OUTPUT);
     g_chgPwmOk = ledcAttachChannel(CHARGE_CTRL_PIN, CHARGE_PWM_FREQ,
                                     CHARGE_PWM_BITS, CHARGE_LEDC_CH);
+    Serial.printf("CHARGE: pin=%d LEDC ch=%d freq=%d bits=%d attach=%s%s\n",
+                  (int)CHARGE_CTRL_PIN, (int)CHARGE_LEDC_CH, (int)CHARGE_PWM_FREQ,
+                  (int)CHARGE_PWM_BITS, g_chgPwmOk ? "OK" : "FAIL",
+                  g_chgPwmOk ? "" : " — ймовірно, вичерпано апаратні таймери LEDC "
+                  "(їх ділять підсвітка/світлодіоди/зумер/розряд); спробуйте інший "
+                  "CHARGE_LEDC_CH або звільніть таймер, знизивши кількість інших "
+                  "джерел ШІМ");
     chargeSetOutputMv(0);
 #endif
     g_chg.state = CHG_IDLE;

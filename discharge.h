@@ -192,6 +192,9 @@ inline void dischargeInit() {
     digitalWrite(LOAD_PIN, LOW);
     g_disPwmOk = ledcAttachChannel(LOAD_PIN, DISCHARGE_PWM_FREQ,
                                    DISCHARGE_PWM_BITS, LOAD_LEDC_CH);
+    Serial.printf("DISCHARGE: pin=%d LEDC ch=%d freq=%d bits=%d attach=%s\n",
+                  (int)LOAD_PIN, (int)LOAD_LEDC_CH, (int)DISCHARGE_PWM_FREQ,
+                  (int)DISCHARGE_PWM_BITS, g_disPwmOk ? "OK" : "FAIL");
     loadOff();                                   // 0 % = LOW і для LEDC теж
 #endif
     g_dis.state = DIS_IDLE;

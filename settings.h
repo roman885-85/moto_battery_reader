@@ -134,32 +134,75 @@
 // показ останнього дампа після перезавантаження — розкоментуйте:
 // #define LOAD_SAVED_DUMPS_ON_BOOT
 
-// --- Кнопки меню (між GPIO і GND, активний рівень LOW, внутр. підтяжка) ---
-#define MENU_BTN_PIN  25   // "Вперед": наступна сторінка
-#define MENU_BTN2_PIN 26   // "Назад": попередня сторінка
-// Третя кнопка «OK / Дія» — НЕОБОВ'ЯЗКОВА (закоментовано = працюють 2 кнопки, як
-// раніше). Якщо задано GPIO — з'являється зручне пряме керування:
-//   • коротко на «Діях»    -> ВИКОНАТИ обрану операцію (без утримання);
-//   • коротко на «Майстрі» -> наступний крок; на будь-якій іншій сторінці ->
-//     ПЕРЕХІД на сторінку «Майстер» (швидкий доступ до відновлення);
-//   • довго (0.8 с)        -> ПОВЕРНУТИСЯ на головну сторінку («додому»).
-// ⚠️ Оберіть ВІЛЬНИЙ GPIO! Уже зайняті: 9 12 13 14 21 22 25 26 27 (LED/1-Wire/
-// I2C/кнопки), а для SPI-дисплея ще 5 16 17 18 23 (+BLK). Вільні з підтяжкою:
-// напр. 32 або 33. Нижче стоїть 33.
-#define MENU_BTN3_PIN 33
+// --- Кнопки меню ------------------------------------------------------------
+// ДВА варіанти. За замовчуванням — аналогова драбинка на ОДНОМУ ADC-піні
+// (звільняє GPIO25/26, наприклад під DAC для заряду). Хочете три окремі GPIO,
+// як було раніше, — закоментуйте блок MENU_BTN_ADC_* нижче й розкоментуйте
+// блок «три окремі GPIO».
+//
+// ── Аналогова драбинка (за замовчуванням) ───────────────────────────────
+//  Підтяжка MENU_BTN_ADC_PULLUP_OHM від MENU_BTN_ADC_PIN до +3.3В; кнопки
+//  тягнуть на землю: «Ввід/OK» напряму (0 Ом), «Вліво» через
+//  MENU_BTN_ADC_LEFT_OHM, «Вправо» через MENU_BTN_ADC_RIGHT_OHM. Пороги
+//  нижче рахуються з цих трьох номіналів автоматично — зміните резистори
+//  на платі, поправте лише ці три #define.
+//
+//  ⚠️ MENU_BTN_ADC_PIN МАЄ бути входом ADC1 (GPIO32..39) — ADC2 (0,2,4,
+//  12-15,25-27) ненадійний, поки активний Wi-Fi (а точка доступу в цьому
+//  проєкті активна завжди). GPIO33 = ADC1_CH5, підходить.
+//
+//  pinMode — INPUT (БЕЗ внутрішньої підтяжки: вона зіб'є розрахунок
+//  драбинки, підтяжка тут зовнішня, резистором на платі).
+#define MENU_BTN_ADC_PIN        33
+#define MENU_BTN_ADC_PULLUP_OHM 10000
+#define MENU_BTN_ADC_LEFT_OHM   5000
+#define MENU_BTN_ADC_RIGHT_OHM  10000
 
-// Захист від помилки: якщо 3-тю кнопку призначено на вже зайнятий пін —
-// компіляція впаде з чіткою підказкою (а не з дивною поведінкою на пристрої).
-#ifdef MENU_BTN3_PIN
-  #if (MENU_BTN3_PIN == MENU_BTN_PIN)    || (MENU_BTN3_PIN == MENU_BTN2_PIN)  || \
-      (MENU_BTN3_PIN == LED_RED_PIN)     || (MENU_BTN3_PIN == LED_GREEN_PIN)  || \
-      (MENU_BTN3_PIN == DS_PIN)          || (MENU_BTN3_PIN == PULLUP_PIN)     || \
-      (MENU_BTN3_PIN == DISPLAY_SDA_PIN) || (MENU_BTN3_PIN == DISPLAY_SCL_PIN) || \
-      (MENU_BTN3_PIN == DISPLAY_CS_PIN)  || (MENU_BTN3_PIN == DISPLAY_DC_PIN)  || \
-      (MENU_BTN3_PIN == DISPLAY_RST_PIN)
-    #error "MENU_BTN3_PIN конфліктує з уже зайнятим піном! Оберіть вільний GPIO (напр. 32 або 33)."
+// Розрахункові рівні (мВ, від 3300 мВ живлення АЦП) і пороги розпізнавання
+// (рівно посередині між сусідніми рівнями — великий запас на нелінійність
+// АЦП ESP32, до найближчого сусіда завжди лишається щонайменше сотні мВ).
+#define MENU_BTN_ADC_MV_NONE  3300
+#define MENU_BTN_ADC_MV_LEFT  (3300 * MENU_BTN_ADC_LEFT_OHM  / (MENU_BTN_ADC_LEFT_OHM  + MENU_BTN_ADC_PULLUP_OHM))
+#define MENU_BTN_ADC_MV_RIGHT (3300 * MENU_BTN_ADC_RIGHT_OHM / (MENU_BTN_ADC_RIGHT_OHM + MENU_BTN_ADC_PULLUP_OHM))
+#define MENU_BTN_ADC_TH_ENTER (MENU_BTN_ADC_MV_LEFT / 2)                          // нижче -> «Ввід» (0 Ом)
+#define MENU_BTN_ADC_TH_LEFT  ((MENU_BTN_ADC_MV_LEFT + MENU_BTN_ADC_MV_RIGHT) / 2) // нижче -> «Вліво»
+#define MENU_BTN_ADC_TH_RIGHT ((MENU_BTN_ADC_MV_RIGHT + MENU_BTN_ADC_MV_NONE) / 2) // нижче -> «Вправо», вище -> не натиснуто
+
+// «3-кнопковий режим» — прапорець для решти коду (той самий, що вмикав
+// окрему третю кнопку раніше). GPIO тепер спільний із MENU_BTN_ADC_PIN, тож
+// значення — те саме: і сам факт #ifdef MENU_BTN3_PIN лишається робочим
+// усюди в display.h/display_color.h, і числові порівняння (BUZZER_PIN ==
+// MENU_BTN3_PIN тощо) нижче не ламаються об порожній макрос.
+#define MENU_BTN3_PIN MENU_BTN_ADC_PIN
+
+#ifdef MENU_BTN_ADC_PIN
+  #if (MENU_BTN_ADC_PIN == LED_RED_PIN)     || (MENU_BTN_ADC_PIN == LED_GREEN_PIN)  || \
+      (MENU_BTN_ADC_PIN == DS_PIN)          || (MENU_BTN_ADC_PIN == PULLUP_PIN)     || \
+      (MENU_BTN_ADC_PIN == DISPLAY_SDA_PIN) || (MENU_BTN_ADC_PIN == DISPLAY_SCL_PIN) || \
+      (MENU_BTN_ADC_PIN == DISPLAY_CS_PIN)  || (MENU_BTN_ADC_PIN == DISPLAY_DC_PIN)  || \
+      (MENU_BTN_ADC_PIN == DISPLAY_RST_PIN)
+    #error "MENU_BTN_ADC_PIN конфліктує з уже зайнятим піном!"
+  #endif
+  #if (MENU_BTN_ADC_PIN < 32) || (MENU_BTN_ADC_PIN > 39)
+    #error "MENU_BTN_ADC_PIN має бути ADC1 (GPIO32..39) — ADC2 ненадійний з увімкненим Wi-Fi."
   #endif
 #endif
+
+// ── Три окремі GPIO (стара схема; закоментовано на користь драбинки вище) ──
+// #define MENU_BTN_PIN  25   // "Вперед": наступна сторінка
+// #define MENU_BTN2_PIN 26   // "Назад": попередня сторінка
+// #define MENU_BTN3_PIN 33   // "OK / Дія" — необов'язкова, закоментуйте й цей рядок для 2 кнопок
+//
+// #ifdef MENU_BTN3_PIN
+//   #if (MENU_BTN3_PIN == MENU_BTN_PIN)    || (MENU_BTN3_PIN == MENU_BTN2_PIN)  || \
+//       (MENU_BTN3_PIN == LED_RED_PIN)     || (MENU_BTN3_PIN == LED_GREEN_PIN)  || \
+//       (MENU_BTN3_PIN == DS_PIN)          || (MENU_BTN3_PIN == PULLUP_PIN)     || \
+//       (MENU_BTN3_PIN == DISPLAY_SDA_PIN) || (MENU_BTN3_PIN == DISPLAY_SCL_PIN) || \
+//       (MENU_BTN3_PIN == DISPLAY_CS_PIN)  || (MENU_BTN3_PIN == DISPLAY_DC_PIN)  || \
+//       (MENU_BTN3_PIN == DISPLAY_RST_PIN)
+//     #error "MENU_BTN3_PIN конфліктує з уже зайнятим піном! Оберіть вільний GPIO (напр. 32 або 33)."
+//   #endif
+// #endif
 
 // --- Звукове оповіщення (ПАСИВНИЙ П'ЄЗО-буззер) — НЕОБОВ'ЯЗКОВЕ ---
 // Клік при перемиканні меню, звук на початку/успіху/помилці операції.
@@ -190,7 +233,8 @@
   #if (BUZZER_PIN == 34) || (BUZZER_PIN == 35) || (BUZZER_PIN == 36) || (BUZZER_PIN == 39)
     #error "BUZZER_PIN на GPIO34/35/36/39 неможливий: ці піни ВХІД-ТІЛЬКИ і не виводять звук. Оберіть вихідний GPIO, напр. 32."
   #endif
-  #if (BUZZER_PIN == MENU_BTN_PIN)   || (BUZZER_PIN == MENU_BTN2_PIN)  || \
+  #if (defined(MENU_BTN_PIN) && BUZZER_PIN == MENU_BTN_PIN) || \
+      (defined(MENU_BTN2_PIN) && BUZZER_PIN == MENU_BTN2_PIN) || \
       (BUZZER_PIN == LED_RED_PIN)    || (BUZZER_PIN == LED_GREEN_PIN)  || \
       (BUZZER_PIN == DS_PIN)         || (BUZZER_PIN == PULLUP_PIN)     || \
       (BUZZER_PIN == DISPLAY_SDA_PIN)|| (BUZZER_PIN == DISPLAY_SCL_PIN)|| \
@@ -222,7 +266,8 @@
   #if (BTN_LED_PIN == 34) || (BTN_LED_PIN == 35) || (BTN_LED_PIN == 36) || (BTN_LED_PIN == 39)
     #error "BTN_LED_PIN на GPIO34/35/36/39 неможливий: ці піни ВХІД-ТІЛЬКИ і не виводять сигнал. Оберіть вихідний GPIO."
   #endif
-  #if (BTN_LED_PIN == MENU_BTN_PIN)   || (BTN_LED_PIN == MENU_BTN2_PIN)  || \
+  #if (defined(MENU_BTN_PIN) && BTN_LED_PIN == MENU_BTN_PIN) || \
+      (defined(MENU_BTN2_PIN) && BTN_LED_PIN == MENU_BTN2_PIN) || \
       (BTN_LED_PIN == LED_RED_PIN)    || (BTN_LED_PIN == LED_GREEN_PIN)  || \
       (BTN_LED_PIN == DS_PIN)         || (BTN_LED_PIN == PULLUP_PIN)     || \
       (BTN_LED_PIN == DISPLAY_SDA_PIN)|| (BTN_LED_PIN == DISPLAY_SCL_PIN)|| \
@@ -411,7 +456,9 @@
 
 #ifdef LOAD_PIN
   #if (LOAD_PIN == DS_PIN) || (LOAD_PIN == PULLUP_PIN) || (LOAD_PIN == LED_GREEN_PIN) || \
-      (LOAD_PIN == LED_RED_PIN) || (LOAD_PIN == MENU_BTN_PIN) || (LOAD_PIN == MENU_BTN2_PIN) || \
+      (LOAD_PIN == LED_RED_PIN) || \
+      (defined(MENU_BTN_PIN) && LOAD_PIN == MENU_BTN_PIN) || \
+      (defined(MENU_BTN2_PIN) && LOAD_PIN == MENU_BTN2_PIN) || \
       (defined(MENU_BTN3_PIN) && LOAD_PIN == MENU_BTN3_PIN) || \
       (defined(BUZZER_PIN) && LOAD_PIN == BUZZER_PIN) || \
       (defined(BTN_LED_PIN) && LOAD_PIN == BTN_LED_PIN)
@@ -608,7 +655,9 @@
 
 #ifdef CHARGE_PIN
   #if (CHARGE_PIN == DS_PIN) || (CHARGE_PIN == PULLUP_PIN) || (CHARGE_PIN == LED_GREEN_PIN) || \
-      (CHARGE_PIN == LED_RED_PIN) || (CHARGE_PIN == MENU_BTN_PIN) || (CHARGE_PIN == MENU_BTN2_PIN) || \
+      (CHARGE_PIN == LED_RED_PIN) || \
+      (defined(MENU_BTN_PIN) && CHARGE_PIN == MENU_BTN_PIN) || \
+      (defined(MENU_BTN2_PIN) && CHARGE_PIN == MENU_BTN2_PIN) || \
       (defined(MENU_BTN3_PIN) && CHARGE_PIN == MENU_BTN3_PIN) || \
       (defined(BUZZER_PIN) && CHARGE_PIN == BUZZER_PIN) || \
       (defined(BTN_LED_PIN) && CHARGE_PIN == BTN_LED_PIN) || \

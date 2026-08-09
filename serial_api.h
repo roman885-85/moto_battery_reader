@@ -40,8 +40,6 @@
 //   CHARGE [%]           -> почати керований заряд (DC/DC) до обраного відсотка
 //                           (типово 100, мінімум CHARGE_TARGET_PCT_MIN)
 //   CHARGE STOP          -> зупинити заряд;  CHARGE ? -> стан заряду
-//   DACTEST              -> діагностика: голий dacWrite() на CHARGE_CTRL_PIN
-//                           (0/64/128/192/255, по 3с), enable НЕ вмикається
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
 //   HDRFIX               -> добудувати заголовок DS2433 із дзеркала DS2438
 //                          (коли зарядна станція сама почала, але не завершила)
@@ -691,38 +689,6 @@ static void serialExec(const String &line) {
                                   else { const char *e = chargeStart((uint8_t)a3.toInt());
                                          if (e) { String r = "{\"ok\":false,\"err\":\""; r += e; r += "\"}"; sResp(r); }
                                          else sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}"); } }
-    // DACTEST — діагностика: голий dacWrite() на CHARGE_CTRL_PIN, у обхід
-    // усієї калібрувальної логіки заряду. Ставить кілька відомих кодів ЦАП
-    // підряд (з паузами, щоб встигнути зняти мультиметром), друкує кожен у
-    // Serial, і в кінці повертає пін у безпечний холостий стан. CHARGE_PIN
-    // (enable силового каскаду) тут НІКОЛИ не піднімається — плата TL494
-    // лишається знеструмленою весь час тесту, це суто перевірка самого ЦАП.
-    // Потрібна, щоб відрізнити «баг у калібрувальній таблиці/формулі заряду»
-    // від «dacWrite()/канал DAC2 не працює на цьому пристрої/ядрі» — код
-    // заряду (chargeCtrlMvForOutputMv/chargeSetOutputMv) перевірений на
-    // хості (tools/charge_logic_check.cpp) і рахує коректно; якщо DACTEST
-    // теж не показує зміни напруги за кодом — проблема нижче прошивки.
-    else if (cmd == "DACTEST") {
-#ifdef CHARGE_CTRL_PIN
-        if (chargeRunning() || dischargeRunning()) {
-            sResp("{\"ok\":false,\"err\":\"Спочатку зупиніть заряд/розряд\"}");
-        } else {
-            static const uint8_t steps[] = {0, 64, 128, 192, 255};
-            Serial.println("=== DACTEST: голий dacWrite() на CHARGE_CTRL_PIN, enable ЛИШАЄТЬСЯ вимкненим ===");
-            for (size_t i = 0; i < sizeof(steps); i++) {
-                dacWrite(CHARGE_CTRL_PIN, steps[i]);
-                Serial.printf("DACTEST: dacWrite(%d, %u) -> очікується ~%.2f В (мірте зараз)\n",
-                              (int)CHARGE_CTRL_PIN, steps[i], steps[i] * 3300.0 / 255.0 / 1000.0);
-                delay(3000);
-            }
-            chargeSetOutputMv(0);   // повернути в звичайний холостий стан заряду
-            Serial.println("=== DACTEST: завершено, пін повернуто в холостий стан ===");
-            sResp("{\"ok\":true}");
-        }
-#else
-        sResp("{\"ok\":false,\"err\":\"CHARGE_CTRL_PIN не налаштовано\"}");
-#endif
-    }
     else if (cmd == "WIZARD")   { sResp(wizStart()); }
     // WIZSTEP <idx> [MODEL] [FIXES=…] [RATED=…] [RSENSE=…|RSMODEL=…] [MFG=…] [HEALTH=…] [USE=…] [CAL=…] [CYC=…] [NONIMP=…] [TODAY=…] [ETMSRC=USE|PACK]
     else if (cmd == "WIZSTEP")  { int s2 = arg.indexOf(' ');

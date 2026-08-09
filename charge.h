@@ -9,14 +9,13 @@
 //  ── ДВА КЕРУЮЧИХ СИГНАЛИ (замінили попередній однопіновий ШІМ на затвор) ──
 //    • CHARGE_PIN       — цифровий enable силового каскаду. LOW = безпечно
 //      (виходу немає), і саме це виставляється НАЙПЕРШИМ рядком setup().
-//    • CHARGE_CTRL_PIN  — аналогова напруга через справжній апаратний ЦАП
-//      ESP32 (dacWrite(), лише GPIO 25/26 — жодного ШІМ і RC-фільтра), що
-//      керує РЕГУЛЬОВАНОЮ ВИХІДНОЮ НАПРУГОЮ перетворювача, дуже нелінійно
-//      (див. таблицю CHARGE_CAL_* у settings.h). Регулятор нижче працює в
-//      термінах цільової ВИХІДНОЇ НАПРУГИ (chargeCtrlMvForOutputMv()
-//      перекладає її в код ЦАП вже в останню чергу) — так крок регулювання
-//      має приблизно однаковий ЕФЕКТ по всьому діапазону, а не лише на
-//      пласкій ділянці кривої.
+//    • CHARGE_CTRL_PIN  — аналогова напруга (ШІМ+RC на платі), що керує
+//      РЕГУЛЬОВАНОЮ ВИХІДНОЮ НАПРУГОЮ перетворювача, дуже нелінійно (див.
+//      таблицю CHARGE_CAL_* у settings.h). Регулятор нижче працює в термінах
+//      цільової ВИХІДНОЇ НАПРУГИ (chargeCtrlMvForOutputMv() перекладає її в
+//      сиру напругу на GPIO вже в останню чергу) — так крок регулювання має
+//      приблизно однаковий ЕФЕКТ по всьому діапазону, а не лише на пласкій
+//      ділянці кривої.
 //
 //  ── ТРЕТІЙ СИГНАЛ: enable САМОГО ПАКЕТА (не тут, а в web_server.h) ─────────
 //  Пакет фізично не прийме струм, доки не піднято той самий сигнал
@@ -125,22 +124,13 @@ inline void chargeMarkDirty(uint8_t level) { if (level > g_chgDirty) g_chgDirty 
 inline uint8_t chargeConsumeDirty() { uint8_t d = g_chgDirty; g_chgDirty = 0; return d; }
 
 // --------------------------------------------------------------- керування
-// CHARGE_CTRL_PIN — справжній апаратний ЦАП ESP32 (GPIO 25/26, 8 біт,
-// 0…3.3 В): dacWrite() відразу дає постійну аналогову напругу на виводі,
-// жодного ШІМ і зовнішнього RC-фільтра не потрібно. «pwm»/chargePwmOk() —
-// стара назва з часів ШІМ+RC, лишена заради сумісності з веб/USB/desktop-
-// клієнтами (поле "pwm" у JSON, банер «керування недоступне»): тепер це
-// просто «керування CHARGE_CTRL_PIN активне», і оскільки dacWrite() не має
-// стану відмови (на відміну від ledcAttachChannel(), для якого канал/частота
-// могли виявитись недосяжними), значення завжди true після chargeInit().
 static bool g_chgPwmOk = false;
 inline bool chargePwmOk() { return g_chgPwmOk; }
 
 // Кусочно-лінійна інтерполяція за калібрувальною таблицею (settings.h):
 // цільова ВИХІДНА напруга перетворювача, мВ -> напруга керування на
-// CHARGE_CTRL_PIN (напряму з ЦАП, БЕЗ RC-фільтра), мВ. Поза таблицею — НЕ
-// екстраполює, затискає до крайньої точки (0 знизу, CHARGE_CAL_OUT_MAX
-// зверху).
+// CHARGE_CTRL_PIN (після RC-фільтра), мВ. Поза таблицею — НЕ екстраполює,
+// затискає до крайньої точки (0 знизу, CHARGE_CAL_OUT_MAX зверху).
 inline uint16_t chargeCtrlMvForOutputMv(uint16_t outMv) {
     static const uint16_t calCtrl[] = CHARGE_CAL_CTRL_MV;
     static const uint16_t calOut[]  = CHARGE_CAL_OUT_MV;
@@ -170,21 +160,17 @@ inline void chargeEnable(bool on) {
 
 // Встановити ЦІЛЬОВУ вихідну напругу перетворювача, мВ (0 — позиція «немає
 // виходу», відповідає нижній точці калібрувальної таблиці). Уся робота з
-// CHARGE_CTRL_PIN — ТІЛЬКИ через цю функцію: жодних dacWrite повз неї.
-// ЦАП — лише 8 біт (256 рівнів на 3.3 В, крок ≈12.9 мВ), помітно грубіше за
-// колишні 11 біт ШІМ+RC (крок ≈1.6 мВ): у найкрутішій ділянці калібрувальної
-// таблиці (1.76→1.78 В дає 0→4.1 В на виході) це лишає лише 1-2 досяжні
-// рівні ЦАП на весь цей піддіапазон виходу. Регулятор (chargeNextOutMv())
-// все одно збігається до найближчого ДОСЯЖНОГО рівня за струмом — плата не
-// зіпсується, — але на самому низу діапазону очікуйте грубші сходинки
-// струму, ніж раніше.
+// CHARGE_CTRL_PIN — ТІЛЬКИ через цю функцію: жодних ledcWrite повз неї.
 inline void chargeSetOutputMv(uint16_t outMv) {
 #ifdef CHARGE_CTRL_PIN
     if (outMv > CHARGE_CAL_OUT_MAX) outMv = CHARGE_CAL_OUT_MAX;
-    uint16_t ctrlMv = chargeCtrlMvForOutputMv(outMv);
-    uint32_t raw    = (uint32_t)ctrlMv * 255u / 3300u;
-    if (raw > 255u) raw = 255u;
-    dacWrite(CHARGE_CTRL_PIN, (uint8_t)raw);
+    if (g_chgPwmOk) {
+        uint16_t ctrlMv  = chargeCtrlMvForOutputMv(outMv);
+        uint32_t maxDuty = (1u << CHARGE_PWM_BITS) - 1u;
+        uint32_t raw     = (uint32_t)ctrlMv * maxDuty / 3300u;
+        if (raw > maxDuty) raw = maxDuty;
+        ledcWrite(CHARGE_CTRL_PIN, raw);
+    }
 #else
     (void)outMv;
 #endif
@@ -286,14 +272,19 @@ inline void chargeInit() {
     digitalWrite(CHARGE_PIN, LOW);       // безпечний стан — миттєво, до всього іншого
 #endif
 #ifdef CHARGE_CTRL_PIN
-    // Справжній ЦАП (не ШІМ-пін): pinMode()/attach() тут нічого не вирішують
-    // — dacWrite() сам вмикає апаратний ЦАП на потрібному GPIO. settings.h
-    // на етапі КОМПІЛЯЦІЇ гарантує, що CHARGE_CTRL_PIN — 25 або 26 (інших
-    // ЦАП на ESP32 нема), тож на відміну від ledcAttachChannel() тут немає
-    // стану «не вдалося» — керування гарантовано доступне.
-    g_chgPwmOk = true;
+    pinMode(CHARGE_CTRL_PIN, OUTPUT);
+    g_chgPwmOk = ledcAttachChannel(CHARGE_CTRL_PIN, CHARGE_PWM_FREQ,
+                                    CHARGE_PWM_BITS, CHARGE_LEDC_CH);
+    Serial.printf("CHARGE: pin=%d LEDC ch=%d freq=%d bits=%d attach=%s%s\n",
+                  (int)CHARGE_CTRL_PIN, (int)CHARGE_LEDC_CH, (int)CHARGE_PWM_FREQ,
+                  (int)CHARGE_PWM_BITS, g_chgPwmOk ? "OK" : "FAIL",
+                  g_chgPwmOk ? "" : " — або CHARGE_PWM_FREQ/CHARGE_PWM_BITS "
+                  "недосяжні для дільника LEDC (макс. частота = джерело/2^bits — "
+                  "деталі в рядку 'ledc: requested frequency ... can not be "
+                  "achieved' вище), або вичерпано вільні таймери (їх ділять "
+                  "підсвітка/світлодіоди/зумер/розряд) — спробуйте інший "
+                  "CHARGE_LEDC_CH чи знизьте CHARGE_PWM_BITS");
     chargeSetOutputMv(0);
-    Serial.printf("CHARGE: pin=%d, ЦАП (8 біт, без ШІМ/RC)\n", (int)CHARGE_CTRL_PIN);
 #endif
     g_chg.state = CHG_IDLE;
     g_chg.reason = CHGR_NONE;

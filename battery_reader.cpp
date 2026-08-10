@@ -58,11 +58,22 @@ bool BatteryReader::findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr) {
             if (addr[0] == DS2433_ID && !found2433) {
                 memcpy(ds2433_addr, addr, 8);
                 found2433 = true;
-                Serial.printf("DS2433 found! (спроба %d)\n", attempt + 1);
+                // Друк лише на ЗМІНУ (новий ROM / вперше знайдено) — не на
+                // кожен виклик. findDevices() наскрізь проходить ПОВНИЙ
+                // пошук шини ЩОПОЛЛУ під час заряду/розряду (щосекунди,
+                // годинами) — без цього затвору тут виходили тисячі рядків
+                // у Serial за сеанс, а блокуючий Serial.print() при
+                // заповненому TX-буфері (напр. закритий монітор порту)
+                // здатен підвісити ГОЛОВНИЙ ЦИКЛ і спричинити скидання за
+                // сторожовим таймером — саме симптом «зависання й
+                // самовільні перезавантаження».
+                if (!_haveRom2433 || memcmp(_rom2433, addr, 8) != 0)
+                    Serial.printf("DS2433 found! (спроба %d)\n", attempt + 1);
             } else if (addr[0] == DS2438_ID && !found2438) {
                 memcpy(ds2438_addr, addr, 8);
                 found2438 = true;
-                Serial.printf("DS2438 found! (спроба %d)\n", attempt + 1);
+                if (!_haveRom2438 || memcmp(_rom2438, addr, 8) != 0)
+                    Serial.printf("DS2438 found! (спроба %d)\n", attempt + 1);
             }
         }
     }
@@ -481,7 +492,11 @@ bool BatteryReader::readDS2438(uint8_t *buffer, size_t size) {
 
     _ow->reset();
     pullupOff();
-    Serial.println("DS2438 read completed");
+    // Без "DS2438 read completed" тут навмисно: цю функцію викликає
+    // dischargeSample() ЩОСЕКУНДИ під час заряду/розряду (див. коментар у
+    // findDevices() вище) — успіх і так видно з наступного рядка "charge:
+    // .../discharge: ...", зайвий рядок тут лише роздував Serial-трафік
+    // без нової інформації.
     return true;
 }
 

@@ -1179,9 +1179,26 @@ inline int pollButtonRaw(bool pressed, BtnState &b, unsigned long longMs) {
 static bool g_btnAdcEnter = false, g_btnAdcLeft = false, g_btnAdcRight = false;
 inline void btnAdcRefresh() {
     int mv = analogRead(MENU_BTN_ADC_PIN) * 3300 / 4095;
-    g_btnAdcEnter = mv < MENU_BTN_ADC_TH_ENTER;
-    g_btnAdcLeft  = !g_btnAdcEnter && mv < MENU_BTN_ADC_TH_LEFT;
-    g_btnAdcRight = !g_btnAdcEnter && !g_btnAdcLeft && mv < MENU_BTN_ADC_TH_RIGHT;
+    bool newEnter = mv < MENU_BTN_ADC_TH_ENTER;
+    bool newLeft  = !newEnter && mv < MENU_BTN_ADC_TH_LEFT;
+    bool newRight = !newEnter && !newLeft && mv < MENU_BTN_ADC_TH_RIGHT;
+    // Друк ЛИШЕ на зміну класифікації (не щоцикл loop()) — щоб побачити, яку
+    // РЕАЛЬНУ напругу дає кожна фізична кнопка, і порівняти з порогами.
+    // Діагностика для скарг «кнопка Х спрацьовує як Y» — це майже завжди
+    // невідповідність РЕАЛЬНОГО номіналу резистора кнопки закодованому
+    // MENU_BTN_ADC_LEFT_OHM/RIGHT_OHM у settings.h, а не баг прошивки.
+    static int8_t lastCls = -1;   // -1=ще не друкували, 0=none, 1=enter, 2=left, 3=right
+    int8_t cls = newEnter ? 1 : newLeft ? 2 : newRight ? 3 : 0;
+    if (cls != lastCls) {
+        lastCls = cls;
+        Serial.printf("BTN_ADC: %d мВ -> %s (пороги: ENTER<%d, LEFT<%d, RIGHT<%d, none>=%d)\n",
+                      mv, cls == 1 ? "ENTER" : cls == 2 ? "LEFT" : cls == 3 ? "RIGHT" : "відпущено",
+                      (int)MENU_BTN_ADC_TH_ENTER, (int)MENU_BTN_ADC_TH_LEFT,
+                      (int)MENU_BTN_ADC_TH_RIGHT, (int)MENU_BTN_ADC_TH_RIGHT);
+    }
+    g_btnAdcEnter = newEnter;
+    g_btnAdcLeft  = newLeft;
+    g_btnAdcRight = newRight;
 }
 // BTN1="Вперед"->Вправо, BTN2="Назад"->Вліво, BTN3="OK/Дія"->Ввід — той самий
 // розподіл ролей, що й був на трьох окремих GPIO.

@@ -18,6 +18,15 @@ struct FakeDS2433State {
     // живлення. -1 / 0 = ніколи не просідає.
     int failAtResetNo = -1;
     int failBudget = 0;
+    // Керування «шумом»: на відміну від failAtResetNo/failBudget вище,
+    // reset() №corruptAtResetNo і наступні corruptBudget-1 ПРАВИЛЬНО дають
+    // presence, але read() у ЦІЙ транзакції повертає СПОТВОРЕНІ байти —
+    // симулює наведення/нестабільний контакт ПОСЕРЕД читання (не втрату
+    // живлення). Спотворення різне для кожної транзакції (замішане на
+    // resetCount), як справжній шум: дві шумні спроби НЕ мають випадково
+    // збігтися між собою.
+    int corruptAtResetNo = -1;
+    int corruptBudget = 0;
     int resetCount = 0;
 };
 inline FakeDS2433State g_ds2433;
@@ -32,6 +41,9 @@ public:
         _selected = false;
         _cmd = 0;
         _haveTA1 = false;
+        _corruptThisTxn = (g_ds2433.corruptAtResetNo > 0 &&
+                            g_ds2433.resetCount >= g_ds2433.corruptAtResetNo &&
+                            g_ds2433.resetCount < g_ds2433.corruptAtResetNo + g_ds2433.corruptBudget);
         if (g_ds2433.failAtResetNo > 0 &&
             g_ds2433.resetCount >= g_ds2433.failAtResetNo &&
             g_ds2433.resetCount < g_ds2433.failAtResetNo + g_ds2433.failBudget)
@@ -62,7 +74,10 @@ public:
     }
     uint8_t read() {
         if (!_selected || _cmd != 0xF0 || _addr >= sizeof(g_ds2433.mem)) return 0xFF;
-        return g_ds2433.mem[_addr++];
+        uint8_t v = g_ds2433.mem[_addr];
+        if (_corruptThisTxn) v ^= (uint8_t)(0x55 + g_ds2433.resetCount);
+        _addr++;
+        return v;
     }
     void write_bit(int) {}
     int read_bit() { return 0; }
@@ -87,7 +102,7 @@ public:
     }
 
 private:
-    bool     _selected = false, _haveTA1 = false, _searchDone = false;
+    bool     _selected = false, _haveTA1 = false, _searchDone = false, _corruptThisTxn = false;
     uint8_t  _cmd = 0, _ta1 = 0;
     uint16_t _addr = 0;
 };

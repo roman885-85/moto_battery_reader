@@ -27,6 +27,8 @@ static void resetSim(BatteryReader &, uint8_t *original) {
     g_ds2433.resetCount = 0;
     g_ds2433.failAtResetNo = -1;
     g_ds2433.failBudget = 0;
+    g_ds2433.corruptAtResetNo = -1;
+    g_ds2433.corruptBudget = 0;
     memcpy(g_ds2433.mem, original, 512);
     g_delayCalls = 0; g_delayLast = 0;
 }
@@ -109,6 +111,34 @@ int main() {
         bool ok = battery.readBattery(out, 512);
         printf("   readBattery -> %s\n", ok ? "true" : "false");
         if (ok) bad("«вичитано тільки початок» мало повернути false, а не удаваний успіх");
+    }
+
+    // ── 6. Шум ПОСЕРЕД читання (presence є, дані спотворені) — відновлюється.
+    //    reset() №9 і №10 (2 транзакції сторінки 8, 0x100..0x11F) дають
+    //    presence, але дані спотворені по-різному щоразу — доти, доки
+    //    ДВІ ПОСПІЛЬ спроби не збіжаться. Це саме те, чого стара логіка
+    //    (лише presence-pulse) не ловила: «якщо виходить прочитати — сміття».
+    printf("\n6) шум посеред читання (presence OK, дані спотворені) — відновлюється\n");
+    {
+        resetSim(battery, original);
+        g_ds2433.corruptAtResetNo = 9; g_ds2433.corruptBudget = 2;   // 2 шумні спроби, 3-я чиста
+        uint8_t out[512]; memset(out, 0, 512);
+        bool ok = battery.readBattery(out, 512);
+        printf("   readBattery -> %s\n", ok ? "true" : "false");
+        if (!ok) bad("шум у межах DS_READ_PAGE_TRIES мав відновитись до збіжного читання");
+        if (memcmp(out, original, 512) != 0) bad("після відновлення дані мають збігатися побайтово (не сміття)");
+    }
+
+    // ── 7. Шум ПОСЕРЕД читання, що НЕ вщухає — чесна відмова, не сміття ──
+    printf("\n7) шум посеред читання — НЕ вщухає (має чесно провалитись)\n");
+    {
+        resetSim(battery, original);
+        g_ds2433.corruptAtResetNo = 9; g_ds2433.corruptBudget = 99;  // шумно завжди
+        uint8_t out[512]; memset(out, 0x77, 512);
+        bool ok = battery.readBattery(out, 512);
+        printf("   readBattery -> %s (має бути false — не удаваний успіх зі сміттям)\n",
+               ok ? "true" : "false");
+        if (ok) bad("постійний шум мав чесно провалитись, а не повернути сміття як success");
     }
 
     printf("\n%s (помилок: %d)\n", fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

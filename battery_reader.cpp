@@ -190,22 +190,41 @@ bool BatteryReader::readBattery(uint8_t *buffer, size_t size) {
     // відновлення напруги й повторюємо ЛИШЕ цю сторінку, до DS_READ_PAGE_TRIES
     // разів. Якщо й після цього сторінка недоступна — чесно повертаємо false,
     // а не вдаваний успіх із діркою в даних.
+    //
+    // ⚑ Read Memory [0xF0] у DS2433 НЕ повертає CRC (на відміну від запису —
+    // там Read Scratchpad CRC ловить помилку одразу). Самого presence-pulse
+    // МАЛО: шина може відповісти на Reset, але дати шум/сміття посеред самого
+    // читання (нестабільний контакт, наведення) — раніше це проходило як
+    // «успіх» із тихо зіпсованими байтами («якщо виходить прочитати —
+    // показує сміття»). Тому кожну сторінку читаємо, поки ДВА ПОСПІЛЬ
+    // читання не збіжаться побайтово — програмний аналог CRC там, де чіп
+    // його не дає.
     for (size_t offset = 0; offset < size; offset += DS2433_PAGE_SIZE) {
         size_t chunk = (offset + DS2433_PAGE_SIZE <= size) ? DS2433_PAGE_SIZE : (size - offset);
         bool pageOk = false;
+        uint8_t prev[DS2433_PAGE_SIZE];
+        bool havePrev = false;
         for (int attempt = 0; attempt < DS_READ_PAGE_TRIES && !pageOk; attempt++) {
             if (attempt) {
                 delay(DS_READ_RECOVER_MS);
-                Serial.printf("readBattery: presence lost @0x%03X, повтор (спроба %d) — "
-                              "пакет просів під навантаженням?\n", (unsigned)offset, attempt + 1);
+                Serial.printf("readBattery: нестабільне читання @0x%03X, повтор (спроба %d) — "
+                              "пакет просів під навантаженням або шум на шині?\n",
+                              (unsigned)offset, attempt + 1);
             }
-            if (!_ow->reset()) continue;         // немає presence-pulse — пакет ще не відновився
+            if (!_ow->reset()) { havePrev = false; continue; }  // немає presence-pulse — пакет ще не відновився
             _ow->select(ds2433_addr);
             _ow->write(0xF0);                    // Команда читання пам'яті
             _ow->write((uint8_t)(offset & 0xFF));        // Адреса (молодший байт)
             _ow->write((uint8_t)((offset >> 8) & 0xFF)); // Адреса (старший байт)
-            for (size_t i = 0; i < chunk; i++) buffer[offset + i] = _ow->read();
-            pageOk = true;
+            uint8_t cur[DS2433_PAGE_SIZE];
+            for (size_t i = 0; i < chunk; i++) cur[i] = _ow->read();
+            if (havePrev && memcmp(prev, cur, chunk) == 0) {
+                memcpy(buffer + offset, cur, chunk);
+                pageOk = true;
+            } else {
+                memcpy(prev, cur, chunk);
+                havePrev = true;
+            }
         }
         if (!pageOk) {
             Serial.printf("Error: DS2433 page @0x%03X недоступна — шина/живлення нестабільні "

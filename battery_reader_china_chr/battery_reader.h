@@ -1,0 +1,112 @@
+#ifndef BATTERY_READER_H
+#define BATTERY_READER_H
+
+#include <OneWire.h>
+#include <Arduino.h>
+
+// Family-коди (перший байт ROM), які Реально повертають мікросхеми цієї
+// батареї Motorola — перевірено на живому пристрої (осцилограф + логи).
+// Відрізняються от номінальних DS2433=0x23 / DS2438=0x26 з даташита.
+// НЕ змінювати на "стандартні" 0x23/0x26 — інакше пошук (search) перестає
+// знаходити чіпи і readBattery/writeBattery падають з "No devices found".
+#define DS2433_ID 0xA3
+#define DS2438_ID 0xA6
+
+// Команди для DS2433
+#define DS2433_READ_MEMORY    0xF0
+#define DS2433_WRITE_SCRATCH  0x0F
+#define DS2433_READ_SCRATCH   0xAA
+#define DS2433_COPY_SCRATCH   0x55
+
+// Організація пам'яті DS2433: 16 сторінок по 32 байта (scratchpad = 32 байта)
+#define DS2433_PAGE_SIZE      32
+
+// Команди для DS2438 (монітор батареї)
+#define DS2438_CONVERT_T      0x44
+#define DS2438_CONVERT_V      0xB4
+#define DS2438_RECALL_MEMORY  0xB8
+#define DS2438_READ_SCRATCH   0xBE
+#define DS2438_WRITE_SCRATCH  0x4E
+#define DS2438_COPY_SCRATCH   0x48
+
+// Організація пам'яті DS2438: 8 сторінок по 8 байт = 64 байта
+#define DS2438_PAGES          8
+#define DS2438_PAGE_SIZE      8
+#define DS2438_MEM_SIZE       64
+
+// Скільки чекати після підняття підтяжки, перш ніж шукати чипи на шині, і
+// скільки разів повторити пошук. Після кожної операції підтяжка гасне, тож
+// кожен пошук — холодний старт: чипу треба встигнути піднятись, інакше в
+// Search ROM потрапляє не кожен. Ціна спроби — одиниці мілісекунд.
+#define DS_BUS_SETTLE_MS      5
+#define DS_SEARCH_TRIES       3
+
+// Допуск при звірці наробітку (ETM) після запису: чіп крутить лічильник далі,
+// тож між Copy Scratchpad і читанням назад він устигає натікати кілька секунд.
+// Усе, що більше, — це вже не «натекло», а «не записалось».
+#define DS2438_ETM_TOLERANCE_S 30
+
+// Читання DS2433 постранично (readBattery): скільки разів повторити ОДНУ
+// сторінку, якщо пакет просів під навантаженням (немає presence-pulse), і
+// скільки чекати між спробами, щоб напруга встигла відновитись. DS2433
+// живиться від самого пакета — при сильній розбалансировці банок він здатен
+// просісти саме посеред довгого читання.
+#define DS_READ_PAGE_TRIES     4
+#define DS_READ_RECOVER_MS     30
+
+class BatteryReader {
+public:
+    BatteryReader(int pin, int pullupPin);
+    bool begin();
+    bool readBattery(uint8_t *buffer, size_t size);
+    bool writeBattery(const uint8_t *buffer, size_t size);
+    // Запис ЛИШЕ сторінок DS2433, що покривають [regionStart, regionStart+regionLen).
+    // buffer — повний дамп 512 Б; пишуться тільки зачеплені 32-байтові сторінки.
+    // Надійніше за повний перезапис для точкових правок (модель, лічильники):
+    // не залежить від придатності решти чипа до перезапису.
+    bool writeBatteryRange(const uint8_t *buffer, size_t regionStart, size_t regionLen);
+    bool readDS2438(uint8_t *buffer, size_t size);
+    bool writeDS2438(const uint8_t *buffer, size_t size);
+    void printDump(const uint8_t *buffer, size_t size);
+
+    // ── УТРИМАННЯ СИГНАЛУ ENABLE ───────────────────────────────────────────
+    // Пін _pullupPin — це не лише підтяжка 1-Wire: ним АКТИВУЄТЬСЯ сам АКБ.
+    // У штатному режимі він піднімається на час транзакції й опускається після
+    // неї, тож між читаннями пакет неактивний. Для КЕРОВАНОГО РОЗРЯДУ цього
+    // замало: із опущеним enable струм тече лише в моменти читання, і розряд
+    // фактично не йде.
+    //
+    // holdEnable(true) — тримати сигнал піднятим постійно: транзакції 1-Wire
+    // працюють як звичайно (вони й так ведуться з піднятим піном), але після
+    // них він НЕ опускається. holdEnable(false) повертає штатну поведінку й
+    // одразу опускає пін.
+    void holdEnable(bool on);
+    bool enableHeld() const { return _holdEnable; }
+
+    // лазерний 1-Wire ROM-ID (серійний номер) останніх знайдених чипів.
+    bool hasRom2433() const { return _haveRom2433; }
+    bool hasRom2438() const { return _haveRom2438; }
+    const uint8_t *rom2433() const { return _rom2433; }
+    const uint8_t *rom2438() const { return _rom2438; }
+
+private:
+    int _pin;
+    int _pullupPin;
+    OneWire* _ow;
+
+    uint8_t _rom2433[8];
+    uint8_t _rom2438[8];
+    bool _haveRom2433 = false;
+    bool _haveRom2438 = false;
+    bool _holdEnable  = false;   // тримати enable піднятим (режим розряду)
+
+    // Опустити enable/підтяжку — але ЛИШЕ якщо не тримаємо його примусово.
+    // Усі місця, де раніше стояло digitalWrite(_pullupPin, LOW), тепер кличуть
+    // це: інакше будь-яка транзакція гасила б АКБ посеред розряду.
+    void pullupOff();
+
+    // Новий метод для пошуку пристроїв
+    bool findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr);
+};
+
+#endif

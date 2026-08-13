@@ -317,6 +317,44 @@ int main() {
               "серії вистачає, щоб усереднення мало сенс (>=32 відліків)");
     }
 
+    printf("\n9б) тепловий і струмовий бюджет БІПОЛЯРНОГО ключа\n");
+    {
+        // Біполярник керується струмом і помітно гріється — на відміну від
+        // MOSFET, це і є головне обмеження стелі профілю струму.
+        long ipeak = CHARGE_IPEAK_MA;
+        long ibNeed = ipeak / CHARGE_BJT_HFE_FORCED;
+        long p = CHARGE_P_COND_MW + CHARGE_P_SW_MW;
+        printf("   пік %ld мА (крейсер %d + ΔI/2 %lld)\n",
+               ipeak, CHARGE_MA_80, (long long)(CHARGE_RIPPLE_MA_EST / 2));
+        printf("   струм бази %d мА, потрібно >= %ld (β_форс %d)\n",
+               (int)CHARGE_IB_MA, ibNeed, (int)CHARGE_BJT_HFE_FORCED);
+        printf("   розсіювання %ld мВт = провідні %lld + перемикальні %lld, Pc %d\n",
+               p, (long long)CHARGE_P_COND_MW, (long long)CHARGE_P_SW_MW,
+               (int)CHARGE_BJT_PC_MW);
+        check(CHARGE_IB_MA >= ibNeed,
+              "струму бази вистачає на насичення НА ВЕРШИНІ пульсацій");
+        check(ipeak <= CHARGE_BJT_IC_MAX_MA, "пік у межах Ic max ключа");
+        check(p <= CHARGE_BJT_PC_MW * 4 / 5, "розсіювання в межах 80 % від Pc");
+        // Перемикальні втрати біполярника домінують — саме тому частота тут
+        // обмежена зверху, попри те, що дросель хоче її вище.
+        check(CHARGE_P_SW_MW > CHARGE_P_COND_MW,
+              "перемикальні втрати переважають провідні — це і є ціна повільного вимикання");
+    }
+
+    printf("\n9в) режим перетворювача на крейсерському струмі\n");
+    {
+        // Межа неперервного режиму — ΔI/2, а не ΔI. Помилка вдвічі тут коштує
+        // хибного спрацювання перевірки (на цьому вже спіткнулись).
+        long half = CHARGE_RIPPLE_MA_EST / 2;
+        printf("   ΔI %lld мА, межа CCM = ΔI/2 = %ld, крейсер %d -> %s\n",
+               (long long)CHARGE_RIPPLE_MA_EST, half, CHARGE_MA_80,
+               CHARGE_MA_80 > half ? "неперервний" : "переривчастий");
+        check(CHARGE_MA_80 > half, "на крейсері перетворювач у неперервному режимі");
+        // А на фінальному спаді — законно переривчастий, і це нормально.
+        check(CHARGE_MA_TAPER < half,
+              "на фінальному спаді режим переривчастий — так і має бути");
+    }
+
     printf("\n10) запас вимірювального кола — те, що стереже #error у settings.h\n");
     {
         long vnode = (long)CHARGE_SUPPLY_MV * CHARGE_VSENSE_R_BOT /

@@ -536,7 +536,7 @@ class ChargeMonitor(ttk.Frame):
             self.lblState.config(text="—")
             return
         if not d.get("available"):
-            self.lblState.config(text="не налаштовано (CHARGE_PIN/CHARGE_CTRL_PIN)")
+            self.lblState.config(text="не налаштовано (CHARGE_PWM_PIN/ISENSE/VSENSE)")
             return
         state = d.get("state", "idle")
         run = state == "run"
@@ -551,8 +551,15 @@ class ChargeMonitor(ttk.Frame):
         ma, setMa, pwm = d.get("ma", 0), d.get("setMa", 0), d.get("pwm", False)
         self.lblLim.config(text=("уставка %d мА · зараз %d мА" % (setMa, ma)) if pwm else "⚠ керування недоступне",
                             foreground=MIL["olive"] if pwm else MIL["maroon"])
-        outMv, outMax = d.get("outMv", 0), d.get("outMaxMv", 1) or 1
-        self.lblOut.config(text=("ціль на виході ДС/ДС: %.2f В (стеля %.1f В)" % (outMv / 1000.0, outMax / 1000.0))
+        # Керування тепер — ШПАРУВАТІСТЬ ключа (P-MOSFET через NPN), а не «цільова
+        # напруга DC/DC». Поруч — вершина пульсацій струму дроселя: вона злітає,
+        # коли дросель фактично випав із кола (обрив, насичення, пробитий ключ).
+        duty, dutyFull = d.get("duty", 0), d.get("dutyFull", 1) or 1
+        dutyMax, dutyPct = d.get("dutyMax", dutyFull), d.get("dutyPct", 0)
+        peak, peakMax = d.get("peakMa", 0), d.get("peakMaxMa", 0)
+        shunt = (d.get("shuntMohm", 0) or 0) / 1000.0
+        self.lblOut.config(text=("ШІМ %d%% (%d/%d, стеля %d) · пік %d мА з %d (шунт %.2f Ом)"
+                                 % (dutyPct, duty, dutyFull, dutyMax, peak, peakMax, shunt))
                                  if pwm else "керування недоступне")
         self.tileVars["mah"].config(text=str(d.get("mah", 0)))
         self.tileVars["cca"].config(text=str(d.get("ccaMah", 0)))

@@ -78,12 +78,14 @@ void setup() {
 #ifdef LOAD_PIN
     pinMode(LOAD_PIN, OUTPUT);   digitalWrite(LOAD_PIN, LOW);
 #endif
-#ifdef CHARGE_PIN
-    // CHARGE_PIN — enable силового каскаду готової TL494-плати: LOW=безпечно
-    // (підтверджено власником — БЕЗ керування плата дає повний прохід ~14 В,
-    // тож саме LOW і мусить стояти тут, найпершим, а не після дисплея/Wi-Fi).
-    pinMode(CHARGE_PIN, OUTPUT);
-    digitalWrite(CHARGE_PIN, LOW);
+#ifdef CHARGE_PWM_PIN
+    // CHARGE_PWM_PIN — ШІМ на базу NPN, що прочиняє P-MOSFET. LOW = NPN
+    // закритий, затвор підтягнуто до +, ключ ЗАКРИТИЙ (див. схему в
+    // settings.h). Ставимо це найпершим, ще до дисплея/Wi-Fi: якщо пристрій
+    // перезавантажився сторожем посеред заряду, ключ усе ще може бути
+    // прочинений наведенням, поки піни — входи.
+    pinMode(CHARGE_PWM_PIN, OUTPUT);
+    digitalWrite(CHARGE_PWM_PIN, LOW);
 #endif
     pinMode(PULLUP_PIN, OUTPUT); digitalWrite(PULLUP_PIN, LOW);
 

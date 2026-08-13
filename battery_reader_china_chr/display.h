@@ -916,7 +916,7 @@ inline void drawPageCharge() {
     // керування нелінійна, див. charge.h/settings.h): чинний струм тримається
     // на уставці, а сама напруга видно для діагностики «регулятор рухається».
     if (chargePwmOk()) {
-        snprintf(b, sizeof(b), "уст%uмА вих%u.%02uВ", c.setMa, c.outMv / 1000, (c.outMv % 1000) / 10);
+        snprintf(b, sizeof(b), "уст%uмА ШІМ%u%%", c.setMa, chargeDutyPct());
     } else {
         snprintf(b, sizeof(b), "БЕЗ КЕРУВАННЯ!");
     }

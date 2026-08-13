@@ -1,62 +1,77 @@
 #ifndef CHARGE_H
 #define CHARGE_H
 // ===========================================================================
-//  charge.h — КЕРОВАНИЙ ЗАРЯД пакета через готову плату DC/DC на TL494.
+//  charge.h — КЕРОВАНИЙ ЗАРЯД пакета: ШІМ на P-канальний MOSFET через NPN.
 //
-//  Схема й ОБОВ'ЯЗКОВІ пороги/калібрування — у settings.h, блок «КЕРОВАНИЙ
-//  ЗАРЯД». Прочитайте його ПЕРШИМ.
+//  Схема, номінали вимірювального кола й ОБОВ'ЯЗКОВІ пороги — у settings.h,
+//  блок «КЕРОВАНИЙ ЗАРЯД». Прочитайте його ПЕРШИМ: тут лише логіка.
 //
-//  ── ДВА КЕРУЮЧИХ СИГНАЛИ (замінили попередній однопіновий ШІМ на затвор) ──
-//    • CHARGE_PIN       — цифровий enable силового каскаду. LOW = безпечно
-//      (виходу немає), і саме це виставляється НАЙПЕРШИМ рядком setup().
-//    • CHARGE_CTRL_PIN  — аналогова напруга (ШІМ+RC на платі), що керує
-//      РЕГУЛЬОВАНОЮ ВИХІДНОЮ НАПРУГОЮ перетворювача, дуже нелінійно (див.
-//      таблицю CHARGE_CAL_* у settings.h). Регулятор нижче працює в термінах
-//      цільової ВИХІДНОЇ НАПРУГИ (chargeCtrlMvForOutputMv() перекладає її в
-//      сиру напругу на GPIO вже в останню чергу) — так крок регулювання має
-//      приблизно однаковий ЕФЕКТ по всьому діапазону, а не лише на пласкій
-//      ділянці кривої.
+//  ── ОДИН КЕРУЮЧИЙ СИГНАЛ ──────────────────────────────────────────────────
+//  CHARGE_PWM_PIN — ШІМ на базу NPN, який притягує затвор P-MOSFET до землі.
+//  Два інвертування (NPN + P-канал) взаємно скасовуються, тож логіка ПРЯМА:
+//  шпаруватість на піні = шпаруватість струму заряду, 0 % = ключ закритий =
+//  безпечно. Ніякого окремого enable силового каскаду більше немає — його роль
+//  виконує сама шпаруватість 0.
 //
-//  ── ТРЕТІЙ СИГНАЛ: enable САМОГО ПАКЕТА (не тут, а в web_server.h) ─────────
+//  ── ДРУГИЙ СИГНАЛ: enable САМОГО ПАКЕТА (не тут, а в web_server.h) ─────────
 //  Пакет фізично не прийме струм, доки не піднято той самий сигнал
 //  (PULLUP_PIN), що й для читання/запису пам'яті — battery.holdEnable(true).
-//  chargeStart() у web_server.h піднімає його ОДРАЗУ при старті заряду й
-//  тримає ввесь час (не лише на час 1-Wire операцій, як зазвичай); зняття —
-//  через g_chgReleaseEnable/chargeConsumeReleaseEnable() при chargeStop().
+//  chargeStart() у web_server.h піднімає його ОДРАЗУ при старті і тримає ввесь
+//  час; зняття — через g_chgReleaseEnable/chargeConsumeReleaseEnable().
 //
-//  ── ЧОМУ РЕГУЛЯТОР ІНШИЙ, НІЖ У РОЗРЯДУ (discharge.h) ─────────────────────
-//  Розряд керує ключем НА РЕЗИСТОРІ: там шпаруватість 100 % — це просто
-//  «резистор без обмежень» (відомий, безпечний максимум ~1.7 А), тож можна
-//  раз на цикл відкрити ключ повністю, зняти ПІК і розрахувати потрібну
-//  шпаруватість алгебрично.
+//  ── ВЛАСНІ ВИМІРЮВАННЯ (головна відмінність від попередньої схеми) ─────────
+//  Раніше струм і напругу заряд брав із монітора пакета DS2438 по 1-Wire.
+//  Тепер у пристрою є СВОЇ давачі:
+//    • струм  — спад на шунті CHARGE_SHUNT_MOHM у мінусовому проводі,
+//               CHARGE_ISENSE_PIN;
+//    • напруга — подільник CHARGE_VSENSE_R_TOP/R_BOT на плюсовій клемі,
+//               CHARGE_VSENSE_PIN.
+//  Це не лише точніше — це на три порядки швидше: АЦП коштує десятки
+//  мікросекунд проти ~100 мс на транзакцію 1-Wire. DS2438 лишається потрібним
+//  рівно для одного — ТЕМПЕРАТУРИ пакета (свого датчика в нас немає) і як
+//  незалежна перехресна перевірка за лічильником CCA.
 //
-//  Тут перетворювач видає РЕГУЛЬОВАНУ напругу напряму (не шпаруватість на
-//  дроселі) — і повна вихідна напруга (8.6 В — верх калібрувальної таблиці)
-//  проти пакета ~8 В теж може дати кидок струму. Міряти «пік на максимумі»
-//  так, як робить розряд, тут НЕБЕЗПЕЧНО.
+//  ── ЧОМУ ВИМІРИ РОЗНЕСЕНІ В ЧАСІ ──────────────────────────────────────────
+//  Обидва давачі під ШІМом дають не те, що здається:
 //
-//  Тому регулятор — класичне ПОВІЛЬНЕ струмове регулювання: щопитання
-//  читаємо РЕАЛЬНИЙ струм (той самий шунт DS2438, що й у розряду) на чинній
-//  цільовій напрузі й підправляємо її МАЛЕНЬКИМ кроком (CHARGE_OUT_STEP_MV) у
-//  бік уставки. Старт — ЗАВЖДИ з 0 В (справжній soft-start): жодних
-//  початкових оцінок «на око».
+//   • СТРУМ порубаний ШІМом, і одиничний відлік ловить або пік, або нуль.
+//     Тому міряємо СЕРІЄЮ (CHARGE_ADC_SAMPLES) через кілька повних періодів:
+//     середнє по серії — це і є середній струм, тобто саме те, що потрібно
+//     регулятору й обліку мА·год. Заразом запам'ятовуємо НАЙБІЛЬШИЙ відлік:
+//     у схемі без дроселя пік нічим не обмежений, крім опору кола, і саме він,
+//     а не середнє, вирішує, чи не горить шунт (див. CHARGE_PEAK_MA_MAX).
+//
+//   • НАПРУГА на плюсовій клемі стрибає між напругою живлення (ключ відкритий)
+//     і напругою пакета (ключ закритий). Усереднювати це безглуздо — вийде
+//     число, якого немає в природі. Тому напругу пакета міряємо ЛИШЕ на
+//     закритому ключі, як це робить розряд: заразом зникає й омічна просадка,
+//     і вимір лишається однаковим від початку до кінця заряду.
+//
+//   • DS2438 теж читається ЛИШЕ на закритому ключі, і не для краси: шунт стоїть
+//     у МІНУСОВОМУ проводі, тож під струмом «мінус» пакета піднімається над
+//     землею ESP32 на I × R_шунт (при 1.5 А це 750 мВ). Для 1-Wire це зсув
+//     опорної землі на чверть логічного рівня — читати під струмом просто не
+//     вийде.
+//
+//  ── РЕГУЛЯТОР ─────────────────────────────────────────────────────────────
+//  Класичне повільне струмове регулювання, тепер прямо в шпаруватості:
+//  щоопитування порівнюємо виміряний середній струм з уставкою профілю й
+//  зсуваємо шпаруватість на CHARGE_DUTY_STEP у потрібний бік. Старт — ЗАВЖДИ
+//  з нуля (справжній soft-start), стеля — CHARGE_DUTY_MAX_PCT.
 //
 //  ── БЕЗПЕКА ────────────────────────────────────────────────────────────────
-//  Заряд — операція, яка може ФІЗИЧНО зашкодити банкам (перезаряд/перегрів)
-//  сильніше, ніж розряд. Тому:
-//    • enable знімається ПЕРШОЮ дією у будь-якому сценарії завершення, до
-//      будь-якої зміни керуючої напруги;
-//    • типовий стан при старті/скиданні пристрою — «закритий» (chargeInit());
-//    • аварійна зупинка за: напругою ВИЩЕ цілі сеансу + CHARGE_HARD_MAX_HEADROOM_MV,
-//      температурою,
-//      стелею часу, кількома невдалими читаннями DS2438 поспіль;
+//  Заряд може ФІЗИЧНО зашкодити банкам сильніше, ніж розряд. Тому:
+//    • шпаруватість 0 — і типовий стан при старті/скиданні (chargeInit()), і
+//      перша дія у будь-якому сценарії завершення;
+//    • ключ ніколи не відкривається повністю (CHARGE_DUTY_MAX_PCT);
+//    • аварійна зупинка за: ПІКОМ струму, напругою вище цілі сеансу +
+//      CHARGE_HARD_MAX_HEADROOM_MV, температурою, стелею часу, кількома
+//      невдалими читаннями DS2438 поспіль;
 //    • заряд «наосліп» неможливий: не читаємо монітор — зупиняємось;
-//    • ОДИН активний заряд на пристрій, повторний старт відхиляється;
-//    • калібрувальна таблиця сама є стелею (CHARGE_CAL_OUT_MAX) — вище не
-//      екстраполюємо, це апаратний бар'єр понад будь-яку помилку регулятора.
-//  Апаратна вимога (силовий каскад плати дає повний прохід ~14 В БЕЗ
-//  керування — див. settings.h) означає, що CHARGE_PIN=LOW має виставлятись
-//  РАНІШЕ будь-якого іншого коду в setup(), так само як і LOAD_PIN.
+//    • ОДИН активний заряд на пристрій, повторний старт відхиляється.
+//  Апаратна вимога: резистор із бази NPN на землю (див. settings.h) — без
+//  нього високоімпедансний стан піна під час скидання ESP32 не перекрити
+//  програмно.
 // ===========================================================================
 
 #include "settings.h"
@@ -85,6 +100,7 @@ enum {
     CHGR_NOREAD,      // монітор не читається
     CHGR_NOSTART,     // не вдалося стартувати (умови не виконані)
     CHGR_STALL,       // головний цикл застряг — сторож зупинив заряд
+    CHGR_PEAK,        // ПІКОВИЙ струм вище CHARGE_PEAK_MA_MAX (див. settings.h)
 };
 
 struct ChargeState {
@@ -106,8 +122,10 @@ struct ChargeState {
     uint16_t polls;
     uint8_t  lastPct;         // останній відсоток заряду (за напругою), для профілю струму
     uint16_t setMa;           // уставка струму зараз (за профілем), мА
-    uint16_t outMv;           // чинна ЦІЛЬОВА вихідна напруга перетворювача, мВ
-    float    rsense;          // вимірювальний резистор ЦЬОГО пакета, Ом
+    // --- керування ключем (замінило колишню «цільову вихідну напругу DC/DC») ---
+    uint16_t duty;            // чинна шпаруватість ШІМ, відліків (0..CHARGE_DUTY_MAX)
+    uint16_t peakMa;          // НАЙБІЛЬШИЙ відлік струму за останній вимір, мА
+    float    rsense;          // шунт ПАКЕТА з DS2438, Ом — лише для перерахунку CCA
 };
 
 // Порожній ініціалізатор — value-initialization зануляє все (float -> 0.0f),
@@ -127,61 +145,88 @@ inline uint8_t chargeConsumeDirty() { uint8_t d = g_chgDirty; g_chgDirty = 0; re
 static bool g_chgPwmOk = false;
 inline bool chargePwmOk() { return g_chgPwmOk; }
 
-// Кусочно-лінійна інтерполяція за калібрувальною таблицею (settings.h):
-// цільова ВИХІДНА напруга перетворювача, мВ -> напруга керування на
-// CHARGE_CTRL_PIN (після RC-фільтра), мВ. Поза таблицею — НЕ екстраполює,
-// затискає до крайньої точки (0 знизу, CHARGE_CAL_OUT_MAX зверху).
-inline uint16_t chargeCtrlMvForOutputMv(uint16_t outMv) {
-    static const uint16_t calCtrl[] = CHARGE_CAL_CTRL_MV;
-    static const uint16_t calOut[]  = CHARGE_CAL_OUT_MV;
-    const int n = CHARGE_CAL_POINTS;
-    if (outMv <= calOut[0])     return calCtrl[0];
-    if (outMv >= calOut[n - 1]) return calCtrl[n - 1];
-    for (int i = 1; i < n; i++) {
-        if (outMv <= calOut[i]) {
-            uint16_t o0 = calOut[i - 1],  o1 = calOut[i];
-            uint16_t c0 = calCtrl[i - 1], c1 = calCtrl[i];
-            return (uint16_t)(c0 + (uint32_t)(c1 - c0) * (outMv - o0) / (o1 - o0));
-        }
-    }
-    return calCtrl[n - 1];   // недосяжно (діапазон покрито циклом вище)
+// Повна шкала шпаруватості й робоча стеля (ключ ніколи не відкривається
+// повністю — див. CHARGE_DUTY_MAX_PCT у settings.h і пояснення там).
+#define CHARGE_DUTY_FULL ((uint16_t)((1u << CHARGE_PWM_BITS) - 1u))
+#define CHARGE_DUTY_MAX  ((uint16_t)((uint32_t)CHARGE_DUTY_FULL * CHARGE_DUTY_MAX_PCT / 100u))
+
+// Шпаруватість у відсотках — для показу на екрані й у JSON.
+inline uint8_t chargeDutyPct() {
+    return (uint8_t)((uint32_t)g_chg.duty * 100u / (CHARGE_DUTY_FULL ? CHARGE_DUTY_FULL : 1));
 }
 
-// Enable силового каскаду. LOW = безпечно (виходу немає) — саме цей стан
-// виставляє chargeInit() НАЙПЕРШИМ, і саме він знімається ПЕРШОЮ дією при
-// будь-якій зупинці (chargeOff()), ДО зміни керуючої напруги.
-inline void chargeEnable(bool on) {
-#ifdef CHARGE_PIN
-    digitalWrite(CHARGE_PIN, on ? HIGH : LOW);
+// Встановити шпаруватість ключа, відліків ШІМ. 0 — ключ закритий (безпечно).
+// Уся робота з CHARGE_PWM_PIN — ТІЛЬКИ через цю функцію: жодних ledcWrite повз
+// неї, інакше LEDC і GPIO почнуть боротись за пін і шпаруватість тихо зникне.
+//
+// ⚑ Затиск до CHARGE_DUTY_MAX — тут, у найнижчій точці, а не в регуляторі:
+// стеля мусить діяти на БУДЬ-ЯКИЙ шлях, включно з майбутнім кодом, який про
+// неї не знатиме.
+inline void chargeSetDuty(uint16_t duty) {
+#ifdef CHARGE_PWM_PIN
+    if (duty > CHARGE_DUTY_MAX) duty = CHARGE_DUTY_MAX;
+    if (g_chgPwmOk) ledcWrite(CHARGE_PWM_PIN, duty);
 #else
-    (void)on;
+    (void)duty;
 #endif
 }
 
-// Встановити ЦІЛЬОВУ вихідну напругу перетворювача, мВ (0 — позиція «немає
-// виходу», відповідає нижній точці калібрувальної таблиці). Уся робота з
-// CHARGE_CTRL_PIN — ТІЛЬКИ через цю функцію: жодних ledcWrite повз неї.
-inline void chargeSetOutputMv(uint16_t outMv) {
-#ifdef CHARGE_CTRL_PIN
-    if (outMv > CHARGE_CAL_OUT_MAX) outMv = CHARGE_CAL_OUT_MAX;
-    if (g_chgPwmOk) {
-        uint16_t ctrlMv  = chargeCtrlMvForOutputMv(outMv);
-        uint32_t maxDuty = (1u << CHARGE_PWM_BITS) - 1u;
-        uint32_t raw     = (uint32_t)ctrlMv * maxDuty / 3300u;
-        if (raw > maxDuty) raw = maxDuty;
-        ledcWrite(CHARGE_CTRL_PIN, raw);
-    }
-#else
-    (void)outMv;
-#endif
-}
-
-// Повна зупинка виходу: СПЕРШУ знімаємо enable (миттєва безпека — вихід
-// падає незалежно від того, яка керуюча напруга зараз стоїть), і лише ПОТІМ
-// повертаємо керування в позицію «0 В» про запас на наступний старт.
+// Повна зупинка: ключ закрити негайно. Це єдиний безпечний стан і він же —
+// перша дія в будь-якому сценарії завершення.
 inline void chargeOff() {
-    chargeEnable(false);
-    chargeSetOutputMv(0);
+    chargeSetDuty(0);
+}
+
+// ── ВИМІРЮВАННЯ ────────────────────────────────────────────────────────────
+// Один відлік АЦП у мілівольти. Свідомо analogRead() і проста пропорція, а НЕ
+// analogReadMilliVolts(): остання спирається на калібрування в eFuse, якого на
+// частині модулів немає, і там вона падає (на цьому вже горіли кнопки меню).
+inline uint16_t chargeAdcMv(int pin) {
+#ifdef CHARGE_PWM_PIN
+    long raw = analogRead(pin);
+    if (raw < 0) raw = 0;
+    return (uint16_t)(raw * CHARGE_ADC_FULL_MV / CHARGE_ADC_MAX_RAW);
+#else
+    (void)pin; return 0;
+#endif
+}
+
+// Напруга пакета, мВ — з подільника на плюсовій клемі.
+//
+// ⚠️ Кличте ЛИШЕ на закритому ключі: при відкритому на клемі стоїть напруга
+// живлення, а не пакета (див. коментар на початку файлу).
+inline uint16_t chargePackMv() {
+#ifdef CHARGE_VSENSE_PIN
+    uint32_t node = chargeAdcMv(CHARGE_VSENSE_PIN);        // напруга у вузлі подільника
+    // Назад через подільник: U = Uвузла * (Rверх + Rниз) / Rниз.
+    return (uint16_t)(node * (CHARGE_VSENSE_R_TOP + CHARGE_VSENSE_R_BOT) / CHARGE_VSENSE_R_BOT);
+#else
+    return 0;
+#endif
+}
+
+// Струм заряду, мА: СЕРЕДНІЙ по серії відліків і, окремо, найбільший (пік).
+//
+// Серія обов'язкова: струм порубаний ШІМом, і одиничний відлік ловить або пік,
+// або нуль. Середнє по кількох повних періодах — це саме середній струм, який
+// і тече в пакет. Пік повертаємо окремо, бо в схемі без дроселя його ніщо не
+// обмежує, крім опору кола, і саме він вирішує долю шунта.
+inline uint16_t chargeMeasureMa(uint16_t *peakMaOut) {
+#ifdef CHARGE_ISENSE_PIN
+    uint32_t sum = 0, peakMv = 0;
+    for (int i = 0; i < CHARGE_ADC_SAMPLES; i++) {
+        uint32_t mv = chargeAdcMv(CHARGE_ISENSE_PIN);
+        sum += mv;
+        if (mv > peakMv) peakMv = mv;
+    }
+    uint32_t avgMv = sum / CHARGE_ADC_SAMPLES;
+    // I(мА) = U(мВ) / R(Ом) = U(мВ) * 1000 / R(мОм)
+    if (peakMaOut) *peakMaOut = (uint16_t)(peakMv * 1000u / CHARGE_SHUNT_MOHM);
+    return (uint16_t)(avgMv * 1000u / CHARGE_SHUNT_MOHM);
+#else
+    if (peakMaOut) *peakMaOut = 0;
+    return 0;
+#endif
 }
 
 // Уставка струму за відсотком заряду, ПЕРЕРАХОВАНА під обрану ЦІЛЬ
@@ -244,54 +289,68 @@ inline uint8_t chargeCycleTarget() {
     return g_chgTargetPct;
 }
 
-// Наступний крок ЦІЛЬОВОЇ вихідної напруги: МАЛЕНЬКИЙ крок у бік уставки за
-// РЕАЛЬНИМ виміряним струмом — не розрахунок наосліп (див. коментар на
-// початку файлу). Крок саме у вихідній напрузі (не в сирій напрузі на
-// CHARGE_CTRL_PIN) — щоб ефект кроку був приблизно однаковим по всьому
-// діапазону, а не лише на пласкій ділянці калібрувальної кривої.
-inline uint16_t chargeNextOutMv(uint16_t outMv, int16_t measuredMa, uint16_t setMa) {
-    int16_t meas = measuredMa < 0 ? -measuredMa : measuredMa;
-    int32_t err  = (int32_t)setMa - meas;
+// Наступна шпаруватість: МАЛЕНЬКИЙ крок у бік уставки за РЕАЛЬНИМ виміряним
+// СЕРЕДНІМ струмом.
+//
+// ⚑ Тут навмисно НЕМАЄ abs(): у попередній схемі струм брався з DS2438, де
+// знак залежить від напрямку, і його доводилось випрямляти. Тепер струм міряє
+// НАШ шунт, увімкнений так, що заряд дає додатний спад, і нуль означає рівно
+// «струму немає». Випрямляти тут було б шкідливо: від'ємний відлік — це або
+// шум навколо нуля, або те, що пакет РОЗРЯДЖАЄТЬСЯ, і в обох випадках правильна
+// реакція одна — вважати струм заряду нульовим і піднімати шпаруватість, а не
+// вдавати, ніби уставка вже досягнута.
+inline uint16_t chargeNextDuty(uint16_t duty, int32_t measuredMa, uint16_t setMa) {
+    if (measuredMa < 0) measuredMa = 0;
+    int32_t err = (int32_t)setMa - measuredMa;
     if (err > CHARGE_DEADBAND_MA) {
-        if (outMv + CHARGE_OUT_STEP_MV <= CHARGE_CAL_OUT_MAX) outMv = (uint16_t)(outMv + CHARGE_OUT_STEP_MV);
-        else outMv = CHARGE_CAL_OUT_MAX;
+        duty = (uint16_t)(duty + CHARGE_DUTY_STEP);
     } else if (err < -CHARGE_DEADBAND_MA) {
-        outMv = (outMv > CHARGE_OUT_STEP_MV) ? (uint16_t)(outMv - CHARGE_OUT_STEP_MV) : 0;
+        duty = (duty > CHARGE_DUTY_STEP) ? (uint16_t)(duty - CHARGE_DUTY_STEP) : 0;
     }
-    if (outMv > CHARGE_CAL_OUT_MAX) outMv = CHARGE_CAL_OUT_MAX;
-    return outMv;
+    if (duty > CHARGE_DUTY_MAX) duty = CHARGE_DUTY_MAX;
+    return duty;
 }
 
-// Викликати в setup() ДО всього іншого: обидва піни у вихід і одразу в стан
-// «закрито» (enable LOW), щоб перетворювач гарантовано не працював одразу
-// після подачі живлення чи скидання — плата й так дає повний прохід ~14 В
-// БЕЗ керування (див. settings.h), тож саме enable=LOW і є запобіжником.
+// Викликати в setup() ДО всього іншого: пін у вихід і одразу LOW, щоб ключ
+// гарантовано був закритий після подачі живлення чи скидання. LOW тут —
+// справді безпечний стан: NPN закритий, затвор P-MOSFET підтягнутий до +, ключ
+// закритий (див. схему в settings.h).
 inline void chargeInit() {
-#ifdef CHARGE_PIN
-    pinMode(CHARGE_PIN, OUTPUT);
-    digitalWrite(CHARGE_PIN, LOW);       // безпечний стан — миттєво, до всього іншого
-#endif
-#ifdef CHARGE_CTRL_PIN
-    pinMode(CHARGE_CTRL_PIN, OUTPUT);
-    g_chgPwmOk = ledcAttachChannel(CHARGE_CTRL_PIN, CHARGE_PWM_FREQ,
-                                    CHARGE_PWM_BITS, CHARGE_LEDC_CH);
-    Serial.printf("CHARGE: pin=%d LEDC ch=%d freq=%d bits=%d attach=%s%s\n",
-                  (int)CHARGE_CTRL_PIN, (int)CHARGE_LEDC_CH, (int)CHARGE_PWM_FREQ,
+#ifdef CHARGE_PWM_PIN
+    pinMode(CHARGE_PWM_PIN, OUTPUT);
+    digitalWrite(CHARGE_PWM_PIN, LOW);   // безпечний стан — миттєво, до LEDC
+    g_chgPwmOk = ledcAttachChannel(CHARGE_PWM_PIN, CHARGE_PWM_FREQ,
+                                   CHARGE_PWM_BITS, CHARGE_LEDC_CH);
+    Serial.printf("CHARGE: pwm=%d LEDC ch=%d freq=%d bits=%d attach=%s%s\n",
+                  (int)CHARGE_PWM_PIN, (int)CHARGE_LEDC_CH, (int)CHARGE_PWM_FREQ,
                   (int)CHARGE_PWM_BITS, g_chgPwmOk ? "OK" : "FAIL",
                   g_chgPwmOk ? "" : " — або CHARGE_PWM_FREQ/CHARGE_PWM_BITS "
-                  "недосяжні для дільника LEDC (макс. частота = джерело/2^bits — "
-                  "деталі в рядку 'ledc: requested frequency ... can not be "
-                  "achieved' вище), або вичерпано вільні таймери (їх ділять "
-                  "підсвітка/світлодіоди/зумер/розряд) — спробуйте інший "
-                  "CHARGE_LEDC_CH чи знизьте CHARGE_PWM_BITS");
-    chargeSetOutputMv(0);
+                  "недосяжні для дільника LEDC (макс. частота = джерело/2^bits), "
+                  "або вичерпано вільні таймери (їх ділять підсвітка/світлодіоди/"
+                  "розряд) — спробуйте інший CHARGE_LEDC_CH чи знизьте CHARGE_PWM_BITS");
+    chargeSetDuty(0);
+    // Вимірювальні входи. pinMode(INPUT) без підтяжок: будь-яка підтяжка тут
+    // зсунула б показання подільника й шунта. 11 дБ — повний діапазон 0..~3.1 В.
+    pinMode(CHARGE_ISENSE_PIN, INPUT);
+    pinMode(CHARGE_VSENSE_PIN, INPUT);
+  #if defined(ARDUINO_ARCH_ESP32)
+    analogSetPinAttenuation(CHARGE_ISENSE_PIN, ADC_11db);
+    analogSetPinAttenuation(CHARGE_VSENSE_PIN, ADC_11db);
+  #endif
+    Serial.printf("CHARGE: isense=%d (шунт %d мОм), vsense=%d (подільник %d/%d, "
+                  "стеля живлення %d мВ -> %lu мВ на АЦП)\n",
+                  (int)CHARGE_ISENSE_PIN, (int)CHARGE_SHUNT_MOHM,
+                  (int)CHARGE_VSENSE_PIN, (int)CHARGE_VSENSE_R_TOP, (int)CHARGE_VSENSE_R_BOT,
+                  (int)CHARGE_SUPPLY_MV,
+                  (unsigned long)((uint32_t)CHARGE_SUPPLY_MV * CHARGE_VSENSE_R_BOT /
+                                  (CHARGE_VSENSE_R_TOP + CHARGE_VSENSE_R_BOT)));
 #endif
     g_chg.state = CHG_IDLE;
     g_chg.reason = CHGR_NONE;
 }
 
 inline bool chargeAvailable() {
-#if defined(CHARGE_PIN) && defined(CHARGE_CTRL_PIN)
+#if defined(CHARGE_PWM_PIN) && defined(CHARGE_ISENSE_PIN) && defined(CHARGE_VSENSE_PIN)
     return true;
 #else
     return false;
@@ -339,9 +398,9 @@ inline void chargeWatchdogFeed() {
 }
 
 inline void chargeStop(uint8_t reason) {
-    // Каскад гасимо ЗАВЖДИ — безумовний запобіжник, він нікому не шкодить.
+    // Ключ гасимо ЗАВЖДИ — безумовний запобіжник, він нікому не шкодить.
     chargeOff();
-    g_chg.outMv = 0;
+    g_chg.duty = 0;
 
     // ⚑ РЕШТА — ЛИШЕ ЯКЩО ЗАРЯД СПРАВДІ ЙШОВ (дзеркально до dischargeStop(),
     // де це розписано докладно). Коротко: зупинку кличуть ззовні беззастережно
@@ -368,6 +427,7 @@ inline const char *chargeReasonText(uint8_t r) {
         case CHGR_NOREAD:   return "АВАРІЯ: монітор не читається";
         case CHGR_NOSTART:  return "старт неможливий";
         case CHGR_STALL:    return "АВАРІЯ: цикл завис — ключ і enable знято";
+        case CHGR_PEAK:     return "АВАРІЯ: піковий струм вище межі";
         default:            return "";
     }
 }
@@ -377,6 +437,11 @@ inline uint32_t chargeMah() { return g_chg.mahX1000 / 1000; }
 
 // Те саме за АПАРАТНИМ лічильником CCA DS2438 (ціна розряду — 15.625 мВ*год,
 // як і DCA в розряду).
+//
+// ⚑ Тепер це справді НЕЗАЛЕЖНА перевірка, а не переспів того самого числа:
+// наш інтеграл рахується з ВЛАСНОГО шунта (CHARGE_SHUNT_MOHM), а CCA — з
+// шунта ПАКЕТА всередині DS2438. Два різні давачі на одному струмі: велика
+// розбіжність означає, що один із них бреше.
 inline uint32_t chargeCcaMah() {
     uint16_t delta = (uint16_t)(g_chg.lastCca - g_chg.startCca);   // з урахуванням переповнення
     float rs = g_chg.rsense > 0.0f ? g_chg.rsense : DS2438_RSENSE_OHM;

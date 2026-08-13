@@ -33,6 +33,14 @@ static unsigned long g_ms = 1000;
 static unsigned long millis() { return g_ms; }
 static bool ledcAttachChannel(int, int, int, int) { return true; }
 static void ledcWrite(int, uint32_t) {}
+// Заряд тепер міряє струм і напругу ВЛАСНИМ АЦП (шунт + подільник), тож
+// charge.h кличе ці функції. Тут вони не потрібні по суті — цей тест про
+// взаємний захист заряду й розряду, а не про вимірювання, — але без них
+// заголовок не збереться. Нуль означає «струму немає, напруги немає».
+#define ADC_11db 3
+#define INPUT 0
+static int  analogRead(int) { return 0; }
+static void analogSetPinAttenuation(int, int) {}
 static class { public: void printf(const char *, ...) {} void println(const char *) {}
                void println() {} void print(const char *) {} } Serial;
 
@@ -67,7 +75,7 @@ static void setCharge(uint8_t state) {
     g_chg.state = state;
     g_chg.targetMv  = 8250;
     g_chg.targetPct = 100;
-    g_chg.outMv     = 4000;
+    g_chg.duty      = 400;
     chargeConsumeReleaseEnable();
     chargeConsumeDirty();
 }
@@ -121,7 +129,7 @@ int main() {
     check(!dischargeConsumeReleaseEnable(),  "enable пакета НЕ знято");
     check(!chargeConsumeReleaseEnable(),     "заряд не просить знімати enable — його не було");
     check(g_led == LED_DISCHARGE,            "індикацію розряду не збито");
-    check(g_chg.outMv == 0,                  "керуючу напругу заряду однаково обнулено — запобіжник");
+    check(g_chg.duty == 0,                   "шпаруватість ключа заряду однаково обнулено — запобіжник");
 
     printf("\n3) зупинка «вхолосту» (нічого не йде) — тиха, без побічних дій\n");
     setDischarge(DIS_IDLE);

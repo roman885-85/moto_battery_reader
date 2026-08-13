@@ -1275,17 +1275,15 @@ static String dischargeJson() {
 // Старт заряду до обраного ВІДСОТКА (0 -> типово 100 %, повний заряд).
 // Повертає nullptr при успіху, інакше — текст причини відмови.
 const char *chargeStart(uint8_t targetPct) {
-    if (!chargeAvailable()) return "Заряд не налаштовано: задайте CHARGE_PIN і CHARGE_CTRL_PIN у settings.h";
+    if (!chargeAvailable()) return "Заряд не налаштовано: задайте CHARGE_PWM_PIN, CHARGE_ISENSE_PIN і CHARGE_VSENSE_PIN у settings.h";
     if (chargeRunning())    return "Заряд уже виконується";
     if (dischargeRunning()) return "Спочатку зупиніть розряд";
-    // На відміну від розряду (де відмова ШІМ безпечно відкочується на
-    // digitalWrite — ключ повністю відкритий, струм лише ЗРОСТАЄ понад
-    // задане), тут відкочуватись нема куди: без ШІМ керуюча напруга на
-    // CHARGE_CTRL_PIN лишається в НЕКАЛІБРОВАНІЙ ділянці (нижче нижньої
-    // точки таблиці, 1.76 В), а поведінка готової TL494-плати там
-    // невідома. enable, який реально відкриває каскад, працює НЕЗАЛЕЖНО
-    // від ШІМ — тому «мовчазний» провал ledcAttachChannel() інакше
-    // призводив би до заряду з непідконтрольною вихідною напругою.
+    // Без ШІМ заряд заборонено взагалі. На відміну від розряду (де відмова
+    // ШІМ безпечно відкочується на digitalWrite: ключ відкритий повністю,
+    // струм лише ЗРОСТАЄ понад задане, але резистор його жорстко обмежує),
+    // тут відкочуватись нема куди: обмежувача струму в схемі немає, і
+    // «постійно відкритий» ключ означав би (Uживл − Uпакета)/R_шунт —
+    // десяток ампер через шунт і банки.
     if (!chargePwmOk())     return "Керування недоступне: каналу LEDC не знайшлося — заряд заборонено, перевірте CHARGE_LEDC_CH у settings.h";
 
     if (!targetPct) targetPct = 100;
@@ -1298,11 +1296,30 @@ const char *chargeStart(uint8_t targetPct) {
     if (targetMv > CHARGE_TARGET_MV) targetMv = CHARGE_TARGET_MV;
     uint16_t hardMaxMv = (uint16_t)(targetMv + CHARGE_HARD_MAX_HEADROOM_MV);
 
-    uint16_t mv; int16_t ma, t;
-    if (!dischargeSample(&mv, &ma, &t)) {   // те саме читання DS2438, напрямок ролі не грає
+    // ⚑ ДВА РІЗНІ ДЖЕРЕЛА, КОЖНЕ ЗА СВОЇМ ПРИЗНАЧЕННЯМ.
+    //  • НАПРУГА — з нашого подільника (chargePackMv). Вона й керує зупинкою за
+    //    ціллю, тож мусить бути тим самим числом, яке далі щосекунди міряє
+    //    chargeTask(): міряти старт монітором, а хід — подільником означало б
+    //    порівнювати різні шкали й ловити стрибок на першому ж опитуванні.
+    //  • ТЕМПЕРАТУРА — з DS2438: свого датчика в пристрою немає, а без контролю
+    //    нагріву заряд заборонено. Ключ зараз закритий, тож 1-Wire читається
+    //    без зсуву землі (див. коментар про шунт у мінусовому проводі).
+    chargeOff();                        // гарантовано закритий ключ на час вимірів
+    uint16_t mv = chargePackMv();
+    uint16_t mvPeak; uint16_t maIdle = chargeMeasureMa(&mvPeak);
+
+    uint16_t dummyMv; int16_t ma, t;
+    if (!dischargeSample(&dummyMv, &ma, &t)) {   // те саме читання DS2438: потрібна ТЕМПЕРАТУРА
         chargeOff();
-        return "DS2438 не читається — заряд наосліп заборонено";
+        return "DS2438 не читається — заряд наосліп заборонено (потрібна температура пакета)";
     }
+    // Правдоподібність власного вимірювального кола. Нуль на подільнику при
+    // під'єднаному пакеті означає обрив вимірювальної лінії або переплутані
+    // клеми — заряджати, не бачачи напруги, не можна.
+    if (mv < BATTERY_EMPTY_MV / 2)
+        return "Подільник напруги показує майже нуль — перевірте CHARGE_VSENSE_PIN і клеми";
+    if (maIdle > CHARGE_DEADBAND_MA)
+        return "На закритому ключі шунт бачить струм — перевірте ключ (можливо, пробитий MOSFET)";
     if (mv >= targetMv)                 return "Пакет уже заряджений до обраної цілі";
     if (mv >= hardMaxMv)                return "Напруга вже вище аварійної межі — заряд не почато";
     if (t >= CHARGE_MAX_TEMP_C * 10)    return "Пакет гарячий — дайте охолонути";
@@ -1313,24 +1330,22 @@ const char *chargeStart(uint8_t targetPct) {
     g_chg.startMv  = g_chg.lastMv = mv;
     g_chg.targetMv  = targetMv;
     g_chg.targetPct = targetPct;
-    g_chg.lastMa   = ma;
+    g_chg.lastMa   = 0;              // ключ ще закритий — струму немає
     g_chg.lastTempC10 = t;
     g_chg.startMs  = g_chg.lastPollMs = millis();
     g_chg.startCca = g_chg.lastCca = impresCca(batteryDump2438);
     g_chg.startIca = g_chg.lastIca = batteryDump2438[12];
     g_chg.lastPct  = (uint8_t)impresPercentFromMv(mv);
-    g_chg.rsense   = impresBmsRsense(batteryDump2438);
+    g_chg.rsense   = impresBmsRsense(batteryDump2438);   // шунт ПАКЕТА — лише для CCA
+    (void)ma;                        // струм DS2438 тут не потрібен: міряємо своїм шунтом
 
-    // ⚑ SOFT-START: цільова вихідна напруга ЗАВЖДИ з нуля, жодних початкових
-    // оцінок «на око» (детальніше — коментар на початку charge.h). Регулятор
-    // сам виведе її на потрібний рівень протягом кількох секунд. Порядок
-    // важливий: спершу керування в позицію «0 В», ПОТІМ enable силового
-    // каскаду — щоб у момент увімкнення каскад уже «бачив» безпечну уставку,
-    // а не випадкове значення з попереднього стану ШІМ.
+    // ⚑ SOFT-START: шпаруватість ЗАВЖДИ з нуля, жодних початкових оцінок «на
+    // око» (детальніше — коментар на початку charge.h). Регулятор сам виведе
+    // її на потрібний рівень за кілька секунд. Окремого enable силового
+    // каскаду більше немає — його роль виконує сама шпаруватість 0.
     g_chg.setMa = chargeSetpointMaForPct(g_chg.lastPct, targetPct);
-    g_chg.outMv = 0;
-    chargeSetOutputMv(0);
-    chargeEnable(true);
+    g_chg.duty  = 0;
+    chargeSetDuty(0);
 
     battery.holdEnable(true);        // enable пакета — так само, як і розряд, ще ДО подачі струму
     chargeWatchdog(true);
@@ -1340,8 +1355,11 @@ const char *chargeStart(uint8_t targetPct) {
     // він перекриє сторінку заряду (докладніше — коментар там).
     dischargeDismiss();                    // не діє, якщо розряд справді йде
     chargeMarkDirty(2);
-    Serial.printf("\n=== Charge started: %u mV (%u%%) -> ціль %u mV (%u%%), setpoint %u mA%s ===\n",
-                  mv, g_chg.lastPct, targetMv, targetPct, g_chg.setMa, chargePwmOk() ? "" : ", PWM UNAVAILABLE");
+    Serial.printf("\n=== Charge started: %u mV (%u%%) -> ціль %u mV (%u%%), setpoint %u mA, "
+                  "soft-start duty 0 (стеля %u з %u = %d%%)%s ===\n",
+                  mv, g_chg.lastPct, targetMv, targetPct, g_chg.setMa,
+                  (unsigned)CHARGE_DUTY_MAX, (unsigned)CHARGE_DUTY_FULL,
+                  (int)CHARGE_DUTY_MAX_PCT, chargePwmOk() ? "" : ", PWM UNAVAILABLE");
     return nullptr;
 }
 
@@ -1374,11 +1392,44 @@ inline void chargeTask() {
     // опитування) струмі, а не на щойно виміряному.
     g_chg.mahX1000 += ((uint32_t)(g_chg.lastMa < 0 ? -g_chg.lastMa : g_chg.lastMa) * dtMs) / 3600UL;
 
-    // Один вимір під ЧИННОЮ шпаруватістю — на відміну від розряду, тут не
-    // потрібне окреме «зняття піка» (див. charge.h): струм читаємо просто на
-    // тому режимі, в якому перетворювач зараз і працює.
-    uint16_t mv = 0; int16_t ma = 0, t = 0;
-    bool ok = dischargeSample(&mv, &ma, &t);
+    // ── крок 1: СТРУМ під ЧИННОЮ шпаруватістю ────────────────────────────
+    //  Серія відліків через кілька повних періодів ШІМ: середнє — це реальний
+    //  середній струм у пакет, найбільший відлік — пік. Пік потрібен окремо:
+    //  дроселя в схемі немає, тож у момент відкриття ключа струм обмежують лише
+    //  різниця напруг і опір кола, і саме він вирішує долю шунта.
+    uint16_t peakMa = 0;
+    uint16_t avgMa  = chargeMeasureMa(&peakMa);
+
+    // ⚑ ПІКОВА ВІДСІЧКА — ПЕРЕД усім іншим. Це єдиний запобіжник, який мусить
+    // спрацювати В ТОМУ Ж проході, де помічений: середній струм може лишатись
+    // у нормі, поки пік уже палить шунт.
+    if (peakMa > CHARGE_PEAK_MA_MAX) {
+        g_chg.peakMa = peakMa;
+        chargeStop(CHGR_PEAK);
+        Serial.printf("=== Charge ABORT: peak %u mA > %u mA (шунт %d мОм) ===\n",
+                      peakMa, (unsigned)CHARGE_PEAK_MA_MAX, (int)CHARGE_SHUNT_MOHM);
+        return;
+    }
+
+    // ── крок 2: НАПРУГА і температура на ЗАКРИТОМУ ключі ──────────────────
+    //  Дві причини закрити ключ, і обидві обов'язкові (див. charge.h):
+    //   • на відкритому ключі плюсова клема показує напругу ЖИВЛЕННЯ, а не
+    //     пакета — міряти там нічого;
+    //   • шунт стоїть у МІНУСОВОМУ проводі, тож під струмом «мінус» пакета
+    //     піднятий над землею ESP32 на I×R_шунт, і 1-Wire (звідки беремо
+    //     температуру) по зсунутій землі просто не відповідає.
+    uint16_t saveDuty = g_chg.duty;
+    chargeSetDuty(0);
+    dischargeSettle(CHARGE_SETTLE_MS);          // той самий неблокуючий сон, що й у розряду
+
+    uint16_t mv = chargePackMv();
+    uint16_t dummy; int16_t maChip = 0, t = 0;
+    bool ok = dischargeSample(&dummy, &maChip, &t);   // з DS2438 тут потрібна ТЕМПЕРАТУРА
+
+    // Ключ НЕГАЙНО назад у робочу шпаруватість — закритим його не лишаємо ні на
+    // мить довше, ніж триває вимір (інакше заряд просто не йшов би).
+    chargeSetDuty(saveDuty);
+
     if (!ok) {
         if (++g_chg.readFails >= CHARGE_MAX_READ_FAILS) {
             chargeStop(CHGR_NOREAD);
@@ -1389,21 +1440,24 @@ inline void chargeTask() {
     g_chg.readFails = 0;
     g_chg.polls++;
 
+    // ── крок 3: перерахунок уставки і шпаруватості ────────────────────────
     int pct = impresPercentFromMv(mv);
     g_chg.lastPct = (uint8_t)pct;
     g_chg.setMa   = chargeSetpointMaForPct(pct, g_chg.targetPct);
-    g_chg.outMv   = chargeNextOutMv(g_chg.outMv, ma, g_chg.setMa);
-    chargeSetOutputMv(g_chg.outMv);
+    g_chg.duty    = chargeNextDuty(g_chg.duty, (int32_t)avgMa, g_chg.setMa);
+    chargeSetDuty(g_chg.duty);
 
     g_chg.lastMv = mv;
-    g_chg.lastMa = ma;               // додатний = заряджаємо (те саме DS2438[5..6], що й розряд)
+    g_chg.lastMa = (int16_t)avgMa;   // СЕРЕДНІЙ струм із НАШОГО шунта, додатний = заряджаємо
+    g_chg.peakMa = peakMa;
     g_chg.lastTempC10 = t;
     g_chg.lastCca = impresCca(batteryDump2438);
     g_chg.lastIca = batteryDump2438[12];
 
-    Serial.printf("charge: %u mV (%d%%), %d mA (set %u, out %u mV), %.1f W, %.1f C, "
-                  "%lu mAh (CCA %lu), ICA %u, %lus\n",
-                  mv, pct, g_chg.lastMa, g_chg.setMa, g_chg.outMv,
+    Serial.printf("charge: %u mV (%d%%), %d mA (пік %u, set %u, duty %u/%u = %u%%), "
+                  "%.1f W, %.1f C, %lu mAh (CCA %lu), ICA %u, %lus\n",
+                  mv, pct, g_chg.lastMa, g_chg.peakMa, g_chg.setMa,
+                  g_chg.duty, (unsigned)CHARGE_DUTY_FULL, chargeDutyPct(),
                   chargeWattsX10(mv, g_chg.lastMa) / 10.0f, t / 10.0f,
                   (unsigned long)chargeMah(), (unsigned long)chargeCcaMah(),
                   g_chg.lastIca, (unsigned long)g_chg.elapsedS);
@@ -1450,8 +1504,16 @@ static String chargeJson() {
     j += ",\"elapsedS\":" + String((unsigned long)g_chg.elapsedS);
     j += ",\"polls\":"    + String(g_chg.polls);
     j += ",\"setMa\":"    + String(g_chg.setMa);
-    j += ",\"outMv\":"    + String(g_chg.outMv);
-    j += ",\"outMaxMv\":" + String(CHARGE_CAL_OUT_MAX);
+    // Керування тепер — шпаруватість ключа, а не «цільова напруга DC/DC».
+    // Клієнти показують duty/dutyMax у відліках і dutyPct у відсотках.
+    j += ",\"duty\":"     + String(g_chg.duty);
+    j += ",\"dutyMax\":"  + String((unsigned)CHARGE_DUTY_MAX);
+    j += ",\"dutyFull\":" + String((unsigned)CHARGE_DUTY_FULL);
+    j += ",\"dutyPct\":"  + String(chargeDutyPct());
+    // Пік струму й межа — головний запобіжник схеми без дроселя.
+    j += ",\"peakMa\":"   + String(g_chg.peakMa);
+    j += ",\"peakMaxMa\":"+ String((unsigned)CHARGE_PEAK_MA_MAX);
+    j += ",\"shuntMohm\":"+ String((unsigned)CHARGE_SHUNT_MOHM);
     j += ",\"pwm\":"      + String(chargePwmOk() ? "true" : "false");
     j += ",\"hardMaxMv\":"+ String((unsigned)g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV);
     j += "}";

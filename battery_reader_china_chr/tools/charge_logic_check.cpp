@@ -14,7 +14,8 @@
 //    • регулятор шпаруватості: soft-start, збіжність, стеля, підлога, і те,
 //      що від'ємний струм НЕ випрямляється (це не «уставка досягнута»);
 //    • перерахунок АЦП -> напруга пакета через подільник;
-//    • вимір струму: середнє по серії й ПІК на порубаному ШІМом сигналі;
+//    • стартова шпаруватість понижувача (точка нульового струму);
+//    • вимір струму: середнє й вершина ПУЛЬСАЦІЙ струму дроселя;
 //    • запас вимірювального кола: подільник і шунт не виводять АЦП за межу.
 // ===========================================================================
 #include <cstdint>
@@ -39,12 +40,14 @@ static class { public: void printf(const char *, ...) {} void println(const char
                void println() {} void print(const char *) {} } Serial;
 
 // ── керований АЦП ──────────────────────────────────────────────────────────
-//  Модель шини: для піна струму віддаємо «порубаний ШІМом» сигнал (peak або 0
-//  залежно від фази), для піна напруги — сталий рівень подільника.
-static int      g_adcIsensePeakRaw = 0;   // відлік у фазі «ключ відкритий»
-static int      g_adcDutyNum = 0, g_adcDutyDen = 1;
+//  ⚑ МОДЕЛЬ СТРУМУ — ПУЛЬСАЦІЇ ДРОСЕЛЯ, а не «рубанина» 0/пік.
+//  Через шунт тече струм дроселя в ОБИДВІ фази (у відкритій — від живлення,
+//  у закритій — через діод), тож сигнал майже неперервний: трикутна хвиля
+//  навколо середнього з розмахом ΔI. Раніше тут стояла модель простого ключа
+//  (peak або 0), і вона перевіряла б зовсім не ту фізику.
+static int      g_adcMidMa = 0;           // середній струм дроселя, мА
+static int      g_adcRippleMa = 0;        // повний розмах пульсацій ΔI, мА
 static int      g_adcVsenseRaw = 0;
-static long     g_adcCall = 0;
 static long     g_adcIsenseReads = 0;
 static int analogRead(int pin);
 
@@ -59,15 +62,20 @@ static void ledSet(LedMode m) { g_led = m; }
 
 #include "charge.h"
 
+// мА -> сирий відлік АЦП на шунті — оголошуємо раніше, бо потрібне в analogRead.
+static int maToRaw(int ma);
+
 static int analogRead(int pin) {
-    g_adcCall++;
     if (pin == CHARGE_VSENSE_PIN) return g_adcVsenseRaw;
-    // Пін струму: рівномірно розкидаємо «відкриті» фази по серії — саме так
-    // серія й перекриває кілька повних періодів ШІМ.
-    g_adcIsenseReads++;
-    bool on = ((g_adcIsenseReads - 1) * g_adcDutyNum / g_adcDutyDen) !=
-              ((g_adcIsenseReads)     * g_adcDutyNum / g_adcDutyDen);
-    return on ? g_adcIsensePeakRaw : 0;
+    // Пін струму: трикутна хвиля навколо g_adcMidMa з розмахом g_adcRippleMa.
+    // Період беремо 16 відліків — серія зі 128 покриває рівно 8 повних
+    // періодів, тож середнє по серії має точно збігтися з g_adcMidMa.
+    long i = g_adcIsenseReads++ % 16;
+    long tri = (i < 8) ? i : (15 - i);          // 0..7..0
+    // Нормуємо трикутник у діапазон [-ΔI/2, +ΔI/2].
+    long ma = g_adcMidMa + (long)g_adcRippleMa * (2 * tri - 7) / 14;
+    if (ma < 0) ma = 0;
+    return maToRaw((int)ma);
 }
 
 // мА -> сирий відлік АЦП на шунті (I·R -> мВ -> відлік).
@@ -119,10 +127,11 @@ int main() {
               "відсоток вище цілі затискається, а не виходить за таблицю");
     }
 
-    printf("\n3) регулятор шпаруватості: soft-start з нуля й збіжність до уставки\n");
+    printf("\n3) регулятор шпаруватості: збіжність до уставки\n");
     {
-        // Модель «плант»: струм пропорційний шпаруватості (резистивне коло без
-        // дроселя саме так себе й поводить).
+        // Модель «плант» понижувача: I = (D×Uживл − Uпакета)/R, тобто струм
+        // лінійний за шпаруватістю вище порога провідності. Беремо спрощено —
+        // важлива саме лінійність і крутість, а не абсолютні числа.
         const int K = 3;                       // мА на відлік шпаруватості
         uint16_t duty = 0, setMa = 1000;
         int steps = 0;
@@ -136,7 +145,7 @@ int main() {
         printf("   збіжність за %d кроків, duty=%u (%u%% від повної), струм ~%d мА (ціль %u)\n",
                steps, duty, (unsigned)((uint32_t)duty * 100 / CHARGE_DUTY_FULL),
                (int)finalMa, setMa);
-        check(steps > 1,                 "це саме soft-start: з нуля, а не стрибком");
+        check(steps > 1,                 "регулятор іде кроками, а не стрибком");
         check(steps < 5000,              "регулятор збігається, а не крутиться вічно");
         check(labs(finalMa - setMa) <= CHARGE_DEADBAND_MA + CHARGE_DUTY_STEP * K,
                                          "кінцевий струм у межах мертвої зони навколо уставки");
@@ -169,6 +178,30 @@ int main() {
         check(up > 100, "від'ємний струм читається як «заряду немає», шпаруватість росте");
     }
 
+    printf("\n6б) стартова шпаруватість понижувача — точка НУЛЬОВОГО струму\n");
+    {
+        // Uвих ≈ D × Uживл, тож D = Uвих/Uживл. Це та точка, з якої стартує
+        // заряд: струму ще немає, але й «мертвого розгону» від нуля немає теж.
+        for (int mv = 6500; mv <= 8250; mv += 250) {
+            uint16_t d = chargeDutyForMv((uint16_t)mv);
+            long backMv = (long)d * CHARGE_SUPPLY_MV / CHARGE_DUTY_FULL;
+            printf("   пакет %d мВ -> duty %4u -> вихід ~%ld мВ\n", mv, d, backMv);
+            if (backMv > mv)
+                bad("розрахований вихід ВИЩИЙ за напругу пакета — старт дав би струм");
+        }
+        check(true, "оцінка помиляється в безпечний бік (вихід не вище пакета)");
+
+        // Скільки кроків заощаджено проти старту з нуля.
+        uint16_t d0 = chargeDutyForMv(8000);
+        printf("   старт із нуля коштував би %u кроків по %d = %u с опитувань\n",
+               (unsigned)(d0 / CHARGE_DUTY_STEP), (int)CHARGE_DUTY_STEP,
+               (unsigned)(d0 / CHARGE_DUTY_STEP));
+        check(d0 > 50 * CHARGE_DUTY_STEP,
+              "розгін від нуля справді був би довгим — feed-forward не косметика");
+        check(chargeDutyForMv(60000) <= CHARGE_DUTY_MAX,
+              "стартова оцінка теж затиснута стелею");
+    }
+
     printf("\n7) АЦП -> напруга пакета через подільник (туди й назад)\n");
     {
         int worst = 0;
@@ -194,41 +227,40 @@ int main() {
         check(worst <= lsbMv * 3, "похибка в межах квантування вимірювального кола");
     }
 
-    printf("\n8) вимір струму: СЕРЕДНЄ по серії й ПІК на порубаному ШІМом сигналі\n");
+    printf("\n8) вимір струму: СЕРЕДНЄ і ВЕРШИНА ПУЛЬСАЦІЙ струму дроселя\n");
     {
-        const int peakMa = 1200;
-        g_adcIsensePeakRaw = maToRaw(peakMa);
-        struct { int num, den; } cases[] = { {1,4}, {1,2}, {3,4}, {1,1} };
+        struct { int mid, ripple; } cases[] = { {300,200}, {1000,800}, {1500,1355}, {100,80} };
         for (auto &c : cases) {
-            g_adcDutyNum = c.num; g_adcDutyDen = c.den;
+            g_adcMidMa = c.mid; g_adcRippleMa = c.ripple;
             g_adcIsenseReads = 0;
             uint16_t pk = 0;
             uint16_t avg = chargeMeasureMa(&pk);
-            int want = peakMa * c.num / c.den;
-            printf("   шпаруватість %d/%d: середнє %u мА (очікую ~%d), пік %u мА\n",
-                   c.num, c.den, avg, want, pk);
-            if (abs((int)avg - want) > peakMa / 20)
-                bad("середнє по серії розійшлося з пік*шпаруватість більш ніж на 5 %");
-            if (abs((int)pk - peakMa) > peakMa / 20)
-                bad("пік не дорівнює струму у відкритій фазі");
+            int wantPk = c.mid + c.ripple / 2;
+            printf("   Iсер %4d мА, ΔI %4d -> виміряно середнє %4u, вершина %4u (очікую ~%d)\n",
+                   c.mid, c.ripple, avg, pk, wantPk);
+            if (abs((int)avg - c.mid) > c.mid / 20 + 10)
+                bad("середнє по серії розійшлося із середнім струмом дроселя");
+            if (abs((int)pk - wantPk) > c.ripple / 5 + 10)
+                bad("вершина не дорівнює Iсер + ΔI/2");
         }
-        check(true, "середнє й пік рахуються окремо й обидва правильні");
+        check(true, "усереднення пульсацій і вершина рахуються окремо");
 
-        // Головне, заради чого пік і потрібен: середнє може бути мізерним, а
-        // пік — уже за аварійною межею.
-        g_adcIsensePeakRaw = maToRaw(CHARGE_PEAK_MA_MAX + 500);
-        g_adcDutyNum = 1; g_adcDutyDen = 32;
+        // Головне, заради чого вершина й потрібна: якщо дросель випав із кола
+        // (обрив, насичення, пробитий ключ), пульсації стають величезними —
+        // середнє ще в нормі, а вершина вже за аварійною межею.
+        g_adcMidMa = 1200; g_adcRippleMa = 4000;
         g_adcIsenseReads = 0;
         uint16_t pk2 = 0;
         uint16_t avg2 = chargeMeasureMa(&pk2);
-        printf("   вузький імпульс: середнє лише %u мА, але пік %u мА (межа %u)\n",
+        printf("   «дроселя немає»: середнє %u мА (ще в нормі), вершина %u (межа %u)\n",
                avg2, pk2, (unsigned)CHARGE_PEAK_MA_MAX);
         check(avg2 < CHARGE_PEAK_MA_MAX && pk2 > CHARGE_PEAK_MA_MAX,
-              "саме той випадок, який середнє приховує, а пік ловить");
+              "саме той випадок, який середнє приховує, а вершина ловить");
     }
 
-    printf("\n9) серія справді перекриває кілька періодів ШІМ\n");
+    printf("\n9) серія справді перекриває кілька періодів пульсацій\n");
     {
+        g_adcMidMa = 1000; g_adcRippleMa = 400;
         g_adcIsenseReads = 0;
         uint16_t pk = 0;
         (void)chargeMeasureMa(&pk);

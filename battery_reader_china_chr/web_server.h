@@ -1339,13 +1339,18 @@ const char *chargeStart(uint8_t targetPct) {
     g_chg.rsense   = impresBmsRsense(batteryDump2438);   // шунт ПАКЕТА — лише для CCA
     (void)ma;                        // струм DS2438 тут не потрібен: міряємо своїм шунтом
 
-    // ⚑ SOFT-START: шпаруватість ЗАВЖДИ з нуля, жодних початкових оцінок «на
-    // око» (детальніше — коментар на початку charge.h). Регулятор сам виведе
-    // її на потрібний рівень за кілька секунд. Окремого enable силового
-    // каскаду більше немає — його роль виконує сама шпаруватість 0.
+    // ⚑ СТАРТ ІЗ РОЗРАХОВАНОЇ ТОЧКИ НУЛЬОВОГО СТРУМУ, а не з нуля.
+    //  У понижувача Uвих ≈ D × Uживл, тож нижче D = Uпакета/Uживл струму немає
+    //  взагалі. Стартувати з нуля й повзти кроками означало б хвилини мертвого
+    //  розгону. chargeDutyForMv(mv) дає РІВНО ту шпаруватість, за якої вихід
+    //  дорівнює напрузі пакета, — струм нульовий, тобто так само безпечно, як
+    //  нуль, але одразу біля робочої зони. Оцінка навмисно груба (ідеальний
+    //  перетворювач), і помиляється вона в БЕЗПЕЧНИЙ бік: усі знехтувані
+    //  падіння (ключ, дросель, діод, шунт) лише зменшують реальний вихід.
+    //  Ключ вмикаємо ОСТАННІМ — коли шпаруватість уже виставлена.
     g_chg.setMa = chargeSetpointMaForPct(g_chg.lastPct, targetPct);
-    g_chg.duty  = 0;
-    chargeSetDuty(0);
+    g_chg.duty  = chargeDutyForMv(mv);
+    chargeSetDuty(g_chg.duty);
 
     battery.holdEnable(true);        // enable пакета — так само, як і розряд, ще ДО подачі струму
     chargeWatchdog(true);
@@ -1356,9 +1361,10 @@ const char *chargeStart(uint8_t targetPct) {
     dischargeDismiss();                    // не діє, якщо розряд справді йде
     chargeMarkDirty(2);
     Serial.printf("\n=== Charge started: %u mV (%u%%) -> ціль %u mV (%u%%), setpoint %u mA, "
-                  "soft-start duty 0 (стеля %u з %u = %d%%)%s ===\n",
+                  "старт duty %u з %u (стеля %u = %d%%)%s ===\n",
                   mv, g_chg.lastPct, targetMv, targetPct, g_chg.setMa,
-                  (unsigned)CHARGE_DUTY_MAX, (unsigned)CHARGE_DUTY_FULL,
+                  g_chg.duty, (unsigned)CHARGE_DUTY_FULL,
+                  (unsigned)CHARGE_DUTY_MAX,
                   (int)CHARGE_DUTY_MAX_PCT, chargePwmOk() ? "" : ", PWM UNAVAILABLE");
     return nullptr;
 }
@@ -1411,33 +1417,44 @@ inline void chargeTask() {
         return;
     }
 
-    // ── крок 2: НАПРУГА і температура на ЗАКРИТОМУ ключі ──────────────────
-    //  Дві причини закрити ключ, і обидві обов'язкові (див. charge.h):
-    //   • на відкритому ключі плюсова клема показує напругу ЖИВЛЕННЯ, а не
-    //     пакета — міряти там нічого;
-    //   • шунт стоїть у МІНУСОВОМУ проводі, тож під струмом «мінус» пакета
-    //     піднятий над землею ESP32 на I×R_шунт, і 1-Wire (звідки беремо
-    //     температуру) по зсунутій землі просто не відповідає.
+    // ── крок 2: НАПРУГА на коротко закритому ключі ────────────────────────
+    //  Напруга на клемі й так згладжена дроселем, але ПІД СТРУМОМ до неї
+    //  додається падіння на дротах і внутрішньому опорі пакета. Закриваємо
+    //  ключ на CHARGE_VSENSE_SETTLE_MS: струм дроселя стікає через діод за
+    //  мікросекунди, омічна просадка зникає, і вимір лишається ОДНАКОВИМ від
+    //  початку до кінця заряду.
     uint16_t saveDuty = g_chg.duty;
     chargeSetDuty(0);
-    dischargeSettle(CHARGE_SETTLE_MS);          // той самий неблокуючий сон, що й у розряду
-
+    dischargeSettle(CHARGE_VSENSE_SETTLE_MS);   // той самий неблокуючий сон, що й у розряду
     uint16_t mv = chargePackMv();
-    uint16_t dummy; int16_t maChip = 0, t = 0;
-    bool ok = dischargeSample(&dummy, &maChip, &t);   // з DS2438 тут потрібна ТЕМПЕРАТУРА
+
+    // ── крок 2б: ТЕМПЕРАТУРА з DS2438 — РІДКО (CHARGE_TEMP_EVERY_N) ───────
+    //  Транзакція 1-Wire коштує сотні мілісекунд, і весь цей час ключ мусить
+    //  лишатись закритим (шунт у мінусовому проводі зсуває опорну землю
+    //  чипа). Читати щосекунди означало б віддавати п'яту частину часу заряду
+    //  й щоразу перезапускати струм дроселя з нуля. Температура міняється
+    //  хвилинами, тож раз на CHARGE_TEMP_EVERY_N опитувань вистачає навіть
+    //  для аварійної відсічки.
+    bool tempRead = (g_chg.polls % CHARGE_TEMP_EVERY_N) == 0;
+    int16_t t = g_chg.lastTempC10;
+    if (tempRead) {
+        uint16_t dummy; int16_t maChip = 0;
+        if (!dischargeSample(&dummy, &maChip, &t)) {
+            chargeSetDuty(saveDuty);            // ключ назад, перш ніж вирішувати долю
+            if (++g_chg.readFails >= CHARGE_MAX_READ_FAILS) {
+                chargeStop(CHGR_NOREAD);
+                Serial.println("=== Charge ABORT: DS2438 unreadable ===");
+            }
+            return;
+        }
+        g_chg.readFails = 0;
+        g_chg.lastCca = impresCca(batteryDump2438);
+        g_chg.lastIca = batteryDump2438[12];
+    }
 
     // Ключ НЕГАЙНО назад у робочу шпаруватість — закритим його не лишаємо ні на
     // мить довше, ніж триває вимір (інакше заряд просто не йшов би).
     chargeSetDuty(saveDuty);
-
-    if (!ok) {
-        if (++g_chg.readFails >= CHARGE_MAX_READ_FAILS) {
-            chargeStop(CHGR_NOREAD);
-            Serial.println("=== Charge ABORT: DS2438 unreadable ===");
-        }
-        return;
-    }
-    g_chg.readFails = 0;
     g_chg.polls++;
 
     // ── крок 3: перерахунок уставки і шпаруватості ────────────────────────
@@ -1450,15 +1467,14 @@ inline void chargeTask() {
     g_chg.lastMv = mv;
     g_chg.lastMa = (int16_t)avgMa;   // СЕРЕДНІЙ струм із НАШОГО шунта, додатний = заряджаємо
     g_chg.peakMa = peakMa;
-    g_chg.lastTempC10 = t;
-    g_chg.lastCca = impresCca(batteryDump2438);
-    g_chg.lastIca = batteryDump2438[12];
+    g_chg.lastTempC10 = t;           // з останнього читання монітора (див. крок 2б)
 
     Serial.printf("charge: %u mV (%d%%), %d mA (пік %u, set %u, duty %u/%u = %u%%), "
-                  "%.1f W, %.1f C, %lu mAh (CCA %lu), ICA %u, %lus\n",
+                  "%.1f W, %.1f C%s, %lu mAh (CCA %lu), ICA %u, %lus\n",
                   mv, pct, g_chg.lastMa, g_chg.peakMa, g_chg.setMa,
                   g_chg.duty, (unsigned)CHARGE_DUTY_FULL, chargeDutyPct(),
                   chargeWattsX10(mv, g_chg.lastMa) / 10.0f, t / 10.0f,
+                  tempRead ? "" : "~",
                   (unsigned long)chargeMah(), (unsigned long)chargeCcaMah(),
                   g_chg.lastIca, (unsigned long)g_chg.elapsedS);
     chargeMarkDirty(1);
@@ -1510,7 +1526,7 @@ static String chargeJson() {
     j += ",\"dutyMax\":"  + String((unsigned)CHARGE_DUTY_MAX);
     j += ",\"dutyFull\":" + String((unsigned)CHARGE_DUTY_FULL);
     j += ",\"dutyPct\":"  + String(chargeDutyPct());
-    // Пік струму й межа — головний запобіжник схеми без дроселя.
+    // Вершина пульсацій і межа — запобіжник від «дросель випав із кола».
     j += ",\"peakMa\":"   + String(g_chg.peakMa);
     j += ",\"peakMaxMa\":"+ String((unsigned)CHARGE_PEAK_MA_MAX);
     j += ",\"shuntMohm\":"+ String((unsigned)CHARGE_SHUNT_MOHM);

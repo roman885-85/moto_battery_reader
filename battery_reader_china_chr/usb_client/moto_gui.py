@@ -552,8 +552,8 @@ class ChargeMonitor(ttk.Frame):
         self.lblLim.config(text=("уставка %d мА · зараз %d мА" % (setMa, ma)) if pwm else "⚠ керування недоступне",
                             foreground=MIL["olive"] if pwm else MIL["maroon"])
         # Керування тепер — ШПАРУВАТІСТЬ ключа (P-MOSFET через NPN), а не «цільова
-        # напруга DC/DC». Поруч — пік струму: у схемі без дроселя саме він, а не
-        # середнє, вирішує, чи не горить шунт.
+        # напруга DC/DC». Поруч — вершина пульсацій струму дроселя: вона злітає,
+        # коли дросель фактично випав із кола (обрив, насичення, пробитий ключ).
         duty, dutyFull = d.get("duty", 0), d.get("dutyFull", 1) or 1
         dutyMax, dutyPct = d.get("dutyMax", dutyFull), d.get("dutyPct", 0)
         peak, peakMax = d.get("peakMa", 0), d.get("peakMaxMa", 0)

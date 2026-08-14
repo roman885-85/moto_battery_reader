@@ -188,8 +188,20 @@ bool readAllChips(bool &ok2433, bool &ok2438) {
     }
 
     char st[40];
-    if (ok2433 || ok2438) snprintf(st, sizeof(st), "ЧИТ 2433:%s 2438:%s", ok2433 ? "OK" : "-", ok2438 ? "OK" : "-");
-    else                  snprintf(st, sizeof(st), "ПОМИЛКА: нема чіпа");
+    if (ok2433 || ok2438) {
+        snprintf(st, sizeof(st), "ЧИТ 2433:%s 2438:%s", ok2433 ? "OK" : "-", ok2438 ? "OK" : "-");
+    } else {
+        // ⚑ «Нема чіпа» — це ВИСНОВОК ПРО ПАКЕТ, і робити його, не перевіривши
+        // власну обв'язку, не можна: коротке на землю в лінії enable/підтяжки
+        // дає рівно ту саму картину. Перевіряємо лінію й називаємо винного.
+        uint8_t enl = battery.enableLineCheck();
+        if (enl != BatteryReader::ENL_OK) {
+            snprintf(st, sizeof(st), "ПОМИЛКА: підтяжка (GPIO%d)", (int)PULLUP_PIN);
+            Serial.printf("ЧИТАННЯ: %s\n", BatteryReader::enableLineText(enl));
+        } else {
+            snprintf(st, sizeof(st), "ПОМИЛКА: нема чіпа");
+        }
+    }
     displayShow(st);
 
     ledSet((ok2433 || ok2438) ? LED_OK : LED_ERROR);

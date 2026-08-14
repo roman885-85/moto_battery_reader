@@ -8,6 +8,22 @@ BatteryReader::BatteryReader(int pin, int pullupPin) {
 
 bool BatteryReader::begin() {
     pinMode(_pullupPin, OUTPUT);
+    digitalWrite(_pullupPin, LOW);            // enable опущено, доки не читаємо
+
+    // Стан лінії — у журнал ще до першого читання: якщо вона несправна, усі
+    // подальші «чіпів не знайдено» пояснюються саме цим рядком.
+    uint8_t enl = enableLineCheck();
+    Serial.printf("1-Wire: пін даних %d, enable/підтяжка %d -> %s\n",
+                  _pin, _pullupPin, enableLineText(enl));
+    // ⚠️ НЕСПРАВНА ЛІНІЯ — НЕ ПРИЧИНА ВІДМОВИТИ В ЗАПУСКУ. Виклик у setup()
+    // обгорнутий у `if (!begin()) { ... while(1) delay(1000); }`, тобто
+    // повернути тут false означає ЗАЦИКЛИТИ пристрій назавжди: ні вебу, ні
+    // екрана, ні журналу далі не буде. Несправність підтяжки робить
+    // непрацездатним читання пакета — але не пристрій: екран, Wi-Fi, дампи з
+    // пам'яті, налаштування працюють і далі, і саме через них користувач
+    // побачить, що не так. Тому лише звіт, а вирок — на читанні.
+    (void)enl;
+
     // Підтяжка буде увімкнена пізніше, в методі readBattery/writeBattery
     return true;
 }
@@ -24,6 +40,42 @@ void BatteryReader::pullupOff() {
 void BatteryReader::holdEnable(bool on) {
     _holdEnable = on;
     digitalWrite(_pullupPin, on ? HIGH : LOW);
+}
+
+// Перевірити саму лінію enable/підтяжки: підняти, прочитати назад, опустити,
+// прочитати назад — і повернути стан у те, як було.
+//
+// Що це ловить. Пін ми піднімаємо завжди, але чи піднялась ЛІНІЯ — питання
+// окреме: коротке на землю, обірваний або надто низькоомний резистор,
+// пробитий транзистор підтяжки дають рівно ту скаргу, з якою це й писалось —
+// «читання не працює, підтяжки немає». Без цієї перевірки прошивка повідомляє
+// лише «чіпів не знайдено», що вказує на пакет, а не на власну обв'язку.
+uint8_t BatteryReader::enableLineCheck() {
+    bool held = _holdEnable;                  // запам'ятати, як було
+
+    digitalWrite(_pullupPin, HIGH);
+    delayMicroseconds(500);                   // час на заряд ємності лінії
+    bool hi = digitalRead(_pullupPin);
+    digitalWrite(_pullupPin, LOW);
+    delayMicroseconds(500);
+    bool lo = digitalRead(_pullupPin);
+
+    digitalWrite(_pullupPin, held ? HIGH : LOW);   // повернути як було
+    if (!hi) return ENL_STUCK_LOW;            // не піднімається
+    if (lo)  return ENL_STUCK_HIGH;           // не опускається
+    return ENL_OK;
+}
+
+const char *BatteryReader::enableLineText(uint8_t code) {
+    switch (code) {
+        case ENL_STUCK_LOW:
+            return "лінія enable/підтяжки НЕ ПІДНІМАЄТЬСЯ (коротке на землю, "
+                   "надто низькоомна підтяжка вниз або пробитий ключ)";
+        case ENL_STUCK_HIGH:
+            return "лінія enable/підтяжки НЕ ОПУСКАЄТЬСЯ (коротке на живлення)";
+        default:
+            return "лінія enable/підтяжки справна";
+    }
 }
 
 // --- Допоміжний Метод ДЛЯ Пошуку Пристроїв ---
@@ -129,8 +181,15 @@ bool BatteryReader::findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr) {
         }
     }
 
-    // Вимикаємо підтяжку, якщо не знайшли ні жодного пристрою
+    // Вимикаємо підтяжку, якщо не знайшли ні жодного пристрою.
+    // ⚑ І одразу перевіряємо ВЛАСНУ обв'язку. «Чіпів не знайдено» вказує на
+    // пакет, і поки лінія enable не перевірена — це припущення, а не висновок:
+    // рівно так само виглядає коротке на землю в підтяжці.
     if (!found2433 && !found2438) {
+        uint8_t enl = enableLineCheck();
+        if (enl != ENL_OK)
+            Serial.printf("1-Wire: %s — річ не в пакеті, а в обв'язці піна %d\n",
+                          enableLineText(enl), _pullupPin);
         pullupOff();
         return false;
     }

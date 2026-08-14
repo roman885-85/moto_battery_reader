@@ -13,8 +13,10 @@ bool BatteryReader::begin() {
     // Стан лінії — у журнал ще до першого читання: якщо вона несправна, усі
     // подальші «чіпів не знайдено» пояснюються саме цим рядком.
     uint8_t enl = enableLineCheck();
-    Serial.printf("1-Wire: пін даних %d, enable/підтяжка %d -> %s\n",
-                  _pin, _pullupPin, enableLineText(enl));
+    uint8_t bus = busLineCheck();
+    Serial.printf("1-Wire: пін даних %d, enable/підтяжка %d\n  керуючий пін: %s\n"
+                  "  лінія даних: %s\n",
+                  _pin, _pullupPin, enableLineText(enl), busLineText(bus));
     // ⚠️ НЕСПРАВНА ЛІНІЯ — НЕ ПРИЧИНА ВІДМОВИТИ В ЗАПУСКУ. Виклик у setup()
     // обгорнутий у `if (!begin()) { ... while(1) delay(1000); }`, тобто
     // повернути тут false означає ЗАЦИКЛИТИ пристрій назавжди: ні вебу, ні
@@ -75,6 +77,49 @@ const char *BatteryReader::enableLineText(uint8_t code) {
             return "лінія enable/підтяжки НЕ ОПУСКАЄТЬСЯ (коротке на живлення)";
         default:
             return "лінія enable/підтяжки справна";
+    }
+}
+
+// Перевірити ЛІНІЮ ДАНИХ — тобто результат роботи підтяжки, а не намір.
+//
+// ⚑ Саме цього бракувало. enableLineCheck() каже, що керуючий пін піднявся, —
+// але скарга «немає підтяжки» про інше: чи піднялась ЛІНІЯ ДАНИХ. Між ними
+// стоїть уся обв'язка: сам резистор підтяжки, ключ, роз'єм пакета і — після
+// переробки заряду — шунт у мінусовому проводі, що розділив «мінус» пакета й
+// землю ESP32. Якщо спільної землі немає, підтяжка нікуди не доходить, і шина
+// мовчить рівно так, як мовчала б із порожнім роз'ємом.
+uint8_t BatteryReader::busLineCheck() {
+    bool held = _holdEnable;
+
+    pinMode(_pin, INPUT);                     // лінію віддаємо зовнішній схемі
+
+    digitalWrite(_pullupPin, LOW);            // підтяжка ВИМКНЕНА
+    delayMicroseconds(500);
+    bool idleOff = digitalRead(_pin);
+
+    digitalWrite(_pullupPin, HIGH);           // підтяжка УВІМКНЕНА
+    delayMicroseconds(500);
+    bool idleOn = digitalRead(_pin);
+
+    digitalWrite(_pullupPin, held ? HIGH : LOW);   // повернути як було
+
+    if (!idleOn)  return BUS_NO_PULLUP;       // підтяжка не доходить до лінії
+    if (idleOff)  return BUS_STUCK_HIGH;      // лінія висока й без підтяжки
+    return BUS_OK;
+}
+
+const char *BatteryReader::busLineText(uint8_t code) {
+    switch (code) {
+        case BUS_NO_PULLUP:
+            return "ЛІНІЯ ДАНИХ НЕ ПІДНІМАЄТЬСЯ підтяжкою: обірваний резистор "
+                   "підтяжки, коротке лінії даних на землю, немає контакту в "
+                   "роз'ємі або НЕМАЄ СПІЛЬНОЇ ЗЕМЛІ з пакетом (перевірте шунт "
+                   "у мінусовому проводі)";
+        case BUS_STUCK_HIGH:
+            return "лінія даних лишається високою навіть із вимкненою підтяжкою "
+                   "(зайва зовнішня підтяжка на живлення)";
+        default:
+            return "лінія даних керується підтяжкою правильно";
     }
 }
 
@@ -187,9 +232,12 @@ bool BatteryReader::findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr) {
     // рівно так само виглядає коротке на землю в підтяжці.
     if (!found2433 && !found2438) {
         uint8_t enl = enableLineCheck();
+        uint8_t bus = busLineCheck();
         if (enl != ENL_OK)
             Serial.printf("1-Wire: %s — річ не в пакеті, а в обв'язці піна %d\n",
                           enableLineText(enl), _pullupPin);
+        if (bus != BUS_OK)
+            Serial.printf("1-Wire: %s\n", busLineText(bus));
         pullupOff();
         return false;
     }

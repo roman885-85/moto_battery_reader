@@ -87,6 +87,16 @@ void setup() {
     pinMode(CHARGE_PWM_PIN, OUTPUT);
     digitalWrite(CHARGE_PWM_PIN, LOW);
 #endif
+#ifdef CHARGE_LEGACY_EN_PIN
+    // Пін попередньої схеми заряду (enable TL494-плати). Переробка його
+    // прибрала, і він лишився висіти ВХОДОМ — а на платі до нього може бути
+    // припаяний той самий ланцюг. Невизначений рівень на вході чужої схеми
+    // з'являється саме «після переробки» й виглядає як стороння несправність.
+    // Опускаємо в LOW, як робив попередній скетч: нічого не припаяно — дія
+    // безкоштовна, припаяно — відновлено дореформений стан.
+    pinMode(CHARGE_LEGACY_EN_PIN, OUTPUT);
+    digitalWrite(CHARGE_LEGACY_EN_PIN, LOW);
+#endif
     pinMode(PULLUP_PIN, OUTPUT); digitalWrite(PULLUP_PIN, LOW);
 
     Serial.println("\n\nMotorola Battery Reader Web Server (AP Mode)");

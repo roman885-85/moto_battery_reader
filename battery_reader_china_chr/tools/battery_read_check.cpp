@@ -7,7 +7,11 @@
 #include <cstring>
 #define PROGMEM
 #include "Arduino.h"
-#define OUTPUT 1
+// ⚑ Значення як в arduino-esp32: OUTPUT = 0x03, тобто разом із бітом INPUT.
+// Саме через це digitalRead() на вихідному піні там дає РЕАЛЬНИЙ рівень
+// виводу — на цьому й тримається перевірка ліній нижче.
+#define INPUT  0x01
+#define OUTPUT 0x03
 #define HIGH 1
 #define LOW 0
 // ── МОДЕЛЬ ПІНА ENABLE/ПІДТЯЖКИ ────────────────────────────────────────────
@@ -15,14 +19,28 @@
 //  узагалі — тобто перевірити, чи прошивка помічає несправну лінію, було
 //  нічим. Тепер пін моделюється: те, що записали, читається назад — якщо
 //  тільки не задано несправність.
-static int  g_pinLevel = 0;               // що реально на лінії
+static int  g_pinLevel = 0;               // рівень на КЕРУЮЧОМУ піні (_pullupPin)
 static int  g_pinFault = 0;               // 0 = справна, 1 = коротке на землю,
                                           // 2 = коротке на живлення
+// Лінія ДАНИХ моделюється окремо: саме її піднімає підтяжка, і саме про неї
+// скарга «підтяжки немає». Зв'язок керуючого піна з нею — через g_busFault:
+//   0 = справна (лінія йде за підтяжкою),
+//   1 = підтяжка не доходить (обрив резистора, немає спільної землі),
+//   2 = лінія висока завжди (зайва зовнішня підтяжка).
+static int  g_busFault = 0;
+static int  g_busPin   = 4;               // DS_PIN у цьому тесті
 static void pinMode(int, int) {}
 static void digitalWrite(int, int v) {
     g_pinLevel = (g_pinFault == 1) ? 0 : (g_pinFault == 2) ? 1 : v;
 }
-static int  digitalRead(int) { return g_pinLevel; }
+static int  digitalRead(int pin) {
+    if (pin == g_busPin) {
+        if (g_busFault == 1) return 0;    // підтяжка нікуди не доходить
+        if (g_busFault == 2) return 1;    // висока завжди
+        return g_pinLevel;                // штатно — за підтяжкою
+    }
+    return g_pinLevel;
+}
 static void delayMicroseconds(int) {}
 static int g_delayCalls = 0, g_delayLast = 0;
 static void delay(int ms) { g_delayCalls++; g_delayLast = ms; }
@@ -188,6 +206,41 @@ int main() {
         battery.enableLineCheck();
         if (g_pinLevel != 0) bad("після перевірки лінія лишилась піднятою");
         else printf("   ок    без утримання лінія лишається опущеною\n");
+    }
+
+    printf("\nY) перевірка ЛІНІЇ ДАНИХ — результату підтяжки, а не наміру\n");
+    {
+        g_pinFault = 0;
+        g_busFault = 0;
+        uint8_t c = battery.busLineCheck();
+        printf("   справна шина -> код %u (%s)\n", c, BatteryReader::busLineText(c));
+        if (c != BatteryReader::BUS_OK) bad("справну шину визнано несправною");
+        else printf("   ок    справна шина проходить перевірку\n");
+
+        // ГОЛОВНИЙ ВИПАДОК: керуючий пін справний, а лінія даних не
+        // піднімається. Саме так виглядає обірвана підтяжка або відсутність
+        // спільної землі з пакетом — і саме цього enableLineCheck() НЕ бачить.
+        g_busFault = 1;
+        c = battery.busLineCheck();
+        printf("   підтяжка не доходить -> код %u (%s)\n", c, BatteryReader::busLineText(c));
+        if (c != BatteryReader::BUS_NO_PULLUP) bad("не виявлено, що підтяжка не доходить до лінії даних");
+        else printf("   ок    виявлено: керуючий пін справний, а лінія даних — ні\n");
+        if (battery.enableLineCheck() != BatteryReader::ENL_OK)
+            bad("керуючий пін помилково визнано несправним");
+        else printf("   ок    і керуючий пін при цьому чесно визнано справним\n");
+
+        g_busFault = 2;
+        c = battery.busLineCheck();
+        printf("   лінія висока завжди -> код %u\n", c);
+        if (c != BatteryReader::BUS_STUCK_HIGH) bad("зайву зовнішню підтяжку не виявлено");
+        else printf("   ок    зайву зовнішню підтяжку виявлено\n");
+
+        g_busFault = 0;
+        battery.holdEnable(true);
+        battery.busLineCheck();
+        if (g_pinLevel != 1) bad("busLineCheck не відновив утримання enable");
+        else printf("   ок    утримання enable відновлюється й після цієї перевірки\n");
+        battery.holdEnable(false);
     }
 
     printf("\n%s (помилок: %d)\n", fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

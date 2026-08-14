@@ -333,6 +333,20 @@ int main() {
                (int)CHARGE_BJT_PC_MW);
         check(CHARGE_IB_MA >= ibNeed,
               "струму бази вистачає на насичення НА ВЕРШИНІ пульсацій");
+
+        // ⚑ ДРАЙВЕРНИЙ КАСКАД. Пін не керує силовим ключем напряму — між ними
+        // керуючий NPN, через колектор якого тече ВЕСЬ струм бази PNP. Якщо
+        // він сам не насичується, відмова каскадна: на NPN падає вольт
+        // замість 0.2 В -> струм бази PNP просідає -> з насичення виходить
+        // силовий ключ. Тому перевіряємо обидві ланки.
+        long npnNeed = (long)CHARGE_IB_MA * 1000 / CHARGE_NPN_HFE_FORCED;
+        printf("   драйвер: R %d Ом -> Iб NPN %d мкА, треба >= %ld (β_форс %d)\n",
+               (int)CHARGE_NPN_BASE_OHM, (int)CHARGE_NPN_IB_UA, npnNeed,
+               (int)CHARGE_NPN_HFE_FORCED);
+        check(CHARGE_NPN_IB_UA >= npnNeed,
+              "керуючий NPN теж насичується (інакше відмова каскадна)");
+        check(CHARGE_NPN_IB_UA <= CHARGE_GPIO_UA_MAX,
+              "струм із піна ESP32 у безпечних межах");
         check(ipeak <= CHARGE_BJT_IC_MAX_MA, "пік у межах Ic max ключа");
         check(p <= CHARGE_BJT_PC_MW * 4 / 5, "розсіювання в межах 80 % від Pc");
         // Перемикальні втрати біполярника домінують — саме тому частота тут

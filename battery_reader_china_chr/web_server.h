@@ -1617,6 +1617,10 @@ static String chargeJson() {
     //  того, як користувач натисне кнопку, а не після невдалого старту.
     j += ",\"psuSensed\":" + String(chargePsuSensed() ? "true" : "false");
     j += ",\"psuMv\":"    + String(chargePsuMv());
+    // НОМІНАЛ блока живлення — головне число в повідомленні про помилку:
+    // саме його користувач має під'єднати. Допуск нижче лише пояснює, чому
+    // нинішній блок відхилено.
+    j += ",\"psuNomMv\":" + String((unsigned)CHARGE_SUPPLY_MV);
     j += ",\"psuMinMv\":" + String((unsigned)CHARGE_PSU_MIN_MV);
     j += ",\"psuMaxMv\":" + String((unsigned)CHARGE_PSU_MAX_MV);
     j += ",\"psuOk\":"    + String(!chargePsuFault() ? "true" : "false");

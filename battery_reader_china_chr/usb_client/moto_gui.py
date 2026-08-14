@@ -491,6 +491,14 @@ class DischargeMonitor(tk.Canvas):
             self._alive = False          # вікно закрилось під час перемальовки
 
 
+def psu_v(mv):
+    """14000 -> «14», 13800 -> «13.8». Номінал блока живлення має читатись як
+    номінал, а не як результат вимірювання. Функція модульна, бо потрібна і
+    ChargeMonitor, і головному вікну — тримати її методом одного з них
+    означало б, що другий кличе чужий клас."""
+    return ("%.1f" % (mv / 1000.0)).rstrip("0").rstrip(".")
+
+
 class ChargeMonitor(ttk.Frame):
     """Панель стану заряду через DC/DC — простіша за DischargeMonitor: ціль
     фіксована (CHARGE_TARGET_MV), тож немає що малювати «уставку струму за
@@ -547,9 +555,9 @@ class ChargeMonitor(ttk.Frame):
         # причину, яку користувач може усунути сам.
         bad_psu = d.get("psuSensed") and not d.get("psuOk", True)
         if bad_psu:
-            txt = "⛔ %s (%.2f В, потрібно %.1f…%.1f В)" % (
+            txt = "⛔ %s (%.2f В, треба %s В)" % (
                 d.get("psuText", "живлення поза допуском"), d.get("psuMv", 0) / 1000.0,
-                d.get("psuMinMv", 0) / 1000.0, d.get("psuMaxMv", 0) / 1000.0)
+                psu_v(d.get("psuNomMv", 14000)))
         self.lblState.config(text=txt,
                              foreground=(MIL["maroon"] if bad_psu else
                                          MIL["olive"] if run else MIL["fg"]))
@@ -2405,14 +2413,18 @@ class App:
                     self.psuBar.pack_forget()
                     self._psuShown = False
                 return
+            # Головне число — НОМІНАЛ («треба 14 В»): допуск пояснює, чому
+            # блок відхилено, а користувачеві потрібна відповідь на «який тоді
+            # під'єднати».
             self.lblPsu.config(
-                text="⛔ %s\n%s\nвиміряно %.2f В, потрібно %.1f…%.1f В\n"
+                text="⛔ %s\n%s\nвиміряно %.2f В — треба %s В (допуск %s…%s)\n"
                      "Заряд неможливий. Читання й правка пам'яті пакета працюють "
                      "без блока живлення."
                      % (d.get("psuHead") or d.get("psuText", "живлення поза допуском"),
                         d.get("psuText", ""),
                         d.get("psuMv", 0) / 1000.0,
-                        d.get("psuMinMv", 0) / 1000.0, d.get("psuMaxMv", 0) / 1000.0))
+                        psu_v(d.get("psuNomMv", 14000)),
+                        psu_v(d.get("psuMinMv", 0)), psu_v(d.get("psuMaxMv", 0))))
             if not self._psuShown:
                 # before=вкладки, щоб смуга сіла НАД ними, а не під низом вікна.
                 self.psuBar.pack(fill="x", padx=6, pady=(0, 4), before=self.nb)

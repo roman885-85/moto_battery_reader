@@ -981,8 +981,14 @@ inline void drawPsuPlate(bool on) {
     snprintf(b, sizeof(b), "є %u.%02u В", mv / 1000, (mv % 1000) / 10);
     tPut((TFT_W - tWidth(b)) / 2, y, b);
 
+    // ⚑ Головне число тут — НОМІНАЛ («треба 14 В»), а не допуск. Допуск
+    // відповідає на питання «чому цей блок відхилено», а користувачеві
+    // потрібна відповідь на «який тоді під'єднати» — тож номінал іде першим і
+    // тим самим шрифтом, а межі — у дужках.
     y += 18;
-    snprintf(b, sizeof(b), "треба %u.%u…%u.%u В",
+    char nom[8];
+    snprintf(b, sizeof(b), "треба %s В (%u.%u…%u.%u)",
+             chargeMvShort(CHARGE_SUPPLY_MV, nom, sizeof(nom)),
              CHARGE_PSU_MIN_MV / 1000, (CHARGE_PSU_MIN_MV % 1000) / 100,
              CHARGE_PSU_MAX_MV / 1000, (CHARGE_PSU_MAX_MV % 1000) / 100);
     tPut((TFT_W - tWidth(b)) / 2, y, b);

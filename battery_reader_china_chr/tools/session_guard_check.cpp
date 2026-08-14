@@ -344,6 +344,29 @@ int main() {
     check(fileCalls("usb_client/moto_gui.py", "psuHead"),
                                              "moto_gui.py: показує заголовок помилки");
 
+    printf("\n6е) повідомлення називає НОМІНАЛ блока живлення, а не лише допуск\n");
+    // Допуск (12.5…16.0) відповідає на питання «чому цей блок відхилено», але
+    // не на «який тоді під'єднати». Користувачеві потрібне друге, тож у всіх
+    // повідомленнях мусить бути номінал — CHARGE_SUPPLY_MV, а не константа в
+    // тексті: поміняють живлення на 12 В, і зашите «14» стало б брехнею.
+    check(fileCalls("charge.h", "chargeMvShort"),
+                                             "є спільний помічник для компактного запису напруги");
+    check(fileCalls("display_color.h", "CHARGE_SUPPLY_MV") &&
+          fileCalls("display_color.h", "chargeMvShort"),
+                                             "кольоровий екран бере номінал із налаштувань");
+    check(fileCalls("display.h", "CHARGE_SUPPLY_MV") &&
+          fileCalls("display.h", "chargeMvShort"),
+                                             "монохромний — так само");
+    check(fileCalls("web_server.h", "psuNomMv"),
+                                             "номінал віддається клієнтам полем psuNomMv");
+    for (const char *c : clients) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "%s: показує номінал (psuNomMv)", c);
+        check(fileCalls(c, "psuNomMv"), msg);
+    }
+    check(fileCalls("usb_client/moto_gui.py", "psuNomMv"),
+                                             "moto_gui.py: показує номінал");
+
     printf("\n7) лінійка струму розряду не вироджується на НАЙВИЩІЙ дозволеній цілі\n");
     // Саме це мала стерегти перевірка в settings.h, яка порівнювалась із
     // неіснуючим DISCHARGE_RAMP_LO_MV і тому не спрацювала б ніколи.

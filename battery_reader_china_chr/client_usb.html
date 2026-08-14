@@ -1600,9 +1600,10 @@ let chgLast=null, chgLastAt=0, chgTimer=null, chgPeriod=0, chgBusy=false, chgWas
 function psuAlertUpdate(d){
   const el=$('psuAlert'); if(!el)return;
   if(!d||!d.psuSensed||d.psuOk){ el.style.display='none'; return; }
-  const mv=(d.psuMv/1000).toFixed(2), lo=(d.psuMinMv/1000).toFixed(1), hi=(d.psuMaxMv/1000).toFixed(1);
+  const v=x=>(x/1000).toFixed(1).replace(/\.0$/,'');
+  const mv=(d.psuMv/1000).toFixed(2), nom=v(d.psuNomMv||14000), lo=v(d.psuMinMv), hi=v(d.psuMaxMv);
   $('psuAlertHead').textContent='⛔ '+(d.psuHead||d.psuText);
-  $('psuAlertBody').innerHTML='виміряно <b style="display:inline">'+mv+' В</b>, потрібно '+lo+'…'+hi+' В'
+  $('psuAlertBody').innerHTML='виміряно <b style="display:inline">'+mv+' В</b> — треба <b style="display:inline">'+nom+' В</b> (допуск '+lo+'…'+hi+')'
     +'<small>'+d.psuText+'<br>Заряд неможливий. Читання й правка пам\'яті пакета працюють без блока живлення.</small>';
   el.style.display='block';
 }
@@ -1618,8 +1619,8 @@ function chgShow(d){
   // не піде взагалі, і «очікування» поверх цього приховало б єдину причину,
   // яку користувач може усунути сам.
   if(d.psuSensed && !d.psuOk){
-    st='⛔ '+d.psuText+' ('+(d.psuMv/1000).toFixed(2)+' В, потрібно '
-       +(d.psuMinMv/1000).toFixed(1)+'…'+(d.psuMaxMv/1000).toFixed(1)+' В)';
+    st='⛔ '+d.psuText+' ('+(d.psuMv/1000).toFixed(2)+' В, треба '
+       +((d.psuNomMv||14000)/1000).toFixed(1).replace(/\.0$/,'')+' В)';
     mon.className='dm abort';
   }
   $('chgSt').textContent=st;

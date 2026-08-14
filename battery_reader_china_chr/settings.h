@@ -37,8 +37,8 @@
 // Потрібні бібліотеки: Adafruit GFX, Adafruit ST7735/ST7789, Adafruit BusIO,
 // U8g2_for_Adafruit_GFX (кириличні шрифти на кольоровому екрані).
 #define DISPLAY_ST7789_SPI
-//   #define DISPLAY_ST7789_240X240   // 1.3"/1.54" ST7789VW — 240x240
-#define DISPLAY_ST7789_240X280   // 1.69"  ST7789V3 — 240x280
+#define DISPLAY_ST7789_240X240   // 1.3"/1.54" ST7789VW — 240x240 (GMT130) ← активний
+//   #define DISPLAY_ST7789_240X280   // 1.69"  ST7789V3 — 240x280
 //   #define DISPLAY_ST7789_240X320   // 2.0"/2.4" — 240x320
 //   #define DISPLAY_ST7789_135X240   // 1.14"  — 135x240
 //   #define DISPLAY_ST7789_170X320   // 1.9"   — 170x320
@@ -58,7 +58,10 @@
 // Заокруглені кути (ST7789V3 1.69" 240x280 зазвичай скруглений) — вмикає
 // безпечний відступ, щоб текст у кутах (заголовок/статус/hex) не обрізало.
 // Радіус можна підправити DISPLAY_ST7789_CORNER (типово 22 px).
-#define DISPLAY_ST7789_ROUND
+//  ⚑ ВИМКНЕНО: GMT130 240x240 — панель КВАДРАТНА, з гострими кутами, і
+//  заокруглення тут лише з'їдало б по 22 px з кожного боку ні за що.
+//  Повертайте разом із пресетом 240x280.
+// #define DISPLAY_ST7789_ROUND
 #define DISPLAY_ST7789_CORNER  22
 // Кастомна КОЛЬОРОВА заставка: згенеруйте custom_splash.h у папку скетчу
 // (python tools/make_color_splash.py logo.png -W 240 -H 240) і увімкніть:
@@ -93,9 +96,25 @@
 // тримає, і на апаратному I2C зависає уся шина!). Змінюйте лише свідомо.
 #define DISPLAY_I2C_KHZ   600
 
-// Крок 2b. Піни SPI (для ST7567 / Nokia 5110). Апаратний SPI ESP32:
-// SCK=GPIO18, MOSI=GPIO23 (підключаються до CLK/DIN дисплея). Керуючі:
-#define DISPLAY_CS_PIN    5      // CS  (Chip Select)
+// Крок 2b. Піни SPI (для ST7567 / Nokia 5110 / ST7789). Апаратний SPI ESP32:
+// SCK=GPIO18, MOSI=GPIO23 (підключаються до CLK/DIN/SDA дисплея). Керуючі:
+//
+// ⚑ CS — НЕОБОВ'ЯЗКОВИЙ, і на частині модулів його просто НЕМАЄ.
+//  Модулі ST7789 240x240 (GMT130 та подібні 1.3"/1.54") виводять на гребінку
+//  лише GND / VCC / SCL / SDA / RES / DC / BLK — сім контактів, CS серед них
+//  нема: на платі він припаяний до землі, тобто контролер вибраний ЗАВЖДИ.
+//  Для такого модуля просто ЗАКОМЕНТУЙТЕ рядок нижче — прошивка передасть
+//  бібліотеці «CS немає» (-1) і не смикатиме зайвий пін. GPIO5 при цьому
+//  звільняється.
+//
+//  ⚠️ ЦІНА ВІДСУТНОСТІ CS: шину SPI більше НЕ МОЖНА ділити ні з чим. Поки
+//  дисплей — єдиний пристрій на SCK/MOSI, це нічого не змінює (саме так у
+//  цьому проєкті). Але додасте на ту саму шину, скажімо, SD-картку — дисплей
+//  прийматиме її трафік за свої команди, і картинка розсиплеться. Перевірка
+//  наприкінці файлу стежить, щоб піни SPI не з'явились у ролі чогось іншого.
+// ⚑ ЗАКОМЕНТОВАНО: на GMT130 240x240 виводу CS немає (припаяний до землі на
+//    платі). Розкоментуйте, якщо ваш модуль CS таки має.
+// #define DISPLAY_CS_PIN    5   // CS (Chip Select)
 #define DISPLAY_DC_PIN    17     // DC  (Data/Command; у Nokia — «D/C»)
 #define DISPLAY_RST_PIN   16     // RST (Reset)
 // Зсув картинки вправо для ST7567, пікселів (у панелі Open-Smart RAM на
@@ -203,7 +222,7 @@
   #if (MENU_BTN_ADC_PIN == LED_RED_PIN)     || (MENU_BTN_ADC_PIN == LED_GREEN_PIN)  || \
       (MENU_BTN_ADC_PIN == DS_PIN)          || (MENU_BTN_ADC_PIN == PULLUP_PIN)     || \
       (MENU_BTN_ADC_PIN == DISPLAY_SDA_PIN) || (MENU_BTN_ADC_PIN == DISPLAY_SCL_PIN) || \
-      (MENU_BTN_ADC_PIN == DISPLAY_CS_PIN)  || (MENU_BTN_ADC_PIN == DISPLAY_DC_PIN)  || \
+      (defined(DISPLAY_CS_PIN) && MENU_BTN_ADC_PIN == DISPLAY_CS_PIN) || (MENU_BTN_ADC_PIN == DISPLAY_DC_PIN)  || \
       (MENU_BTN_ADC_PIN == DISPLAY_RST_PIN)
     #error "MENU_BTN_ADC_PIN конфліктує з уже зайнятим піном!"
   #endif
@@ -222,7 +241,7 @@
 //       (MENU_BTN3_PIN == LED_RED_PIN)     || (MENU_BTN3_PIN == LED_GREEN_PIN)  || \
 //       (MENU_BTN3_PIN == DS_PIN)          || (MENU_BTN3_PIN == PULLUP_PIN)     || \
 //       (MENU_BTN3_PIN == DISPLAY_SDA_PIN) || (MENU_BTN3_PIN == DISPLAY_SCL_PIN) || \
-//       (MENU_BTN3_PIN == DISPLAY_CS_PIN)  || (MENU_BTN3_PIN == DISPLAY_DC_PIN)  || \
+//       (defined(DISPLAY_CS_PIN) && MENU_BTN3_PIN == DISPLAY_CS_PIN) || (MENU_BTN3_PIN == DISPLAY_DC_PIN)  || \
 //       (MENU_BTN3_PIN == DISPLAY_RST_PIN)
 //     #error "MENU_BTN3_PIN конфліктує з уже зайнятим піном! Оберіть вільний GPIO (напр. 32 або 33)."
 //   #endif
@@ -297,7 +316,7 @@
       (BUZZER_DAC_PIN == LED_RED_PIN) || (BUZZER_DAC_PIN == LED_GREEN_PIN) || \
       (BUZZER_DAC_PIN == DS_PIN) || (BUZZER_DAC_PIN == PULLUP_PIN) || \
       (BUZZER_DAC_PIN == DISPLAY_SDA_PIN) || (BUZZER_DAC_PIN == DISPLAY_SCL_PIN) || \
-      (BUZZER_DAC_PIN == DISPLAY_CS_PIN) || (BUZZER_DAC_PIN == DISPLAY_DC_PIN) || \
+      (defined(DISPLAY_CS_PIN) && BUZZER_DAC_PIN == DISPLAY_CS_PIN) || (BUZZER_DAC_PIN == DISPLAY_DC_PIN) || \
       (BUZZER_DAC_PIN == DISPLAY_RST_PIN) || \
       (defined(DISPLAY_BLK_PIN) && BUZZER_DAC_PIN == DISPLAY_BLK_PIN) || \
       (defined(CHARGE_PWM_PIN) && BUZZER_DAC_PIN == CHARGE_PWM_PIN) || \
@@ -319,7 +338,7 @@
       (BUZZER_PIN == LED_RED_PIN)    || (BUZZER_PIN == LED_GREEN_PIN)  || \
       (BUZZER_PIN == DS_PIN)         || (BUZZER_PIN == PULLUP_PIN)     || \
       (BUZZER_PIN == DISPLAY_SDA_PIN)|| (BUZZER_PIN == DISPLAY_SCL_PIN)|| \
-      (BUZZER_PIN == DISPLAY_CS_PIN) || (BUZZER_PIN == DISPLAY_DC_PIN) || \
+      (defined(DISPLAY_CS_PIN) && BUZZER_PIN == DISPLAY_CS_PIN) || (BUZZER_PIN == DISPLAY_DC_PIN) || \
       (BUZZER_PIN == DISPLAY_RST_PIN)|| (defined(MENU_BTN3_PIN) && BUZZER_PIN == MENU_BTN3_PIN) || \
       (defined(DISPLAY_BLK_PIN) && BUZZER_PIN == DISPLAY_BLK_PIN)
     // ⚠️ Якщо BUZZER_PIN збігається з піном підсвітки (DISPLAY_BLK_PIN) — ШІМ
@@ -352,7 +371,7 @@
       (BTN_LED_PIN == LED_RED_PIN)    || (BTN_LED_PIN == LED_GREEN_PIN)  || \
       (BTN_LED_PIN == DS_PIN)         || (BTN_LED_PIN == PULLUP_PIN)     || \
       (BTN_LED_PIN == DISPLAY_SDA_PIN)|| (BTN_LED_PIN == DISPLAY_SCL_PIN)|| \
-      (BTN_LED_PIN == DISPLAY_CS_PIN) || (BTN_LED_PIN == DISPLAY_DC_PIN) || \
+      (defined(DISPLAY_CS_PIN) && BTN_LED_PIN == DISPLAY_CS_PIN) || (BTN_LED_PIN == DISPLAY_DC_PIN) || \
       (BTN_LED_PIN == DISPLAY_RST_PIN)|| (defined(MENU_BTN3_PIN) && BTN_LED_PIN == MENU_BTN3_PIN) || \
       (defined(DISPLAY_BLK_PIN) && BTN_LED_PIN == DISPLAY_BLK_PIN) || \
       (defined(BUZZER_PIN) && BTN_LED_PIN == BUZZER_PIN)
@@ -1340,7 +1359,7 @@
       (defined(BTN_LED_PIN) && CHARGE_PWM_PIN == BTN_LED_PIN) || \
       (defined(LOAD_PIN) && CHARGE_PWM_PIN == LOAD_PIN) || \
       (CHARGE_PWM_PIN == DISPLAY_SDA_PIN) || (CHARGE_PWM_PIN == DISPLAY_SCL_PIN) || \
-      (CHARGE_PWM_PIN == DISPLAY_CS_PIN)  || (CHARGE_PWM_PIN == DISPLAY_DC_PIN)  || \
+      (defined(DISPLAY_CS_PIN) && CHARGE_PWM_PIN == DISPLAY_CS_PIN) || (CHARGE_PWM_PIN == DISPLAY_DC_PIN)  || \
       (CHARGE_PWM_PIN == DISPLAY_RST_PIN) || \
       (defined(DISPLAY_BLK_PIN) && CHARGE_PWM_PIN == DISPLAY_BLK_PIN)
     #error "CHARGE_PWM_PIN конфліктує з уже зайнятим піном! Оберіть вільний вихідний GPIO."
@@ -1595,6 +1614,50 @@
        ((CHARGE_TARGET_MV) + (CHARGE_MA_80) * (CHARGE_SHUNT_MOHM) / 1000))
     #error "CHARGE_DUTY_MAX_PCT замала: D×Uживл не дотягується до цілі плюс падіння на шунті. Підніміть стелю або напругу живлення."
   #endif
+#endif
+
+// ===========================================================================
+//  ШИНА SPI ДИСПЛЕЯ — перевірка наприкінці, коли ВСІ піни вже визначені
+// ===========================================================================
+//  Апаратний SPI ESP32 (VSPI) сидить на фіксованих пінах: SCK=18, MOSI=23.
+//  Вони ніде не задаються константою — бібліотека бере їх сама, — і саме тому
+//  їх легко «зайняти» вдруге, не помітивши: жоден із вартових вище про них не
+//  знає. Тут ця щілина й закривається.
+//
+//  ⚑ ЧОМУ ЦЕ ВАЖЛИВІШЕ, НІЖ ЗДАЄТЬСЯ, КОЛИ НА МОДУЛІ НЕМАЄ CS. З CS дисплей
+//  слухає шину лише тоді, коли його вибрали. Без CS (модулі ST7789 240x240 —
+//  GMT130 і подібні, де CS припаяний до землі) він слухає ЗАВЖДИ: будь-який
+//  чужий трафік на SCK/MOSI піде йому як команди, і картинка розсиплеться.
+//  Тобто без CS шина стає монопольною — і ділити її не можна взагалі.
+#if defined(DISPLAY_ST7567_SPI) || defined(DISPLAY_PCD8544_SPI) || defined(DISPLAY_ST7789_SPI)
+  #define DISPLAY_SPI_SCK_PIN  18
+  #define DISPLAY_SPI_MOSI_PIN 23
+
+  #if (defined(LOAD_PIN) && (LOAD_PIN == DISPLAY_SPI_SCK_PIN || LOAD_PIN == DISPLAY_SPI_MOSI_PIN)) || \
+      (defined(CHARGE_PWM_PIN) && (CHARGE_PWM_PIN == DISPLAY_SPI_SCK_PIN || CHARGE_PWM_PIN == DISPLAY_SPI_MOSI_PIN)) || \
+      (defined(BUZZER_PIN) && (BUZZER_PIN == DISPLAY_SPI_SCK_PIN || BUZZER_PIN == DISPLAY_SPI_MOSI_PIN)) || \
+      (defined(BUZZER_DAC_PIN) && (BUZZER_DAC_PIN == DISPLAY_SPI_SCK_PIN || BUZZER_DAC_PIN == DISPLAY_SPI_MOSI_PIN)) || \
+      (defined(BTN_LED_PIN) && (BTN_LED_PIN == DISPLAY_SPI_SCK_PIN || BTN_LED_PIN == DISPLAY_SPI_MOSI_PIN)) || \
+      (DS_PIN == DISPLAY_SPI_SCK_PIN) || (DS_PIN == DISPLAY_SPI_MOSI_PIN) || \
+      (PULLUP_PIN == DISPLAY_SPI_SCK_PIN) || (PULLUP_PIN == DISPLAY_SPI_MOSI_PIN) || \
+      (LED_GREEN_PIN == DISPLAY_SPI_SCK_PIN) || (LED_GREEN_PIN == DISPLAY_SPI_MOSI_PIN) || \
+      (LED_RED_PIN == DISPLAY_SPI_SCK_PIN) || (LED_RED_PIN == DISPLAY_SPI_MOSI_PIN) || \
+      (defined(DISPLAY_BLK_PIN) && (DISPLAY_BLK_PIN == DISPLAY_SPI_SCK_PIN || DISPLAY_BLK_PIN == DISPLAY_SPI_MOSI_PIN)) || \
+      (DISPLAY_DC_PIN == DISPLAY_SPI_SCK_PIN) || (DISPLAY_DC_PIN == DISPLAY_SPI_MOSI_PIN) || \
+      (DISPLAY_RST_PIN == DISPLAY_SPI_SCK_PIN) || (DISPLAY_RST_PIN == DISPLAY_SPI_MOSI_PIN)
+    #error "Пін зайнято двічі: GPIO18 (SCK) і GPIO23 (MOSI) належать апаратному SPI дисплея. Оберіть інший GPIO."
+  #endif
+
+  //  ⚑ GPIO19 — ОКРЕМИЙ ВИПАДОК, і він НЕ помилка. SPI.begin() без аргументів
+  //  чіпляє ще й MISO (для VSPI це 19), хоча дисплею читання не потрібне. Той
+  //  самий GPIO19 у цьому проєкті — затвор ключа розряду (LOAD_PIN), і працює
+  //  це лише тому, що displayInit() у setup() стоїть РАНІШЕ за dischargeInit():
+  //  пізніший ledcAttach() перепризначає пін через матрицю GPIO й перекриває
+  //  MISO. SPI.begin() кличеться один раз, тож назад воно вже не відіграє.
+  //  Тому тут не #error (робоча конфігурація — не помилка), а попередження:
+  //  переставите ініціалізацію місцями — розряд мовчки перестане керуватись.
+  //  Той самий текст продубльовано в setup(), поруч із самим порядком викликів,
+  //  бо ламається воно саме там.
 #endif
 
 #endif

@@ -68,6 +68,17 @@ extern bool hasSN2433;
 // ACK — слабкі підтяжки, довгі проводи), displayInit автоматично
 // перемикається на програмний I2C на тех же пінах. Кадровий буфер у пари
 // об'єктів спільний (статичний в U8g2), зайвої пам'яті це майже не ест.
+// ── CS для монохромних SPI-панелей ────────────────────────────────────────
+//  На ST7567/PCD8544 контакт CS є практично завжди, але константа спільна з
+//  кольоровою гілкою (ST7789 240x240 його не має взагалі), тож і тут вона
+//  може бути не задана. U8g2 для такого випадку має U8X8_PIN_NONE — той самий
+//  зміст, що й -1 у Adafruit: пін не чіпаємо, панель вибрана постійно.
+#ifdef DISPLAY_CS_PIN
+  #define U8G2_CS_ARG (DISPLAY_CS_PIN)
+#else
+  #define U8G2_CS_ARG U8X8_PIN_NONE
+#endif
+
 #if defined(DISPLAY_ST7567_SPI)
   #define DISP_W 128
   #define DISP_H 64
@@ -76,13 +87,13 @@ extern bool hasSN2433;
   // контраст — варіант OS12864 з bias 1/7 дає темний засвічений екран).
   // Зсув картинки +4px робиться через x_offset в displayInit
   // (DISPLAY_ST7567_XOFF в settings.h).
-  U8G2_ST7567_ENH_DG128064_F_4W_HW_SPI u8g2_spi(U8G2_R0, DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+  U8G2_ST7567_ENH_DG128064_F_4W_HW_SPI u8g2_spi(U8G2_R0, U8G2_CS_ARG, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
   static U8G2 *g_u8g2p = &u8g2_spi;
 #elif defined(DISPLAY_PCD8544_SPI)
   #define DISP_W 84
   #define DISP_H 48
   // Nokia 5110 (PCD8544), 84x48, апаратний SPI.
-  U8G2_PCD8544_84X48_F_4W_HW_SPI u8g2_spi(U8G2_R0, DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+  U8G2_PCD8544_84X48_F_4W_HW_SPI u8g2_spi(U8G2_R0, U8G2_CS_ARG, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
   static U8G2 *g_u8g2p = &u8g2_spi;
 #elif defined(DISPLAY_SH1107_128_I2C)
   #define DISPLAY_USES_I2C 1

@@ -10,8 +10,12 @@
 // ⚑ Значення як в arduino-esp32: OUTPUT = 0x03, тобто разом із бітом INPUT.
 // Саме через це digitalRead() на вихідному піні там дає РЕАЛЬНИЙ рівень
 // виводу — на цьому й тримається перевірка ліній нижче.
-#define INPUT  0x01
-#define OUTPUT 0x03
+#define INPUT           0x01
+#define OUTPUT          0x03
+#define PULLUP          0x04
+#define INPUT_PULLUP    0x05
+#define PULLDOWN        0x08
+#define INPUT_PULLDOWN  0x09
 #define HIGH 1
 #define LOW 0
 // ── МОДЕЛЬ ПІНА ENABLE/ПІДТЯЖКИ ────────────────────────────────────────────
@@ -29,15 +33,28 @@ static int  g_pinFault = 0;               // 0 = справна, 1 = корот�
 //   2 = лінія висока завжди (зайва зовнішня підтяжка).
 static int  g_busFault = 0;
 static int  g_busPin   = 4;               // DS_PIN у цьому тесті
-static void pinMode(int, int) {}
+static int  g_busMode  = 0x01;            // режим піна даних (INPUT/PULLUP/PULLDOWN)
+// ⚑ На цій платі ЗОВНІШНІХ резисторів немає — підтяжку дає сам контролер.
+// Тому модель мусить розрізняти режими піна: із простим INPUT вільна лінія
+// висить у повітрі, з INPUT_PULLUP — тягнеться вгору, з INPUT_PULLDOWN — вниз.
+// Без цього перевірку «чи піднімає лінію внутрішня підтяжка» не відтворити.
+static void pinMode(int pin, int mode) { if (pin == g_busPin) g_busMode = mode; }
 static void digitalWrite(int, int v) {
     g_pinLevel = (g_pinFault == 1) ? 0 : (g_pinFault == 2) ? 1 : v;
 }
+// Дозволяє фейковому OneWire відтворити поведінку справжнього — pinMode(INPUT)
+// у конструкторі, що на ESP32 знімає внутрішню підтяжку. Має бути оголошено ДО
+// включення fake/OneWire.h (він приходить разом із battery_reader.h нижче).
+#define FAKE_ONEWIRE_TOUCHES_PIN 1
+
 static int  digitalRead(int pin) {
     if (pin == g_busPin) {
-        if (g_busFault == 1) return 0;    // підтяжка нікуди не доходить
-        if (g_busFault == 2) return 1;    // висока завжди
-        return g_pinLevel;                // штатно — за підтяжкою
+        if (g_busFault == 2) return 1;              // зовнішнє коротке на живлення
+        if (g_busFault == 1) return 0;              // лінія притиснута до землі
+        if (g_pinLevel) return 1;                   // підняв керуючий пін
+        if ((g_busMode & PULLUP)   == PULLUP)   return 1;   // внутрішня підтяжка вгору
+        if ((g_busMode & PULLDOWN) == PULLDOWN) return 0;   // внутрішня вниз
+        return 0;                                   // вільна лінія (модель: нуль)
     }
     return g_pinLevel;
 }
@@ -66,8 +83,26 @@ int main() {
     uint8_t original[512];
     for (int i = 0; i < 512; i++) original[i] = (uint8_t)(0x10 + (i % 200));
 
+    printf("0) внутрішня підтяжка лінії даних (зовнішніх резисторів на платі немає)\n");
     BatteryReader battery(4, 5);
+    // Конструктор OneWire щойно виконав pinMode(pin, INPUT) — як справжній, —
+    // тобто підтяжку ЗНЯТО. Саме з цього стану все й починається.
+    if ((g_busMode & PULLUP) == PULLUP)
+        bad("модель невірна: конструктор OneWire мав зняти підтяжку");
+    else printf("   ок    конструктор OneWire знімає підтяжку (відтворено як у бібліотеці)\n");
+
+    // Пряма перевірка самої dsIdle(): вона й відновлює підтяжку. Побічних
+    // ефектів тут немає — падає рівно тоді, коли зламано саме її.
+    battery.dsIdle();
+    if ((g_busMode & PULLUP) != PULLUP)
+        bad("dsIdle() не вмикає внутрішню підтяжку — шина лишиться мовчазною");
+    else printf("   ок    dsIdle() вмикає внутрішню підтяжку\n");
+
+    g_busMode = INPUT;                        // знову знімаємо
     battery.begin();
+    if ((g_busMode & PULLUP) != PULLUP)
+        bad("після begin() підтяжки немає");
+    else printf("   ок    після begin() підтяжка увімкнена\n");
 
     // ── 1. Здорова шина: точні дані, база для порівняння з іншими сценаріями.
     //    Абсолютних чисел тут свідомо не чекаємо: findDevices() і так робить
@@ -220,11 +255,18 @@ int main() {
         // ГОЛОВНИЙ ВИПАДОК: керуючий пін справний, а лінія даних не
         // піднімається. Саме так виглядає обірвана підтяжка або відсутність
         // спільної землі з пакетом — і саме цього enableLineCheck() НЕ бачить.
+        // Хто саме підняв лінію — важливо: на цій платі зовнішніх резисторів
+        // немає, і працювати мусить саме ВНУТРІШНЯ підтяжка контролера.
+        printf("   підняли: керуючий пін=%d, внутрішня=%d\n",
+               (int)battery.busPulledByCtrl(), (int)battery.busPulledByInt());
+        if (!battery.busPulledByInt()) bad("внутрішня підтяжка контролера не піднімає лінію");
+        else printf("   ок    внутрішня підтяжка контролера піднімає лінію\n");
+
         g_busFault = 1;
         c = battery.busLineCheck();
-        printf("   підтяжка не доходить -> код %u (%s)\n", c, BatteryReader::busLineText(c));
-        if (c != BatteryReader::BUS_NO_PULLUP) bad("не виявлено, що підтяжка не доходить до лінії даних");
-        else printf("   ок    виявлено: керуючий пін справний, а лінія даних — ні\n");
+        printf("   лінія притиснута до землі -> код %u (%s)\n", c, BatteryReader::busLineText(c));
+        if (c != BatteryReader::BUS_NO_PULLUP) bad("не виявлено, що лінію не підняти жодною підтяжкою");
+        else printf("   ок    виявлено: жодна підтяжка лінію не піднімає\n");
         if (battery.enableLineCheck() != BatteryReader::ENL_OK)
             bad("керуючий пін помилково визнано несправним");
         else printf("   ок    і керуючий пін при цьому чесно визнано справним\n");
@@ -241,6 +283,18 @@ int main() {
         if (g_pinLevel != 1) bad("busLineCheck не відновив утримання enable");
         else printf("   ок    утримання enable відновлюється й після цієї перевірки\n");
         battery.holdEnable(false);
+
+        // ГОЛОВНЕ ДЛЯ ЦІЄЇ ПЛАТИ: після будь-якої діагностики внутрішня
+        // підтяжка мусить ЛИШИТИСЬ увімкненою. Її знімає будь-який
+        // pinMode(INPUT) — і саме так шина замовкає повністю.
+        battery.busLineCheck();
+        if ((g_busMode & PULLUP) != PULLUP)
+            bad("після перевірки внутрішню підтяжку не відновлено — шина замовкне");
+        else printf("   ок    внутрішня підтяжка відновлена після перевірки\n");
+        battery.enableLineCheck();
+        if ((g_busMode & PULLUP) != PULLUP)
+            bad("enableLineCheck зняв внутрішню підтяжку лінії даних");
+        else printf("   ок    і перевірка керуючого піна її не знімає\n");
     }
 
     printf("\n%s (помилок: %d)\n", fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

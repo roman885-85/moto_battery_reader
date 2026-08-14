@@ -33,7 +33,18 @@ inline FakeDS2433State g_ds2433;
 
 class OneWire {
 public:
+    // ⚑ Як у СПРАВЖНІЙ бібліотеці: OneWire::begin() (його кличе конструктор)
+    // виконує pinMode(pin, INPUT). На ESP32 це ЗНІМАЄ внутрішню підтяжку —
+    // саме та пастка, через яку шина без зовнішнього резистора замовкає.
+    // Модель мусить її відтворювати, інакше тест доводив би не те.
+    //
+    // Заголовок спільний для кількох тестів, і не в кожного є pinMode(): модель
+    // вмикається лише там, де пін справді моделюється.
+#ifdef FAKE_ONEWIRE_TOUCHES_PIN
+    explicit OneWire(int pin) { pinMode(pin, 0x01 /* INPUT */); }
+#else
     explicit OneWire(int) {}
+#endif
 
     // 1 = хтось відповів на шині (presence pulse), 0 = нікого/чіп просів.
     uint8_t reset() {

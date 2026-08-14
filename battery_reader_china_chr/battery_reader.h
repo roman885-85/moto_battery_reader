@@ -41,6 +41,14 @@
 #define DS_BUS_SETTLE_MS      5
 #define DS_SEARCH_TRIES       3
 
+// Внутрішня підтяжка лінії даних. Значення задається в settings.h (він
+// включається раніше), а тут лише ЗАПАСНЕ — щоб battery_reader.cpp збирався й
+// сам по собі, як його збирає хостовий тест. Докладно про пастку з
+// pinMode(INPUT), що знімає цю підтяжку, — у settings.h і в dsIdle().
+#ifndef DS_INTERNAL_PULLUP
+  #define DS_INTERNAL_PULLUP 1
+#endif
+
 // Допуск при звірці наробітку (ETM) після запису: чіп крутить лічильник далі,
 // тож між Copy Scratchpad і читанням назад він устигає натікати кілька секунд.
 // Усе, що більше, — це вже не «натекло», а «не записалось».
@@ -109,6 +117,15 @@ public:
     enum { BUS_OK = 0, BUS_NO_PULLUP, BUS_STUCK_HIGH };
     uint8_t busLineCheck();
     static const char *busLineText(uint8_t code);
+    // Хто саме підняв лінію в останній перевірці — заповнюється busLineCheck().
+    bool busPulledByCtrl() const { return _busByCtrl; }   // керуючим піном
+    bool busPulledByInt()  const { return _busByInt;  }   // внутрішньою підтяжкою
+
+    // Привести лінію даних у ШТАТНИЙ стан спокою (з внутрішньою підтяжкою або
+    // без, за DS_INTERNAL_PULLUP). Кличеться після конструктора OneWire — той
+    // робить pinMode(pin, INPUT) і тим самим ЗНІМАЄ внутрішню підтяжку — і
+    // після кожної діагностики, що чіпала режим піна.
+    void dsIdle();
 
     // лазерний 1-Wire ROM-ID (серійний номер) останніх знайдених чипів.
     bool hasRom2433() const { return _haveRom2433; }
@@ -126,6 +143,8 @@ private:
     bool _haveRom2433 = false;
     bool _haveRom2438 = false;
     bool _holdEnable  = false;   // тримати enable піднятим (режим розряду)
+    bool _busByCtrl   = false;   // лінію підняв керуючий пін
+    bool _busByInt    = false;   // лінію підняла внутрішня підтяжка
 
     // Опустити enable/підтяжку — але ЛИШЕ якщо не тримаємо його примусово.
     // Усі місця, де раніше стояло digitalWrite(_pullupPin, LOW), тепер кличуть

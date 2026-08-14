@@ -1376,6 +1376,40 @@ inline void displaySetBrightness(uint8_t v) {
 #endif
 }
 
+// ── САМОПЕРЕВІРКА ЕКРАНА: розрізнити «немає підсвітки» і «немає обміну» ───
+//  Вмикається DISPLAY_ST7789_SELFTEST у settings.h. Потрібна рівно тоді, коли
+//  екран чорний: сама по собі чорнота нічого не каже — однаково виглядають і
+//  згасла підсвітка, і мовчазна шина SPI. Тест заливає екран чистими кольорами
+//  при ПОВНІЙ підсвітці, і відповідь читається очима, без осцилографа:
+//    • бачите кольори       -> і підсвітка, і обмін працюють (шукайте далі: у
+//                              верстці, орієнтації, оффсетах);
+//    • екран світлий, але без кольорів -> підсвітка є, обміну немає
+//                              (SDA/SCL/DC/RST, живлення панелі, CS);
+//    • екран лишається темним -> не працює підсвітка (BLK, її живлення).
+inline void displaySelfTest() {
+#if defined(DISPLAY_ST7789_SELFTEST)
+  #ifdef DISPLAY_BLK_PIN
+    analogWrite(DISPLAY_BLK_PIN, 255);       // на час тесту — на повну
+  #endif
+    struct { uint16_t c; const char *n; } steps[] = {
+        { 0xF800, "ЧЕРВОНИЙ" }, { 0x07E0, "ЗЕЛЕНИЙ" },
+        { 0x001F, "СИНІЙ" },    { 0xFFFF, "БІЛИЙ" },
+    };
+    for (auto &s : steps) {
+        tft.fillScreen(s.c);
+        Serial.printf("DISPLAY SELFTEST: %s\n", s.n);
+        delay(700);
+    }
+    tft.fillScreen(C_BG);
+    Serial.println("DISPLAY SELFTEST: завершено. Бачили кольори — обмін і "
+                   "підсвітка справні; світлий екран без кольорів — немає "
+                   "обміну; темний — немає підсвітки.");
+  #ifdef DISPLAY_BLK_PIN
+    analogWrite(DISPLAY_BLK_PIN, 0);         // повертаємо як було до заставки
+  #endif
+#endif
+}
+
 inline void displayInit() {
 #ifdef DISPLAY_BLK_PIN
     pinMode(DISPLAY_BLK_PIN, OUTPUT);
@@ -1402,9 +1436,30 @@ inline void displayInit() {
                                               // під колір ділянки (без чорних ореолів)
     u8g2Fonts.setFontDirection(0);
     tft.fillScreen(C_BG);
-    Serial.printf("DISPLAY: ST7789 %dx%d (panel %dx%d) color, rot=%d\n",
-                  (int)TFT_W, (int)TFT_H, (int)PANEL_W, (int)PANEL_H, (int)DISPLAY_ST7789_ROT);
+    displaySelfTest();                        // порожньо, доки не увімкнено
+                                              // DISPLAY_ST7789_SELFTEST
+    // ── ЗВІТ ПРО КОНФІГУРАЦІЮ ЕКРАНА ──────────────────────────────────────
+    //  Друкуємо ВСЕ, що впливає на «чорний екран»: геометрію, орієнтацію,
+    //  керуючі піни й те, чи використовується CS. Скарга «зображення немає»
+    //  без цих чисел не діагностується взагалі — а з ними одразу видно, чи
+    //  дійшла прошивка до ініціалізації і з якими саме параметрами.
+    Serial.printf("DISPLAY: ST7789 %dx%d (panel %dx%d) color, rot=%d, "
+                  "DC=%d RST=%d CS=%s BLK=%s\n",
+                  (int)TFT_W, (int)TFT_H, (int)PANEL_W, (int)PANEL_H,
+                  (int)DISPLAY_ST7789_ROT, (int)DISPLAY_DC_PIN, (int)DISPLAY_RST_PIN,
+#ifdef DISPLAY_CS_PIN
+                  String((int)DISPLAY_CS_PIN).c_str(),
+#else
+                  "немає (тягнеться до GND на модулі)",
+#endif
+#ifdef DISPLAY_BLK_PIN
+                  String((int)DISPLAY_BLK_PIN).c_str()
+#else
+                  "немає (підсвітка на живленні)"
+#endif
+    );
 }
+
 
 // ---- Кнопки (та ж логіка, що й у монохромній версії) ----
 

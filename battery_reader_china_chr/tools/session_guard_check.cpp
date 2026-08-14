@@ -56,6 +56,10 @@ static void ledSet(LedMode m) { g_led = m; }
 #include "discharge.h"
 #include "charge.h"
 
+// Дзеркало fileCalls(): подекуди треба довести саме ВІДСУТНІСТЬ конструкції.
+// Тут межа токена не потрібна — шукаємо точний фрагмент виклику.
+static bool fileHasNo(const char *path, const char *needle);
+
 static int fails = 0;
 static void ok(const char *m)  { printf("   ок    %s\n", m); }
 static void bad(const char *m) { printf("   ЗБІЙ  %s\n", m); fails++; }
@@ -105,6 +109,20 @@ static bool fileCalls(const char *path, const char *name) {
     }
     free(buf);
     return found;
+}
+
+static bool fileHasNo(const char *path, const char *needle) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;                      // файла немає — це теж провал
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    char *buf = (char *)malloc((size_t)n + 1);
+    if (!buf) { fclose(f); return false; }
+    size_t rd = fread(buf, 1, (size_t)n, f);
+    buf[rd] = '\0';
+    fclose(f);
+    bool absent = (strstr(buf, needle) == nullptr);
+    free(buf);
+    return absent;
 }
 
 int main() {
@@ -205,6 +223,24 @@ int main() {
                                              "і з причиною CHGR_NODRIVE");
     check(fileCalls("web_server.h", "chargePsuPoll"),
                                              "живлення міряється в самому циклі заряду, а не лише при старті");
+
+    printf("\n6в) конструктори дисплеїв не звертаються до DISPLAY_CS_PIN напряму\n");
+    // На частині модулів ST7789 240x240 (GMT130 і подібні) виводу CS НЕМАЄ —
+    // на платі він припаяний до землі. Тому DISPLAY_CS_PIN необов'язковий, а
+    // конструктори мусять брати його через ST7789_CS_ARG / U8G2_CS_ARG, які
+    // підставляють -1 (Adafruit) чи U8X8_PIN_NONE (U8g2), коли піна немає.
+    // Пряме DISPLAY_CS_PIN у конструкторі зібралося б лише з визначеним піном,
+    // а без нього — «мовчазний нуль», тобто дисплей смикав би GPIO0. Це
+    // strapping-пін: плата просто не завантажилась би, і шукати причину
+    // довелося б у живленні, а не в дисплеї.
+    check(fileHasNo("display_color.h", "Adafruit_ST7789(DISPLAY_CS_PIN"),
+                                             "ST7789 бере CS через ST7789_CS_ARG");
+    check(fileCalls("display_color.h", "ST7789_CS_ARG"),
+                                             "і сам макрос на місці");
+    check(fileHasNo("display.h", "HW_SPI u8g2_spi(U8G2_R0, DISPLAY_CS_PIN"),
+                                             "монохромні SPI-панелі беруть CS через U8G2_CS_ARG");
+    check(fileCalls("display.h", "U8G2_CS_ARG"),
+                                             "і цей макрос теж на місці");
 
     printf("\n7) лінійка струму розряду не вироджується на НАЙВИЩІЙ дозволеній цілі\n");
     // Саме це мала стерегти перевірка в settings.h, яка порівнювалась із

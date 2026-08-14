@@ -106,6 +106,21 @@ extern bool hasSN2433;
 // бібліотеки Adafruit (вона знає стандартні панелі 240x240/240x320/135x240/
 // 240x280 у свіжих версіях), і підклас із доступом до protected-полів навіть
 // не компілюється — стандартний випадок максимально безпечний.
+// ── CS: пін, якого на модулі може не бути ──────────────────────────────────
+//  Модулі ST7789 240x240 (GMT130 і подібні 1.3"/1.54") виводять лише
+//  GND/VCC/SCL/SDA/RES/DC/BLK — CS на платі припаяний до землі, тобто
+//  контролер вибраний завжди. Adafruit_SPITFT це штатно підтримує: -1 означає
+//  «CS немає», і бібліотека просто не смикає пін (ані pinMode, ані рівні в
+//  startWrite()). Тому тут не заглушка, а документований режим драйвера.
+//
+//  ⚠️ Наслідок, який варто пам'ятати: шину SPI більше не можна ділити. Поки
+//  дисплей на ній єдиний — а в цьому проєкті так і є, — це нічого не змінює.
+#ifdef DISPLAY_CS_PIN
+  #define ST7789_CS_ARG (DISPLAY_CS_PIN)
+#else
+  #define ST7789_CS_ARG (-1)
+#endif
+
 #if defined(DISPLAY_ST7789_MANUAL_OFFSET) || defined(DISPLAY_ST7789_XOFF) || defined(DISPLAY_ST7789_YOFF)
   #define ST7789_USE_OFFSET_CLASS 1
   class ST7789Panel : public Adafruit_ST7789 {
@@ -117,9 +132,9 @@ extern bool hasSN2433;
       setRotation(rotation);             // перерахувати _xstart/_ystart
     }
   };
-  static ST7789Panel tft = ST7789Panel(DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+  static ST7789Panel tft = ST7789Panel(ST7789_CS_ARG, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
 #else
-  static Adafruit_ST7789 tft = Adafruit_ST7789(DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+  static Adafruit_ST7789 tft = Adafruit_ST7789(ST7789_CS_ARG, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
 #endif
 static U8G2_FOR_ADAFRUIT_GFX u8g2Fonts;
 

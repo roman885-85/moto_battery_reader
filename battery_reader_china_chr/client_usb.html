@@ -1586,8 +1586,17 @@ function chgShow(d){
   if(!d.available){mon.className='dm';$('chgSt').textContent='не налаштовано (CHARGE_PWM_PIN/ISENSE/VSENSE)';return;}
   const run=d.state==='run';
   mon.className='dm '+d.state;
-  $('chgSt').textContent={idle:'очікування',run:'ІДЕ ЗАРЯД',
+  let st={idle:'очікування',run:'ІДЕ ЗАРЯД',
     done:'✅ ЗАРЯД ЗАВЕРШЕНО',abort:'⛔ '+(d.reason||'аварія')}[d.state]||d.state;
+  // ЖИВЛЕННЯ +14 В — попереду стану заряду: несправний блок означає, що заряд
+  // не піде взагалі, і «очікування» поверх цього приховало б єдину причину,
+  // яку користувач може усунути сам.
+  if(d.psuSensed && !d.psuOk){
+    st='⛔ '+d.psuText+' ('+(d.psuMv/1000).toFixed(2)+' В, потрібно '
+       +(d.psuMinMv/1000).toFixed(1)+'…'+(d.psuMaxMv/1000).toFixed(1)+' В)';
+    mon.className='dm abort';
+  }
+  $('chgSt').textContent=st;
 
   $('chgMvBig').innerHTML=(d.mv/1000).toFixed(2)+'<small>В</small>';
   $('chgPctSub').textContent=d.pct+' % · старт '+(d.startMv/1000).toFixed(2)+' В → ціль '+(d.targetMv/1000).toFixed(2)+' В';
@@ -1597,7 +1606,7 @@ function chgShow(d){
   $('chgCurBar').style.width=Math.min(100,ma*100/scale)+'%';
   $('chgLim').textContent=d.pwm?('уставка '+d.setMa+' мА · зараз '+d.ma+' мА'):'⚠ керування недоступне';
   $('chgLim').style.color=d.pwm?'var(--grn)':'var(--red)';
-  // Керування тепер — ШПАРУВАТІСТЬ ключа (P-MOSFET через NPN), а не «цільова
+  // Керування тепер — ШПАРУВАТІСТЬ ключа (PNP B772M через керуючий NPN), а не «цільова
   // напруга DC/DC»: смужку заповнюємо відносно РОБОЧОЇ стелі dutyMax.
   $('chgDutyBar').style.width=(d.pwm?(d.duty*100/(d.dutyMax||1)):100)+'%';
   $('chgDutyTxt').textContent=d.pwm

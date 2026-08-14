@@ -128,6 +128,20 @@ enum {
     CHGR_NOSTART,     // не вдалося стартувати (умови не виконані)
     CHGR_STALL,       // головний цикл застряг — сторож зупинив заряд
     CHGR_PEAK,        // ПІКОВИЙ струм вище CHARGE_PEAK_MA_MAX (див. settings.h)
+    CHGR_PSU,         // живлення +14 В відсутнє або поза допуском
+    CHGR_NODRIVE,     // шпаруватість у стелі, а струму немає — ключ не тягне
+};
+
+// ── СТАН ЖИВЛЕННЯ +14 В ────────────────────────────────────────────────────
+// Окремо від причин зупинки: живлення перевіряється ПОСТІЙНО, а не лише під
+// час заряду, і його стан треба показувати на екрані й у вебі навіть тоді,
+// коли заряд ніхто не запускав.
+enum {
+    PSU_UNKNOWN = 0,  // ще не міряли (або пін не заданий)
+    PSU_OK,           // у робочому діапазоні
+    PSU_ABSENT,       // блока живлення немає
+    PSU_LOW,          // напруга занижена — не той блок
+    PSU_HIGH,         // напруга завищена — не той блок
 };
 
 struct ChargeState {
@@ -152,6 +166,8 @@ struct ChargeState {
     // --- керування ключем (замінило колишню «цільову вихідну напругу DC/DC») ---
     uint16_t duty;            // чинна шпаруватість ШІМ, відліків (0..CHARGE_DUTY_MAX)
     uint16_t peakMa;          // НАЙБІЛЬШИЙ відлік струму за останній вимір, мА
+    uint8_t  lowDrivePolls;   // скільки опитувань поспіль «стеля D, а струму немає»
+    uint8_t  badPsuPolls;     // скільки опитувань поспіль живлення поза допуском
     float    rsense;          // шунт ПАКЕТА з DS2438, Ом — лише для перерахунку CCA
 };
 
@@ -204,6 +220,127 @@ inline void chargeOff() {
     chargeSetDuty(0);
 }
 
+// ── ВИМІРЮВАННЯ: базовий відлік і ЖИВЛЕННЯ ────────────────────────────────
+// Один відлік АЦП у мілівольти. Свідомо analogRead() і проста пропорція, а НЕ
+// analogReadMilliVolts(): остання спирається на калібрування в eFuse, якого на
+// частині модулів немає, і там вона падає (на цьому вже горіли кнопки меню).
+//
+// ⚑ ПРО РЕЗИСТОР 1 кОм ПЕРЕД ПІНОМ (він є на ВСІХ трьох вимірювальних входах).
+// Його НЕМАЄ в жодній формулі нижче, і це правильно, а не забутий доданок:
+// вхід АЦП високоомний, струму через резистор практично немає, отже немає й
+// падіння на ньому — на пін приходить рівно та напруга, що на шунті (для
+// струму) чи у вузлі подільника (для напруги). Резистор стоїть виключно як
+// струмообмеження входу на випадок кидка. Не «виправляйте» це, додавши його
+// в перерахунок: показання поїдуть.
+inline uint16_t chargeAdcMv(int pin) {
+#ifdef CHARGE_PWM_PIN
+    long raw = analogRead(pin);
+    if (raw < 0) raw = 0;
+    return (uint16_t)(raw * CHARGE_ADC_FULL_MV / CHARGE_ADC_MAX_RAW);
+#else
+    (void)pin; return 0;
+#endif
+}
+
+// ── НАПРУГА ЖИВЛЕННЯ +14 В ─────────────────────────────────────────────────
+//  Останній вимір живлення й його стан. Оновлюються chargePsuPoll() — і в
+//  спокої теж, а не лише під час заряду: несправний блок треба показати ще до
+//  того, як користувач натисне «заряд».
+static uint16_t g_psuMv    = 0;
+static uint8_t  g_psuState = PSU_UNKNOWN;
+
+inline uint8_t  chargePsuState() { return g_psuState; }
+inline uint16_t chargePsuMv()    { return g_psuMv; }
+
+// Чи взагалі є апаратний контроль живлення на цій платі.
+inline bool chargePsuSensed() {
+#ifdef CHARGE_PSU_PIN
+    return true;
+#else
+    return false;
+#endif
+}
+
+// Один вимір напруги живлення, мВ (сирий, без класифікації).
+// Серія відліків: шина живлення — найшумніше місце в пристрої, на ній сидить
+// ключ, що комутує ампери.
+inline uint16_t chargePsuReadMv() {
+#ifdef CHARGE_PSU_PIN
+    uint32_t sum = 0;
+    for (int i = 0; i < CHARGE_PSU_SAMPLES; i++) sum += chargeAdcMv(CHARGE_PSU_PIN);
+    uint32_t node = sum / CHARGE_PSU_SAMPLES;
+    return (uint16_t)(node * (CHARGE_PSU_R_TOP + CHARGE_PSU_R_BOT) / CHARGE_PSU_R_BOT);
+#else
+    return 0;
+#endif
+}
+
+// Класифікація з ГІСТЕРЕЗИСОМ. prev — попередній стан; саме він вирішує, чи
+// пом'якшувати поріг.
+//
+// ⚑ Гістерезис ОДНОБІЧНИЙ і це навмисно: несправність піднімається за чистим
+// порогом (12.5 В означає 12.5 В), а знімається лише коли напруга повернулась
+// у діапазон із запасом CHARGE_PSU_HYST_MV. Тобто помилку показуємо охоче, а
+// прибираємо неохоче — для запобіжника це правильний бік асиметрії.
+// Без нього блок, що стоїть рівно на порозі, блимав би «помилка/норма» кожні
+// дві секунди: шум АЦП на цій шині — десятки мілівольт.
+inline uint8_t chargePsuClassify(uint16_t mv, uint8_t prev) {
+#ifdef CHARGE_PSU_PIN
+    uint16_t lo = CHARGE_PSU_MIN_MV, hi = CHARGE_PSU_MAX_MV, off = CHARGE_PSU_ABSENT_MV;
+    if (prev == PSU_LOW || prev == PSU_ABSENT) lo += CHARGE_PSU_HYST_MV;
+    if (prev == PSU_ABSENT)                    off += CHARGE_PSU_HYST_MV;
+    if (prev == PSU_HIGH)                      hi -= CHARGE_PSU_HYST_MV;
+    if (mv < off) return PSU_ABSENT;
+    if (mv < lo)  return PSU_LOW;
+    if (mv > hi)  return PSU_HIGH;
+    return PSU_OK;
+#else
+    (void)mv; (void)prev; return PSU_UNKNOWN;
+#endif
+}
+
+inline bool chargePsuFault() {
+    return g_psuState != PSU_OK && g_psuState != PSU_UNKNOWN;
+}
+
+inline const char *chargePsuText(uint8_t s) {
+    switch (s) {
+        case PSU_OK:     return "живлення в нормі";
+        case PSU_ABSENT: return "НЕМАЄ ЖИВЛЕННЯ: блок не під'єднано або несправний";
+        case PSU_LOW:    return "ПОМИЛКА БЛОКА ЖИВЛЕННЯ: напруга занижена — блок не той";
+        case PSU_HIGH:   return "ПОМИЛКА БЛОКА ЖИВЛЕННЯ: напруга завищена — блок не той";
+        default:         return "живлення не контролюється";
+    }
+}
+
+// НАПРУГА ЖИВЛЕННЯ ДЛЯ РОЗРАХУНКІВ, мВ.
+//
+// ⚑ Уся арифметика понижувача нижче будується на Uживл, і раніше вона брала
+// константу CHARGE_SUPPLY_MV — тобто ПРИПУЩЕННЯ. Тепер бере вимір, а константа
+// лишається запасним значенням для плат без подільника живлення й на час до
+// першого виміру. Різниця не косметична: із 12-вольтовим блоком стартова
+// шпаруватість за формулою на 14 В занижена на чверть, і контур витрачає
+// десятки опитувань, щоб це надолужити.
+//
+// Явно неправдоподібний вимір (немає живлення) до розрахунків не пускаємо:
+// ділити на нього не можна, а заряд у такому стані все одно заборонений.
+inline uint16_t chargeSupplyMv() {
+#ifdef CHARGE_PSU_PIN
+    if (g_psuMv >= CHARGE_PSU_ABSENT_MV) return g_psuMv;
+#endif
+    return CHARGE_SUPPLY_MV;
+}
+
+// Перечитати живлення й перекласифікувати. Викликається і з chargeTask()
+// (кожне опитування), і з головного циклу в спокої (рідко).
+inline uint8_t chargePsuPoll() {
+#ifdef CHARGE_PSU_PIN
+    g_psuMv    = chargePsuReadMv();
+    g_psuState = chargePsuClassify(g_psuMv, g_psuState);
+#endif
+    return g_psuState;
+}
+
 // Шпаруватість, за якої вихід ІДЕАЛЬНОГО понижувача дорівнює заданій напрузі:
 // Uвих ≈ D × Uживл, звідки D = Uвих / Uживл.
 //
@@ -219,7 +356,7 @@ inline void chargeOff() {
 // перетворювач переходить у неперервний режим, де струм росте значно
 // швидше), а не як стартова точка.
 inline uint16_t chargeDutyForMv(uint16_t mv) {
-    uint32_t d = (uint32_t)mv * CHARGE_DUTY_FULL / CHARGE_SUPPLY_MV;
+    uint32_t d = (uint32_t)mv * CHARGE_DUTY_FULL / chargeSupplyMv();
     if (d > CHARGE_DUTY_MAX) d = CHARGE_DUTY_MAX;
     return (uint16_t)d;
 }
@@ -228,9 +365,10 @@ inline uint16_t chargeDutyForMv(uint16_t mv) {
 // Нижче нього перетворювач працює в ПЕРЕРИВЧАСТОМУ режимі, і залежність
 // струму від шпаруватості там квадратична, а не лінійна.
 inline uint16_t chargeBoundaryMa(uint16_t packMv) {
-    if (packMv >= CHARGE_SUPPLY_MV) return 0;
+    uint16_t supplyMv = chargeSupplyMv();
+    if (packMv >= supplyMv) return 0;
     // ΔI = (Uживл − Uпак) × D × T / L, при D = Uпак/Uживл.
-    float vi = CHARGE_SUPPLY_MV / 1000.0f, vp = packMv / 1000.0f;
+    float vi = supplyMv / 1000.0f, vp = packMv / 1000.0f;
     float dI = (vi - vp) * (vp / vi) / ((CHARGE_L_UH / 1000000.0f) * (float)CHARGE_PWM_FREQ);
     return (uint16_t)(dI * 500.0f + 0.5f);      // ΔI/2, у мА
 }
@@ -254,8 +392,9 @@ inline uint16_t chargeBoundaryMa(uint16_t packMv) {
 //  пропорційний похибці (див. chargeNextDuty): помилка моделі закривається за
 //  кілька опитувань, а не за сотні.
 inline uint16_t chargeStartDuty(uint16_t packMv, uint16_t setMa) {
-    if (packMv >= CHARGE_SUPPLY_MV || setMa == 0) return 0;
-    float vi = CHARGE_SUPPLY_MV / 1000.0f, vp = packMv / 1000.0f;
+    uint16_t supplyMv = chargeSupplyMv();
+    if (packMv >= supplyMv || setMa == 0) return 0;
+    float vi = supplyMv / 1000.0f, vp = packMv / 1000.0f;
     float I  = setMa / 1000.0f;
     float d;
     if (setMa <= chargeBoundaryMa(packMv)) {
@@ -268,28 +407,6 @@ inline uint16_t chargeStartDuty(uint16_t packMv, uint16_t setMa) {
     uint32_t duty = (uint32_t)(d * CHARGE_DUTY_FULL);
     if (duty > CHARGE_DUTY_MAX) duty = CHARGE_DUTY_MAX;
     return (uint16_t)duty;
-}
-
-// ── ВИМІРЮВАННЯ ────────────────────────────────────────────────────────────
-// Один відлік АЦП у мілівольти. Свідомо analogRead() і проста пропорція, а НЕ
-// analogReadMilliVolts(): остання спирається на калібрування в eFuse, якого на
-// частині модулів немає, і там вона падає (на цьому вже горіли кнопки меню).
-//
-// ⚑ ПРО РЕЗИСТОР 1 кОм ПЕРЕД ПІНОМ (він є на ОБОХ вимірювальних входах).
-// Його НЕМАЄ в жодній формулі нижче, і це правильно, а не забутий доданок:
-// вхід АЦП високоомний, струму через резистор практично немає, отже немає й
-// падіння на ньому — на пін приходить рівно та напруга, що на шунті (для
-// струму) чи у вузлі подільника (для напруги). Резистор стоїть виключно як
-// струмообмеження входу на випадок кидка. Не «виправляйте» це, додавши його
-// в перерахунок: показання поїдуть.
-inline uint16_t chargeAdcMv(int pin) {
-#ifdef CHARGE_PWM_PIN
-    long raw = analogRead(pin);
-    if (raw < 0) raw = 0;
-    return (uint16_t)(raw * CHARGE_ADC_FULL_MV / CHARGE_ADC_MAX_RAW);
-#else
-    (void)pin; return 0;
-#endif
 }
 
 // Напруга пакета, мВ — з подільника на плюсовій клемі.
@@ -452,9 +569,15 @@ inline void chargeInit() {
     // зсунула б показання подільника й шунта. 11 дБ — повний діапазон 0..~3.1 В.
     pinMode(CHARGE_ISENSE_PIN, INPUT);
     pinMode(CHARGE_VSENSE_PIN, INPUT);
+  #ifdef CHARGE_PSU_PIN
+    pinMode(CHARGE_PSU_PIN, INPUT);
+  #endif
   #if defined(ARDUINO_ARCH_ESP32)
     analogSetPinAttenuation(CHARGE_ISENSE_PIN, ADC_11db);
     analogSetPinAttenuation(CHARGE_VSENSE_PIN, ADC_11db);
+    #ifdef CHARGE_PSU_PIN
+    analogSetPinAttenuation(CHARGE_PSU_PIN, ADC_11db);
+    #endif
   #endif
     Serial.printf("CHARGE: isense=%d (шунт %d мОм), vsense=%d (подільник %d/%d, "
                   "стеля живлення %d мВ -> %lu мВ на АЦП)\n",
@@ -482,6 +605,33 @@ inline void chargeInit() {
                   (int)CHARGE_BJT_PC_MW,
                   (CHARGE_P_COND_MW + CHARGE_P_SW_MW) > CHARGE_BJT_PC_MW / 2
                       ? " — ПОТРІБЕН РАДІАТОР" : "");
+    // ── ЗВІТ ПРО ОБВ'ЯЗКУ: «треба» проти «є на платі» ─────────────────────
+    //  Різниця між розрахунковими й фактичними номіналами не має жити лише в
+    //  коментарях: із нею прошивка технічно збереться, а ключ згорить.
+#if !CHARGE_HW_REWORK_DONE
+    Serial.printf("CHARGE: ⚠ ПЛАТА НЕ ДООПРАЦЬОВАНА — база PNP %d Ом (треба %d), "
+                  "база NPN %d Ом (треба %d)\n",
+                  (int)CHARGE_BASE_DRIVE_ASBUILT_OHM, (int)CHARGE_BASE_DRIVE_OHM,
+                  (int)CHARGE_NPN_BASE_ASBUILT_OHM, (int)CHARGE_NPN_BASE_OHM);
+    Serial.printf("CHARGE: ⚠ на нинішніх номіналах Iб(NPN)=%d мкА, Iб(PNP)=%d мА -> "
+                  "ключ насичується щонайбільше до ~%d мА замість %d мА. Заряд "
+                  "спиниться сам (відсічка «ключ не тягне»), але СПЕРШУ "
+                  "перепаяйте обидва резистори.\n",
+                  (int)CHARGE_ASBUILT_NPN_IB_UA, (int)CHARGE_ASBUILT_IB_MA,
+                  (int)CHARGE_ASBUILT_IC_MAX_MA, (int)CHARGE_IPEAK_MA);
+#endif
+    // Живлення силової частини — читаємо одразу, ще до першого заряду.
+#ifdef CHARGE_PSU_PIN
+    chargePsuPoll();
+    Serial.printf("CHARGE: живлення %u мВ (подільник %d/%d на GPIO%d), допуск "
+                  "%d..%d мВ -> %s\n",
+                  chargePsuMv(), (int)CHARGE_PSU_R_TOP, (int)CHARGE_PSU_R_BOT,
+                  (int)CHARGE_PSU_PIN, (int)CHARGE_PSU_MIN_MV, (int)CHARGE_PSU_MAX_MV,
+                  chargePsuText(chargePsuState()));
+#else
+    Serial.printf("CHARGE: контролю живлення НЕМАЄ (CHARGE_PSU_PIN не заданий) — "
+                  "усі розрахунки йдуть на номінальних %d мВ\n", (int)CHARGE_SUPPLY_MV);
+#endif
 #endif
     g_chg.state = CHG_IDLE;
     g_chg.reason = CHGR_NONE;
@@ -535,6 +685,45 @@ inline void chargeWatchdogFeed() {
 #endif
 }
 
+// ── ДВІ ВІДСІЧКИ, ЯКІ МУСЯТЬ БУТИ ПЕРЕВІРЯЮВАНИМИ ─────────────────────────
+//  Обидві живуть ТУТ, а не в chargeTask() у web_server.h, і на це є причина.
+//  web_server.h на хості не збирається взагалі (WebServer, SPIFFS, U8g2,
+//  ArduinoJson), тож усе, що написано всередині chargeTask(), не покрите
+//  жодним тестом. Раніше в цьому проєкті вже був тест, що тримав ВЛАСНУ КОПІЮ
+//  логіки заряду й лишався зеленим після переробки схеми, — повторювати цю
+//  помилку не можна. Тому рішення «зупинятись чи ні» ухвалюють ось ці дві
+//  функції, які тест викликає напряму, а chargeTask() лишається тонким
+//  викликачем: він тільки міряє, питає й виконує.
+//
+//  Лічильник передається за посиланням: обидві відсічки рахують СТАЛИЙ стан, а
+//  не поодинокий провал, і скидаються на першому ж нормальному опитуванні.
+
+// Живлення поза допуском CHARGE_PSU_BAD_POLLS опитувань поспіль.
+//  Одиничний вихід за межі — це просадка на кидку струму, а не аварія.
+inline bool chargePsuTrip(uint8_t psuState, uint8_t *polls) {
+    if (psuState == PSU_OK || psuState == PSU_UNKNOWN) { *polls = 0; return false; }
+    if (*polls < 255) (*polls)++;
+    return *polls >= CHARGE_PSU_BAD_POLLS;
+}
+
+// «Ключ не тягне»: шпаруватість уперлась у стелю, а струм усе одно нижчий за
+// CHARGE_NODRIVE_PCT від уставки — і так CHARGE_NODRIVE_POLLS разів поспіль.
+//
+// ⚑ Навіщо взагалі зупинятись, якщо струму МАЛО (а не багато). Бо реакція
+// регулятора на брак струму — піднімати шпаруватість, тобто збільшувати час,
+// який транзистор проводить під навантаженням. Якщо причина браку — замалий
+// струм бази (ключ поза насиченням), це рівно те, що його й палить. Стеля
+// часу спрацює через шість годин, коли палити вже нічого.
+inline bool chargeNoDriveTrip(uint16_t duty, int32_t avgMa, uint16_t setMa,
+                              uint8_t *polls) {
+    if (avgMa < 0) avgMa = 0;
+    bool starved = (duty >= CHARGE_DUTY_MAX) && (setMa > 0) &&
+                   ((uint32_t)avgMa * 100u < (uint32_t)setMa * CHARGE_NODRIVE_PCT);
+    if (!starved) { *polls = 0; return false; }
+    if (*polls < 255) (*polls)++;
+    return *polls >= CHARGE_NODRIVE_POLLS;
+}
+
 inline void chargeStop(uint8_t reason) {
     // Ключ гасимо ЗАВЖДИ — безумовний запобіжник, він нікому не шкодить.
     chargeOff();
@@ -566,6 +755,8 @@ inline const char *chargeReasonText(uint8_t r) {
         case CHGR_NOSTART:  return "старт неможливий";
         case CHGR_STALL:    return "АВАРІЯ: цикл завис — ключ і enable знято";
         case CHGR_PEAK:     return "АВАРІЯ: піковий струм вище межі";
+        case CHGR_PSU:      return "АВАРІЯ: живлення +14 В поза допуском";
+        case CHGR_NODRIVE:  return "АВАРІЯ: ключ не тягне — стеля ШІМ без струму";
         default:            return "";
     }
 }

@@ -440,8 +440,13 @@ inline void drawHeaderBar(const char *title) {
     tft.fillRect(0, 0, TFT_W, HDR_H, C_HDRBG);
     tft.drawFastHLine(0, HDR_H - 1, TFT_W, C_BLUE);
     char h[16];
-    snprintf(h, sizeof(h), "%d/%d", g_displayPage + 1, NUM_DISPLAY_PAGES);
-    tSet(FONT_SMALL, C_TEXT, C_HDRBG);
+    // ⚑ «!» перед номером сторінки — ознака несправності ЖИВЛЕННЯ, видима з
+    // БУДЬ-ЯКОЇ сторінки: без блока живлення заряд не піде, хай що користувач
+    // зараз гортає. Розшифровка — на сторінці заряду й у вебі.
+    bool psuBad = chargePsuFault();
+    snprintf(h, sizeof(h), "%s%d/%d", psuBad ? "!" : "",
+             g_displayPage + 1, NUM_DISPLAY_PAGES);
+    tSet(FONT_SMALL, psuBad ? C_RED : C_TEXT, C_HDRBG);
     int cx = TFT_W - tWidth(h) - EDGE;
     tPut(cx, 20, h);
     // Заголовок обрізаємо так, щоб він не заліз під лічильник сторінок: назви
@@ -1055,6 +1060,20 @@ inline void drawPageCharge() {
         tPut(EDGE, y, txt);
         y += 18;
     };
+
+    // ЖИВЛЕННЯ — найпершим рядком і тільки коли з ним негаразд. Без блока
+    // заряд не піде взагалі, тож ховати причину нижче за наслідки не можна.
+    if (chargePsuFault()) {
+        snprintf(b, sizeof(b), "БЖ %u.%02u В — %s", chargePsuMv() / 1000,
+                 (chargePsuMv() % 1000) / 10,
+                 chargePsuState() == PSU_ABSENT ? "НЕМАЄ ЖИВЛЕННЯ" :
+                 chargePsuState() == PSU_LOW    ? "НАПРУГА ЗАНИЖЕНА" : "НАПРУГА ЗАВИЩЕНА");
+        row(b, C_RED);
+        snprintf(b, sizeof(b), "потрібен блок %u.%u..%u.%u В",
+                 CHARGE_PSU_MIN_MV / 1000, (CHARGE_PSU_MIN_MV % 1000) / 100,
+                 CHARGE_PSU_MAX_MV / 1000, (CHARGE_PSU_MAX_MV % 1000) / 100);
+        row(b, C_RED);
+    }
 
     snprintf(b, sizeof(b), "ціль %u.%02u В (%u%%)",
              c.targetMv / 1000, (c.targetMv % 1000) / 10, c.targetPct);

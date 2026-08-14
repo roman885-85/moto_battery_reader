@@ -542,7 +542,17 @@ class ChargeMonitor(ttk.Frame):
         run = state == "run"
         txt = {"idle": "очікування", "run": "ІДЕ ЗАРЯД",
                "done": "✅ ЗАРЯД ЗАВЕРШЕНО", "abort": "⛔ " + str(d.get("reason") or "аварія")}.get(state, state)
-        self.lblState.config(text=txt, foreground=(MIL["olive"] if run else MIL["fg"]))
+        # ЖИВЛЕННЯ +14 В — попереду стану заряду: несправний блок означає, що
+        # заряд не піде взагалі, і «очікування» поверх цього приховало б єдину
+        # причину, яку користувач може усунути сам.
+        bad_psu = d.get("psuSensed") and not d.get("psuOk", True)
+        if bad_psu:
+            txt = "⛔ %s (%.2f В, потрібно %.1f…%.1f В)" % (
+                d.get("psuText", "живлення поза допуском"), d.get("psuMv", 0) / 1000.0,
+                d.get("psuMinMv", 0) / 1000.0, d.get("psuMaxMv", 0) / 1000.0)
+        self.lblState.config(text=txt,
+                             foreground=(MIL["maroon"] if bad_psu else
+                                         MIL["olive"] if run else MIL["fg"]))
         mv, pct = d.get("mv", 0), d.get("pct", 0)
         self.lblMv.config(text="%.2f В" % (mv / 1000.0))
         self.lblSub.config(text="%d %% · старт %.2f В → ціль %.2f В"
@@ -551,7 +561,7 @@ class ChargeMonitor(ttk.Frame):
         ma, setMa, pwm = d.get("ma", 0), d.get("setMa", 0), d.get("pwm", False)
         self.lblLim.config(text=("уставка %d мА · зараз %d мА" % (setMa, ma)) if pwm else "⚠ керування недоступне",
                             foreground=MIL["olive"] if pwm else MIL["maroon"])
-        # Керування тепер — ШПАРУВАТІСТЬ ключа (P-MOSFET через NPN), а не «цільова
+        # Керування тепер — ШПАРУВАТІСТЬ ключа (PNP B772M через керуючий NPN), а не «цільова
         # напруга DC/DC». Поруч — вершина пульсацій струму дроселя: вона злітає,
         # коли дросель фактично випав із кола (обрив, насичення, пробитий ключ).
         duty, dutyFull = d.get("duty", 0), d.get("dutyFull", 1) or 1

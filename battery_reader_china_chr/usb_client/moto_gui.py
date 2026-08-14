@@ -630,6 +630,7 @@ class App:
         self.root.after(40, self._poll)
         self.root.after(1000, self._dis_tick)     # стан розряду тягнеться сам
         self.root.after(1000, self._chg_tick)     # стан заряду тягнеться сам
+        self.root.after(500, self._psu_blink)     # блимання смуги аварії живлення
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ---- контекстне меню для звичайних полів ---------------------------
@@ -1021,7 +1022,21 @@ class App:
         self.lblStatus = ttk.Label(bar, text="Не підключено", foreground="#a00", padding=(8, 0))
         self.lblStatus.pack(side="left", fill="x", expand=True)
 
+        # ── АВАРІЯ ЖИВЛЕННЯ +14 В ─────────────────────────────────────────
+        # Над вкладками, а не всередині «Заряду»: без блока живлення заряд не
+        # піде взагалі, і дізнатись про це лише відкривши потрібну вкладку
+        # означало б дізнатись запізно. Пакується ДО Notebook, щоб лишалась
+        # угорі й не з'їдалась розтягуванням вкладок.
+        self.psuBar = tk.Frame(self.root, bg=MIL["maroon"])
+        self.lblPsu = tk.Label(self.psuBar, text="", bg=MIL["maroon"], fg="#ffffff",
+                               font=fnt("Segoe UI", 10, "bold"), justify="left",
+                               anchor="w", padx=10, pady=6)
+        self.lblPsu.pack(fill="x")
+        self._psuBlink = False        # фаза блимання
+        self._psuShown = False        # чи смуга зараз на екрані
+
         nb = ttk.Notebook(self.root)
+        self.nb = nb                  # потрібен смузі аварії живлення (pack before=)
         nb.pack(fill="both", expand=True, padx=6, pady=6)
         self.tabOv = ttk.Frame(nb, padding=8); nb.add(self.tabOv, text="Огляд")
         self.tabWiz = ttk.Frame(nb, padding=8); nb.add(self.tabWiz, text="🧙 Майстер")
@@ -2377,6 +2392,46 @@ class App:
         self._chgBusy = False
         d = (r or {}).get("charge") if isinstance(r, dict) else None
         self.monChg.update_state(d)
+        self.psu_alert_update(d)          # смуга аварії живлення — над вкладками
+
+    # ── АВАРІЯ ЖИВЛЕННЯ: смуга вгорі вікна ────────────────────────────────
+    # Ті самі поля /api/charge, що малює екран пристрою й веб-інтерфейс, тож
+    # розходження між трьома поверхнями неможливе.
+    def psu_alert_update(self, d):
+        try:
+            bad = bool(d) and d.get("psuSensed") and not d.get("psuOk", True)
+            if not bad:
+                if self._psuShown:
+                    self.psuBar.pack_forget()
+                    self._psuShown = False
+                return
+            self.lblPsu.config(
+                text="⛔ %s\nвиміряно %.2f В, потрібно %.1f…%.1f В\n"
+                     "Заряд неможливий. Читання й правка пам'яті пакета працюють "
+                     "без блока живлення."
+                     % (d.get("psuText", "живлення поза допуском"),
+                        d.get("psuMv", 0) / 1000.0,
+                        d.get("psuMinMv", 0) / 1000.0, d.get("psuMaxMv", 0) / 1000.0))
+            if not self._psuShown:
+                # before=вкладки, щоб смуга сіла НАД ними, а не під низом вікна.
+                self.psuBar.pack(fill="x", padx=6, pady=(0, 4), before=self.nb)
+                self._psuShown = True
+        except tk.TclError:
+            pass                      # вікно закрилось
+
+    def _psu_blink(self):
+        """Блимання смуги. Статичну червону смугу за хвилину перестаєш
+        помічати — рухома лишається видимою боковим зором; це та сама причина,
+        з якої аварійна індикація в техніці завжди рухома."""
+        try:
+            if self._psuShown:
+                self._psuBlink = not self._psuBlink
+                c = MIL["maroon"] if self._psuBlink else MIL["bg_dark"]
+                self.psuBar.config(bg=c)
+                self.lblPsu.config(bg=c)
+            self.root.after(500, self._psu_blink)
+        except tk.TclError:
+            pass
 
     def _chg_tick(self):
         """Автоопитування стану заряду — той самий принцип, що й _dis_tick:
@@ -2388,7 +2443,11 @@ class App:
             if self.connected and not self._chgBusy:
                 self._chgBusy = True
                 self.cmd("CHARGE ?", 8.0, cb=self._chg_show)
-            self.root.after(3000 if run else 30000, self._chg_tick)
+            # Несправне живлення опитуємо частіше за звичайний спокій:
+            # користувач саме зараз щось перемикає в блоці й чекає, коли смуга
+            # зникне.
+            badPsu = bool(d) and d.get("psuSensed") and not d.get("psuOk", True)
+            self.root.after(3000 if (run or badPsu) else 30000, self._chg_tick)
         except tk.TclError:
             pass                      # вікно закрилось
 

@@ -965,6 +965,45 @@ inline void drawPageCharge() {
                            : chargeReasonText(c.reason));
 }
 
+// ── СТОРІНКА ПОМИЛКИ ЖИВЛЕННЯ (монохромна) ────────────────────────────────
+//  Те саме, що й на кольоровому екрані, лише щільніше: без блока живлення
+//  заряд не піде взагалі, тож причина має бути на екрані одразу.
+//  Великий напис БЛИМАЄ (g_psuBlinkOn) — статичний текст за хвилину
+//  перестає читатись як тривога.
+static bool g_psuBlinkOn = true;
+
+inline void drawPagePsuFault() {
+    uint8_t st = chargePsuState();
+    uint16_t mv = chargePsuMv();
+    char b[40];
+
+    drawHeader("ЖИВЛЕННЯ");
+
+    u8g2.setFont(u8g2_font_6x12_t_cyrillic);
+    if (g_psuBlinkOn) {
+        const char *big = (st == PSU_ABSENT) ? "НЕМАЄ 14 В"
+                        : (st == PSU_LOW)    ? "НАПРУГА НИЗЬКА"
+                                             : "НАПРУГА ВИСОКА";
+        int w = u8g2.getUTF8Width(big);
+        u8g2.drawUTF8((DISP_W - w) / 2, HEAD_LINE + 14, big);
+    }
+
+    u8g2.setFont(BODY_FONT);
+    snprintf(b, sizeof(b), "є %u.%02u В, треба %u.%u-%u.%u",
+             mv / 1000, (mv % 1000) / 10,
+             CHARGE_PSU_MIN_MV / 1000, (CHARGE_PSU_MIN_MV % 1000) / 100,
+             CHARGE_PSU_MAX_MV / 1000, (CHARGE_PSU_MAX_MV % 1000) / 100);
+    u8g2.drawUTF8(0, HEAD_LINE + 25, b);
+
+    u8g2.drawUTF8(0, HEAD_LINE + 34,
+                  st == PSU_ABSENT ? "під'єднайте блок" :
+                  st == PSU_LOW    ? "блок не той / просів" : "блок завищений (19В?)");
+    u8g2.drawUTF8(0, HEAD_LINE + 43, "ЗАРЯД НЕМОЖЛИВИЙ");
+
+    u8g2.drawHLine(0, FOOT_HL, DISP_W);
+    u8g2.drawUTF8(0, FOOT_Y, "кнопка — сховати");
+}
+
 inline void drawPageActions() {
     // Назви/описи/небезпека — з operations.h (той самий каталог, що в кольоровому
     // екрані, вебі й USB-клієнті). Локального списку дій більше немає.
@@ -1056,6 +1095,20 @@ inline void displayRender();
 inline void displayDischargeRefresh(bool /*full*/) { displayRender(); }
 inline void displayChargeRefresh(bool /*full*/) { displayRender(); }
 
+// ── БЛИМАННЯ НАПИСУ ПРО ЖИВЛЕННЯ ──────────────────────────────────────────
+//  Кличеться часто з loop(). Тут перемальовується ВЕСЬ буфер — на монохромному
+//  екрані це дешево (одна посилка кадру), на відміну від кольорового, де
+//  блимає лише смуга напису.
+inline void displayPsuBlinkTask() {
+    static unsigned long lastMs = 0;
+    if (!chargePsuScreenActive()) { g_psuBlinkOn = true; return; }
+    unsigned long now = millis();
+    if (now - lastMs < DISPLAY_PSU_BLINK_MS) return;
+    lastMs = now;
+    g_psuBlinkOn = !g_psuBlinkOn;
+    displayRender();
+}
+
 inline void displayRender() {
     u8g2.clearBuffer();
     // Поки навантаження/заряд увімкнені — примусово моніторинг, хоч би яку
@@ -1069,6 +1122,13 @@ inline void displayRender() {
     }
     if (chargeScreenActive()) {
         drawPageCharge();
+        u8g2.sendBuffer();
+        return;
+    }
+    // Помилка живлення — НИЖЧЕ за операції, що йдуть: розряд блока живлення не
+    // потребує, а зупинений через живлення заряд і так показує ту саму причину.
+    if (chargePsuScreenActive()) {
+        drawPagePsuFault();
         u8g2.sendBuffer();
         return;
     }
@@ -1306,6 +1366,20 @@ inline void displayHandleButton() {
         } else if (d1 == 1 || d2 == 1 || d3 == 1) {   // коротке = оновити показання
             displayChargeRefresh(false);
         }
+        return;
+    }
+
+    // ── СТОРІНКА ПОМИЛКИ ЖИВЛЕННЯ ─────────────────────────────────────────
+    // Будь-яке натискання прибирає її. Сама несправність лишається: «!» у
+    // шапці, код на світлодіоді, і при зміні стану сторінка з'явиться знову.
+    if (chargePsuScreenActive()) {
+        int d1 = pollButtonRaw(btn1Raw(), b1, 0);
+        int d2 = pollButtonRaw(btn2Raw(), b2, 0);
+        int d3 = 0;
+#ifdef MENU_BTN3_PIN
+        d3 = pollButtonRaw(btn3Raw(), b3, 0);
+#endif
+        if (d1 || d2 || d3) { chargePsuDismiss(); displayRender(); }
         return;
     }
 

@@ -48,7 +48,7 @@ static class { public: void printf(const char *, ...) {} void println(const char
 // потрібен лише слід від ledSet() — який режим індикації виставили останнім.
 #define LEDS_H
 enum LedMode { LED_BOOT, LED_IDLE, LED_READ, LED_WRITE, LED_OK, LED_ERROR,
-               LED_DISCHARGE, LED_CHARGE, LED_CHARGE_TAPER };
+               LED_FAULT, LED_DISCHARGE, LED_CHARGE, LED_CHARGE_TAPER };
 static LedMode g_led = LED_BOOT;
 static void ledSet(LedMode m) { g_led = m; }
 
@@ -184,6 +184,27 @@ int main() {
                                              "скетч справді викликає chargeConsumeDirty() у loop()");
     check(fileCalls("motorola-battery-reader-web.ino", "displayChargeRefresh"),
                                              "і перемальовує сторінку заряду");
+    check(fileCalls("motorola-battery-reader-web.ino", "chargePsuIdleTask"),
+                                             "і опитує живлення В СПОКОЇ, а не лише під час заряду");
+
+    printf("\n6б) відсічки заряду СПРАВДІ підключені в chargeTask()\n");
+    // ⚑ Логіка обох відсічок живе в charge.h саме тому, що web_server.h на
+    // хості не збирається — там її можна викликати з тесту напряму (див.
+    // charge_logic_check.cpp). Але «функція правильна» і «функцію хтось
+    // кличе» — різні твердження, і саме на другому цей проєкт уже горів:
+    // chargeMarkDirty() працював бездоганно, а chargeConsumeDirty() у скетчі
+    // не викликав ніхто, тож заряд ніколи не оновлював екран. Тому окремо
+    // перевіряємо, що chargeTask() ці функції таки викликає.
+    check(fileCalls("web_server.h", "chargePsuTrip"),
+                                             "chargeTask() перевіряє живлення через chargePsuTrip()");
+    check(fileCalls("web_server.h", "chargeNoDriveTrip"),
+                                             "chargeTask() перевіряє «ключ не тягне» через chargeNoDriveTrip()");
+    check(fileCalls("web_server.h", "CHGR_PSU"),
+                                             "і зупиняється з причиною CHGR_PSU");
+    check(fileCalls("web_server.h", "CHGR_NODRIVE"),
+                                             "і з причиною CHGR_NODRIVE");
+    check(fileCalls("web_server.h", "chargePsuPoll"),
+                                             "живлення міряється в самому циклі заряду, а не лише при старті");
 
     printf("\n7) лінійка струму розряду не вироджується на НАЙВИЩІЙ дозволеній цілі\n");
     // Саме це мала стерегти перевірка в settings.h, яка порівнювалась із

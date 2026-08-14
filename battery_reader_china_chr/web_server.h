@@ -1305,6 +1305,18 @@ const char *chargeStart(uint8_t targetPct) {
     //    нагріву заряд заборонено. Ключ зараз закритий, тож 1-Wire читається
     //    без зсуву землі (див. коментар про шунт у мінусовому проводі).
     chargeOff();                        // гарантовано закритий ключ на час вимірів
+
+    // ⚑ ЖИВЛЕННЯ — ПЕРШИМ, ще до всіх інших перевірок. Без нього решта вимірів
+    //  не має сенсу: заряд «іде» зі шпаруватістю в стелю й нульовим струмом, і
+    //  виглядає це як несправність пакета, а не як забутий блок живлення.
+    //  Міряємо саме зараз, на закритому ключі, — під струмом на шині живлення
+    //  є просадка, і поріг довелося б розмазувати.
+    uint8_t psu = chargePsuPoll();
+    if (psu != PSU_OK && psu != PSU_UNKNOWN) {
+        ledSet(LED_FAULT);
+        return chargePsuText(psu);
+    }
+
     uint16_t mv = chargePackMv();
     uint16_t mvPeak; uint16_t maIdle = chargeMeasureMa(&mvPeak);
 
@@ -1427,6 +1439,22 @@ inline void chargeTask() {
     dischargeSettle(CHARGE_VSENSE_SETTLE_MS);   // той самий неблокуючий сон, що й у розряду
     uint16_t mv = chargePackMv();
 
+    // ── крок 2а: ЖИВЛЕННЯ — тут же, на закритому ключі ────────────────────
+    //  Разом із напругою пакета й з тієї ж причини: під струмом на шині
+    //  живлення є просадка від власного опору блока й проводів, і порівнювати
+    //  її з порогом означало б ловити не блок живлення, а кидки струму.
+    //  Одиничний вихід за межі не зупиняє заряд — потрібно CHARGE_PSU_BAD_POLLS
+    //  поспіль. Пропадання ж живлення видно одразу й безпомилково.
+    uint8_t psu = chargePsuPoll();
+    if (chargePsuTrip(psu, &g_chg.badPsuPolls)) {
+        chargeStop(CHGR_PSU);
+        ledSet(LED_FAULT);
+        Serial.printf("=== Charge ABORT: %s (%u мВ, допуск %d..%d мВ) ===\n",
+                      chargePsuText(psu), chargePsuMv(),
+                      (int)CHARGE_PSU_MIN_MV, (int)CHARGE_PSU_MAX_MV);
+        return;                      // ключ уже закритий — chargeStop() гасить його першим
+    }
+
     // ── крок 2б: ТЕМПЕРАТУРА з DS2438 — РІДКО (CHARGE_TEMP_EVERY_N) ───────
     //  Транзакція 1-Wire коштує сотні мілісекунд, і весь цей час ключ мусить
     //  лишатись закритим (шунт у мінусовому проводі зсуває опорну землю
@@ -1463,6 +1491,26 @@ inline void chargeTask() {
     g_chg.duty    = chargeNextDuty(g_chg.duty, (int32_t)avgMa, g_chg.setMa);
     chargeSetDuty(g_chg.duty);
 
+    // ── «КЛЮЧ НЕ ТЯГНЕ»: стеля шпаруватості без струму ────────────────────
+    //  Дзеркало пікової відсічки й з тією ж метою — врятувати силовий ключ.
+    //  Регулятор на брак струму відповідає підняттям шпаруватості, тобто
+    //  ЗБІЛЬШУЄ час, який транзистор проводить під навантаженням; якщо причина
+    //  браку — недостатній струм бази (ключ поза насиченням), це рівно те, що
+    //  його й палить. Тому вихід на стелю разом із недобором струму — привід
+    //  зупинитись, а не чекати шість годин до відсічки за часом.
+    //  Лічильник скидається на першому ж нормальному опитуванні: рахуємо
+    //  СТАЛИЙ стан, а не окремий провал під час стрибка уставки.
+    if (chargeNoDriveTrip(g_chg.duty, (int32_t)avgMa, g_chg.setMa, &g_chg.lowDrivePolls)) {
+        chargeStop(CHGR_NODRIVE);
+        ledSet(LED_FAULT);
+        Serial.printf("=== Charge ABORT: стеля duty %u, а струм лише %u мА з %u мА. "
+                      "Перевірте струм бази ключа (база PNP %d Ом, база NPN %d Ом), "
+                      "дросель і контакти ===\n",
+                      (unsigned)CHARGE_DUTY_MAX, avgMa, g_chg.setMa,
+                      (int)CHARGE_BASE_DRIVE_ASBUILT_OHM, (int)CHARGE_NPN_BASE_ASBUILT_OHM);
+        return;
+    }
+
     g_chg.lastMv = mv;
     g_chg.lastMa = (int16_t)avgMa;   // СЕРЕДНІЙ струм із НАШОГО шунта, додатний = заряджаємо
     g_chg.peakMa = peakMa;
@@ -1489,6 +1537,38 @@ inline void chargeTask() {
         chargeStop(CHGR_TARGET);
         Serial.printf("=== Charge DONE: %lu mAh in %lus ===\n",
                       (unsigned long)chargeMah(), (unsigned long)g_chg.elapsedS);
+    }
+}
+
+// ── КОНТРОЛЬ ЖИВЛЕННЯ У СПОКОЇ ─────────────────────────────────────────────
+//  Під час заряду живлення міряє chargeTask() — на закритому ключі, разом із
+//  напругою пакета. Але саме в спокої несправність і треба помітити: інакше
+//  користувач дізнається про забутий блок живлення лише з відмови старту.
+//
+//  ⚑ Світлодіод чіпаємо ОБЕРЕЖНО. LED_FAULT — постійний сигнал, і виставляти
+//  його поверх заряду/розряду/читання не можна: це стерло б індикацію процесу,
+//  який саме йде. Тому вмикаємо його тільки із «спокійних» режимів, а знімаємо
+//  тільки якщо він і зараз наш.
+inline void chargePsuIdleTask() {
+    if (!chargePsuSensed()) return;
+    if (chargeRunning()) return;              // під час заряду цим займається chargeTask()
+
+    static unsigned long lastMs = 0;
+    unsigned long now = millis();
+    if (lastMs && (now - lastMs) < CHARGE_PSU_IDLE_MS) return;
+    lastMs = now;
+
+    uint8_t before = chargePsuState();
+    uint8_t after  = chargePsuPoll();
+    if (after != before) chargeMarkDirty(2);  // стан живлення показує й екран
+
+    bool fault = chargePsuFault();
+    LedMode m = ledMode();
+    if (fault) {
+        // Не перебиваємо індикацію процесу, що саме йде.
+        if (m == LED_IDLE || m == LED_BOOT) ledSet(LED_FAULT);
+    } else if (m == LED_FAULT) {
+        ledSet(LED_IDLE);                     // несправність зникла — повертаємось у спокій
     }
 }
 
@@ -1531,6 +1611,16 @@ static String chargeJson() {
     j += ",\"shuntMohm\":"+ String((unsigned)CHARGE_SHUNT_MOHM);
     j += ",\"pwm\":"      + String(chargePwmOk() ? "true" : "false");
     j += ",\"hardMaxMv\":"+ String((unsigned)g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV);
+    // ── ЖИВЛЕННЯ +14 В ─────────────────────────────────────────────────────
+    //  Йде в тому ж об'єкті, що й заряд, і оновлюється НЕЗАЛЕЖНО від того, чи
+    //  заряд узагалі запускали: несправний блок треба показати на екрані до
+    //  того, як користувач натисне кнопку, а не після невдалого старту.
+    j += ",\"psuSensed\":" + String(chargePsuSensed() ? "true" : "false");
+    j += ",\"psuMv\":"    + String(chargePsuMv());
+    j += ",\"psuMinMv\":" + String((unsigned)CHARGE_PSU_MIN_MV);
+    j += ",\"psuMaxMv\":" + String((unsigned)CHARGE_PSU_MAX_MV);
+    j += ",\"psuOk\":"    + String(!chargePsuFault() ? "true" : "false");
+    j += ",\"psuText\":\""; j += chargePsuText(chargePsuState()); j += "\"";
     j += "}";
     return j;
 }

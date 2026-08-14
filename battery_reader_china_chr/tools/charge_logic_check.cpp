@@ -48,6 +48,7 @@ static class { public: void printf(const char *, ...) {} void println(const char
 static int      g_adcMidMa = 0;           // середній струм дроселя, мА
 static int      g_adcRippleMa = 0;        // повний розмах пульсацій ΔI, мА
 static int      g_adcVsenseRaw = 0;
+static int      g_adcPsuRaw = 0;          // вузол подільника ЖИВЛЕННЯ
 static long     g_adcIsenseReads = 0;
 static int analogRead(int pin);
 
@@ -56,9 +57,10 @@ static int analogRead(int pin);
 // leds.h підмінюємо — справжній тягне buzzer.h з таблицями й таймерами.
 #define LEDS_H
 enum LedMode { LED_BOOT, LED_IDLE, LED_READ, LED_WRITE, LED_OK, LED_ERROR,
-               LED_DISCHARGE, LED_CHARGE, LED_CHARGE_TAPER };
+               LED_FAULT, LED_DISCHARGE, LED_CHARGE, LED_CHARGE_TAPER };
 static LedMode g_led = LED_BOOT;
 static void ledSet(LedMode m) { g_led = m; }
+static LedMode ledMode() { return g_led; }
 
 #include "charge.h"
 
@@ -67,6 +69,9 @@ static int maToRaw(int ma);
 
 static int analogRead(int pin) {
     if (pin == CHARGE_VSENSE_PIN) return g_adcVsenseRaw;
+#ifdef CHARGE_PSU_PIN
+    if (pin == CHARGE_PSU_PIN) return g_adcPsuRaw;
+#endif
     // Пін струму: трикутна хвиля навколо g_adcMidMa з розмахом g_adcRippleMa.
     // Період беремо 16 відліків — серія зі 128 покриває рівно 8 повних
     // періодів, тож середнє по серії має точно збігтися з g_adcMidMa.
@@ -88,6 +93,16 @@ static int packMvToRaw(int mv) {
     long node = (long)mv * CHARGE_VSENSE_R_BOT / (CHARGE_VSENSE_R_TOP + CHARGE_VSENSE_R_BOT);
     return (int)(node * CHARGE_ADC_MAX_RAW / CHARGE_ADC_FULL_MV);
 }
+// напруга ЖИВЛЕННЯ, мВ -> сирий відлік АЦП у вузлі свого подільника.
+// Затискаємо на повній шкалі — саме так поводиться реальний АЦП, і саме це
+// робить перевірку діапазону подільника осмисленою.
+static int psuMvToRaw(int mv) {
+    long node = (long)mv * CHARGE_PSU_R_BOT / (CHARGE_PSU_R_TOP + CHARGE_PSU_R_BOT);
+    long raw  = node * CHARGE_ADC_MAX_RAW / CHARGE_ADC_FULL_MV;
+    return (int)(raw > CHARGE_ADC_MAX_RAW ? CHARGE_ADC_MAX_RAW : raw);
+}
+// Виставити живлення й перечитати його — як це робить прошивка.
+static uint8_t setPsu(int mv) { g_adcPsuRaw = psuMvToRaw(mv); return chargePsuPoll(); }
 
 static int fails = 0;
 static void bad(const char *m) { printf("   ЗБІЙ  %s\n", m); fails++; }
@@ -406,6 +421,212 @@ int main() {
               "навіть прямий виклик повз регулятор не перевищить CHARGE_DUTY_MAX");
         chargeSetDuty(0);
         check(g_lastDuty == 0, "нуль проходить як нуль — ключ закривається");
+    }
+
+    printf("\n12) контроль живлення +14 В: класифікація й перерахунок\n");
+    {
+        // Перерахунок туди-назад через подільник живлення.
+        long worst = 0;
+        for (int mv = 6000; mv <= CHARGE_PSU_MAX_READ_MV; mv += 250) {
+            g_adcPsuRaw = psuMvToRaw(mv);
+            long back = chargePsuReadMv();
+            long d = back > mv ? back - mv : mv - back;
+            if (d > worst) worst = d;
+        }
+        // Крок АЦП на боці живлення: один відлік = (R_в+R_н)/R_н × крок АЦП.
+        long stepMv = (long)CHARGE_ADC_FULL_MV * (CHARGE_PSU_R_TOP + CHARGE_PSU_R_BOT) /
+                      (CHARGE_PSU_R_BOT * CHARGE_ADC_MAX_RAW);
+        printf("   найбільша похибка перерахунку 6.0..%.1f В: %ld мВ "
+               "(крок АЦП тут ≈%ld мВ)\n",
+               CHARGE_PSU_MAX_READ_MV / 1000.0, worst, stepMv);
+        check(worst <= stepMv * 3, "перерахунок живлення в межах квантування");
+
+        printf("   пороги: немає <%d, занижено <%d, норма, завищено >%d мВ\n",
+               (int)CHARGE_PSU_ABSENT_MV, (int)CHARGE_PSU_MIN_MV, (int)CHARGE_PSU_MAX_MV);
+        check(setPsu(0)     == PSU_ABSENT, "блок не під'єднано -> PSU_ABSENT");
+        check(setPsu(3000)  == PSU_ABSENT, "залишкова напруга без блока -> PSU_ABSENT");
+        // 8 В — саме той випадок, заради якого поріг «немає» піднято над нулем:
+        // пакет підживлює шину через перехід база-колектор силового PNP.
+        check(setPsu(8000)  == PSU_LOW,    "підживлення від пакета читається як «занижено», а не «норма»");
+        check(setPsu(12000) == PSU_LOW,    "12-вольтовий блок -> PSU_LOW (не той блок)");
+        check(setPsu(14000) == PSU_OK,     "штатні 14 В -> норма");
+        check(setPsu(19000) == PSU_HIGH,   "19-вольтовий блок від ноутбука -> PSU_HIGH");
+        setPsu(14000);
+        check(setPsu(CHARGE_PSU_MAX_MV - CHARGE_PSU_HYST_MV) == PSU_OK,
+              "верхня межа з запасом — норма");
+        check(setPsu(CHARGE_PSU_MIN_MV + CHARGE_PSU_HYST_MV) == PSU_OK,
+              "нижня межа з запасом — норма");
+
+        // ГІСТЕРЕЗИС. Без нього блок, що стоїть рівно на порозі, блимав би
+        // «помилка/норма» на кожному опитуванні — і шум АЦП тут не гіпотеза,
+        // а десятки мілівольт.
+        setPsu(14000);
+        check(setPsu(CHARGE_PSU_MIN_MV - 50) == PSU_LOW,
+              "трохи нижче порога — помилка піднімається за ЧИСТИМ порогом");
+        check(setPsu(CHARGE_PSU_MIN_MV + 50) == PSU_LOW,
+              "трохи вище порога помилка ЩЕ ТРИМАЄТЬСЯ — це і є гістерезис");
+        check(setPsu(CHARGE_PSU_MIN_MV + CHARGE_PSU_HYST_MV + 50) == PSU_OK,
+              "знімається лише при поверненні в діапазон із запасом");
+        setPsu(14000);
+        check(setPsu(CHARGE_PSU_MAX_MV + 50) == PSU_HIGH, "дзеркально для верхньої межі");
+        check(setPsu(CHARGE_PSU_MAX_MV - 50) == PSU_HIGH, "і там теж не відпускає одразу");
+        check(setPsu(CHARGE_PSU_MAX_MV - CHARGE_PSU_HYST_MV - 50) == PSU_OK,
+              "верхня межа теж відпускає лише із запасом");
+        setPsu(14000);
+        // Головне, заради чого пороги й існують: несправність мусить бути
+        // ВИДИМОЮ як несправність, а не лише «не норма».
+        setPsu(12000);
+        check(chargePsuFault(), "занижене живлення піднімає ознаку несправності");
+        setPsu(14000);
+        check(!chargePsuFault(), "справне живлення ознаку знімає");
+        check(psuMvToRaw(19000) < CHARGE_ADC_MAX_RAW,
+              "помилковий блок 19 В читається числом, а не «залипає» на 4095");
+    }
+
+    printf("\n12б) розрахунок іде на ВИМІРЯНОМУ живленні, а не на константі\n");
+    {
+        // Це і є сенс усього подільника живлення: та сама уставка на різних
+        // блоках вимагає різної шпаруватості, і стартова оцінка мусить це
+        // враховувати, інакше контур витрачає десятки опитувань на надолуження.
+        setPsu(14000);
+        uint16_t d14 = chargeStartDuty(8000, 400);
+        uint16_t b14 = chargeBoundaryMa(8000);
+        setPsu(12500);
+        uint16_t d12 = chargeStartDuty(8000, 400);
+        uint16_t b12 = chargeBoundaryMa(8000);
+        printf("   пакет 8.0 В, уставка 400 мА: при 14.0 В -> duty %u (межа CCM %u мА), "
+               "при 12.5 В -> duty %u (межа CCM %u мА)\n", d14, b14, d12, b12);
+        check(d12 > d14, "на просілому живленні стартова шпаруватість БІЛЬША");
+        check(b12 < b14, "межа неперервного режиму теж рахується на живому вимірі");
+
+        // Запасний шлях: якщо живлення не читається (немає блока), розрахунок
+        // мусить впасти на номінал, а не ділити на майже нуль.
+        setPsu(0);
+        printf("   без блока живлення chargeSupplyMv() -> %u мВ (номінал %d)\n",
+               chargeSupplyMv(), (int)CHARGE_SUPPLY_MV);
+        check(chargeSupplyMv() == CHARGE_SUPPLY_MV,
+              "неправдоподібний вимір до розрахунків не пускається");
+        // Не «те саме число», а «те саме з точністю до квантування»: вимір
+        // 14.000 В повертається як 13.985 (крок АЦП на цій шині ~6 мВ), і
+        // вимагати побітового збігу означало б перевіряти АЦП, а не логіку.
+        int dfb = (int)chargeStartDuty(8000, 400) - (int)d14;
+        printf("   запасний шлях: duty %u проти %u (різниця %d відліків)\n",
+               chargeStartDuty(8000, 400), d14, dfb);
+        check(dfb > -4 && dfb < 4,
+              "запасний шлях дає ту саму робочу точку, що й номінальне живлення");
+        setPsu(14000);
+    }
+
+    printf("\n13) обв'язка бази: що дає ПЛАТА і чого вимагає розрахунок\n");
+    {
+        // Тут перевіряється не прошивка, а ЧЕСНІСТЬ звіту про залізо: числа,
+        // які пристрій друкує при старті, мусять збігатися з арифметикою.
+        printf("   треба: база PNP %d Ом, база NPN %d Ом -> Iб(PNP) %d мА, Iб(NPN) %d мкА\n",
+               (int)CHARGE_BASE_DRIVE_OHM, (int)CHARGE_NPN_BASE_OHM,
+               (int)CHARGE_IB_MA, (int)CHARGE_NPN_IB_UA);
+        printf("   на платі: %d Ом і %d Ом -> Iб(PNP) %d мА, Iб(NPN) %d мкА, "
+               "стеля ключа ~%d мА замість %d мА\n",
+               (int)CHARGE_BASE_DRIVE_ASBUILT_OHM, (int)CHARGE_NPN_BASE_ASBUILT_OHM,
+               (int)CHARGE_ASBUILT_IB_MA, (int)CHARGE_ASBUILT_NPN_IB_UA,
+               (int)CHARGE_ASBUILT_IC_MAX_MA, (int)CHARGE_IPEAK_MA);
+        check(!CHARGE_HW_REWORK_DONE,
+              "плата ЩЕ НЕ доопрацьована — прапорець це визнає");
+        check(CHARGE_ASBUILT_IC_MAX_MA < CHARGE_IPEAK_MA,
+              "нинішня обв'язка не тягне робочий пік — саме тому потрібна заміна");
+        check(CHARGE_ASBUILT_NPN_IB_UA * CHARGE_NPN_HFE_FORCED < CHARGE_ASBUILT_DRIVE_UA,
+              "вужче місце — керуючий NPN: він не пропускає навіть нинішній струм драйвера");
+        // Найгірші кути діапазону живлення — те, на чому 150/470 Ом і провалились.
+        printf("   на межах допуску: Iб(PNP) при %d мВ = %d мА (треба %d), "
+               "струм драйвера при %d мВ = %d мкА (NPN дає %d)\n",
+               (int)CHARGE_PSU_MIN_MV, (int)CHARGE_IB_AT_MIN_PSU_MA,
+               (int)(CHARGE_IPEAK_MA / CHARGE_BJT_HFE_FORCED),
+               (int)CHARGE_PSU_MAX_MV, (int)CHARGE_DRIVE_AT_MAX_PSU_UA,
+               (int)(CHARGE_NPN_IB_UA * CHARGE_NPN_HFE_FORCED));
+        check(CHARGE_IB_AT_MIN_PSU_MA >= CHARGE_IPEAK_MA / CHARGE_BJT_HFE_FORCED,
+              "на НИЖНІЙ межі живлення силовий ключ ще насичується");
+        check(CHARGE_NPN_IB_UA >= CHARGE_DRIVE_AT_MAX_PSU_UA / CHARGE_NPN_HFE_FORCED,
+              "на ВЕРХНІЙ межі живлення керуючий NPN ще насичується");
+        check(CHARGE_DRIVE_AT_MAX_PSU_UA <= (long)CHARGE_NPN_IC_MAX_MA * 1000,
+              "струм через керуючий NPN у межах його Ic max");
+        check(CHARGE_NPN_IB_UA <= CHARGE_GPIO_UA_MAX,
+              "струм із піна ESP32 у безпечних межах і на новому номіналі");
+    }
+
+    printf("\n14) відсічка за ЖИВЛЕННЯМ: рахує СТАЛИЙ стан, а не поодинокий провал\n");
+    {
+        uint8_t n = 0;
+        bool tripped = false;
+        for (int i = 1; i < CHARGE_PSU_BAD_POLLS; i++)
+            tripped |= chargePsuTrip(PSU_LOW, &n);
+        printf("   %d опитувань поспіль «занижено» -> %s (поріг %d)\n",
+               CHARGE_PSU_BAD_POLLS - 1, tripped ? "ЗУПИНКА" : "ще терпимо",
+               (int)CHARGE_PSU_BAD_POLLS);
+        check(!tripped, "менше за поріг — заряд не зупиняється");
+        check(chargePsuTrip(PSU_LOW, &n), "на порозі — зупинка");
+
+        // Одна нормальна відповідь скидає лічильник: просадка на кидку струму
+        // не мусить накопичуватись до аварії протягом усього заряду.
+        n = 0;
+        for (int i = 0; i < 50; i++) {
+            chargePsuTrip(PSU_LOW, &n);      // провал...
+            if (chargePsuTrip(PSU_OK, &n)) { bad("норма не скинула лічильник"); break; }
+        }
+        check(n == 0, "поодинокі провали між нормальними вимірами не накопичуються");
+
+        n = 0;
+        check(!chargePsuTrip(PSU_UNKNOWN, &n),
+              "плата без контролю живлення (PSU_UNKNOWN) заряд не зупиняє");
+    }
+
+    printf("\n15) відсічка «КЛЮЧ НЕ ТЯГНЕ»: стеля шпаруватості без струму\n");
+    {
+        uint8_t n = 0;
+        // Робочий режим: струм на уставці, шпаруватість не в стелі.
+        for (int i = 0; i < 20; i++)
+            if (chargeNoDriveTrip(CHARGE_DUTY_MAX / 2, 1000, 1000, &n)) bad("штатний режим зупинено");
+        check(n == 0, "штатний режим відсічку не чіпає");
+
+        // Стеля шпаруватості, але струм у нормі — теж не привід зупинятись:
+        // так виглядає кінець заряду на просілому живленні.
+        n = 0;
+        for (int i = 0; i < 20; i++)
+            if (chargeNoDriveTrip(CHARGE_DUTY_MAX, 1000, 1000, &n)) bad("стеля зі струмом зупинена");
+        check(n == 0, "сама лише стеля шпаруватості — не аварія, поки струм є");
+
+        // Недобір струму, але шпаруватість ще НЕ в стелі — регулятору є куди
+        // рости, зупинятись зарано.
+        n = 0;
+        for (int i = 0; i < 20; i++)
+            if (chargeNoDriveTrip(CHARGE_DUTY_MAX - 1, 0, 1000, &n)) bad("зупинено до виходу на стелю");
+        check(n == 0, "поки є запас шпаруватості — даємо регулятору працювати");
+
+        // А ось це і є плата з нинішньою обв'язкою: стеля й ~34 мА замість 1000.
+        n = 0;
+        int polls = 0;
+        while (!chargeNoDriveTrip(CHARGE_DUTY_MAX, CHARGE_ASBUILT_IC_MAX_MA, 1000, &n)) {
+            if (++polls > 100) { bad("відсічка так і не спрацювала"); break; }
+        }
+        printf("   плата як є (%d мА при уставці 1000): зупинка на %d-му опитуванні "
+               "(поріг %d, ~%lu с)\n", (int)CHARGE_ASBUILT_IC_MAX_MA, polls + 1,
+               (int)CHARGE_NODRIVE_POLLS,
+               (unsigned long)((polls + 1) * CHARGE_POLL_MS / 1000));
+        check(polls + 1 == CHARGE_NODRIVE_POLLS, "спрацьовує рівно на CHARGE_NODRIVE_POLLS");
+        check((polls + 1) * CHARGE_POLL_MS <= 30000UL,
+              "зупинка настає за десятки секунд, а не за години");
+
+        // Межа: рівно половина уставки — ще НЕ голодування (поріг строгий).
+        n = 0;
+        check(!chargeNoDriveTrip(CHARGE_DUTY_MAX, 500, 1000, &n),
+              "рівно на порозі CHARGE_NODRIVE_PCT ще не рахується");
+        // Один нормальний вимір скидає лічильник.
+        n = 0;
+        chargeNoDriveTrip(CHARGE_DUTY_MAX, 0, 1000, &n);
+        chargeNoDriveTrip(CHARGE_DUTY_MAX, 1000, 1000, &n);
+        check(n == 0, "нормальний струм скидає лічильник голодування");
+        // Від'ємний струм читається як нуль, а не як «уставку перевищено».
+        n = 0;
+        chargeNoDriveTrip(CHARGE_DUTY_MAX, -500, 1000, &n);
+        check(n == 1, "від'ємний струм — це голодування, а не надлишок");
     }
 
     printf("\n%s (помилок: %d)\n",

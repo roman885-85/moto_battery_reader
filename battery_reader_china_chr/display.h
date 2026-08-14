@@ -402,7 +402,12 @@ inline void drawHeader(const char *title) {
     char h[16];
     u8g2.setFont(HEAD_FONT);
     u8g2.drawUTF8(0, HEAD_Y, title);
-    snprintf(h, sizeof(h), "%d/%d", g_displayPage + 1, NUM_DISPLAY_PAGES);
+    // ⚑ «!» перед номером сторінки — ознака несправності ЖИВЛЕННЯ. Вона тут, у
+    // спільній шапці, а не на окремій сторінці, саме тому, що видима мусить
+    // бути з БУДЬ-ЯКОЇ сторінки: без блока живлення заряд не піде, хай що
+    // користувач зараз гортає. Розшифровка — на сторінці заряду й у вебі.
+    snprintf(h, sizeof(h), "%s%d/%d", chargePsuFault() ? "!" : "",
+             g_displayPage + 1, NUM_DISPLAY_PAGES);
     u8g2.drawStr(DISP_W - u8g2.getStrWidth(h) - 1, HEAD_Y, h);
     u8g2.drawHLine(0, HEAD_LINE, DISP_W);
 }
@@ -923,8 +928,18 @@ inline void drawPageCharge() {
     u8g2.drawUTF8(0, HEAD_LINE + 24, b);
 
     // Наш інтеграл і апаратний лічильник CCA самого DS2438 — поруч, для звірки.
-    snprintf(b, sizeof(b), "%lu мА·год (CCA %lu)",
-             (unsigned long)chargeMah(), (unsigned long)chargeCcaMah());
+    // Але якщо несправне ЖИВЛЕННЯ — на цьому рядку саме воно: без блока заряд
+    // не піде взагалі, і показувати натомість накопичені мА·год означало б
+    // ховати причину за наслідком.
+    if (chargePsuFault()) {
+        snprintf(b, sizeof(b), "БЖ %u.%02u В — %s", chargePsuMv() / 1000,
+                 (chargePsuMv() % 1000) / 10,
+                 chargePsuState() == PSU_ABSENT ? "НЕМАЄ" :
+                 chargePsuState() == PSU_LOW    ? "ЗАНИЖЕНО" : "ЗАВИЩЕНО");
+    } else {
+        snprintf(b, sizeof(b), "%lu мА·год (CCA %lu)",
+                 (unsigned long)chargeMah(), (unsigned long)chargeCcaMah());
+    }
     u8g2.drawUTF8(0, HEAD_LINE + 33, b);
 
     snprintf(b, sizeof(b), "ICA %u  %d.%dC  %lu:%02lu:%02lu",

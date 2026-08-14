@@ -1848,8 +1848,16 @@ async function chgPoll(){
                       chgSchedule(20000); return; }
     const run=d.state==='run';
     mon.className='dm '+d.state;
-    const st={idle:'очікування',run:'ІДЕ ЗАРЯД',
+    let st={idle:'очікування',run:'ІДЕ ЗАРЯД',
               done:'✅ ЗАРЯД ЗАВЕРШЕНО',abort:'⛔ '+(d.reason||'аварія')}[d.state]||d.state;
+    // ЖИВЛЕННЯ +14 В — попереду стану заряду. Несправний блок означає, що заряд
+    // не піде взагалі, і показувати «очікування» поверх цього означало б
+    // приховати єдину причину, яку користувач може усунути сам.
+    if(d.psuSensed && !d.psuOk){
+      st='⛔ '+d.psuText+' ('+(d.psuMv/1000).toFixed(2)+' В, потрібно '
+         +(d.psuMinMv/1000).toFixed(1)+'…'+(d.psuMaxMv/1000).toFixed(1)+' В)';
+      mon.className='dm abort';
+    }
     $('chgState').textContent=st;
 
     $('chgMvBig').innerHTML=(d.mv/1000).toFixed(2)+'<small>В</small>';
@@ -1861,7 +1869,7 @@ async function chgPoll(){
     $('chgLim').textContent=d.pwm?('уставка '+d.setMa+' мА · зараз '+d.ma+' мА')
                                  :'⚠ ШІМ недоступний';
     $('chgLim').style.color=d.pwm?'var(--ok)':'var(--accent)';
-    // Керування тепер — ШПАРУВАТІСТЬ ключа (P-MOSFET через NPN), а не «цільова
+    // Керування тепер — ШПАРУВАТІСТЬ ключа (PNP B772M через керуючий NPN), а не «цільова
     // напруга DC/DC»: смужку заповнюємо відносно РОБОЧОЇ стелі dutyMax, бо саме
     // вона, а не повна шкала, є максимумом, до якого регулятор може дійти.
     $('chgDutyBar').style.width=(d.pwm?(d.duty*100/(d.dutyMax||1)):100)+'%';

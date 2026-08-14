@@ -18,6 +18,7 @@ enum LedMode {
     LED_WRITE,       // запис чипа: червоний+зелений почергово (увага!)
     LED_OK,          // успіх: зелений горить ~1.2 с, потім повернення в idle
     LED_ERROR,       // помилка: 4 швидких червоних блимання, потім повернення в idle
+    LED_FAULT,       // НЕСПРАВНІСТЬ ЗАЛІЗА: два червоних спалахи + пауза, ПОСТІЙНО
     LED_DISCHARGE,   // розряд навантаженням: ПЛАВНЕ дихання помаранчевим (зел.+черв.)
     LED_CHARGE,      // заряд, <90 %: ПЛАВНЕ дихання зеленим (той самий механізм, лише без червоного)
     LED_CHARGE_TAPER // заряд, 90..100 %: часте зелене блимання 2 Гц (майже готово)
@@ -54,6 +55,11 @@ inline void ledInit() {
 #endif
     buzzInit();
 }
+
+// Поточний режим — щоб зовнішня логіка могла ЗНЯТИ свій постійний сигнал
+// (LED_FAULT), не затираючи режим, який тим часом виставив хтось інший
+// (заряд/розряд/читання).
+inline LedMode ledMode() { return g_ledMode; }
 
 inline void ledWrite(bool g, bool r) {
     digitalWrite(LED_GREEN_PIN, g ? HIGH : LOW);
@@ -175,6 +181,7 @@ inline void btnLedByMode(LedMode m, bool phase) {
         case LED_READ:  on = true;  break;   // читання — рівне світіння (без блимання)
         case LED_WRITE: on = true;  break;   // запис   — рівне світіння (без блимання)
         case LED_ERROR: on = phase; break;   // помилка — тривожне блимання (алерт)
+        case LED_FAULT: on = phase; break;   // несправність заліза — у такт зі спалахами
         case LED_BOOT:  on = false; break;   // старт — темно
         case LED_OK:    on = true;  break;   // успіх — рівне світіння
         case LED_DISCHARGE: on = phase; break; // розряд — повільне дихання разом із LED
@@ -197,7 +204,10 @@ inline void ledSet(LedMode m) {
     // звичайний digitalWrite-режим.
     bool willBreathe = (m == LED_DISCHARGE || m == LED_CHARGE);
     if (g_ledPwmOn && !willBreathe) ledPwmDetach();
-    if (m == LED_IDLE || m == LED_BOOT) g_ledBase = m;
+    // LED_FAULT — теж БАЗОВИЙ режим, а не одноразовий сигнал: несправність
+    // заліза нікуди не дівається сама, тож короткочасні OK/ERROR мусять
+    // повертатися саме в неї, а не в «готовий».
+    if (m == LED_IDLE || m == LED_BOOT || m == LED_FAULT) g_ledBase = m;
     g_ledMode = m;
     g_ledT0 = g_ledLast = millis();
     g_ledPhase = false;
@@ -251,6 +261,18 @@ inline void ledTask() {
             if (now - g_ledLast > 200) { g_ledPhase = !g_ledPhase; g_ledLast = now; ledWrite(false, g_ledPhase); }
             if (now - g_ledT0 > 1600) ledSet(g_ledBase);
             break;
+
+        case LED_FAULT: {
+            // ДВА швидких червоних спалахи, потім пауза — і так постійно.
+            // Саме «код несправності», а не рівне блимання: рівне вже зайняте
+            // під LED_ERROR (одноразова помилка операції), і сплутати їх
+            // означало б прийняти несправне живлення за невдале читання чипа.
+            unsigned long ph = (now - g_ledT0) % 1600UL;
+            bool on = (ph < 150UL) || (ph >= 300UL && ph < 450UL);
+            ledWrite(false, on);
+            g_ledPhase = on;
+            break;
+        }
 
         case LED_CHARGE:
             // Плавне ЗЕЛЕНЕ дихання (той самий механізм, що й розряд, лише без

@@ -12,11 +12,20 @@ bool BatteryReader::begin() {
 
     // Стан лінії — у журнал ще до першого читання: якщо вона несправна, усі
     // подальші «чіпів не знайдено» пояснюються саме цим рядком.
+    // ⚑ ВНУТРІШНЯ ПІДТЯЖКА — ЯВНО Й САМЕ ТУТ. Конструктор OneWire уже виконав
+    // pinMode(_pin, INPUT), тобто ЗНЯВ її; відновлюємо після нього, інакше на
+    // платі без зовнішнього резистора лінія лишиться висіти в повітрі.
+    dsIdle();
+
     uint8_t enl = enableLineCheck();
     uint8_t bus = busLineCheck();
-    Serial.printf("1-Wire: пін даних %d, enable/підтяжка %d\n  керуючий пін: %s\n"
-                  "  лінія даних: %s\n",
-                  _pin, _pullupPin, enableLineText(enl), busLineText(bus));
+    Serial.printf("1-Wire: пін даних %d, enable/підтяжка %d, внутрішня підтяжка %s\n"
+                  "  керуючий пін: %s\n  лінія даних: %s (піднімає: %s%s%s)\n",
+                  _pin, _pullupPin, DS_INTERNAL_PULLUP ? "УВІМК" : "вимк",
+                  enableLineText(enl), busLineText(bus),
+                  _busByCtrl ? "керуючий пін" : "",
+                  (_busByCtrl && _busByInt) ? " + " : "",
+                  _busByInt ? "внутрішня" : (_busByCtrl ? "" : "ніхто"));
     // ⚠️ НЕСПРАВНА ЛІНІЯ — НЕ ПРИЧИНА ВІДМОВИТИ В ЗАПУСКУ. Виклик у setup()
     // обгорнутий у `if (!begin()) { ... while(1) delay(1000); }`, тобто
     // повернути тут false означає ЗАЦИКЛИТИ пристрій назавжди: ні вебу, ні
@@ -80,6 +89,24 @@ const char *BatteryReader::enableLineText(uint8_t code) {
     }
 }
 
+// Штатний стан спокою лінії даних.
+//
+// ⚑ НАВІЩО ЦЕ ВЗАГАЛІ. Зовнішнього резистора підтяжки на платі немає —
+// підтяжку дає сам ESP32. Але це налаштування піна, і воно ЗНІМАЄТЬСЯ будь-яким
+// pinMode(pin, INPUT): у arduino-esp32 INPUT (0x01) не містить біта PULLUP
+// (0x04). Конструктор OneWire робить рівно це, а далі бібліотека чіпає тільки
+// регістр дозволу виходу й підтяжку не відновлює ніколи — лінія висить у
+// повітрі, і шина мовчить так само, як із порожнім роз'ємом.
+// Тому підтяжку вмикаємо ЯВНО тут і повертаємось сюди після кожної
+// діагностики, що чіпала режим піна.
+void BatteryReader::dsIdle() {
+#if DS_INTERNAL_PULLUP
+    pinMode(_pin, INPUT_PULLUP);
+#else
+    pinMode(_pin, INPUT);
+#endif
+}
+
 // Перевірити ЛІНІЮ ДАНИХ — тобто результат роботи підтяжки, а не намір.
 //
 // ⚑ Саме цього бракувало. enableLineCheck() каже, що керуючий пін піднявся, —
@@ -90,31 +117,51 @@ const char *BatteryReader::enableLineText(uint8_t code) {
 // мовчить рівно так, як мовчала б із порожнім роз'ємом.
 uint8_t BatteryReader::busLineCheck() {
     bool held = _holdEnable;
+    _busByCtrl = _busByInt = false;
 
-    pinMode(_pin, INPUT);                     // лінію віддаємо зовнішній схемі
-
-    digitalWrite(_pullupPin, LOW);            // підтяжка ВИМКНЕНА
+    // Фаза 1: жодної ПІДТЯЖКИ ВГОРУ — ні керуючим піном, ні внутрішньої.
+    //
+    // ⚑ Тут саме INPUT_PULLDOWN, а не INPUT, і це принципово. Зовнішніх
+    // резисторів на лінії немає взагалі (використовуються внутрішні засоби
+    // контролера), тож із простим INPUT лінія просто ВИСИТЬ У ПОВІТРІ, і її
+    // рівень — не «низький», а невизначений: наведення однаково легко дає і
+    // нуль, і одиницю. Перевірка «чи тримає щось лінію вгорі» на такому
+    // читанні перетворилась би на підкидання монетки. Слабка внутрішня
+    // підтяжка ВНИЗ робить відповідь однозначною: вільна лінія читається як
+    // нуль, а справді притиснута до живлення — як одиниця.
+    pinMode(_pin, INPUT_PULLDOWN);
+    digitalWrite(_pullupPin, LOW);
     delayMicroseconds(500);
-    bool idleOff = digitalRead(_pin);
+    bool idleBare = digitalRead(_pin);
 
-    digitalWrite(_pullupPin, HIGH);           // підтяжка УВІМКНЕНА
+    // Фаза 2: підтяжка КЕРУЮЧИМ ПІНОМ (зовнішня обв'язка).
+    digitalWrite(_pullupPin, HIGH);
     delayMicroseconds(500);
-    bool idleOn = digitalRead(_pin);
+    _busByCtrl = digitalRead(_pin);
 
-    digitalWrite(_pullupPin, held ? HIGH : LOW);   // повернути як було
+    // Фаза 3: підтяжка ВНУТРІШНЯ, керуючий пін опущено. Саме цей режим і
+    // працює на платі без зовнішніх резисторів, тож перевіряти його треба
+    // окремо: лінію може піднімати одна з двох підтяжок, і які саме — важливо.
+    digitalWrite(_pullupPin, LOW);
+    pinMode(_pin, INPUT_PULLUP);
+    delayMicroseconds(500);
+    _busByInt = digitalRead(_pin);
 
-    if (!idleOn)  return BUS_NO_PULLUP;       // підтяжка не доходить до лінії
-    if (idleOff)  return BUS_STUCK_HIGH;      // лінія висока й без підтяжки
+    digitalWrite(_pullupPin, held ? HIGH : LOW);   // повернути enable як було
+    dsIdle();                                      // і штатний режим лінії
+
+    if (idleBare)                  return BUS_STUCK_HIGH;
+    if (!_busByCtrl && !_busByInt) return BUS_NO_PULLUP;
     return BUS_OK;
 }
 
 const char *BatteryReader::busLineText(uint8_t code) {
     switch (code) {
         case BUS_NO_PULLUP:
-            return "ЛІНІЯ ДАНИХ НЕ ПІДНІМАЄТЬСЯ підтяжкою: обірваний резистор "
-                   "підтяжки, коротке лінії даних на землю, немає контакту в "
-                   "роз'ємі або НЕМАЄ СПІЛЬНОЇ ЗЕМЛІ з пакетом (перевірте шунт "
-                   "у мінусовому проводі)";
+            return "ЛІНІЯ ДАНИХ НЕ ПІДНІМАЄТЬСЯ ЖОДНОЮ підтяжкою (ні керуючим "
+                   "піном, ні внутрішньою): коротке лінії даних на землю, немає "
+                   "контакту в роз'ємі або НЕМАЄ СПІЛЬНОЇ ЗЕМЛІ з пакетом "
+                   "(перевірте шунт у мінусовому проводі)";
         case BUS_STUCK_HIGH:
             return "лінія даних лишається високою навіть із вимкненою підтяжкою "
                    "(зайва зовнішня підтяжка на живлення)";

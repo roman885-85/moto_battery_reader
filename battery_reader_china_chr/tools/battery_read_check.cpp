@@ -10,8 +10,19 @@
 #define OUTPUT 1
 #define HIGH 1
 #define LOW 0
+// ── МОДЕЛЬ ПІНА ENABLE/ПІДТЯЖКИ ────────────────────────────────────────────
+//  Раніше digitalWrite() був порожній заглушкою, а digitalRead() не існував
+//  узагалі — тобто перевірити, чи прошивка помічає несправну лінію, було
+//  нічим. Тепер пін моделюється: те, що записали, читається назад — якщо
+//  тільки не задано несправність.
+static int  g_pinLevel = 0;               // що реально на лінії
+static int  g_pinFault = 0;               // 0 = справна, 1 = коротке на землю,
+                                          // 2 = коротке на живлення
 static void pinMode(int, int) {}
-static void digitalWrite(int, int) {}
+static void digitalWrite(int, int v) {
+    g_pinLevel = (g_pinFault == 1) ? 0 : (g_pinFault == 2) ? 1 : v;
+}
+static int  digitalRead(int) { return g_pinLevel; }
 static void delayMicroseconds(int) {}
 static int g_delayCalls = 0, g_delayLast = 0;
 static void delay(int ms) { g_delayCalls++; g_delayLast = ms; }
@@ -139,6 +150,44 @@ int main() {
         printf("   readBattery -> %s (має бути false — не удаваний успіх зі сміттям)\n",
                ok ? "true" : "false");
         if (ok) bad("постійний шум мав чесно провалитись, а не повернути сміття як success");
+    }
+
+    printf("\nX) перевірка лінії enable/підтяжки (GPIO %d)\n", 5);
+    {
+        // Справна лінія: рівень іде за записом.
+        g_pinFault = 0;
+        uint8_t c = battery.enableLineCheck();
+        printf("   справна лінія -> код %u (%s)\n", c, BatteryReader::enableLineText(c));
+        if (c != BatteryReader::ENL_OK) bad("справну лінію визнано несправною");
+        else printf("   ок    справна лінія проходить перевірку\n");
+
+        // Коротке на землю — саме та скарга, з якою це писалось: «читання не
+        // працює, підтяжки немає». Раніше прошивка казала б «нема чіпа», тобто
+        // звинувачувала пакет.
+        g_pinFault = 1;
+        c = battery.enableLineCheck();
+        printf("   коротке на землю -> код %u (%s)\n", c, BatteryReader::enableLineText(c));
+        if (c != BatteryReader::ENL_STUCK_LOW) bad("коротке на землю не виявлено");
+        else printf("   ок    коротке на землю виявлено й назване\n");
+
+        g_pinFault = 2;
+        c = battery.enableLineCheck();
+        printf("   коротке на живлення -> код %u\n", c);
+        if (c != BatteryReader::ENL_STUCK_HIGH) bad("коротке на живлення не виявлено");
+        else printf("   ок    коротке на живлення виявлено\n");
+
+        // Перевірка мусить ПОВЕРНУТИ лінію в попередній стан: її кличуть і
+        // посеред роботи (на невдалому читанні), і якби вона лишала пін
+        // піднятим, наступне читання пішло б на «гарячій» шині.
+        g_pinFault = 0;
+        battery.holdEnable(true);
+        battery.enableLineCheck();
+        if (g_pinLevel != 1) bad("після перевірки не відновлено утримання enable");
+        else printf("   ок    утримання enable відновлюється після перевірки\n");
+        battery.holdEnable(false);
+        battery.enableLineCheck();
+        if (g_pinLevel != 0) bad("після перевірки лінія лишилась піднятою");
+        else printf("   ок    без утримання лінія лишається опущеною\n");
     }
 
     printf("\n%s (помилок: %d)\n", fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

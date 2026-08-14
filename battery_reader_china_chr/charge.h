@@ -323,6 +323,18 @@ inline bool chargePsuScreenActive() {
 }
 inline void chargePsuDismiss() { g_psuAck = g_psuState; }
 
+// Короткий заголовок помилки — те, що має впасти в око першим. Повний текст
+// (нижче) пояснює, а цей — називає. Обидва йдуть у JSON, тож екран пристрою,
+// веб і USB-клієнт формулюють однаково.
+inline const char *chargePsuHead(uint8_t s) {
+    switch (s) {
+        case PSU_ABSENT: return "НЕМАЄ ЖИВЛЕННЯ";
+        case PSU_LOW:    return "ЗАНИЖЕНА НАПРУГА БЛОКА ЖИВЛЕННЯ";
+        case PSU_HIGH:   return "ЗАВИЩЕНА НАПРУГА БЛОКА ЖИВЛЕННЯ";
+        default:         return "";
+    }
+}
+
 inline const char *chargePsuText(uint8_t s) {
     switch (s) {
         case PSU_OK:     return "живлення в нормі";

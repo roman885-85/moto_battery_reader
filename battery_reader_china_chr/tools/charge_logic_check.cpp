@@ -357,14 +357,27 @@ int main() {
 
     printf("\n10) запас вимірювального кола — те, що стереже #error у settings.h\n");
     {
-        long vnode = (long)CHARGE_SUPPLY_MV * CHARGE_VSENSE_R_BOT /
+        // ⚑ Дві РІЗНІ умови, а не одна. Штатно на клемі стоїть напруга
+        // ПАКЕТА — вона мусить лягати в робочу стелю АЦП. Напруга ЖИВЛЕННЯ
+        // опиняється там лише у нештатному випадку (пакет від'єднали посеред
+        // заряду), і там питання не в стелі, а в СТРУМІ через захисний діод.
+        long vread = (long)CHARGE_VSENSE_MAX_READ_MV * CHARGE_VSENSE_R_BOT /
                      (CHARGE_VSENSE_R_TOP + CHARGE_VSENSE_R_BOT);
         long ipeak = (long)CHARGE_PEAK_MA_MAX * CHARGE_SHUNT_MOHM / 1000;
-        printf("   подільник: живлення %d мВ -> %ld мВ на АЦП (межа %d)\n",
-               (int)CHARGE_SUPPLY_MV, vnode, (int)CHARGE_ADC_MAX_MV);
+        printf("   діапазон виміру: %d мВ -> %ld мВ на АЦП (стеля %d)\n",
+               (int)CHARGE_VSENSE_MAX_READ_MV, vread, (int)CHARGE_ADC_MAX_MV);
+        printf("   нештатно (живлення на клемі): вузол %d мВ, R_дж %d Ом, "
+               "струм у діод %d мкА (межа %d)\n",
+               (int)CHARGE_VSENSE_NODE_AT_SUPPLY_MV, (int)CHARGE_VSENSE_SRC_OHM,
+               (int)CHARGE_VSENSE_CLAMP_UA, (int)CHARGE_ADC_CLAMP_UA_MAX);
         printf("   шунт: пікова відсічка %d мА -> %ld мВ на АЦП (межа %d)\n",
                (int)CHARGE_PEAK_MA_MAX, ipeak, (int)CHARGE_ADC_MAX_MV);
-        check(vnode <= CHARGE_ADC_MAX_MV, "подільник лишає АЦП у робочому діапазоні");
+        check(vread <= CHARGE_ADC_MAX_MV,
+              "робочий діапазон виміру лягає в стелю АЦП");
+        check(CHARGE_VSENSE_CLAMP_UA <= CHARGE_ADC_CLAMP_UA_MAX,
+              "у нештатному випадку струм у захисний діод входу безпечний");
+        check((long)CHARGE_TARGET_MV + CHARGE_HARD_MAX_HEADROOM_MV < CHARGE_VSENSE_MAX_READ_MV,
+              "аварійна межа напруги — усередині діапазону, який АЦП ще розрізняє");
         check(ipeak <= CHARGE_ADC_MAX_MV, "пікова відсічка видима — вона в межах шкали АЦП");
         check(CHARGE_MA_80 < CHARGE_PEAK_MA_MAX,
               "штатний максимум профілю нижчий за аварійну відсічку");

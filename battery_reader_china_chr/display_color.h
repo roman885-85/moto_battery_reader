@@ -922,6 +922,77 @@ inline void drawPageRaw2438() { drawRawColor("DS2438 (hex)", batteryDump2438, ha
 inline void drawPageRaw2433() { drawRawColor("DS2433 (hex)", batteryDump, hasDump, RAW2433_COUNT); }
 
 // Сторінка «Дії»: одна обрана операція крупно + опис + попередження.
+// ── СТОРІНКА ПОМИЛКИ ЖИВЛЕННЯ ──────────────────────────────────────────────
+//  З'являється САМА, щойно контроль живлення бачить несправність. Без блока
+//  живлення заряд не піде взагалі, тож причина має бути на екрані, а не за
+//  кілька натискань кнопки.
+//  Червоне тло на всю площу: цю сторінку не можна сплутати зі звичайною —
+//  решта екранів у проєкті на темному тлі.
+// Смуга з великим написом — окремо від решти сторінки: блимання мусить
+// перемальовувати ТІЛЬКИ її. Перемальовувати весь екран двічі на секунду по SPI
+// означало б видиме мерехтіння всієї картинки замість акценту на написі.
+#define PSU_BIG_Y (HDR_H + 34)
+inline void drawPsuHeadline(bool on) {
+    uint8_t st = chargePsuState();
+    tft.fillRect(0, PSU_BIG_Y - 22, TFT_W, 30, C_RED);
+    if (!on) return;                          // фаза «згасло» — лишаємо тло
+    const char *big = (st == PSU_ABSENT) ? "НЕМАЄ 14 В"
+                    : (st == PSU_LOW)    ? "НАПРУГА НИЗЬКА"
+                                         : "НАПРУГА ВИСОКА";
+    tSet(FONT_MODEL, C_BG, C_RED);
+    tPut((TFT_W - tWidth(big)) / 2, PSU_BIG_Y, big);
+}
+
+inline void drawPagePsuFault() {
+    uint8_t st = chargePsuState();
+    uint16_t mv = chargePsuMv();
+
+    tft.fillScreen(C_RED);
+    tft.fillRect(0, 0, TFT_W, HDR_H, C_BG);
+    tft.drawFastHLine(0, HDR_H - 1, TFT_W, C_YELLOW);
+    tSet(FONT_HDR, C_YELLOW, C_BG);
+    tPut(EDGE, 21, "ПОМИЛКА ЖИВЛЕННЯ");
+
+    char b[64];
+    int y = HDR_H + 34;
+    drawPsuHeadline(true);                    // великий напис — блимає (див. нижче)
+    y += 34;
+
+    tSet(FONT_BODY, C_BG, C_RED);
+    auto row = [&](const char *txt) {
+        if (y > FOOT_Y - 6) return;
+        tPut(EDGE, y, txt);
+        y += 18;
+    };
+
+    snprintf(b, sizeof(b), "виміряно %u.%02u В", mv / 1000, (mv % 1000) / 10);
+    row(b);
+    snprintf(b, sizeof(b), "потрібно %u.%u…%u.%u В",
+             CHARGE_PSU_MIN_MV / 1000, (CHARGE_PSU_MIN_MV % 1000) / 100,
+             CHARGE_PSU_MAX_MV / 1000, (CHARGE_PSU_MAX_MV % 1000) / 100);
+    row(b);
+    y += 6;
+    // Що робити — по суті несправності, а не загальні слова.
+    if (st == PSU_ABSENT) {
+        row("Під'єднайте блок живлення");
+        row("й перевірте роз'єм.");
+    } else if (st == PSU_LOW) {
+        row("Блок не той або просів.");
+        row("Потрібен 14 В під струм.");
+    } else {
+        row("Блок завищений (19 В?).");
+        row("Заряд заборонено.");
+    }
+    y += 6;
+    row("ЗАРЯД НЕМОЖЛИВИЙ.");
+    row("Читання пам'яті працює.");
+
+    tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
+    tft.drawFastHLine(0, FOOT_Y, TFT_W, C_YELLOW);
+    tSet(FONT_SMALL, C_MUTED, C_CARD);
+    tPut(EDGE, TFT_H - 8, "будь-яка кнопка — сховати");
+}
+
 inline void drawPageActions() {
     // Назви/описи/небезпека беруться з operations.h — того самого каталогу, що
     // й у монохромному екрані, вебі й USB-клієнті. Локальних списків більше немає.
@@ -1224,6 +1295,11 @@ inline void displayRenderBody(bool clearBody) {
     // не має значення.
     if (dischargeScreenActive()) { drawPageDischarge(); return; }
     if (chargeScreenActive())    { drawPageCharge();    return; }
+    // Помилка живлення — НИЖЧЕ за операції, що йдуть: розряд блока живлення не
+    // потребує взагалі, а зупинений через живлення заряд і так показує ту саму
+    // причину на своїй сторінці. Перебивати роботу, що триває, було б гірше,
+    // ніж почекати — «!» у шапці нікуди не дівається.
+    if (chargePsuScreenActive()) { drawPagePsuFault(); return; }
     switch (g_displayPage) {
         case 0:  drawPageMain();     break;
         case 1:  drawPageModel();    break;
@@ -1237,6 +1313,20 @@ inline void displayRenderBody(bool clearBody) {
     }
 }
 inline void displayRender() { displayRenderBody(true); }
+
+// ── БЛИМАННЯ НАПИСУ ПРО ЖИВЛЕННЯ ──────────────────────────────────────────
+//  Кличеться часто з loop(). Поза сторінкою помилки — миттєво виходить.
+static bool          g_psuBlinkOn = true;
+static unsigned long g_psuBlinkMs = 0;
+
+inline void displayPsuBlinkTask() {
+    if (!chargePsuScreenActive()) { g_psuBlinkOn = true; return; }
+    unsigned long now = millis();
+    if (now - g_psuBlinkMs < DISPLAY_PSU_BLINK_MS) return;
+    g_psuBlinkMs = now;
+    g_psuBlinkOn = !g_psuBlinkOn;
+    drawPsuHeadline(g_psuBlinkOn);            // лише смуга напису, не весь екран
+}
 
 // Оновлення екрана під час РОЗРЯДУ. full=false — перемальовуємо лише рядки
 // показань (кожен сам чистить свою смужку), тож картинка не блимає раз на 5 с.
@@ -1660,6 +1750,21 @@ inline void displayHandleButton() {
         } else if (d1 == 1 || d2 == 1 || d3 == 1) {   // коротке = оновити показання
             displayChargeRefresh(false);
         }
+        return;
+    }
+
+    // ── СТОРІНКА ПОМИЛКИ ЖИВЛЕННЯ ─────────────────────────────────────────
+    // Будь-яке натискання прибирає її й повертає звичайне меню. Сама
+    // несправність нікуди не дівається: лишаються «!» у шапці й код на
+    // світлодіоді, а якщо стан зміниться на інший — сторінка з'явиться знову.
+    if (chargePsuScreenActive()) {
+        int d1 = pollButtonRaw(btn1Raw(), b1, 0);
+        int d2 = pollButtonRaw(btn2Raw(), b2, 0);
+        int d3 = 0;
+#ifdef MENU_BTN3_PIN
+        d3 = pollButtonRaw(btn3Raw(), b3, 0);
+#endif
+        if (d1 || d2 || d3) { chargePsuDismiss(); displayRender(); }
         return;
     }
 

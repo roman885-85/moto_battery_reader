@@ -106,7 +106,21 @@ static bool fileCalls(const char *path, const char *name) {
         char prev = (p == buf) ? ' ' : p[-1];
         bool idChar = (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') ||
                       (prev >= '0' && prev <= '9') || prev == '_';
-        if (!idChar) { found = true; break; }
+        if (idChar) continue;                  // це середина довшого імені
+        // ⚑ ЗАКОМЕНТОВАНИЙ рядок викликом НЕ рахуємо. Без цього перевірка
+        // «функцію хтось кличе» тримається на самій лише НАЯВНОСТІ слова у
+        // файлі, і закоментований виклик лишає її зеленою — тобто вона не
+        // ловить рівно ту регресію, заради якої написана. Виявлено при звірці
+        // від протилежного: закоментував виклик у скетчі, а тест не впав.
+        // Шукаємо «//» на початку рядка (саме так коментують цілий виклик);
+        // «//» посеред рядка чіпати не можна — у HTML/JS це трапляється в
+        // адресах на кшталт https://.
+        const char *ls = p;
+        while (ls > buf && ls[-1] != '\n') ls--;
+        const char *t = ls;
+        while (*t == ' ' || *t == '\t') t++;
+        if (t[0] == '/' && t[1] == '/') continue;
+        found = true; break;
     }
     free(buf);
     return found;
@@ -264,6 +278,45 @@ int main() {
     check(fileDefinesBefore("display_color.h", "inline void displaySelfTest()",
                             "    displaySelfTest();"),
                                              "displaySelfTest() визначена до свого виклику");
+
+    printf("\n6г) аварія живлення показується на ВСІХ поверхнях\n");
+    // Вимога власника: без правильного живлення на екрані має бути помилка з
+    // блиманням, і таке саме сповіщення — в усіх клієнтах. Жодна з цих
+    // поверхонь на хості не збирається (дисплей тягне U8g2/Adafruit, клієнти
+    // це взагалі HTML і Python), тому перевіряємо те, що перевірити можна:
+    // що виклики на місці. «Сторінку намальовано» і «сторінку хтось показує» —
+    // різні твердження, і саме на другому цей проєкт уже горів.
+    check(fileCalls("display_color.h", "drawPagePsuFault"),
+                                             "кольоровий екран має сторінку помилки живлення");
+    check(fileCalls("display_color.h", "chargePsuScreenActive"),
+                                             "і показує її сам, без переходу в меню");
+    check(fileCalls("display_color.h", "chargePsuDismiss"),
+                                             "і знімає її кнопкою (пристрій лишається придатним без блока)");
+    check(fileCalls("display.h", "drawPagePsuFault"),
+                                             "монохромний екран — те саме");
+    check(fileCalls("display.h", "chargePsuScreenActive"), "і так само показує сам");
+    check(fileCalls("display.h", "chargePsuDismiss"),      "і так само знімає кнопкою");
+    check(fileCalls("motorola-battery-reader-web.ino", "displayPsuBlinkTask"),
+                                             "напис БЛИМАЄ: завдання кличеться з loop()");
+    check(fileDefinesBefore("display_color.h", "inline void drawPsuHeadline(",
+                            "    drawPsuHeadline(true);"),
+                                             "смуга напису визначена до свого виклику");
+    // Клієнти. Поля JSON у них мусять збігатися з тими, що віддає прошивка, —
+    // інакше смуга або не з'явиться ніколи, або висітиме завжди.
+    const char *clients[] = { "index.html", "data/index.html", "client_usb.html" };
+    for (const char *c : clients) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "%s: смуга аварії живлення є", c);
+        check(fileCalls(c, "psuAlertUpdate") && fileCalls(c, "psuAlert"), msg);
+        snprintf(msg, sizeof(msg), "%s: читає psuOk/psuMv/psuText із прошивки", c);
+        check(fileCalls(c, "psuOk") && fileCalls(c, "psuMv") && fileCalls(c, "psuText"), msg);
+        snprintf(msg, sizeof(msg), "%s: смуга БЛИМАЄ (анімація)", c);
+        check(fileCalls(c, "psuBlink"), msg);
+    }
+    check(fileCalls("usb_client/moto_gui.py", "psu_alert_update"),
+                                             "moto_gui.py: смуга аварії живлення є");
+    check(fileCalls("usb_client/moto_gui.py", "_psu_blink"),
+                                             "moto_gui.py: і вона блимає");
 
     printf("\n7) лінійка струму розряду не вироджується на НАЙВИЩІЙ дозволеній цілі\n");
     // Саме це мала стерегти перевірка в settings.h, яка порівнювалась із

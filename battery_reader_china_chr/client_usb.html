@@ -151,6 +151,16 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 .zone{font-weight:700;font-size:.88em;padding:8px 11px;border-radius:8px;margin:16px 0 8px}
 .zone.zi{background:#232a17;color:#cdd0a8}.zone.zd{background:#4a1512;color:#ff9b8f;border:1px solid var(--red)}
 #log{font-family:monospace;font-size:.72em;background:#171a10;border-radius:8px;padding:8px;height:120px;overflow:auto;white-space:pre-wrap;color:#b9bd86}
+/* Аварійне сповіщення про живлення. Блимає навмисно: статичну червону смугу
+   за хвилину перестаєш помічати, а рухома лишається видимою боковим зором. */
+.psuAlert{display:none;margin:0 0 10px;padding:12px 14px;border-radius:10px;
+          background:#5c1a16;border:2px solid #c2483c;color:#f2ece0;font-weight:700;
+          line-height:1.45;animation:psuBlink 1s steps(1,end) infinite}
+.psuAlert b{font-size:1.15em;display:block;margin-bottom:2px}
+.psuAlert small{display:block;font-weight:400;opacity:.92;margin-top:4px}
+@keyframes psuBlink{0%,100%{background:#5c1a16;border-color:#c2483c}
+                    50%{background:#2a0d0b;border-color:#5c1a16}}
+@media (prefers-reduced-motion: reduce){ .psuAlert{animation:none} }
 .hxwrap{margin-top:8px;font-family:monospace;font-size:.8em;line-height:1.4;background:#171a10;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
 .hxbar{display:flex;color:#a9c06a;background:#232a17;padding:4px 0;white-space:pre}
 .hxrow{display:flex;height:170px}
@@ -193,6 +203,9 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 </header>
 
 <div class="wrap">
+<!-- Аварія живлення +14 В — видима з будь-якої вкладки: без блока живлення
+     заряд не піде, і дізнатись про це лише на вкладці «Заряд» означало б пізно. -->
+<div class="psuAlert" id="psuAlert"><b id="psuAlertHead">—</b><span id="psuAlertBody"></span></div>
   <div id="unsupported" class="note w" style="display:none">
     ⚠️ Web Serial API недоступний. Відкрийте цей файл у <b>Chrome</b> або <b>Edge</b>.
     Якщо не працює з <code>file://</code> — покладіть файл у теку й запустіть
@@ -1580,6 +1593,19 @@ async function disStop(){
 // Ціль фіксована (CHARGE_TARGET_MV у settings.h) — на відміну від розряду
 // тут немає перемикача цілі й графіка-лінійки.
 let chgLast=null, chgLastAt=0, chgTimer=null, chgPeriod=0, chgBusy=false, chgWasRun=false;
+
+// ── АВАРІЯ ЖИВЛЕННЯ +14 В ───────────────────────────────────────────────────
+// Ті самі поля, що малює екран пристрою й веб-інтерфейс, тож розходження між
+// трьома поверхнями неможливе.
+function psuAlertUpdate(d){
+  const el=$('psuAlert'); if(!el)return;
+  if(!d||!d.psuSensed||d.psuOk){ el.style.display='none'; return; }
+  const mv=(d.psuMv/1000).toFixed(2), lo=(d.psuMinMv/1000).toFixed(1), hi=(d.psuMaxMv/1000).toFixed(1);
+  $('psuAlertHead').textContent='⛔ '+d.psuText;
+  $('psuAlertBody').innerHTML='виміряно <b style="display:inline">'+mv+' В</b>, потрібно '+lo+'…'+hi+' В'
+    +'<small>Заряд неможливий. Читання й правка пам\'яті пакета працюють без блока живлення.</small>';
+  el.style.display='block';
+}
 function chgShow(d){
   const mon=$('chgMon');
   if(!d){mon.className='dm';$('chgSt').textContent='—';return;}
@@ -1629,7 +1655,10 @@ function chgShow(d){
 
   chgLast=d; chgLastAt=Date.now();
   $('chgEl').textContent=disFmtT(d.elapsedS);
-  chgSchedule(run?3000:30000);
+  psuAlertUpdate(d);
+  // Несправне живлення опитуємо частіше за звичайний спокій: користувач саме
+  // зараз щось перемикає в блоці й чекає, коли смуга зникне.
+  chgSchedule(run?3000:((d.psuSensed&&!d.psuOk)?3000:30000));
   if(!run&&chgWasRun){chgWasRun=false;}
   if(run)chgWasRun=true;
 }

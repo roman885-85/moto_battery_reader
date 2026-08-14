@@ -121,6 +121,23 @@ extern bool hasSN2433;
   #define ST7789_CS_ARG (-1)
 #endif
 
+// ── НОМЕР РЕЖИМУ SPI -> КОНСТАНТА ПЛАТФОРМИ ────────────────────────────────
+//  У settings.h режим задається числом 0..3 і НАВМИСНО не константою: макроси
+//  SPI_MODE0..SPI_MODE3 на різних платформах мають різні значення (на AVR —
+//  0x00/0x04/0x08/0x0C, на ESP32 — 0..3), тож «просто число» туди підставляти
+//  не можна. Перетворення — тут, де вже підключено SPI.h разом з Adafruit.
+#if   (DISPLAY_ST7789_SPI_MODE) == 3
+  #define ST7789_SPI_MODE_CONST SPI_MODE3
+#elif (DISPLAY_ST7789_SPI_MODE) == 2
+  #define ST7789_SPI_MODE_CONST SPI_MODE2
+#elif (DISPLAY_ST7789_SPI_MODE) == 1
+  #define ST7789_SPI_MODE_CONST SPI_MODE1
+#elif (DISPLAY_ST7789_SPI_MODE) == 0
+  #define ST7789_SPI_MODE_CONST SPI_MODE0
+#else
+  #error "DISPLAY_ST7789_SPI_MODE має бути 0, 1, 2 або 3."
+#endif
+
 #if defined(DISPLAY_ST7789_MANUAL_OFFSET) || defined(DISPLAY_ST7789_XOFF) || defined(DISPLAY_ST7789_YOFF)
   #define ST7789_USE_OFFSET_CLASS 1
   class ST7789Panel : public Adafruit_ST7789 {
@@ -1416,7 +1433,19 @@ inline void displayInit() {
     analogWrite(DISPLAY_BLK_PIN, 0);          // підсвітка ВИМК до заставки —
                                               // ховаємо артефакти ініціалізації
 #endif
-    tft.init(PANEL_W, PANEL_H);               // рідні (портретні) розміри матриці
+    // ⚑ РЕЖИМ SPI передаємо ЯВНО. Раніше init() кликався без нього, тобто
+    //  мовчки брав зашитий у бібліотеку режим 0 — а панелі без виводу CS
+    //  (240x240 GMT130 і подібні) типово вимагають режим 3: CS у них
+    //  припаяний до землі, контролер вибраний завжди, і межу посилки він
+    //  визначає за станом такту в спокої. З «не тим» режимом біти приймаються
+    //  зі зсувом, жодної команди панель не впізнає — і лишається чорною.
+    //  Номер -> константа платформи тут, а не в settings.h: SPI_MODE0..3 на
+    //  різних платформах мають різні значення, тож голе число передавати не
+    //  можна (на AVR це 0x00/0x04/0x08/0x0C, на ESP32 — 0..3).
+    tft.init(PANEL_W, PANEL_H, ST7789_SPI_MODE_CONST);   // рідні (портретні) розміри
+    // ⚑ ЧАСТОТА теж явно. Типова в бібліотеки — десятки МГц: на доріжках
+    //  плати це працює, на дротах-перемичках дає «сніг» або чорний екран.
+    tft.setSPISpeed(DISPLAY_ST7789_SPI_HZ);
     tft.setRotation(DISPLAY_ST7789_ROT);
 #if defined(ST7789_USE_OFFSET_CLASS)
     // Ручні оффсети пам'яті (для нестандартних панелей або якщо авто-зсув хибний).
@@ -1444,9 +1473,11 @@ inline void displayInit() {
     //  без цих чисел не діагностується взагалі — а з ними одразу видно, чи
     //  дійшла прошивка до ініціалізації і з якими саме параметрами.
     Serial.printf("DISPLAY: ST7789 %dx%d (panel %dx%d) color, rot=%d, "
-                  "DC=%d RST=%d CS=%s BLK=%s\n",
+                  "SPI mode=%d %.1f МГц, DC=%d RST=%d CS=%s BLK=%s\n",
                   (int)TFT_W, (int)TFT_H, (int)PANEL_W, (int)PANEL_H,
-                  (int)DISPLAY_ST7789_ROT, (int)DISPLAY_DC_PIN, (int)DISPLAY_RST_PIN,
+                  (int)DISPLAY_ST7789_ROT,
+                  (int)DISPLAY_ST7789_SPI_MODE, DISPLAY_ST7789_SPI_HZ / 1000000.0,
+                  (int)DISPLAY_DC_PIN, (int)DISPLAY_RST_PIN,
 #ifdef DISPLAY_CS_PIN
                   String((int)DISPLAY_CS_PIN).c_str(),
 #else

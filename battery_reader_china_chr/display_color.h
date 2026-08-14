@@ -185,6 +185,9 @@ inline uint16_t TC(uint16_t c) { return g_errTint ? redFilter(c) : c; }
 #define C_GREEN   TC(0x07E6)     // добрий заряд
 #define C_ORANGE  TC(0xFC60)     // середній
 #define C_RED     TC(0xF800)     // низький / небезпека
+// Темна фаза блимання аварійної плашки. Не чорний: плашка мусить лишатись
+// ПЛАШКОЮ в обидві фази, інакше замість блимання виходить зникнення.
+#define C_DARKRED TC(0x6000)     // темно-червоний — друга фаза блимання
 
 // -------------------- Шрифти, адаптивно за шириною --------------------
 // ВАЖЛИВО: беремо ЛИШЕ ті кириличні шрифти, що зашиті в U8g2_for_Adafruit_GFX
@@ -928,64 +931,88 @@ inline void drawPageRaw2433() { drawRawColor("DS2433 (hex)", batteryDump, hasDum
 //  кілька натискань кнопки.
 //  Червоне тло на всю площу: цю сторінку не можна сплутати зі звичайною —
 //  решта екранів у проєкті на темному тлі.
-// Смуга з великим написом — окремо від решти сторінки: блимання мусить
-// перемальовувати ТІЛЬКИ її. Перемальовувати весь екран двічі на секунду по SPI
-// означало б видиме мерехтіння всієї картинки замість акценту на написі.
-#define PSU_BIG_Y (HDR_H + 34)
-inline void drawPsuHeadline(bool on) {
-    uint8_t st = chargePsuState();
-    tft.fillRect(0, PSU_BIG_Y - 22, TFT_W, 30, C_RED);
-    if (!on) return;                          // фаза «згасло» — лишаємо тло
-    const char *big = (st == PSU_ABSENT) ? "НЕМАЄ 14 В"
-                    : (st == PSU_LOW)    ? "НАПРУГА НИЗЬКА"
-                                         : "НАПРУГА ВИСОКА";
-    tSet(FONT_MODEL, C_BG, C_RED);
-    tPut((TFT_W - tWidth(big)) / 2, PSU_BIG_Y, big);
+// ── ПЛАШКА ПОМИЛКИ ЖИВЛЕННЯ ───────────────────────────────────────────────
+//  ⚠️ ТУТ БУЛА ПОМИЛКА, І ЇЇ ВАРТО НАЗВАТИ: спершу блимав САМ ТЕКСТ —
+//  півперіоду на екрані висіла порожня червона смуга. Тобто рівно тоді, коли
+//  користувач дивиться на екран, він міг побачити «щось червоне» без жодного
+//  слова про причину. Аварійне повідомлення, яке пів часу нічого не повідомляє,
+//  гірше за статичне.
+//  Правильно навпаки: БЛИМАЄ ПЛАШКА (тло й рамка), а текст усередині стоїть
+//  нерухомо й читається в обидві фази. Рух привертає увагу, зміст лишається.
+#define PSU_PLATE_Y  (HDR_H + 8)
+#define PSU_PLATE_H  108
+
+// Текст помилки — одним місцем на всі поверхні, щоб екран, веб і USB-клієнт
+// не розповідали різне. Перший рядок — крупно, другий — пояснення.
+inline const char *psuHeadline(uint8_t st) {
+    return (st == PSU_ABSENT) ? "НЕМАЄ ЖИВЛЕННЯ"
+         : (st == PSU_LOW)    ? "НАПРУГА ЗАНИЖЕНА"
+                              : "НАПРУГА ЗАВИЩЕНА";
+}
+inline const char *psuSubline(uint8_t st) {
+    return (st == PSU_ABSENT) ? "блок живлення не під'єднано"
+         : (st == PSU_LOW)    ? "блок живлення просів або не той"
+                              : "блок живлення не той (19 В?)";
+}
+
+inline void drawPsuPlate(bool on) {
+    uint8_t  st = chargePsuState();
+    uint16_t mv = chargePsuMv();
+    char b[64];
+
+    // Дві фази — яскраво-червона й темна. Текст білий в обидві: він мусить
+    // читатись завжди, а не лише на «яскравій» половині періоду.
+    uint16_t bg = on ? C_RED : C_DARKRED;
+    tft.fillRect(EDGE - 4, PSU_PLATE_Y, TFT_W - 2 * (EDGE - 4), PSU_PLATE_H, bg);
+    tft.drawRect(EDGE - 4, PSU_PLATE_Y, TFT_W - 2 * (EDGE - 4), PSU_PLATE_H,
+                 on ? C_YELLOW : C_RED);
+
+    int y = PSU_PLATE_Y + 26;
+    tSet(FONT_MODEL, C_TEXT, bg);
+    const char *big = psuHeadline(st);
+    tPut((TFT_W - tWidth(big)) / 2, y, big);
+
+    y += 22;
+    tSet(FONT_BODY, C_TEXT, bg);
+    const char *sub = psuSubline(st);
+    tPut((TFT_W - tWidth(sub)) / 2, y, sub);
+
+    y += 22;
+    snprintf(b, sizeof(b), "є %u.%02u В", mv / 1000, (mv % 1000) / 10);
+    tPut((TFT_W - tWidth(b)) / 2, y, b);
+
+    y += 18;
+    snprintf(b, sizeof(b), "треба %u.%u…%u.%u В",
+             CHARGE_PSU_MIN_MV / 1000, (CHARGE_PSU_MIN_MV % 1000) / 100,
+             CHARGE_PSU_MAX_MV / 1000, (CHARGE_PSU_MAX_MV % 1000) / 100);
+    tPut((TFT_W - tWidth(b)) / 2, y, b);
 }
 
 inline void drawPagePsuFault() {
     uint8_t st = chargePsuState();
-    uint16_t mv = chargePsuMv();
 
-    tft.fillScreen(C_RED);
-    tft.fillRect(0, 0, TFT_W, HDR_H, C_BG);
+    tft.fillScreen(C_BG);
+    tft.fillRect(0, 0, TFT_W, HDR_H, C_RED);
     tft.drawFastHLine(0, HDR_H - 1, TFT_W, C_YELLOW);
-    tSet(FONT_HDR, C_YELLOW, C_BG);
+    tSet(FONT_HDR, C_TEXT, C_RED);
     tPut(EDGE, 21, "ПОМИЛКА ЖИВЛЕННЯ");
 
-    char b[64];
-    int y = HDR_H + 34;
-    drawPsuHeadline(true);                    // великий напис — блимає (див. нижче)
-    y += 34;
+    drawPsuPlate(true);                       // плашка з текстом — вона й блимає
 
-    tSet(FONT_BODY, C_BG, C_RED);
-    auto row = [&](const char *txt) {
+    // Нижче плашки — нерухомі пояснення: що робити і що при цьому ще працює.
+    int y = PSU_PLATE_Y + PSU_PLATE_H + 20;
+    tSet(FONT_BODY, C_TEXT, C_BG);
+    auto row = [&](const char *txt, uint16_t col) {
         if (y > FOOT_Y - 6) return;
+        tSet(FONT_BODY, col, C_BG);
         tPut(EDGE, y, txt);
         y += 18;
     };
-
-    snprintf(b, sizeof(b), "виміряно %u.%02u В", mv / 1000, (mv % 1000) / 10);
-    row(b);
-    snprintf(b, sizeof(b), "потрібно %u.%u…%u.%u В",
-             CHARGE_PSU_MIN_MV / 1000, (CHARGE_PSU_MIN_MV % 1000) / 100,
-             CHARGE_PSU_MAX_MV / 1000, (CHARGE_PSU_MAX_MV % 1000) / 100);
-    row(b);
-    y += 6;
-    // Що робити — по суті несправності, а не загальні слова.
-    if (st == PSU_ABSENT) {
-        row("Під'єднайте блок живлення");
-        row("й перевірте роз'єм.");
-    } else if (st == PSU_LOW) {
-        row("Блок не той або просів.");
-        row("Потрібен 14 В під струм.");
-    } else {
-        row("Блок завищений (19 В?).");
-        row("Заряд заборонено.");
-    }
-    y += 6;
-    row("ЗАРЯД НЕМОЖЛИВИЙ.");
-    row("Читання пам'яті працює.");
+    row(st == PSU_ABSENT ? "Під'єднайте блок живлення."
+      : st == PSU_LOW    ? "Потрібен 14 В під струмом."
+                         : "Зніміть завищений блок.", C_TEXT);
+    row("ЗАРЯД НЕМОЖЛИВИЙ.", C_RED);
+    row("Читання пам'яті працює.", C_MUTED);
 
     tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
     tft.drawFastHLine(0, FOOT_Y, TFT_W, C_YELLOW);
@@ -1325,7 +1352,7 @@ inline void displayPsuBlinkTask() {
     if (now - g_psuBlinkMs < DISPLAY_PSU_BLINK_MS) return;
     g_psuBlinkMs = now;
     g_psuBlinkOn = !g_psuBlinkOn;
-    drawPsuHeadline(g_psuBlinkOn);            // лише смуга напису, не весь екран
+    drawPsuPlate(g_psuBlinkOn);               // блимає ПЛАШКА, текст усередині стоїть
 }
 
 // Оновлення екрана під час РОЗРЯДУ. full=false — перемальовуємо лише рядки

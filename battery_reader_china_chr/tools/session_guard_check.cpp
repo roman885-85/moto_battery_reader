@@ -298,9 +298,9 @@ int main() {
     check(fileCalls("display.h", "chargePsuDismiss"),      "і так само знімає кнопкою");
     check(fileCalls("motorola-battery-reader-web.ino", "displayPsuBlinkTask"),
                                              "напис БЛИМАЄ: завдання кличеться з loop()");
-    check(fileDefinesBefore("display_color.h", "inline void drawPsuHeadline(",
-                            "    drawPsuHeadline(true);"),
-                                             "смуга напису визначена до свого виклику");
+    check(fileDefinesBefore("display_color.h", "inline void drawPsuPlate(",
+                            "    drawPsuPlate(true);"),
+                                             "плашка помилки визначена до свого виклику");
     // Клієнти. Поля JSON у них мусять збігатися з тими, що віддає прошивка, —
     // інакше смуга або не з'явиться ніколи, або висітиме завжди.
     const char *clients[] = { "index.html", "data/index.html", "client_usb.html" };
@@ -317,6 +317,32 @@ int main() {
                                              "moto_gui.py: смуга аварії живлення є");
     check(fileCalls("usb_client/moto_gui.py", "_psu_blink"),
                                              "moto_gui.py: і вона блимає");
+
+    printf("\n6д) блимає ПЛАШКА, а не текст (текст видимий в обидві фази)\n");
+    // Спершу тут було навпаки — блимав сам напис, і півперіоду на екрані
+    // висіла порожня кольорова смуга без жодного слова про причину. Аварійне
+    // повідомлення, яке пів часу нічого не повідомляє, гірше за статичне.
+    // Ознака правильної реалізації: функція блимання перемальовує ПЛАШКУ
+    // (drawPsuPlate), а не «заголовок» (drawPsuHeadline, якого більше немає).
+    check(fileCalls("display_color.h", "drawPsuPlate"),
+                                             "кольоровий: блимання перемальовує плашку");
+    check(fileHasNo("display_color.h", "drawPsuHeadline"),
+                                             "і колишнього блимання самим написом не лишилось");
+    check(fileCalls("display.h", "setDrawColor"),
+                                             "монохромний: текст інвертується разом із заливкою плашки");
+    // Формулювання помилки мусить називати САМЕ причину, а не просто «помилка».
+    check(fileCalls("charge.h", "ЗАВИЩЕНА НАПРУГА БЛОКА ЖИВЛЕННЯ") &&
+          fileCalls("charge.h", "ЗАНИЖЕНА НАПРУГА БЛОКА ЖИВЛЕННЯ"),
+                                             "текст називає завищену/занижену напругу блока живлення");
+    check(fileCalls("web_server.h", "psuHead"),
+                                             "і цей заголовок віддається клієнтам окремим полем");
+    for (const char *c : clients) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "%s: показує заголовок помилки (psuHead)", c);
+        check(fileCalls(c, "psuHead"), msg);
+    }
+    check(fileCalls("usb_client/moto_gui.py", "psuHead"),
+                                             "moto_gui.py: показує заголовок помилки");
 
     printf("\n7) лінійка струму розряду не вироджується на НАЙВИЩІЙ дозволеній цілі\n");
     // Саме це мала стерегти перевірка в settings.h, яка порівнювалась із

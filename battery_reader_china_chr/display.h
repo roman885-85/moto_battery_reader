@@ -966,10 +966,12 @@ inline void drawPageCharge() {
 }
 
 // ── СТОРІНКА ПОМИЛКИ ЖИВЛЕННЯ (монохромна) ────────────────────────────────
-//  Те саме, що й на кольоровому екрані, лише щільніше: без блока живлення
-//  заряд не піде взагалі, тож причина має бути на екрані одразу.
-//  Великий напис БЛИМАЄ (g_psuBlinkOn) — статичний текст за хвилину
-//  перестає читатись як тривога.
+//  ⚠️ ТУТ БУЛА ТА САМА ПОМИЛКА, ЩО Й НА КОЛЬОРОВОМУ ЕКРАНІ: блимав САМ ТЕКСТ,
+//  тобто півперіоду на екрані не було жодного слова про причину. Аварійне
+//  повідомлення, яке пів часу нічого не повідомляє, гірше за статичне.
+//  Правильно навпаки: блимає ПЛАШКА (заливка інвертується), а текст усередині
+//  стоїть нерухомо й читається в обидві фази — у прямій як чорний на білому,
+//  у зворотній як білий на чорному.
 static bool g_psuBlinkOn = true;
 
 inline void drawPagePsuFault() {
@@ -979,26 +981,33 @@ inline void drawPagePsuFault() {
 
     drawHeader("ЖИВЛЕННЯ");
 
+    // Плашка на всю ширину: у прямій фазі — залита, у зворотній — лише рамка.
+    const int py = HEAD_LINE + 2, ph = 24;
+    if (g_psuBlinkOn) u8g2.drawBox(0, py, DISP_W, ph);
+    else              u8g2.drawFrame(0, py, DISP_W, ph);
+    // Текст усередині плашки — інверсний до її заливки, тож видимий завжди.
+    u8g2.setDrawColor(g_psuBlinkOn ? 0 : 1);
+
     u8g2.setFont(u8g2_font_6x12_t_cyrillic);
-    if (g_psuBlinkOn) {
-        const char *big = (st == PSU_ABSENT) ? "НЕМАЄ 14 В"
-                        : (st == PSU_LOW)    ? "НАПРУГА НИЗЬКА"
-                                             : "НАПРУГА ВИСОКА";
-        int w = u8g2.getUTF8Width(big);
-        u8g2.drawUTF8((DISP_W - w) / 2, HEAD_LINE + 14, big);
-    }
+    const char *big = (st == PSU_ABSENT) ? "НЕМАЄ ЖИВЛЕННЯ"
+                    : (st == PSU_LOW)    ? "НАПРУГА ЗАНИЖЕНА"
+                                         : "НАПРУГА ЗАВИЩЕНА";
+    u8g2.drawUTF8((DISP_W - u8g2.getUTF8Width(big)) / 2, py + 11, big);
 
     u8g2.setFont(BODY_FONT);
+    const char *sub = (st == PSU_ABSENT) ? "блок не під'єднано"
+                    : (st == PSU_LOW)    ? "блок просів або не той"
+                                         : "блок не той (19 В?)";
+    u8g2.drawUTF8((DISP_W - u8g2.getUTF8Width(sub)) / 2, py + 21, sub);
+
+    u8g2.setDrawColor(1);                     // назад у звичайний режим
+
     snprintf(b, sizeof(b), "є %u.%02u В, треба %u.%u-%u.%u",
              mv / 1000, (mv % 1000) / 10,
              CHARGE_PSU_MIN_MV / 1000, (CHARGE_PSU_MIN_MV % 1000) / 100,
              CHARGE_PSU_MAX_MV / 1000, (CHARGE_PSU_MAX_MV % 1000) / 100);
-    u8g2.drawUTF8(0, HEAD_LINE + 25, b);
-
-    u8g2.drawUTF8(0, HEAD_LINE + 34,
-                  st == PSU_ABSENT ? "під'єднайте блок" :
-                  st == PSU_LOW    ? "блок не той / просів" : "блок завищений (19В?)");
-    u8g2.drawUTF8(0, HEAD_LINE + 43, "ЗАРЯД НЕМОЖЛИВИЙ");
+    u8g2.drawUTF8(0, py + ph + 11, b);
+    u8g2.drawUTF8(0, py + ph + 20, "ЗАРЯД НЕМОЖЛИВИЙ");
 
     u8g2.drawHLine(0, FOOT_HL, DISP_W);
     u8g2.drawUTF8(0, FOOT_Y, "кнопка — сховати");

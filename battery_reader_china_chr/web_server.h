@@ -1620,6 +1620,7 @@ static String chargeJson() {
     j += ",\"psuMinMv\":" + String((unsigned)CHARGE_PSU_MIN_MV);
     j += ",\"psuMaxMv\":" + String((unsigned)CHARGE_PSU_MAX_MV);
     j += ",\"psuOk\":"    + String(!chargePsuFault() ? "true" : "false");
+    j += ",\"psuHead\":\""; j += chargePsuHead(chargePsuState()); j += "\"";
     j += ",\"psuText\":\""; j += chargePsuText(chargePsuState()); j += "\"";
     j += "}";
     return j;

@@ -2406,10 +2406,11 @@ class App:
                     self._psuShown = False
                 return
             self.lblPsu.config(
-                text="⛔ %s\nвиміряно %.2f В, потрібно %.1f…%.1f В\n"
+                text="⛔ %s\n%s\nвиміряно %.2f В, потрібно %.1f…%.1f В\n"
                      "Заряд неможливий. Читання й правка пам'яті пакета працюють "
                      "без блока живлення."
-                     % (d.get("psuText", "живлення поза допуском"),
+                     % (d.get("psuHead") or d.get("psuText", "живлення поза допуском"),
+                        d.get("psuText", ""),
                         d.get("psuMv", 0) / 1000.0,
                         d.get("psuMinMv", 0) / 1000.0, d.get("psuMaxMv", 0) / 1000.0))
             if not self._psuShown:
@@ -2426,9 +2427,13 @@ class App:
         try:
             if self._psuShown:
                 self._psuBlink = not self._psuBlink
+                # ⚠️ Блимає ПЛАШКА, а не текст: колір напису підбирається під
+                # обидві фази, щоб слова читались завжди. Інакше виходить те
+                # саме, що спершу вийшло на екрані пристрою, — півперіоду
+                # кольорова смуга без жодного слова про причину.
                 c = MIL["maroon"] if self._psuBlink else MIL["bg_dark"]
                 self.psuBar.config(bg=c)
-                self.lblPsu.config(bg=c)
+                self.lblPsu.config(bg=c, fg="#ffffff")
             self.root.after(500, self._psu_blink)
         except tk.TclError:
             pass

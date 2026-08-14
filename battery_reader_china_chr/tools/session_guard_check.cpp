@@ -59,6 +59,7 @@ static void ledSet(LedMode m) { g_led = m; }
 // Дзеркало fileCalls(): подекуди треба довести саме ВІДСУТНІСТЬ конструкції.
 // Тут межа токена не потрібна — шукаємо точний фрагмент виклику.
 static bool fileHasNo(const char *path, const char *needle);
+static bool fileDefinesBefore(const char *path, const char *def, const char *use);
 
 static int fails = 0;
 static void ok(const char *m)  { printf("   ок    %s\n", m); }
@@ -109,6 +110,22 @@ static bool fileCalls(const char *path, const char *name) {
     }
     free(buf);
     return found;
+}
+
+// Чи йде визначення РАНІШЕ за виклик — у C++ це умова збірки, а не стиль.
+static bool fileDefinesBefore(const char *path, const char *def, const char *use) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    char *buf = (char *)malloc((size_t)n + 1);
+    if (!buf) { fclose(f); return false; }
+    size_t rd = fread(buf, 1, (size_t)n, f);
+    buf[rd] = '\0';
+    fclose(f);
+    const char *d = strstr(buf, def), *u = strstr(buf, use);
+    bool okOrder = d && u && d < u;
+    free(buf);
+    return okOrder;
 }
 
 static bool fileHasNo(const char *path, const char *needle) {
@@ -241,6 +258,12 @@ int main() {
                                              "монохромні SPI-панелі беруть CS через U8G2_CS_ARG");
     check(fileCalls("display.h", "U8G2_CS_ARG"),
                                              "і цей макрос теж на місці");
+    // Самоперевірка екрана має бути ВИЗНАЧЕНА раніше, ніж її кличуть: у C++
+    // це не стиль, а умова збірки, і перша ж спроба поставити її поруч із
+    // displayIntro() дала виклик на 900 рядків вище за визначення.
+    check(fileDefinesBefore("display_color.h", "inline void displaySelfTest()",
+                            "    displaySelfTest();"),
+                                             "displaySelfTest() визначена до свого виклику");
 
     printf("\n7) лінійка струму розряду не вироджується на НАЙВИЩІЙ дозволеній цілі\n");
     // Саме це мала стерегти перевірка в settings.h, яка порівнювалась із

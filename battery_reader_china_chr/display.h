@@ -1002,12 +1002,18 @@ inline void drawPagePsuFault() {
 
     u8g2.setDrawColor(1);                     // назад у звичайний режим
 
-    snprintf(b, sizeof(b), "є %u.%02u В, треба %u.%u-%u.%u",
+    // ⚑ Головне число — НОМІНАЛ («треба 14 В»): допуск пояснює, ЧОМУ блок
+    // відхилено, а користувачеві потрібна відповідь на «який тоді треба».
+    // Тому номінал у першому рядку поруч із виміром, допуск — окремо нижче.
+    char nom[8];
+    snprintf(b, sizeof(b), "є %u.%02u В, треба %s В",
              mv / 1000, (mv % 1000) / 10,
+             chargeMvShort(CHARGE_SUPPLY_MV, nom, sizeof(nom)));
+    u8g2.drawUTF8(0, py + ph + 11, b);
+    snprintf(b, sizeof(b), "допуск %u.%u-%u.%u В  ЗАРЯД НІ",
              CHARGE_PSU_MIN_MV / 1000, (CHARGE_PSU_MIN_MV % 1000) / 100,
              CHARGE_PSU_MAX_MV / 1000, (CHARGE_PSU_MAX_MV % 1000) / 100);
-    u8g2.drawUTF8(0, py + ph + 11, b);
-    u8g2.drawUTF8(0, py + ph + 20, "ЗАРЯД НЕМОЖЛИВИЙ");
+    u8g2.drawUTF8(0, py + ph + 20, b);
 
     u8g2.drawHLine(0, FOOT_HL, DISP_W);
     u8g2.drawUTF8(0, FOOT_Y, "кнопка — сховати");

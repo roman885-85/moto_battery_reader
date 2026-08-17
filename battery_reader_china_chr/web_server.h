@@ -194,13 +194,25 @@ bool readAllChips(bool &ok2433, bool &ok2438) {
         // ⚑ «Нема чіпа» — це ВИСНОВОК ПРО ПАКЕТ, і робити його, не перевіривши
         // власну обв'язку, не можна: коротке на землю в лінії enable/підтяжки
         // дає рівно ту саму картину. Перевіряємо лінію й називаємо винного.
+        // ⚑ «Нема чіпа» — це висновок ПРО ПАКЕТ, і робити його, не перевіривши
+        // власну обв'язку, не можна: відсутня підтяжка, коротке на землю чи
+        // відсутня спільна земля дають рівно ту саму картину. Спершу питаємо
+        // залізо, і лише якщо воно справне — звинувачуємо пакет.
         uint8_t enl = battery.enableLineCheck();
-        if (enl != BatteryReader::ENL_OK) {
-            snprintf(st, sizeof(st), "ПОМИЛКА: підтяжка (GPIO%d)", (int)PULLUP_PIN);
-            Serial.printf("ЧИТАННЯ: %s\n", BatteryReader::enableLineText(enl));
+        uint8_t bus = battery.busLineCheck();
+        if (bus == BatteryReader::BUS_NO_EXT_PULLUP) {
+            snprintf(st, sizeof(st), "ПОМИЛКА: нема підтяжки 4.7к");
+        } else if (bus == BatteryReader::BUS_NO_PULLUP) {
+            snprintf(st, sizeof(st), "ПОМИЛКА: лінія даних (GPIO%d)", (int)DS_PIN);
+        } else if (enl != BatteryReader::ENL_OK) {
+            snprintf(st, sizeof(st), "ПОМИЛКА: enable (GPIO%d)", (int)PULLUP_PIN);
         } else {
             snprintf(st, sizeof(st), "ПОМИЛКА: нема чіпа");
         }
+        if (enl != BatteryReader::ENL_OK)
+            Serial.printf("ЧИТАННЯ: %s\n", BatteryReader::enableLineText(enl));
+        if (bus != BatteryReader::BUS_OK)
+            Serial.printf("ЧИТАННЯ: %s\n", BatteryReader::busLineText(bus));
     }
     displayShow(st);
 

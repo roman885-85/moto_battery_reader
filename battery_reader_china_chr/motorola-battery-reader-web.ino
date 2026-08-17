@@ -206,7 +206,7 @@ void setup() {
     
     // Розрядне навантаження — у безпечний стан ДО всього іншого.
     dischargeInit();
-    // Зарядний DC/DC — так само, у безпечний стан ДО всього іншого.
+    // Силовий ключ заряду — так само, у безпечний стан ДО всього іншого.
     chargeInit();
 
     // Запускаємо веб-сервер
@@ -322,7 +322,7 @@ void loop() {
                                             snprintf(m, sizeof(m), "ЦІЛЬ %.2f В",
                                                      dischargeCycleTarget() / 1000.0);
                                             displayShow(m); ledSet(LED_IDLE); }
-        // Заряд через DC/DC — до цілі, обраної сусіднім пунктом (у %).
+        // Керований заряд — до цілі, обраної сусіднім пунктом (у %).
         else if (act == OP_CHARGE_DCDC)   { const char *e = chargeStart(chargeTargetPct());
                                             if (e) { Serial.println(e); displayShow("ЗАРЯД: ЗБІЙ");
                                                      ledSet(LED_ERROR); } }

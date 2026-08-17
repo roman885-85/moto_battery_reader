@@ -605,13 +605,17 @@ inline void chargeInit() {
     digitalWrite(CHARGE_PWM_PIN, LOW);   // безпечний стан — миттєво, до LEDC
     g_chgPwmOk = ledcAttachChannel(CHARGE_PWM_PIN, CHARGE_PWM_FREQ,
                                    CHARGE_PWM_BITS, CHARGE_LEDC_CH);
-    Serial.printf("CHARGE: pwm=%d LEDC ch=%d freq=%d bits=%d attach=%s%s\n",
-                  (int)CHARGE_PWM_PIN, (int)CHARGE_LEDC_CH, (int)CHARGE_PWM_FREQ,
-                  (int)CHARGE_PWM_BITS, g_chgPwmOk ? "OK" : "FAIL",
-                  g_chgPwmOk ? "" : " — або CHARGE_PWM_FREQ/CHARGE_PWM_BITS "
-                  "недосяжні для дільника LEDC (макс. частота = джерело/2^bits), "
-                  "або вичерпано вільні таймери (їх ділять підсвітка/світлодіоди/"
-                  "розряд) — спробуйте інший CHARGE_LEDC_CH чи знизьте CHARGE_PWM_BITS");
+    // ⚑ Друкуємо ТАЙМЕР, а не лише канал. Конфліктує саме таймер (канали
+    //  діляться ними попарно), і з номера каналу це не видно — через що дефект
+    //  «заряд і розряд на одному таймері» й прожив непоміченим.
+    Serial.printf("CHARGE: pwm=%d LEDC ch=%d (таймер %d) freq=%d bits=%d attach=%s%s\n",
+                  (int)CHARGE_PWM_PIN, (int)CHARGE_LEDC_CH, (int)CHARGE_LEDC_CH / 2,
+                  (int)CHARGE_PWM_FREQ, (int)CHARGE_PWM_BITS, g_chgPwmOk ? "OK" : "FAIL",
+                  g_chgPwmOk ? "" : " — найімовірніше ТАЙМЕР уже зайнятий іншим "
+                  "каналом з іншою частотою (канали діляться таймерами попарно: "
+                  "0-1, 2-3, 4-5, 6-7). Оберіть CHARGE_LEDC_CH з іншої пари. Друга "
+                  "можлива причина — частота недосяжна для розрядності "
+                  "(макс. = 80 МГц / 2^bits)");
     chargeSetDuty(0);
     // Вимірювальні входи. pinMode(INPUT) без підтяжок: будь-яка підтяжка тут
     // зсунула б показання подільника й шунта. 11 дБ — повний діапазон 0..~3.1 В.

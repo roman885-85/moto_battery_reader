@@ -56,6 +56,7 @@ static void ledSet(LedMode m) { g_led = m; }
 #include "settings.h"
 #include "discharge.h"
 #include "charge.h"
+#include "postmortem.h"    // чорний ящик — чистий, збирається на хості
 #include "battbar.h"       // коли шкалу батареї треба перемальовувати
 #include "bt_link.h"       // правило доступу по радіо — чисте, збирається на хості
 #include "splash.h"          // формат завантаженої заставки — чистий, збирається на хості
@@ -846,6 +847,61 @@ int main() {
                                              "анімація бере ширину з намальованого стану");
     check(fileHasNo("display_color.h", "int fw = (g_battW - 6) * pct / 100;"),
                                              "власного перерахунку ширини в анімації більше немає");
+
+    printf("\n18) чорний ящик: після скидання видно, ЩО пристрій робив\n");
+    {
+        // Скарга «періодично перезавантажується» трималась так довго саме тому,
+        // що після скидання від події не лишалось нічого. Тепер лишається.
+        check(!pmIsAbnormal(PM_RST_POWERON),  "подача живлення — не аварія");
+        check(!pmIsAbnormal(PM_RST_EXT),      "кнопка RESET — не аварія");
+        check(!pmIsAbnormal(PM_RST_SW),       "навмисний перезапуск — не аварія");
+        check(pmIsAbnormal(PM_RST_PANIC),     "паніка — аварія");
+        check(pmIsAbnormal(PM_RST_TASK_WDT),  "сторож задач — аварія");
+        check(pmIsAbnormal(PM_RST_INT_WDT),   "сторож переривань — аварія");
+        check(pmIsAbnormal(PM_RST_BROWNOUT),  "просадка живлення — аварія");
+        // ⚑ Невідома причина мусить рахуватись аварією, а не «нормально»:
+        //  мовчазний пропуск — це рівно те, через що скарга й жила довго.
+        check(pmIsAbnormal(PM_RST_UNKNOWN),   "невідома причина — теж аварія");
+        check(pmIsAbnormal(99),               "нове значення з майбутнього ядра — теж аварія");
+
+        // Слід із RTC можна показувати лише тоді, коли він справді наш.
+        PmTrace t;
+        t.magic = 0; t.mode = PM_MODE_CHARGE;
+        check(!pmTraceValid(t, PM_RST_PANIC), "сміття без магії не показуємо");
+        t.magic = PM_MAGIC;
+        check(pmTraceValid(t, PM_RST_PANIC),  "наш слід після паніки — показуємо");
+        check(!pmTraceValid(t, PM_RST_POWERON),
+              "після подачі живлення RTC не зберігся — показувати нічого");
+
+        check(strcmp(pmModeName(PM_MODE_CHARGE), "ЗАРЯД") == 0 &&
+              strcmp(pmModeName(PM_MODE_DISCHARGE), "РОЗРЯД") == 0,
+              "режими названо по-людськи");
+    }
+
+    printf("\n19) оптимізація: щосекундні відповіді не рвуть купу\n");
+    // Статус заряду/розряду будується десятками `j += ...` КОЖНУ СЕКУНДУ, поки
+    // клієнт дивиться. Рядок Arduino росте блоками по 16 байтів, тож без
+    // reserve() це десятки realloc на відповідь — сотні тисяч за години
+    // роботи, тобто фрагментація купи. Виглядає вона як «періодично
+    // перезавантажується»: вільної пам'яті начебто вистачає, а суцільного
+    // шматка під буфер Wi-Fi уже немає.
+    check(fileCalls("web_server.h", "j.reserve"),
+                                             "гарячі відповіді резервують буфер одним разом");
+    check(fileCalls("web_server.h", "pmNote"),
+                                             "заряд і розряд лишають слід у чорному ящику");
+    check(fileCalls("motorola-battery-reader-web.ino", "RTC_NOINIT_ATTR"),
+                                             "слід живе в пам'яті, що переживає скидання");
+    check(fileCalls("motorola-battery-reader-web.ino", "pmTraceValid"),
+                                             "при старті слід перевіряється, а не показується наосліп");
+    check(fileCalls("web_server.h", "uxTaskGetStackHighWaterMark"),
+                                             "запас стека видно в журналі, а не лише при падінні");
+    check(fileCalls("web_server.h", "pmStack") && fileCalls("web_server.h", "pmHeap"),
+                                             "обставини останнього скидання віддаються клієнтам");
+    // Витримка перед виміром кличеться і з заряду теж — годувати треба обидва
+    // сторожі, інакше підняття CHARGE_VSENSE_SETTLE_MS дало б перезавантаження
+    // саме на вимірі.
+    check(fileCalls("web_server.h", "chargeWatchdogFeed"),
+                                             "витримка перед виміром годує і сторож заряду");
 
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

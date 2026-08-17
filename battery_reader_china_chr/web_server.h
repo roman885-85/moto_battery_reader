@@ -20,6 +20,11 @@
 #include "display.h"
 #include "templates.h"
 
+// ⚑ Визначене у скетчі НИЖЧЕ за цей include, тож потрібне оголошення.
+//  Без нього збірка падає на «resetReasonText was not declared» — і причина
+//  була б неочевидна: функція ж «є», просто ще не видима в цій точці.
+const char *resetReasonText(esp_reset_reason_t r);
+
 extern WebServer server;
 extern BatteryReader battery;
 extern uint8_t batteryDump[DUMP_SIZE];
@@ -1290,7 +1295,19 @@ inline bool performRecalPrepare() { return performRecalPrepare(false); }
 // операцію просто посеред циклу вимірювання.
 static void dischargeSettle(unsigned long ms) {
     unsigned long t0 = millis();
-    while (millis() - t0 < ms) { ledTask(); dischargeWatchdogFeed(); delay(1); }
+    // ⚑ ГОДУЄМО ОБИДВА СТОРОЖІ. Функцію кличе не лише розряд: chargeTask()
+    //  бере її ж на витримку перед виміром напруги. dischargeWatchdogFeed()
+    //  мовчки нічого не робить, коли розряд не йде, — тобто під час ЗАРЯДУ ця
+    //  пауза лишалась негодованою. Зараз вона коротка (10 мс) і до порога
+    //  сторожа не дотягує, але це збіг обставин, а не властивість коду:
+    //  варто комусь підняти CHARGE_VSENSE_SETTLE_MS — і пристрій почав би
+    //  перезавантажуватись саме на вимірі, тобто в найменш очікуваному місці.
+    while (millis() - t0 < ms) {
+        ledTask();
+        dischargeWatchdogFeed();
+        chargeWatchdogFeed();
+        delay(1);
+    }
 }
 
 // Зняти показання монітора під навантаженням. true — читання вдалось.
@@ -1488,12 +1505,18 @@ inline void dischargeTask() {
     // під знятим навантаженням струм ~0, а температуру беремо з того ж кроку.)
     (void)ma; (void)tLoaded;
     int sag = (int)mv - (int)mvLoaded;
+    // Слід у чорний ящик і тренд пам'яті — так само, як у заряду (postmortem.h).
+    pmNote(PM_MODE_DISCHARGE, g_dis.polls, g_dis.dutyPct, g_dis.lastMa, mv);
+
     Serial.printf("discharge: %u mV (sag %d mV), avg %d mA (peak %u, set %u, duty %u%%), "
-                  "%.1f W, %.1f C, %lu mAh (DCA %lu), ICA %u, %lus\n",
+                  "%.1f W, %.1f C, %lu mAh (DCA %lu), ICA %u, %lus, "
+                  "купа %lu/%lu, стек %lu\n",
                   mv, sag, g_dis.lastMa, g_dis.peakMa, g_dis.setMa, g_dis.dutyPct,
                   dischargeWattsX10(mv, g_dis.lastMa) / 10.0f, t / 10.0f,
                   (unsigned long)dischargeMah(), (unsigned long)dischargeDcaMah(),
-                  g_dis.lastIca, (unsigned long)g_dis.elapsedS);
+                  g_dis.lastIca, (unsigned long)g_dis.elapsedS,
+                  (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap(),
+                  (unsigned long)uxTaskGetStackHighWaterMark(NULL));
     dischargeMarkDirty(1);                 // нові показання -> оновити екран
 
     if (mv <= DISCHARGE_HARD_MIN_MV) {
@@ -1511,7 +1534,23 @@ inline void dischargeTask() {
 
 // Стан розряду у JSON — для веб-моніторингу й USB-клієнта.
 static String dischargeJson() {
-    String j = "{\"available\":" + String(dischargeAvailable() ? "true" : "false");
+    // ⚑ ОДНА ВИДІЛЕНА ДІЛЯНКА ЗАМІСТЬ СОТЕНЬ ПЕРЕВИДІЛЕНЬ. Цей відповідач
+    //  кличеться КОЖНУ СЕКУНДУ, поки клієнт дивиться на заряд/розряд, а нижче
+    //  йдуть десятки `j += ...`. Рядок Arduino росте блоками по 16 байтів, тож
+    //  без reserve() кожна відповідь — це десятки realloc (malloc+memcpy+free)
+    //  плюс тимчасовий String на КОЖНЕ число.
+    //
+    //  Само по собі це не помилка, але за години заряду виходять СОТНІ ТИСЯЧ
+    //  розподілів різного розміру — а це фрагментація купи. Вільної пам'яті
+    //  начебто вистачає, а суцільного шматка під буфер Wi-Fi/TCP уже немає, і
+    //  черговий розподіл падає. Виглядає це як «під час заряду пристрій
+    //  періодично перезавантажується» — тобто рівно як скарга.
+    //
+    //  reserve() робить із цього ОДИН розподіл. Розмір узято з запасом над
+    //  реальною довжиною відповіді; якщо не влізе, String просто дорощується
+    //  як і раніше, тобто гірше не стане.
+    String j; j.reserve(1024);
+    j = "{\"available\":" + String(dischargeAvailable() ? "true" : "false");
     j += ",\"state\":\"" + String(g_dis.state == DIS_RUN ? "run"
                                : g_dis.state == DIS_DONE ? "done"
                                : g_dis.state == DIS_ABORT ? "abort" : "idle") + "\"";
@@ -1884,14 +1923,26 @@ inline void chargeTask() {
     // «чип N mV» — напруга з DS2438 усередині пакета. Друкуємо поруч із
     // виміром на клемі САМЕ для звірки: поки числа поряд, коло ціле; коли
     // клема пішла в стелю, а чип лишився на 8 В — пакета в колі немає.
+    // ⚑ СЛІД У ЧОРНИЙ ЯЩИК — раз на опитування. Переживає скидання, і саме він
+    //  перетворює «періодично перезавантажується» на конкретні обставини
+    //  (postmortem.h).
+    pmNote(PM_MODE_CHARGE, g_chg.polls, g_chg.duty, g_chg.lastMa, mv);
+
+    // Купа й запас стека — В КОЖНОМУ рядку журналу, а не лише при старті.
+    //  Разові числа нічого не кажуть; потрібен ТРЕНД. Фрагментація й витік
+    //  видно саме як повільне сповзання за годину роботи, а переповнення
+    //  стека — як запас, що тане до сотень байтів.
     Serial.printf("charge: %u mV (чип %u mV) (%d%%), %d mA (пік %u, set %u, duty %u/%u = %u%%), "
-                  "%.1f W, %.1f C%s, %lu mAh (CCA %lu), ICA %u, %lus\n",
+                  "%.1f W, %.1f C%s, %lu mAh (CCA %lu), ICA %u, %lus, "
+                  "купа %lu/%lu, стек %lu\n",
                   mv, g_chg.chipMv, pct, g_chg.lastMa, g_chg.peakMa, g_chg.setMa,
                   g_chg.duty, (unsigned)CHARGE_DUTY_FULL, chargeDutyPct(),
                   chargeWattsX10(mv, g_chg.lastMa) / 10.0f, t / 10.0f,
                   tempRead ? "" : "~",
                   (unsigned long)chargeMah(), (unsigned long)chargeCcaMah(),
-                  g_chg.lastIca, (unsigned long)g_chg.elapsedS);
+                  g_chg.lastIca, (unsigned long)g_chg.elapsedS,
+                  (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap(),
+                  (unsigned long)uxTaskGetStackHighWaterMark(NULL));
     chargeMarkDirty(1);
     ledSet(pct >= CHARGE_LED_TAPER_PCT ? LED_CHARGE_TAPER : LED_CHARGE);
 
@@ -1964,7 +2015,23 @@ inline void chargePsuIdleTask() {
 
 // Стан заряду у JSON — для веб-моніторингу й USB-клієнта.
 static String chargeJson() {
-    String j = "{\"available\":" + String(chargeAvailable() ? "true" : "false");
+    // ⚑ ОДНА ВИДІЛЕНА ДІЛЯНКА ЗАМІСТЬ СОТЕНЬ ПЕРЕВИДІЛЕНЬ. Цей відповідач
+    //  кличеться КОЖНУ СЕКУНДУ, поки клієнт дивиться на заряд/розряд, а нижче
+    //  йдуть десятки `j += ...`. Рядок Arduino росте блоками по 16 байтів, тож
+    //  без reserve() кожна відповідь — це десятки realloc (malloc+memcpy+free)
+    //  плюс тимчасовий String на КОЖНЕ число.
+    //
+    //  Само по собі це не помилка, але за години заряду виходять СОТНІ ТИСЯЧ
+    //  розподілів різного розміру — а це фрагментація купи. Вільної пам'яті
+    //  начебто вистачає, а суцільного шматка під буфер Wi-Fi/TCP уже немає, і
+    //  черговий розподіл падає. Виглядає це як «під час заряду пристрій
+    //  періодично перезавантажується» — тобто рівно як скарга.
+    //
+    //  reserve() робить із цього ОДИН розподіл. Розмір узято з запасом над
+    //  реальною довжиною відповіді; якщо не влізе, String просто дорощується
+    //  як і раніше, тобто гірше не стане.
+    String j; j.reserve(1536);
+    j = "{\"available\":" + String(chargeAvailable() ? "true" : "false");
     j += ",\"state\":\"" + String(g_chg.state == CHG_RUN ? "run"
                                : g_chg.state == CHG_DONE ? "done"
                                : g_chg.state == CHG_ABORT ? "abort" : "idle") + "\"";
@@ -2005,6 +2072,30 @@ static String chargeJson() {
     //  Йде в тому ж об'єкті, що й заряд, і оновлюється НЕЗАЛЕЖНО від того, чи
     //  заряд узагалі запускали: несправний блок треба показати на екрані до
     //  того, як користувач натисне кнопку, а не після невдалого старту.
+    // ── ОСТАННЄ СКИДАННЯ ───────────────────────────────────────────────────
+    //  Причина й обставини — прямо в статусі заряду, бо саме тут користувач і
+    //  дивиться, коли пристрій «періодично перезавантажується». Читати консоль
+    //  він не зобов'язаний, а без цих чисел скарга лишається здогадкою.
+    j += ",\"rstReason\":" + String(g_pmResetReason);
+    j += ",\"rstText\":\"" + String(resetReasonText((esp_reset_reason_t)g_pmResetReason)) + "\"";
+    j += ",\"rstAbnormal\":" + String(pmIsAbnormal(g_pmResetReason) ? "true" : "false");
+    j += ",\"pmValid\":" + String(g_pmPrevOk ? "true" : "false");
+    if (g_pmPrevOk) {
+        j += ",\"pmMode\":\"" + String(pmModeName(g_pmPrev.mode)) + "\"";
+        j += ",\"pmSec\":"   + String((unsigned long)(g_pmPrev.ms / 1000));
+        j += ",\"pmPolls\":" + String(g_pmPrev.polls);
+        j += ",\"pmDuty\":"  + String(g_pmPrev.duty);
+        j += ",\"pmMa\":"    + String(g_pmPrev.ma);
+        j += ",\"pmMv\":"    + String(g_pmPrev.mv);
+        j += ",\"pmHeap\":"  + String((unsigned long)g_pmPrev.freeHeap);
+        j += ",\"pmBlock\":" + String((unsigned long)g_pmPrev.maxBlock);
+        j += ",\"pmStack\":" + String((unsigned long)g_pmPrev.stackLeft);
+    }
+    // Поточні числа — щоб тренд було видно НЕ ЛИШЕ після падіння.
+    j += ",\"heap\":"      + String((unsigned long)ESP.getFreeHeap());
+    j += ",\"heapBlock\":" + String((unsigned long)ESP.getMaxAllocHeap());
+    j += ",\"stack\":"     + String((unsigned long)uxTaskGetStackHighWaterMark(NULL));
+
     j += ",\"psuSensed\":" + String(chargePsuSensed() ? "true" : "false");
     j += ",\"psuMv\":"    + String(chargePsuMv());
     // НОМІНАЛ блока живлення — головне число в повідомленні про помилку:

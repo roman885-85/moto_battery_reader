@@ -4,6 +4,29 @@
 #include <DNSServer.h>
 #include <SPIFFS.h>
 #include <esp_system.h>
+#include "postmortem.h"          // чорний ящик: що робив пристрій перед скиданням
+
+// ⚑ RTC_NOINIT_ATTR — пам'ять, яку НЕ чіпає завантажувач. Саме тому запис
+//  переживає і паніку, і сторожа, і просадку живлення: після скидання дані
+//  лишаються на місці, і ми можемо сказати, ЩО САМЕ робив пристрій.
+RTC_NOINIT_ATTR PmTrace g_pmTrace;
+static PmTrace g_pmPrev;              // копія ДО того, як почнемо перезаписувати
+static bool    g_pmPrevOk = false;
+static int     g_pmResetReason = 0;
+
+// Записати слід. Кличеться раз на опитування — дешево (кілька присвоєнь).
+void pmNote(uint8_t mode, uint16_t polls, uint16_t duty, int16_t ma, uint16_t mv) {
+    g_pmTrace.magic     = PM_MAGIC;
+    g_pmTrace.ms        = millis();
+    g_pmTrace.freeHeap  = ESP.getFreeHeap();
+    g_pmTrace.maxBlock  = ESP.getMaxAllocHeap();
+    g_pmTrace.stackLeft = uxTaskGetStackHighWaterMark(NULL);
+    g_pmTrace.polls     = polls;
+    g_pmTrace.duty      = duty;
+    g_pmTrace.ma        = ma;
+    g_pmTrace.mv        = mv;
+    g_pmTrace.mode      = mode;
+}
 #include "settings.h"
 #include "leds.h"
 #include "battery_reader.h"
@@ -106,8 +129,40 @@ void setup() {
     // каскаду заряду/розряду, TASK_WDT — завис головний цикл, PANIC — крах
     // прошивки). Особливо важливо для скарг «перезавантажується під час
     // заряду/розряду» — сама ця причина одразу відсікає половину гіпотез.
+    g_pmResetReason = (int)esp_reset_reason();
     Serial.printf("RESET REASON: %s (код %d)\n",
-                  resetReasonText(esp_reset_reason()), (int)esp_reset_reason());
+                  resetReasonText((esp_reset_reason_t)g_pmResetReason), g_pmResetReason);
+
+    // ── ЧОРНИЙ ЯЩИК ────────────────────────────────────────────────────────
+    //  Знімаємо копію ДО того, як почнемо перезаписувати слід, і друкуємо її.
+    //  Без цього «періодично перезавантажується» лишається здогадкою: причина
+    //  скидання каже ЩО сталося, а ці числа — за яких обставин.
+    g_pmPrev   = g_pmTrace;
+    g_pmPrevOk = pmTraceValid(g_pmPrev, g_pmResetReason);
+    if (g_pmPrevOk) {
+        Serial.printf("ПЕРЕД СКИДАННЯМ: %s, %lu с роботи, опитування %u, "
+                      "duty %u, %d мА, %u мВ\n",
+                      pmModeName(g_pmPrev.mode), (unsigned long)(g_pmPrev.ms / 1000),
+                      g_pmPrev.polls, g_pmPrev.duty, g_pmPrev.ma, g_pmPrev.mv);
+        Serial.printf("ПЕРЕД СКИДАННЯМ: купа %lu Б (найбільший блок %lu Б), "
+                      "запас стека loop() %lu Б\n",
+                      (unsigned long)g_pmPrev.freeHeap, (unsigned long)g_pmPrev.maxBlock,
+                      (unsigned long)g_pmPrev.stackLeft);
+        // Три підозрюваних — і одразу вказівка, куди дивитись.
+        if (g_pmPrev.stackLeft < 512)
+            Serial.println("⚠ ЗАПАС СТЕКА БУВ МІЗЕРНИЙ — схоже на переповнення стека.");
+        if (g_pmPrev.maxBlock < 20000 && g_pmPrev.freeHeap > g_pmPrev.maxBlock * 2)
+            Serial.println("⚠ КУПА СИЛЬНО ФРАГМЕНТОВАНА — вільної пам'яті вистачає, "
+                           "а суцільного шматка вже немає.");
+        if (g_pmResetReason == PM_RST_BROWNOUT)
+            Serial.println("⚠ ПРОСАДКА ЖИВЛЕННЯ — дивіться живлення 3.3 В і силовий каскад, "
+                           "а не прошивку.");
+    } else if (pmIsAbnormal(g_pmResetReason)) {
+        Serial.println("ПЕРЕД СКИДАННЯМ: слід недоступний (перше вмикання після "
+                       "подачі живлення або новий запис прошивки).");
+    }
+    // Далі слід перезаписується поточною роботою.
+    g_pmTrace.magic = PM_MAGIC;
 
     // Ініціалізація дисплея і кнопок меню + стартова заставка.
     //

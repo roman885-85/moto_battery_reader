@@ -306,6 +306,10 @@ void handleUploadDump2438() {
 }
 
 #ifdef DISPLAY_SPLASH_SPIFFS
+#ifdef DISPLAY_SPLASH_JPEG
+#include <TJpg_Decoder.h>   // приймальник сам питає розміри JPEG (getFsJpgSize),
+                            // тож залежність його власна, а не успадкована
+#endif
 #include "splash.h"   // явно, а не транзитом через display.h: приймальник
                       // мусить розбирати заголовок ТИМ САМИМ кодом, що й
                       // дисплей, і залежати тут від чужого include не варто

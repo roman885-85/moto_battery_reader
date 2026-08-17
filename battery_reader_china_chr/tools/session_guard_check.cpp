@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <initializer_list>
 
 // ── мінімальне оточення Arduino (реальні заголовки тягнути нікуди) ──────────
 #define OUTPUT 1
@@ -55,6 +56,7 @@ static void ledSet(LedMode m) { g_led = m; }
 #include "settings.h"
 #include "discharge.h"
 #include "charge.h"
+#include "splash.h"          // формат завантаженої заставки — чистий, збирається на хості
 
 // Дзеркало fileCalls(): подекуди треба довести саме ВІДСУТНІСТЬ конструкції.
 // Тут межа токена не потрібна — шукаємо точний фрагмент виклику.
@@ -486,6 +488,155 @@ int main() {
     check(CHARGE_SW_PD_MW == CHARGE_BJT_PC_MW && CHARGE_SW_IMAX_MA == CHARGE_BJT_IC_MAX_MA,
                                              "спільні імена вказують на паспорт БІПОЛЯРНОГО");
 #endif
+
+    printf("\n11) заставка зі SPIFFS: розбір заголовка відсікає чуже\n");
+    {
+        // Той самий splashParse() ганяють приймальник (web_server.h) і дисплей
+        // (display_color.h). Якщо він пропустить сміття, воно або виллється на
+        // екран шумом, або обірве малювання посеред кадру.
+        const uint16_t PW = 240, PH = 240;
+        uint16_t w = 0, h = 0;
+
+        // Правильний файл на весь екран.
+        uint8_t good[SPLASH_HDR_BYTES] = { 'M','B','S','1', 240,0, 240,0 };
+        size_t  goodSz = splashBytesFor(240, 240);
+        printf("   240x240 -> %u байтів (заголовок %d + %u пікселів × 2)\n",
+               (unsigned)goodSz, SPLASH_HDR_BYTES, 240u * 240u);
+        check(splashParse(good, sizeof(good), goodSz, PW, PH, &w, &h) == SPLASH_OK,
+                                             "коректний файл приймається");
+        check(w == 240 && h == 240,          "розміри читаються із заголовка");
+        check(goodSz == 115208,              "розмір файла на весь екран — 115208 байтів");
+
+        // Менша картинка — теж законна, її центрують.
+        uint8_t small[SPLASH_HDR_BYTES] = { 'M','B','S','1', 100,0, 80,0 };
+        check(splashParse(small, sizeof(small), splashBytesFor(100, 80), PW, PH, &w, &h) == SPLASH_OK &&
+              w == 100 && h == 80,           "менша за екран картинка приймається");
+
+        // ⚑ ГОЛОВНЕ, ЗАРАДИ ЧОГО ЗАГОЛОВОК І ПОТРІБЕН: чужий файл ПОТРІБНОЇ
+        //  довжини. Без магії він пройшов би як картинка.
+        uint8_t png[SPLASH_HDR_BYTES] = { 0x89,'P','N','G', 0x0D,0x0A,0x1A,0x0A };
+        check(splashParse(png, sizeof(png), goodSz, PW, PH, &w, &h) == SPLASH_ERR_MAGIC,
+                                             "PNG рівно тієї ж довжини відхиляється за магією");
+
+        // Порядок перевірок: на PNG має бути «не той формат», а не «довжина
+        // не збігається» — інакше повідомлення веде шукати не туди.
+        uint8_t png2[SPLASH_HDR_BYTES] = { 0x89,'P','N','G', 0,0, 0,0 };
+        check(splashParse(png2, sizeof(png2), 12345, PW, PH, &w, &h) == SPLASH_ERR_MAGIC,
+                                             "магія перевіряється РАНІШЕ за розміри");
+
+        // Решта відмов.
+        check(splashParse(good, 4, goodSz, PW, PH, &w, &h) == SPLASH_ERR_SHORT,
+                                             "обрізаний заголовок");
+        check(splashParse(good, sizeof(good), 4, PW, PH, &w, &h) == SPLASH_ERR_SHORT,
+                                             "файл коротший за заголовок");
+        uint8_t zero[SPLASH_HDR_BYTES] = { 'M','B','S','1', 0,0, 240,0 };
+        check(splashParse(zero, sizeof(zero), goodSz, PW, PH, &w, &h) == SPLASH_ERR_ZERO,
+                                             "нульова ширина");
+        uint8_t big[SPLASH_HDR_BYTES] = { 'M','B','S','1', 0x40,0x01, 240,0 };  // 320x240
+        check(splashParse(big, sizeof(big), splashBytesFor(320, 240), PW, PH, &w, &h) == SPLASH_ERR_TOO_BIG,
+                                             "картинка ширша за екран");
+        check(splashParse(good, sizeof(good), goodSz - 1, PW, PH, &w, &h) == SPLASH_ERR_SIZE,
+                                             "файл на байт коротший — відхилено");
+        check(splashParse(good, sizeof(good), goodSz + 1, PW, PH, &w, &h) == SPLASH_ERR_SIZE,
+                                             "файл на байт довший — теж");
+        // На відмові розміри мусять бути занулені: інакше виклик, що не
+        // перевірив код повернення, намалював би сміття у випадковому вікні.
+        w = 777; h = 777;
+        splashParse(png, sizeof(png), goodSz, PW, PH, &w, &h);
+        check(w == 0 && h == 0,              "на відмові розміри занулено");
+
+        // ── ТИП ФАЙЛА — ЗА МАГІЄЮ, А НЕ ЗА РОЗШИРЕННЯМ ─────────────────
+        //  Розширення бреше (його ставить хто завгодно), перші байти — ні.
+        uint8_t jpg[4]  = { 0xFF, 0xD8, 0xFF, 0xE0 };   // JFIF
+        uint8_t exif[4] = { 0xFF, 0xD8, 0xFF, 0xE1 };   // EXIF (з фотоапарата)
+        check(splashSniff(jpg,  4) == SPLASH_KIND_JPEG, "JFIF розпізнається як JPEG");
+        check(splashSniff(exif, 4) == SPLASH_KIND_JPEG, "EXIF-JPEG теж (саме такі дає телефон)");
+        check(splashSniff(good, 4) == SPLASH_KIND_RAW,  "наш .bin розпізнається як сирий");
+        check(splashSniff(png,  4) == SPLASH_KIND_NONE, "PNG — не наш формат і не JPEG");
+        // Два байти FF D8 трапляються й у довільних даних; вимагаємо три.
+        uint8_t half[3] = { 0xFF, 0xD8, 0x00 };
+        check(splashSniff(half, 3) == SPLASH_KIND_NONE, "FF D8 без третього FF — не JPEG");
+        check(splashSniff(jpg,  2) == SPLASH_KIND_NONE, "двох байтів для висновку замало");
+        check(splashSniff(good, 3) == SPLASH_KIND_NONE, "трьох байтів для сирого формату замало");
+
+        // JPEG теж мусить влазити в екран: декодер центрує, але не масштабує.
+        check(splashJpegFits(240, 240, PW, PH),  "JPEG рівно в екран — приймається");
+        check(splashJpegFits(120,  90, PW, PH),  "менший — теж (відцентрують)");
+        check(!splashJpegFits(320, 240, PW, PH), "ширший за екран — ні");
+        check(!splashJpegFits(240, 320, PW, PH), "вищий за екран — ні");
+        check(!splashJpegFits(0,   240, PW, PH), "нульовий розмір — ні");
+
+        // Стелі двох форматів мусять розрізнятись: сенс JPEG саме в економії.
+        printf("   стелі: сирий %lu КБ, JPEG %lu КБ\n",
+               (unsigned long)DISPLAY_SPLASH_MAX_BYTES/1024,
+               (unsigned long)DISPLAY_SPLASH_JPG_MAX_BYTES/1024);
+        check(DISPLAY_SPLASH_JPG_MAX_BYTES < DISPLAY_SPLASH_MAX_BYTES,
+                                             "стеля JPEG менша — інакше формат втрачає сенс");
+        check(DISPLAY_SPLASH_JPG_MAX_BYTES >= 49152UL,
+                                             "але достатня для повноекранного JPEG у пристойній якості");
+
+        // Стеля приймальника мусить пропускати найбільшу законну картинку.
+        check(splashBytesFor(DISPLAY_SPLASH_MAX_W, 320) <= DISPLAY_SPLASH_MAX_BYTES,
+                                             "стеля розміру пропускає повноекранну заставку");
+        check(DISPLAY_SPLASH_MAX_W >= 240,   "буфер рядка вміщає ширину цієї панелі");
+
+        // І текст помилки мусить бути в кожної причини — порожній рядок у
+        // відповіді сервера означав би «щось не так» замість пояснення.
+        for (int e = SPLASH_OK; e <= SPLASH_ERR_SIZE; e++)
+            if (splashErrText(e)[0] == '\0') bad("порожній текст помилки заставки");
+        check(true,                          "у кожної причини відмови є текст");
+    }
+
+    printf("\n12) заставка: джерела, приймання й клієнт зв'язані між собою\n");
+    check(fileCalls("display_color.h", "splashDrawFromFs"),
+                                             "кольоровий дисплей уміє малювати заставку з файла");
+    check(fileCalls("display_color.h", "DISPLAY_SPLASH_SPIFFS"),
+                                             "і робить це під власним прапорцем");
+    check(fileCalls("web_server.h", "splashParse"),
+                                             "приймальник перевіряє файл ТИМ САМИМ розбором, що й дисплей");
+    check(fileCalls("web_server.h", "/uploadsplash") &&
+          fileCalls("web_server.h", "/api/splash"),
+                                             "кінцеві точки завантаження й стану зареєстровані");
+    // Тимчасовий файл — щоб обірване приймання не затерло робочу заставку.
+    check(fileCalls("web_server.h", "DISPLAY_SPLASH_PATH \".tmp\""),
+                                             "пишемо в тимчасовий файл, а бойовий підміняємо після перевірки");
+    // JPEG: тип визначає магія, а не розширення; декодер кличеться в обох
+    // місцях (приймання й показ); при прийманні одного формату інший
+    // прибирається, інакше «поточна заставка» залежала б від порядку
+    // перевірок при показі, а не від вибору людини.
+    check(fileCalls("web_server.h", "splashSniff"),
+                                             "приймальник визначає тип за магією файла");
+    check(fileCalls("web_server.h", "TJpgDec") && fileCalls("display_color.h", "TJpgDec"),
+                                             "декодер кличеться і при прийманні, і при показі");
+    check(fileCalls("display_color.h", "splashDrawJpeg"),
+                                             "дисплей уміє малювати JPEG");
+    check(fileCalls("web_server.h", "DISPLAY_SPLASH_JPG_PATH"),
+                                             "JPEG зберігається окремим шляхом");
+    check(fileCalls("splash.h", "SPLASH_KIND_JPEG"),
+                                             "перелік типів живе у спільному splash.h");
+    for (const char *c : { "index.html", "data/index.html" }) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "%s: уміє конвертувати картинку й надіслати", c);
+        check(fileCalls(c, "uploadsplash"), msg);
+    }
+
+    printf("\n13) старт заряду: enable ПЕРШИМ, і жоден вихід його не лишає піднятим\n");
+    // Пакет під'єднує клеми за сигналом enable. Поки він не піднятий, на клемі
+    // немає напруги ПАКЕТА, і будь-який вимір стосується розімкненого кола —
+    // подільник показує стелю, тобто те саме хибне «9.9 В».
+    check(fileCalls("web_server.h", "CHARGE_ENABLE_LEAD_MS"),
+                                             "пауза після підйому enable справді витримується");
+    check(fileDefinesBefore("web_server.h", "battery.holdEnable(true);\n    delay(CHARGE_ENABLE_LEAD_MS);",
+                                            "uint16_t mv = chargePackMv();"),
+                                             "enable піднімається РАНІШЕ за перший вимір напруги пакета");
+    // Сім різних виходів «не можна почати» — і жоден не має лишити пакет
+    // під'єднаним. Тому вихід із них один, і зняття enable теж одне.
+    check(fileCalls("web_server.h", "if (startErr) {"),
+                                             "невдалий старт має єдину точку згортання");
+    check(fileHasNo("web_server.h", "battery.holdEnable(true);        // enable пакета"),
+                                             "старого пізнього підйому enable більше немає");
+    check(CHARGE_ENABLE_LEAD_MS >= 20 && CHARGE_ENABLE_LEAD_MS * 2 <= CHARGE_POLL_MS,
+                                             "випередження помітне, але не з'їдає такт опитування");
 
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

@@ -16,6 +16,15 @@ settings.h:  #define DISPLAY_SPLASH_CUSTOM
   python make_color_splash.py logo.png -W 240 -H 320 --fit cover
   python make_color_splash.py logo.png --bg 000000     # колір фону (hex RRGGBB)
   python make_color_splash.py logo.png -o custom_splash.h
+  python make_color_splash.py logo.png --bin           # splash.bin -> завантажити у SPIFFS
+
+⚑ Два різні режими:
+  без --bin  -> custom_splash.h, картинка ВКОМПІЛЬОВУЄТЬСЯ у прошивку
+                (потрібне перезбирання й перепрошивання);
+  з  --bin   -> splash.bin, завантажується у SPIFFS через веб-інтерфейс
+                («Заставка екрана»), прошивка лишається та сама.
+Найпростіший шлях — узагалі без цього скрипта: веб-інтерфейс уміє перетворити
+PNG/JPEG прямо в браузері. Скрипт потрібен для пакетної роботи або без браузера.
 """
 import sys, argparse
 try:
@@ -37,7 +46,10 @@ def main():
                     help="contain — вписати повністю (з фоном); cover — заповнити з обрізанням")
     ap.add_argument("--bg", default="000000", help="колір фону HEX RRGGBB (за замовч. 000000)")
     ap.add_argument("--name", default="splash_rgb565", help="ім'я масиву")
-    ap.add_argument("-o", "--out", default="custom_splash.h", help="вихідний файл (.h)")
+    ap.add_argument("-o", "--out", default="custom_splash.h", help="вихідний файл (.h або .bin)")
+    ap.add_argument("--bin", action="store_true",
+                    help="зробити splash.bin для завантаження у SPIFFS через веб "
+                         "(замість .h для вкомпільовування)")
     a = ap.parse_args()
 
     W, H = a.width, a.height
@@ -71,6 +83,27 @@ def main():
         for x in range(W):
             r, g, b = px[x, y]
             vals.append(rgb565(r, g, b))
+
+    # ── РЕЖИМ .bin: файл для завантаження у SPIFFS, без перепрошивання ─────
+    #  Той самий формат, який збирає веб-клієнт у браузері й читає splash.h:
+    #  8 байтів заголовка ('MBS1', ширина LE, висота LE), далі RGB565
+    #  СТАРШИМ БАЙТОМ УПЕРЕД. Big-endian не примха: саме так байти йдуть у
+    #  шину ST7789, тож пристрій віддає їх напряму, не перевертаючи піксель
+    #  за пікселем.
+    if a.bin:
+        out = a.out if a.out.endswith(".bin") else "splash.bin"
+        with open(out, "wb") as f:
+            f.write(b"MBS1")
+            f.write(bytes([W & 255, (W >> 8) & 255, H & 255, (H >> 8) & 255]))
+            f.write(b"".join(bytes([(v >> 8) & 255, v & 255]) for v in vals))
+        kb = (len(vals) * 2 + 8) / 1024.0
+        print(f"OK: {out}  ({W}x{H}, {len(vals) * 2 + 8} байтів, ~{kb:.1f} КБ)")
+        print("Завантажте цей файл через веб-інтерфейс: «Заставка екрана» -> "
+              "НАДІСЛАТИ. Перепрошивати не треба.", file=sys.stderr)
+        print("Простіше: той самий веб-інтерфейс уміє перетворити PNG/JPEG сам, "
+              "у браузері — цей скрипт потрібен лише для пакетної роботи.",
+              file=sys.stderr)
+        return
 
     with open(a.out, "w", encoding="utf-8") as f:
         f.write("// Кольорова заставка (RGB565) для кольорових TFT ST7789.\n")

@@ -305,6 +305,253 @@ void handleUploadDump2438() {
     }
 }
 
+#ifdef DISPLAY_SPLASH_SPIFFS
+#include "splash.h"   // явно, а не транзитом через display.h: приймальник
+                      // мусить розбирати заголовок ТИМ САМИМ кодом, що й
+                      // дисплей, і залежати тут від чужого include не варто
+// ── ЗАВАНТАЖЕННЯ КОЛЬОРОВОЇ ЗАСТАВКИ У SPIFFS ─────────────────────────────
+//  Формат і перевірка — у splash.h (той самий код, що читає її дисплей і
+//  ганяє хостовий тест). Тут — приймання й запис.
+static bool     g_splashUpOpen = false;
+static uint32_t g_splashUpBytes = 0;
+static bool     g_splashUpOverflow = false;
+
+void handleUploadSplash() {
+    static File up;
+    HTTPUpload &u = server.upload();
+
+    if (u.status == UPLOAD_FILE_START) {
+        Serial.printf("\n=== Splash upload started: %s ===\n", u.filename.c_str());
+        if (up) { up.close(); delay(20); }
+        // ⚑ ПИШЕМО У ТИМЧАСОВИЙ ФАЙЛ, а не одразу в бойовий. Приймання може
+        //  обірватись посеред передачі, і затерти робочу заставку недописаним
+        //  шматком означало б зламати те, що працювало, — при спробі, яка
+        //  навіть не дійшла до кінця. Перейменуємо лише після перевірки.
+        if (SPIFFS.exists(DISPLAY_SPLASH_PATH ".tmp")) SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+        up = SPIFFS.open(DISPLAY_SPLASH_PATH ".tmp", "w");
+        g_splashUpOpen = (bool)up;
+        g_splashUpBytes = 0;
+        g_splashUpOverflow = false;
+        if (!up) Serial.println("Splash: не вдалося створити тимчасовий файл");
+
+    } else if (u.status == UPLOAD_FILE_WRITE) {
+        // Стелю перевіряємо НА ХОДУ, а не наприкінці: інакше надто великий
+        // файл спершу заповнив би SPIFFS (витіснивши index.html), і лише
+        // потім був би відхилений.
+        if (up && !g_splashUpOverflow) {
+            if (g_splashUpBytes + u.currentSize > (uint32_t)DISPLAY_SPLASH_MAX_BYTES) {
+                // (стеля сирого формату; для JPEG діє менша — перевіряється
+                //  після приймання, коли вже відомий тип файла)
+                g_splashUpOverflow = true;
+                up.close(); up = File();
+                SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+                Serial.println("Splash: файл більший за стелю — приймання припинено");
+            } else {
+                up.write(u.buf, u.currentSize);
+                g_splashUpBytes += u.currentSize;
+            }
+        }
+
+    } else if (u.status == UPLOAD_FILE_END) {
+        if (up) { up.flush(); up.close(); delay(30); }
+        Serial.printf("Splash upload finished (%lu bytes)\n", (unsigned long)g_splashUpBytes);
+
+    } else if (u.status == UPLOAD_FILE_ABORTED) {
+        if (up) up.close();
+        SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+        Serial.println("Splash upload aborted!");
+    }
+}
+
+void handleUploadSplashDone() {
+    if (g_splashUpOverflow) {
+        char m[160];
+        snprintf(m, sizeof(m),
+                 "{\"status\":\"error\",\"message\":\"Файл більший за стелю %lu байтів\"}",
+                 (unsigned long)DISPLAY_SPLASH_MAX_BYTES);
+        server.send(400, "application/json", m);
+        return;
+    }
+    if (!SPIFFS.exists(DISPLAY_SPLASH_PATH ".tmp")) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Файл не прийнято\"}");
+        return;
+    }
+
+    // Перевіряємо ТИМЧАСОВИЙ файл тим самим розбором, що й дисплей. Один код
+    // на приймання й на показ — інакше рано чи пізно приймальник почне
+    // пропускати те, чого дисплей не покаже.
+    File f = SPIFFS.open(DISPLAY_SPLASH_PATH ".tmp", "r");
+    uint8_t hdr[SPLASH_HDR_BYTES];
+    size_t  nHdr = f ? f.read(hdr, sizeof(hdr)) : 0;
+    size_t  sz   = f ? f.size() : 0;
+    uint16_t w = 0, h = 0;
+    // ⚑ ТИП — ЗА МАГІЄЮ, а не за розширенням чи полем форми: розширення
+    //  бреше, перші байти — ні.
+    int kind = splashSniff(hdr, nHdr);
+    if (f) f.close();
+
+#ifdef DISPLAY_SPLASH_JPEG
+    if (kind == SPLASH_KIND_JPEG) {
+        // Для JPEG діє власна, менша стеля: сенс формату — саме економія
+        // місця, і файл на сотні кілобайтів означає або фотографію в повній
+        // роздільності, або взагалі не те, що мали на увазі.
+        if (sz > (size_t)DISPLAY_SPLASH_JPG_MAX_BYTES) {
+            SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+            char m[180];
+            snprintf(m, sizeof(m),
+                     "{\"status\":\"error\",\"message\":\"JPEG більший за %lu КБ — стисніть сильніше\"}",
+                     (unsigned long)DISPLAY_SPLASH_JPG_MAX_BYTES / 1024UL);
+            server.send(400, "application/json", m);
+            return;
+        }
+        // Розміри питаємо в декодера, не декодуючи кадр цілком. Це ще й
+        // перевірка «а чи це справді JPEG»: магія збігтись може випадково,
+        // а розібрати заголовок сміття декодер не зможе.
+        uint16_t jw = 0, jh = 0;
+        if (TJpgDec.getFsJpgSize(&jw, &jh, DISPLAY_SPLASH_PATH ".tmp", SPIFFS) != JDR_OK) {
+            SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+            server.send(400, "application/json",
+                        "{\"status\":\"error\",\"message\":\"Файл починається як JPEG, але декодер його не розібрав\"}");
+            return;
+        }
+        if (!splashJpegFits(jw, jh, TFT_W, TFT_H)) {
+            SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+            char m[200];
+            snprintf(m, sizeof(m),
+                     "{\"status\":\"error\",\"message\":\"JPEG %ux%u не влазить в екран %dx%d — зменште зображення\"}",
+                     jw, jh, (int)TFT_W, (int)TFT_H);
+            server.send(400, "application/json", m);
+            return;
+        }
+        // Приймаємо. Інший формат прибираємо: два файли поруч означали б, що
+        // «поточна заставка» — питання порядку перевірок, а не вибору людини.
+        if (SPIFFS.exists(DISPLAY_SPLASH_JPG_PATH)) SPIFFS.remove(DISPLAY_SPLASH_JPG_PATH);
+        if (!SPIFFS.rename(DISPLAY_SPLASH_PATH ".tmp", DISPLAY_SPLASH_JPG_PATH)) {
+            SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+            server.send(500, "application/json",
+                        "{\"status\":\"error\",\"message\":\"Не вдалося зберегти у SPIFFS\"}");
+            return;
+        }
+        if (SPIFFS.exists(DISPLAY_SPLASH_PATH)) SPIFFS.remove(DISPLAY_SPLASH_PATH);
+        Serial.printf("Splash JPEG збережено: %ux%u, %u байтів\n", jw, jh, (unsigned)sz);
+        char m[220];
+        snprintf(m, sizeof(m),
+                 "{\"status\":\"success\",\"kind\":\"jpeg\",\"w\":%u,\"h\":%u,\"bytes\":%u,"
+                 "\"message\":\"JPEG %ux%u збережено — буде видно при наступному запуску\"}",
+                 jw, jh, (unsigned)sz, jw, jh);
+        server.send(200, "application/json", m);
+        return;
+    }
+#else
+    if (kind == SPLASH_KIND_JPEG) {
+        SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Ця прошивка зібрана без підтримки JPEG "
+                    "(DISPLAY_SPLASH_JPEG). Надішліть підготовлений .bin\"}");
+        return;
+    }
+#endif
+
+    int rc = splashParse(hdr, nHdr, sz, TFT_W, TFT_H, &w, &h);
+    if (rc != SPLASH_OK) {
+        SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+        char m[220];
+        snprintf(m, sizeof(m),
+                 "{\"status\":\"error\",\"message\":\"%s (екран %dx%d)\"}",
+                 splashErrText(rc), (int)TFT_W, (int)TFT_H);
+        Serial.printf("Splash ВІДХИЛЕНО: %s (%u байтів)\n", splashErrText(rc), (unsigned)sz);
+        server.send(400, "application/json", m);
+        return;
+    }
+
+    // Аж тепер підміняємо бойовий файл — і прибираємо інший формат, щоб
+    // «поточна заставка» не залежала від порядку перевірок при показі.
+    if (SPIFFS.exists(DISPLAY_SPLASH_PATH)) SPIFFS.remove(DISPLAY_SPLASH_PATH);
+#ifdef DISPLAY_SPLASH_JPEG
+    if (SPIFFS.exists(DISPLAY_SPLASH_JPG_PATH)) SPIFFS.remove(DISPLAY_SPLASH_JPG_PATH);
+#endif
+    if (!SPIFFS.rename(DISPLAY_SPLASH_PATH ".tmp", DISPLAY_SPLASH_PATH)) {
+        SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+        server.send(500, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Не вдалося зберегти у SPIFFS\"}");
+        return;
+    }
+
+    Serial.printf("Splash збережено: %ux%u, %u байтів\n", w, h, (unsigned)sz);
+    char m[200];
+    snprintf(m, sizeof(m),
+             "{\"status\":\"success\",\"w\":%u,\"h\":%u,\"bytes\":%u,"
+             "\"message\":\"Заставку збережено — буде видно при наступному запуску\"}",
+             w, h, (unsigned)sz);
+    server.send(200, "application/json", m);
+}
+
+// Стан заставки: чи є файл, які розміри, скільки місця лишилось.
+void handleSplashInfo() {
+    uint16_t w = 0, h = 0; size_t sz = 0; int rc = SPLASH_ERR_SHORT;
+    const char *kind = "none";
+    bool present = false;
+#ifdef DISPLAY_SPLASH_JPEG
+    if (SPIFFS.exists(DISPLAY_SPLASH_JPG_PATH)) {
+        present = true; kind = "jpeg";
+        File jf = SPIFFS.open(DISPLAY_SPLASH_JPG_PATH, "r");
+        if (jf) { sz = jf.size(); jf.close(); }
+        uint16_t jw = 0, jh = 0;
+        if (TJpgDec.getFsJpgSize(&jw, &jh, DISPLAY_SPLASH_JPG_PATH, SPIFFS) == JDR_OK &&
+            splashJpegFits(jw, jh, TFT_W, TFT_H)) { w = jw; h = jh; rc = SPLASH_OK; }
+        else rc = SPLASH_ERR_MAGIC;
+    } else
+#endif
+    if (SPIFFS.exists(DISPLAY_SPLASH_PATH)) {
+        present = true; kind = "raw";
+        File f = SPIFFS.open(DISPLAY_SPLASH_PATH, "r");
+        if (f) {
+            uint8_t hdr[SPLASH_HDR_BYTES];
+            size_t n = f.read(hdr, sizeof(hdr));
+            sz = f.size();
+            rc = splashParse(hdr, n, sz, TFT_W, TFT_H, &w, &h);
+            f.close();
+        }
+    }
+    size_t total = SPIFFS.totalBytes(), used = SPIFFS.usedBytes();
+#ifdef DISPLAY_SPLASH_JPEG
+    const bool jpegOk = true;
+    const unsigned long jpgMax = (unsigned long)DISPLAY_SPLASH_JPG_MAX_BYTES;
+#else
+    const bool jpegOk = false;
+    const unsigned long jpgMax = 0;
+#endif
+    char j[420];
+    snprintf(j, sizeof(j),
+             "{\"present\":%s,\"ok\":%s,\"kind\":\"%s\",\"jpeg\":%s,"
+             "\"w\":%u,\"h\":%u,\"bytes\":%u,"
+             "\"panelW\":%d,\"panelH\":%d,\"maxBytes\":%lu,\"jpgMaxBytes\":%lu,"
+             "\"fsFree\":%lu,\"err\":\"%s\"}",
+             present ? "true" : "false",
+             rc == SPLASH_OK ? "true" : "false",
+             kind, jpegOk ? "true" : "false",
+             w, h, (unsigned)sz, (int)TFT_W, (int)TFT_H,
+             (unsigned long)DISPLAY_SPLASH_MAX_BYTES, jpgMax,
+             (unsigned long)(total > used ? total - used : 0),
+             rc == SPLASH_OK ? "" : splashErrText(rc));
+    server.send(200, "application/json", j);
+}
+
+// Прибрати завантажену заставку — повернутись до типової.
+void handleSplashDelete() {
+    bool had = SPIFFS.exists(DISPLAY_SPLASH_PATH);
+    if (had) SPIFFS.remove(DISPLAY_SPLASH_PATH);
+#ifdef DISPLAY_SPLASH_JPEG
+    if (SPIFFS.exists(DISPLAY_SPLASH_JPG_PATH)) { SPIFFS.remove(DISPLAY_SPLASH_JPG_PATH); had = true; }
+#endif
+    SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+    server.send(200, "application/json",
+                had ? "{\"status\":\"success\",\"message\":\"Заставку прибрано — буде типова\"}"
+                    : "{\"status\":\"success\",\"message\":\"Завантаженої заставки не було\"}");
+}
+#endif  // DISPLAY_SPLASH_SPIFFS
+
 // обробник запиту /upload2438 (fn): надсилає відповідь після приймання файлу.
 void handleUploadDone2438() {
     if (SPIFFS.exists("/upload2438.bin")) {
@@ -1324,6 +1571,32 @@ const char *chargeStart(uint8_t targetPct) {
     if (targetMv > CHARGE_TARGET_MV) targetMv = CHARGE_TARGET_MV;
     uint16_t hardMaxMv = (uint16_t)(targetMv + CHARGE_HARD_MAX_HEADROOM_MV);
 
+    // ⚑ ENABLE — НАЙПЕРШИМ, І ЛИШЕ ПОТІМ УСЕ ІНШЕ.
+    //  Пакет IMPRES під'єднує свої клеми до зовнішнього кола не сам по собі, а
+    //  за сигналом enable. Поки він не піднятий, на клемі немає напруги
+    //  ПАКЕТА — там або нічого, або напруга нашого ж живлення через ключ. Отже
+    //  будь-який вимір, зроблений до enable, стосується не пакета, а
+    //  розімкненого кола: саме так і виходить те «9.9 В» (стеля подільника),
+    //  через яке заряд оголошував хибну перенапругу.
+    //
+    //  Раніше enable піднімався в самому КІНЦІ chargeStart() — уже після того,
+    //  як зміряно напругу, струм і температуру, і навіть після chargeSetDuty(),
+    //  тобто струм подавався РАНІШЕ за під'єднання пакета. Коментар поруч при
+    //  цьому стверджував «ще ДО подачі струму»; насправді порядок був
+    //  зворотний.
+    //
+    //  CHARGE_ENABLE_LEAD_MS — пауза на те, щоб пакет справді замкнув клеми й
+    //  напруга встоялась. Без неї перший же вимір потрапляв би у перехідний
+    //  процес.
+    battery.holdEnable(true);
+    delay(CHARGE_ENABLE_LEAD_MS);
+
+    //  Далі — усе, що може відмовити. Тіло винесене в лямбду НЕ для краси: у
+    //  нього сім різних виходів «не можна почати», і при кожному enable треба
+    //  зняти назад. Сім однакових рядків перед сімома return — це шість шансів
+    //  забути один і лишити пакет під'єднаним після невдалого старту.
+    const char *startErr = [&]() -> const char * {
+
     // ⚑ ДВА РІЗНІ ДЖЕРЕЛА, КОЖНЕ ЗА СВОЇМ ПРИЗНАЧЕННЯМ.
     //  • НАПРУГА — з нашого подільника (chargePackMv). Вона й керує зупинкою за
     //    ціллю, тож мусить бути тим самим числом, яке далі щосекунди міряє
@@ -1412,7 +1685,7 @@ const char *chargeStart(uint8_t targetPct) {
     g_chg.duty  = chargeStartDuty(mv, g_chg.setMa);
     chargeSetDuty(g_chg.duty);
 
-    battery.holdEnable(true);        // enable пакета — так само, як і розряд, ще ДО подачі струму
+    // enable вже піднято на самому початку chargeStart() — до всіх вимірів.
     chargeWatchdog(true);
 
     ledSet(g_chg.lastPct >= CHARGE_LED_TAPER_PCT ? LED_CHARGE_TAPER : LED_CHARGE);
@@ -1427,6 +1700,15 @@ const char *chargeStart(uint8_t targetPct) {
                   (unsigned)CHARGE_DUTY_MAX,
                   (int)CHARGE_DUTY_MAX_PCT, chargePwmOk() ? "" : ", PWM UNAVAILABLE");
     return nullptr;
+    }();
+
+    //  Єдине місце, де знімається enable після невдалого старту. Ключ гасимо
+    //  теж: частина виходів трапляється вже після chargeOff(), частина — ні.
+    if (startErr) {
+        chargeOff();
+        battery.holdEnable(false);
+    }
+    return startErr;
 }
 
 // Викликати часто з loop(). Реальна робота — раз на CHARGE_POLL_MS.
@@ -3537,6 +3819,11 @@ void setupWebServer() {
     server.on("/api/info2438", HTTP_GET, handleDumpInfo2438);
     server.on("/api/write2438", HTTP_POST, handleWriteDump2438);
     server.on("/upload2438", HTTP_POST, handleUploadDone2438, handleUploadDump2438);
+#ifdef DISPLAY_SPLASH_SPIFFS
+    server.on("/uploadsplash", HTTP_POST, handleUploadSplashDone, handleUploadSplash);
+    server.on("/api/splash", HTTP_GET, handleSplashInfo);        // стан заставки
+    server.on("/api/splash/delete", HTTP_POST, handleSplashDelete);
+#endif
     server.on("/api/reset", HTTP_POST, handleResetBattery);
     server.on("/api/clean", HTTP_POST, handleClean);            // очистка (крім критичних)
     server.on("/api/wipe2433", HTTP_POST, handleWipe2433);      // ПОВНЕ стирання DS2433

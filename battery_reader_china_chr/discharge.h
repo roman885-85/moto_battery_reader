@@ -43,9 +43,7 @@
 #include "settings.h"
 #include "leds.h"
 #include "impres_format.h"
-#if defined(ARDUINO_ARCH_ESP32) && !defined(DISCHARGE_NO_WDT)
-  #include <esp_task_wdt.h>
-#endif
+#include "wdt.h"           // спільний із зарядом апаратний сторож
 
 // Стан машини розряду.
 enum {
@@ -262,20 +260,13 @@ inline bool dischargeConsumeReleaseEnable() {
 //
 //  Вмикаємо його ЛИШЕ на час розряду. Постійно тримати не можна: запис DS2433,
 //  форматування SPIFFS і перше підняття Wi-Fi законно тривають довше.
+//  Сам механізм живе у wdt.h — спільно із зарядом; тут лишився лише поріг.
+//  ⚑ І там же описано, чому цей сторож САМ перезавантажував пристрій під час
+//  розряду: він стежив за бездіяльною задачею ядра 1, якій цикл Arduino не
+//  віддавав процесор ніколи.
 inline void dischargeWatchdog(bool on) {
-#if defined(ARDUINO_ARCH_ESP32) && !defined(DISCHARGE_NO_WDT)
-    if (on) {
-  #if ESP_ARDUINO_VERSION_MAJOR >= 3
-        esp_task_wdt_config_t cfg = { DISCHARGE_WDT_SEC * 1000U, (uint32_t)(1 << portNUM_PROCESSORS) - 1, true };
-        esp_task_wdt_init(&cfg);
-  #else
-        esp_task_wdt_init(DISCHARGE_WDT_SEC, true);
-  #endif
-        esp_task_wdt_add(NULL);
-    } else {
-        esp_task_wdt_delete(NULL);
-        esp_task_wdt_deinit();
-    }
+#if !defined(DISCHARGE_NO_WDT)
+    wdtGuard(on, DISCHARGE_WDT_SEC);
 #else
     (void)on;
 #endif
@@ -284,8 +275,8 @@ inline void dischargeWatchdog(bool on) {
 // Погодувати сторожа. Викликається з опитування і з пауз очікування — тобто
 // звідусіль, де цикл ще живий.
 inline void dischargeWatchdogFeed() {
-#if defined(ARDUINO_ARCH_ESP32) && !defined(DISCHARGE_NO_WDT)
-    if (g_dis.state == DIS_RUN) esp_task_wdt_reset();
+#if !defined(DISCHARGE_NO_WDT)
+    if (g_dis.state == DIS_RUN) wdtFeed();
 #endif
 }
 

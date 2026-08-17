@@ -1514,8 +1514,13 @@ inline void chargeTask() {
     bool tempRead = (g_chg.polls % CHARGE_TEMP_EVERY_N) == 0;
     int16_t t = g_chg.lastTempC10;
     if (tempRead) {
-        uint16_t dummy; int16_t maChip = 0;
-        if (!dischargeSample(&dummy, &maChip, &t)) {
+        // ⚑ Напругу з монітора БІЛЬШЕ НЕ ВИКИДАЄМО. Раніше вона йшла в змінну
+        //  на ім'я dummy — а це був єдиний у прошивці незалежний вимір напруги
+        //  пакета, зроблений ІЗСЕРЕДИНИ пакета. Саме його бракувало, щоб
+        //  розрізнити «банки перезаряджені» й «на клемі живлення, бо пакета
+        //  немає»: зовнішній подільник у другому випадку бреше, а чип — ні.
+        uint16_t chipMv = 0; int16_t maChip = 0;
+        if (!dischargeSample(&chipMv, &maChip, &t)) {
             chargeSetDuty(saveDuty);            // ключ назад, перш ніж вирішувати долю
             if (++g_chg.readFails >= CHARGE_MAX_READ_FAILS) {
                 chargeStop(CHGR_NOREAD);
@@ -1524,6 +1529,7 @@ inline void chargeTask() {
             return;
         }
         g_chg.readFails = 0;
+        g_chg.chipMv  = chipMv;
         g_chg.lastCca = impresCca(batteryDump2438);
         g_chg.lastIca = batteryDump2438[12];
     }
@@ -1565,9 +1571,12 @@ inline void chargeTask() {
     g_chg.peakMa = peakMa;
     g_chg.lastTempC10 = t;           // з останнього читання монітора (див. крок 2б)
 
-    Serial.printf("charge: %u mV (%d%%), %d mA (пік %u, set %u, duty %u/%u = %u%%), "
+    // «чип N mV» — напруга з DS2438 усередині пакета. Друкуємо поруч із
+    // виміром на клемі САМЕ для звірки: поки числа поряд, коло ціле; коли
+    // клема пішла в стелю, а чип лишився на 8 В — пакета в колі немає.
+    Serial.printf("charge: %u mV (чип %u mV) (%d%%), %d mA (пік %u, set %u, duty %u/%u = %u%%), "
                   "%.1f W, %.1f C%s, %lu mAh (CCA %lu), ICA %u, %lus\n",
-                  mv, pct, g_chg.lastMa, g_chg.peakMa, g_chg.setMa,
+                  mv, g_chg.chipMv, pct, g_chg.lastMa, g_chg.peakMa, g_chg.setMa,
                   g_chg.duty, (unsigned)CHARGE_DUTY_FULL, chargeDutyPct(),
                   chargeWattsX10(mv, g_chg.lastMa) / 10.0f, t / 10.0f,
                   tempRead ? "" : "~",
@@ -1576,9 +1585,31 @@ inline void chargeTask() {
     chargeMarkDirty(1);
     ledSet(pct >= CHARGE_LED_TAPER_PCT ? LED_CHARGE_TAPER : LED_CHARGE);
 
+    // ⚑ «ПАКЕТ ВІД'ЄДНАНО» ПЕРЕВІРЯЄМО ПЕРШИМ — ДО ПЕРЕНАПРУГИ.
+    //  Порядок тут вирішує, що побачить користувач. Показання, що вперлось у
+    //  стелю АЦП, формально «вище аварійної межі», тож стара послідовність
+    //  віддавала цей випадок перенапрузі — і на екрані з'являлось «напруга
+    //  9.9 В, аварійна зупинка, перенапруга». Обидві половини повідомлення
+    //  були неправдою: 9.9 В — це підпис відліку 4095 (див. chargeSenseSaturated()
+    //  у charge.h), а перенапруги не було взагалі. Правильний діагноз —
+    //  на клемі стоїть живлення, тобто пакета в колі немає.
+    if (chargeNoPackTrip(mv, &g_chg.noPackPolls)) {
+        chargeStop(CHGR_NOPACK);
+        ledSet(LED_FAULT);
+        Serial.printf("=== Charge ABORT: на клемі %u мВ — це стеля подільника (%d мВ), "
+                      "а не напруга пакета. Пакета в колі немає: перевірте контакт клем, "
+                      "резистор 4.7 кОм між enable (GPIO%d) і +3.3 В, і чи не від'єднався "
+                      "пакет власним захистом. Монітор DS2438 показував %u мВ ===\n",
+                      mv, (int)CHARGE_VSENSE_SAT_MV, (int)PULLUP_PIN, g_chg.chipMv);
+        return;
+    }
+
     if (mv >= (uint32_t)g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV) {
         chargeStop(CHGR_HARD_MAX);
-        Serial.println("=== Charge ABORT: above hard maximum ===");
+        Serial.printf("=== Charge ABORT: above hard maximum (%u мВ >= %u мВ; "
+                      "монітор DS2438 %u мВ) ===\n",
+                      mv, (unsigned)(g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV),
+                      g_chg.chipMv);
     } else if (t >= CHARGE_MAX_TEMP_C * 10) {
         chargeStop(CHGR_TEMP);
         Serial.println("=== Charge ABORT: overheat ===");

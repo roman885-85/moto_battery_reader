@@ -873,6 +873,20 @@ int main() {
         check(!pmTraceValid(t, PM_RST_POWERON),
               "після подачі живлення RTC не зберігся — показувати нічого");
 
+        // ⚑ ЕТАП УСЕРЕДИНІ ОПИТУВАННЯ. Причина скидання й обставини звужують
+        //  пошук до «паніка під час заряду», але не кажуть, У ЯКОМУ місці.
+        //  Реальний випадок: паніка на 10-му опитуванні — а CHARGE_TEMP_EVERY_N
+        //  саме 10, тобто рівно там уперше йде читання DS2438. Позначка етапу
+        //  робить такий висновок не арифметикою постфактум, а рядком у журналі.
+        check(CHARGE_TEMP_EVERY_N == 10,
+              "читання DS2438 під час заряду йде кожні 10 опитувань");
+        for (uint8_t st = PM_STEP_NONE; st <= PM_STEP_LOAD; st++)
+            if (pmStepName(st)[0] == '\0') bad("порожня назва етапу");
+        check(strcmp(pmStepName(PM_STEP_DS2438), "читання DS2438 по 1-Wire") == 0,
+              "найпідозріліший етап названо однозначно");
+        check(strcmp(pmStepName(PM_STEP_NONE), pmStepName(PM_STEP_DS2438)) != 0,
+              "етапи розрізняються, а не зливаються в один текст");
+
         check(strcmp(pmModeName(PM_MODE_CHARGE), "ЗАРЯД") == 0 &&
               strcmp(pmModeName(PM_MODE_DISCHARGE), "РОЗРЯД") == 0,
               "режими названо по-людськи");
@@ -897,6 +911,16 @@ int main() {
                                              "запас стека видно в журналі, а не лише при падінні");
     check(fileCalls("web_server.h", "pmStack") && fileCalls("web_server.h", "pmHeap"),
                                              "обставини останнього скидання віддаються клієнтам");
+    // Позначки етапів мусять стояти в КОЖНОМУ місці опитування, інакше після
+    // паніки буде видно попередній етап, а не той, на якому впало.
+    for (const char *st : { "PM_STEP_ISENSE", "PM_STEP_VSENSE", "PM_STEP_PSU",
+                            "PM_STEP_DS2438", "PM_STEP_REGULATOR", "PM_STEP_REPORT" }) {
+        char m[96];
+        snprintf(m, sizeof(m), "етап %s позначено в опитуванні", st);
+        check(fileCalls("web_server.h", st), m);
+    }
+    check(fileCalls("motorola-battery-reader-web.ino", "pmStepName"),
+                                             "етап друкується при старті після скидання");
     // Витримка перед виміром кличеться і з заряду теж — годувати треба обидва
     // сторожі, інакше підняття CHARGE_VSENSE_SETTLE_MS дало б перезавантаження
     // саме на вимірі.

@@ -27,6 +27,10 @@ void pmNote(uint8_t mode, uint16_t polls, uint16_t duty, int16_t ma, uint16_t mv
     g_pmTrace.mv        = mv;
     g_pmTrace.mode      = mode;
 }
+
+// Позначити етап усередині опитування. Один запис у пам'ять — навмисно дешево,
+// щоб можна було ставити позначку на кожному кроці без роздумів про вартість.
+void pmStep(uint8_t step) { g_pmTrace.step = step; }
 #include "settings.h"
 #include "leds.h"
 #include "battery_reader.h"
@@ -140,9 +144,10 @@ void setup() {
     g_pmPrev   = g_pmTrace;
     g_pmPrevOk = pmTraceValid(g_pmPrev, g_pmResetReason);
     if (g_pmPrevOk) {
-        Serial.printf("ПЕРЕД СКИДАННЯМ: %s, %lu с роботи, опитування %u, "
+        Serial.printf("ПЕРЕД СКИДАННЯМ: %s, ЕТАП «%s», %lu с роботи, опитування %u, "
                       "duty %u, %d мА, %u мВ\n",
-                      pmModeName(g_pmPrev.mode), (unsigned long)(g_pmPrev.ms / 1000),
+                      pmModeName(g_pmPrev.mode), pmStepName(g_pmPrev.step),
+                      (unsigned long)(g_pmPrev.ms / 1000),
                       g_pmPrev.polls, g_pmPrev.duty, g_pmPrev.ma, g_pmPrev.mv);
         Serial.printf("ПЕРЕД СКИДАННЯМ: купа %lu Б (найбільший блок %lu Б), "
                       "запас стека loop() %lu Б\n",

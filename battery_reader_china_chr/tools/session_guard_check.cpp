@@ -545,6 +545,36 @@ int main() {
         splashParse(png, sizeof(png), goodSz, PW, PH, &w, &h);
         check(w == 0 && h == 0,              "на відмові розміри занулено");
 
+        // ── ТИП ФАЙЛА — ЗА МАГІЄЮ, А НЕ ЗА РОЗШИРЕННЯМ ─────────────────
+        //  Розширення бреше (його ставить хто завгодно), перші байти — ні.
+        uint8_t jpg[4]  = { 0xFF, 0xD8, 0xFF, 0xE0 };   // JFIF
+        uint8_t exif[4] = { 0xFF, 0xD8, 0xFF, 0xE1 };   // EXIF (з фотоапарата)
+        check(splashSniff(jpg,  4) == SPLASH_KIND_JPEG, "JFIF розпізнається як JPEG");
+        check(splashSniff(exif, 4) == SPLASH_KIND_JPEG, "EXIF-JPEG теж (саме такі дає телефон)");
+        check(splashSniff(good, 4) == SPLASH_KIND_RAW,  "наш .bin розпізнається як сирий");
+        check(splashSniff(png,  4) == SPLASH_KIND_NONE, "PNG — не наш формат і не JPEG");
+        // Два байти FF D8 трапляються й у довільних даних; вимагаємо три.
+        uint8_t half[3] = { 0xFF, 0xD8, 0x00 };
+        check(splashSniff(half, 3) == SPLASH_KIND_NONE, "FF D8 без третього FF — не JPEG");
+        check(splashSniff(jpg,  2) == SPLASH_KIND_NONE, "двох байтів для висновку замало");
+        check(splashSniff(good, 3) == SPLASH_KIND_NONE, "трьох байтів для сирого формату замало");
+
+        // JPEG теж мусить влазити в екран: декодер центрує, але не масштабує.
+        check(splashJpegFits(240, 240, PW, PH),  "JPEG рівно в екран — приймається");
+        check(splashJpegFits(120,  90, PW, PH),  "менший — теж (відцентрують)");
+        check(!splashJpegFits(320, 240, PW, PH), "ширший за екран — ні");
+        check(!splashJpegFits(240, 320, PW, PH), "вищий за екран — ні");
+        check(!splashJpegFits(0,   240, PW, PH), "нульовий розмір — ні");
+
+        // Стелі двох форматів мусять розрізнятись: сенс JPEG саме в економії.
+        printf("   стелі: сирий %lu КБ, JPEG %lu КБ\n",
+               (unsigned long)DISPLAY_SPLASH_MAX_BYTES/1024,
+               (unsigned long)DISPLAY_SPLASH_JPG_MAX_BYTES/1024);
+        check(DISPLAY_SPLASH_JPG_MAX_BYTES < DISPLAY_SPLASH_MAX_BYTES,
+                                             "стеля JPEG менша — інакше формат втрачає сенс");
+        check(DISPLAY_SPLASH_JPG_MAX_BYTES >= 49152UL,
+                                             "але достатня для повноекранного JPEG у пристойній якості");
+
         // Стеля приймальника мусить пропускати найбільшу законну картинку.
         check(splashBytesFor(DISPLAY_SPLASH_MAX_W, 320) <= DISPLAY_SPLASH_MAX_BYTES,
                                              "стеля розміру пропускає повноекранну заставку");
@@ -570,6 +600,20 @@ int main() {
     // Тимчасовий файл — щоб обірване приймання не затерло робочу заставку.
     check(fileCalls("web_server.h", "DISPLAY_SPLASH_PATH \".tmp\""),
                                              "пишемо в тимчасовий файл, а бойовий підміняємо після перевірки");
+    // JPEG: тип визначає магія, а не розширення; декодер кличеться в обох
+    // місцях (приймання й показ); при прийманні одного формату інший
+    // прибирається, інакше «поточна заставка» залежала б від порядку
+    // перевірок при показі, а не від вибору людини.
+    check(fileCalls("web_server.h", "splashSniff"),
+                                             "приймальник визначає тип за магією файла");
+    check(fileCalls("web_server.h", "TJpgDec") && fileCalls("display_color.h", "TJpgDec"),
+                                             "декодер кличеться і при прийманні, і при показі");
+    check(fileCalls("display_color.h", "splashDrawJpeg"),
+                                             "дисплей уміє малювати JPEG");
+    check(fileCalls("web_server.h", "DISPLAY_SPLASH_JPG_PATH"),
+                                             "JPEG зберігається окремим шляхом");
+    check(fileCalls("splash.h", "SPLASH_KIND_JPEG"),
+                                             "перелік типів живе у спільному splash.h");
     for (const char *c : { "index.html", "data/index.html" }) {
         char msg[96];
         snprintf(msg, sizeof(msg), "%s: уміє конвертувати картинку й надіслати", c);

@@ -537,6 +537,9 @@ inline void drawBatteryBar(int x, int y, int w, int h, int pct, uint16_t col) {
   #include <FS.h>
   #include <SPIFFS.h>
   #include "splash.h"
+  #ifdef DISPLAY_SPLASH_JPEG
+    #include <TJpg_Decoder.h>
+  #endif
 
 // Останній результат спроби — щоб пристрій міг сказати, ЧОМУ показує типову
 // заставку замість завантаженої. Мовчазна відмова тут була б найгіршим
@@ -557,6 +560,51 @@ inline uint16_t splashLastH()      { return g_splashH; }
 //
 //  ⚑ bigEndian=true — і саме тому файл зберігається старшим байтом уперед:
 //  так дані йдуть у панель без жодного перевертання (див. splash.h).
+#ifdef DISPLAY_SPLASH_JPEG
+// Куди TJpg_Decoder віддає розкодовані блоки MCU. Зсув до центру екрана
+// рахується один раз при старті декодування й лежить тут, бо сигнатура
+// callback-а фіксована й нічого свого в неї не передаси.
+static int16_t g_jpgOffX = 0, g_jpgOffY = 0;
+
+// ⚑ swapBytes(true) у splashDrawJpeg() робить порядок байтів таким самим, як
+//  у сирого формату, тож обидва шляхи виводять пікселі однаково.
+static bool splashJpegBlock(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bmp) {
+    if (y >= TFT_H) return false;                 // нижче екрана — decoder зупиниться
+    tft.drawRGBBitmap(g_jpgOffX + x, g_jpgOffY + y, bmp, w, h);
+    return true;
+}
+
+// Намалювати JPEG зі SPIFFS. Розміри перевіряємо ДО малювання: TJpgDec уміє
+// віддати їх, не декодуючи кадр.
+inline bool splashDrawJpeg() {
+    uint16_t w = 0, h = 0;
+    if (TJpgDec.getFsJpgSize(&w, &h, DISPLAY_SPLASH_JPG_PATH, SPIFFS) != JDR_OK) {
+        g_splashLast = SPLASH_ERR_MAGIC;          // не розібрався — отже не JPEG
+        return false;
+    }
+    if (!splashJpegFits(w, h, TFT_W, TFT_H)) {
+        g_splashLast = (w == 0 || h == 0) ? SPLASH_ERR_ZERO : SPLASH_ERR_TOO_BIG;
+        return false;
+    }
+    g_jpgOffX = (int16_t)((TFT_W - (int)w) / 2);
+    g_jpgOffY = (int16_t)((TFT_H - (int)h) / 2);
+    if (g_jpgOffX < 0) g_jpgOffX = 0;
+    if (g_jpgOffY < 0) g_jpgOffY = 0;
+
+    TJpgDec.setJpgScale(1);
+    TJpgDec.setSwapBytes(true);
+    TJpgDec.setCallback(splashJpegBlock);
+    if (TJpgDec.drawFsJpg(0, 0, DISPLAY_SPLASH_JPG_PATH, SPIFFS) != JDR_OK) {
+        // Кадр міг лягти наполовину — не лишаємо огризок на екрані.
+        tft.fillScreen(C_BG);
+        g_splashLast = SPLASH_ERR_SIZE;
+        return false;
+    }
+    g_splashLast = SPLASH_OK; g_splashW = w; g_splashH = h;
+    return true;
+}
+#endif  // DISPLAY_SPLASH_JPEG
+
 inline bool splashDrawFromFs() {
     g_splashLast = SPLASH_ERR_SHORT; g_splashW = g_splashH = 0;
 
@@ -564,6 +612,16 @@ inline bool splashDrawFromFs() {
     // до SPIFFS.begin(true), і відформатувати чужу файлову систему заради
     // картинки — неприпустимо. Не змонтувалось — просто типова заставка.
     if (!SPIFFS.begin(false) && !SPIFFS.exists(DISPLAY_SPLASH_PATH)) return false;
+
+    // ⚑ JPEG ПЕРШИМ. Обидва формати можуть лежати поруч, і перевага в JPEG не
+    //  довільна: він з'являється лише тоді, коли користувач щойно його
+    //  завантажив (приймальник видаляє інший формат), тож це завжди свіжіший
+    //  вибір. Не розкодувався — тихо пробуємо сирий.
+#ifdef DISPLAY_SPLASH_JPEG
+    if (SPIFFS.exists(DISPLAY_SPLASH_JPG_PATH) && splashDrawJpeg()) return true;
+#endif
+    if (!SPIFFS.exists(DISPLAY_SPLASH_PATH)) return false;
+
     File f = SPIFFS.open(DISPLAY_SPLASH_PATH, "r");
     if (!f) return false;
 

@@ -340,6 +340,8 @@ void handleUploadSplash() {
         // потім був би відхилений.
         if (up && !g_splashUpOverflow) {
             if (g_splashUpBytes + u.currentSize > (uint32_t)DISPLAY_SPLASH_MAX_BYTES) {
+                // (стеля сирого формату; для JPEG діє менша — перевіряється
+                //  після приймання, коли вже відомий тип файла)
                 g_splashUpOverflow = true;
                 up.close(); up = File();
                 SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
@@ -384,9 +386,74 @@ void handleUploadSplashDone() {
     size_t  nHdr = f ? f.read(hdr, sizeof(hdr)) : 0;
     size_t  sz   = f ? f.size() : 0;
     uint16_t w = 0, h = 0;
-    int rc = splashParse(hdr, nHdr, sz, TFT_W, TFT_H, &w, &h);
+    // ⚑ ТИП — ЗА МАГІЄЮ, а не за розширенням чи полем форми: розширення
+    //  бреше, перші байти — ні.
+    int kind = splashSniff(hdr, nHdr);
     if (f) f.close();
 
+#ifdef DISPLAY_SPLASH_JPEG
+    if (kind == SPLASH_KIND_JPEG) {
+        // Для JPEG діє власна, менша стеля: сенс формату — саме економія
+        // місця, і файл на сотні кілобайтів означає або фотографію в повній
+        // роздільності, або взагалі не те, що мали на увазі.
+        if (sz > (size_t)DISPLAY_SPLASH_JPG_MAX_BYTES) {
+            SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+            char m[180];
+            snprintf(m, sizeof(m),
+                     "{\"status\":\"error\",\"message\":\"JPEG більший за %lu КБ — стисніть сильніше\"}",
+                     (unsigned long)DISPLAY_SPLASH_JPG_MAX_BYTES / 1024UL);
+            server.send(400, "application/json", m);
+            return;
+        }
+        // Розміри питаємо в декодера, не декодуючи кадр цілком. Це ще й
+        // перевірка «а чи це справді JPEG»: магія збігтись може випадково,
+        // а розібрати заголовок сміття декодер не зможе.
+        uint16_t jw = 0, jh = 0;
+        if (TJpgDec.getFsJpgSize(&jw, &jh, DISPLAY_SPLASH_PATH ".tmp", SPIFFS) != JDR_OK) {
+            SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+            server.send(400, "application/json",
+                        "{\"status\":\"error\",\"message\":\"Файл починається як JPEG, але декодер його не розібрав\"}");
+            return;
+        }
+        if (!splashJpegFits(jw, jh, TFT_W, TFT_H)) {
+            SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+            char m[200];
+            snprintf(m, sizeof(m),
+                     "{\"status\":\"error\",\"message\":\"JPEG %ux%u не влазить в екран %dx%d — зменште зображення\"}",
+                     jw, jh, (int)TFT_W, (int)TFT_H);
+            server.send(400, "application/json", m);
+            return;
+        }
+        // Приймаємо. Інший формат прибираємо: два файли поруч означали б, що
+        // «поточна заставка» — питання порядку перевірок, а не вибору людини.
+        if (SPIFFS.exists(DISPLAY_SPLASH_JPG_PATH)) SPIFFS.remove(DISPLAY_SPLASH_JPG_PATH);
+        if (!SPIFFS.rename(DISPLAY_SPLASH_PATH ".tmp", DISPLAY_SPLASH_JPG_PATH)) {
+            SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+            server.send(500, "application/json",
+                        "{\"status\":\"error\",\"message\":\"Не вдалося зберегти у SPIFFS\"}");
+            return;
+        }
+        if (SPIFFS.exists(DISPLAY_SPLASH_PATH)) SPIFFS.remove(DISPLAY_SPLASH_PATH);
+        Serial.printf("Splash JPEG збережено: %ux%u, %u байтів\n", jw, jh, (unsigned)sz);
+        char m[220];
+        snprintf(m, sizeof(m),
+                 "{\"status\":\"success\",\"kind\":\"jpeg\",\"w\":%u,\"h\":%u,\"bytes\":%u,"
+                 "\"message\":\"JPEG %ux%u збережено — буде видно при наступному запуску\"}",
+                 jw, jh, (unsigned)sz, jw, jh);
+        server.send(200, "application/json", m);
+        return;
+    }
+#else
+    if (kind == SPLASH_KIND_JPEG) {
+        SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Ця прошивка зібрана без підтримки JPEG "
+                    "(DISPLAY_SPLASH_JPEG). Надішліть підготовлений .bin\"}");
+        return;
+    }
+#endif
+
+    int rc = splashParse(hdr, nHdr, sz, TFT_W, TFT_H, &w, &h);
     if (rc != SPLASH_OK) {
         SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
         char m[220];
@@ -398,8 +465,12 @@ void handleUploadSplashDone() {
         return;
     }
 
-    // Аж тепер підміняємо бойовий файл.
+    // Аж тепер підміняємо бойовий файл — і прибираємо інший формат, щоб
+    // «поточна заставка» не залежала від порядку перевірок при показі.
     if (SPIFFS.exists(DISPLAY_SPLASH_PATH)) SPIFFS.remove(DISPLAY_SPLASH_PATH);
+#ifdef DISPLAY_SPLASH_JPEG
+    if (SPIFFS.exists(DISPLAY_SPLASH_JPG_PATH)) SPIFFS.remove(DISPLAY_SPLASH_JPG_PATH);
+#endif
     if (!SPIFFS.rename(DISPLAY_SPLASH_PATH ".tmp", DISPLAY_SPLASH_PATH)) {
         SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
         server.send(500, "application/json",
@@ -419,7 +490,21 @@ void handleUploadSplashDone() {
 // Стан заставки: чи є файл, які розміри, скільки місця лишилось.
 void handleSplashInfo() {
     uint16_t w = 0, h = 0; size_t sz = 0; int rc = SPLASH_ERR_SHORT;
+    const char *kind = "none";
+    bool present = false;
+#ifdef DISPLAY_SPLASH_JPEG
+    if (SPIFFS.exists(DISPLAY_SPLASH_JPG_PATH)) {
+        present = true; kind = "jpeg";
+        File jf = SPIFFS.open(DISPLAY_SPLASH_JPG_PATH, "r");
+        if (jf) { sz = jf.size(); jf.close(); }
+        uint16_t jw = 0, jh = 0;
+        if (TJpgDec.getFsJpgSize(&jw, &jh, DISPLAY_SPLASH_JPG_PATH, SPIFFS) == JDR_OK &&
+            splashJpegFits(jw, jh, TFT_W, TFT_H)) { w = jw; h = jh; rc = SPLASH_OK; }
+        else rc = SPLASH_ERR_MAGIC;
+    } else
+#endif
     if (SPIFFS.exists(DISPLAY_SPLASH_PATH)) {
+        present = true; kind = "raw";
         File f = SPIFFS.open(DISPLAY_SPLASH_PATH, "r");
         if (f) {
             uint8_t hdr[SPLASH_HDR_BYTES];
@@ -430,14 +515,24 @@ void handleSplashInfo() {
         }
     }
     size_t total = SPIFFS.totalBytes(), used = SPIFFS.usedBytes();
-    char j[320];
+#ifdef DISPLAY_SPLASH_JPEG
+    const bool jpegOk = true;
+    const unsigned long jpgMax = (unsigned long)DISPLAY_SPLASH_JPG_MAX_BYTES;
+#else
+    const bool jpegOk = false;
+    const unsigned long jpgMax = 0;
+#endif
+    char j[420];
     snprintf(j, sizeof(j),
-             "{\"present\":%s,\"ok\":%s,\"w\":%u,\"h\":%u,\"bytes\":%u,"
-             "\"panelW\":%d,\"panelH\":%d,\"maxBytes\":%lu,\"fsFree\":%lu,\"err\":\"%s\"}",
-             SPIFFS.exists(DISPLAY_SPLASH_PATH) ? "true" : "false",
+             "{\"present\":%s,\"ok\":%s,\"kind\":\"%s\",\"jpeg\":%s,"
+             "\"w\":%u,\"h\":%u,\"bytes\":%u,"
+             "\"panelW\":%d,\"panelH\":%d,\"maxBytes\":%lu,\"jpgMaxBytes\":%lu,"
+             "\"fsFree\":%lu,\"err\":\"%s\"}",
+             present ? "true" : "false",
              rc == SPLASH_OK ? "true" : "false",
+             kind, jpegOk ? "true" : "false",
              w, h, (unsigned)sz, (int)TFT_W, (int)TFT_H,
-             (unsigned long)DISPLAY_SPLASH_MAX_BYTES,
+             (unsigned long)DISPLAY_SPLASH_MAX_BYTES, jpgMax,
              (unsigned long)(total > used ? total - used : 0),
              rc == SPLASH_OK ? "" : splashErrText(rc));
     server.send(200, "application/json", j);
@@ -447,6 +542,9 @@ void handleSplashInfo() {
 void handleSplashDelete() {
     bool had = SPIFFS.exists(DISPLAY_SPLASH_PATH);
     if (had) SPIFFS.remove(DISPLAY_SPLASH_PATH);
+#ifdef DISPLAY_SPLASH_JPEG
+    if (SPIFFS.exists(DISPLAY_SPLASH_JPG_PATH)) { SPIFFS.remove(DISPLAY_SPLASH_JPG_PATH); had = true; }
+#endif
     SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
     server.send(200, "application/json",
                 had ? "{\"status\":\"success\",\"message\":\"Заставку прибрано — буде типова\"}"

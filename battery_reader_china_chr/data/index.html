@@ -937,8 +937,9 @@
             <div class="note i">Картинка, яку пристрій показує при вмиканні. Раніше її треба було
                 вкомпільовувати в прошивку (<code>custom_splash.h</code>) і перепрошивати пристрій;
                 тепер вона просто лежить у файловій системі приладу, і замінити її можна звідси.
-                <b>Перетворення робить ваш браузер</b>, а не пристрій: беремо будь-який PNG/JPEG,
-                вписуємо в екран і надсилаємо готовий RGB565. Нічого встановлювати не треба.</div>
+                <b>JPEG вантажиться як є</b> — пристрій розкодує його сам, і у файловій системі
+                він займає 10…30 КБ замість 113 КБ. Будь-що інше (PNG, велике фото) браузер сам
+                впише в екран і надішле готовим RGB565. Нічого встановлювати не треба.</div>
             <div class="row"><span class="k">Екран пристрою</span><b id="spPanel">—</b></div>
             <div class="row"><span class="k">Зараз завантажено</span><b id="spNow">—</b></div>
             <div class="row"><span class="k">Вільно у файловій системі</span><b id="spFree">—</b></div>
@@ -949,6 +950,8 @@
                            style="width:44px;height:28px;border:none;background:none;cursor:pointer"></label>
                 <label style="display:flex;align-items:center;gap:6px">
                     <input type="checkbox" id="spCover" onchange="spPick()"> Заповнити з обрізанням</label>
+                <label style="display:flex;align-items:center;gap:6px" title="JPEG у файловій системі займає в рази менше; пристрій розкодує його сам">
+                    <input type="checkbox" id="spRaw" onchange="spPick()"> Завжди перетворювати в RGB565</label>
             </div>
             <div class="note" id="spHint" style="display:none"></div>
             <div style="text-align:center;margin:10px 0">
@@ -2572,17 +2575,21 @@ async function sndLoad(){
    УПЕРЕД, рядками зверху вниз. Big-endian тут не примха: саме в такому
    порядку байти йдуть у шину ST7789, тож пристрій віддає їх напряму, без
    перевертання кожного пікселя. */
-let spPanel = {w:240, h:240}, spBlob = null;
+let spPanel = {w:240, h:240}, spBlob = null, spJpegOk = false, spJpgMax = 0;
 
 async function spLoad(){
     try{
         const r = await fetch('/api/splash'); if(!r.ok) return;
         const j = await r.json();
         spPanel = {w:j.panelW||240, h:j.panelH||240};
-        document.getElementById('spPanel').textContent = spPanel.w+'×'+spPanel.h+' px';
+        spJpegOk = !!j.jpeg;
+        spJpgMax = j.jpgMaxBytes||0;
+        document.getElementById('spPanel').textContent = spPanel.w+'×'+spPanel.h+' px'+
+            (spJpegOk ? ' · приймає JPEG і .bin' : ' · лише .bin (прошивка без JPEG)');
         document.getElementById('spNow').textContent =
             !j.present ? 'типова (вбудована)' :
-            j.ok ? (j.w+'×'+j.h+', '+Math.round(j.bytes/1024)+' КБ')
+            j.ok ? (j.w+'×'+j.h+', '+Math.round(j.bytes/1024)+' КБ, '+
+                    (j.kind==='jpeg'?'JPEG':'RGB565'))
                  : ('файл є, але непридатний: '+j.err);
         document.getElementById('spFree').textContent = Math.round((j.fsFree||0)/1024)+' КБ';
     }catch(e){}
@@ -2595,6 +2602,15 @@ function spPick(){
     const hint = document.getElementById('spHint');
     spBlob = null; send.disabled = true;
     if(!f){ cv.style.display='none'; hint.style.display='none'; return; }
+
+    /* ⚑ JPEG ВІДПРАВЛЯЄМО ЯК Є, якщо прошивка вміє його розкодувати.
+       240×240 у RGB565 — це 113 КБ у файловій системі приладу, той самий кадр
+       у JPEG — 10…30 КБ. Перетворювати його тут означало б роздути файл у
+       кілька разів заради роботи, яку пристрій зробить сам. Картинку все одно
+       показуємо поруч — але це ПЕРЕГЛЯД, а не те, що поїде: пристрій
+       розкодує оригінал і відцентрує його сам. */
+    const isJpeg = /^image\/jpe?g$/i.test(f.type) || /\.jpe?g$/i.test(f.name);
+    const sendAsIs = isJpeg && spJpegOk && !document.getElementById('spRaw').checked;
 
     const img = new Image();
     img.onload = function(){
@@ -2620,9 +2636,33 @@ function spPick(){
             out[o++] = (v>>8)&255;                            // старший байт ПЕРШИМ
             out[o++] = v&255;
         }
-        spBlob = new Blob([out], {type:'application/octet-stream'});
         hint.style.display = 'block';
-        hint.textContent = 'Готово до надсилання: '+W+'×'+H+', '+
+        if(sendAsIs){
+            /* Пристрій розкодує сам — надсилаємо оригінал. Але він мусить
+               ВЛІЗТИ в екран: декодер не масштабує, а центрує. */
+            if(img.width > spPanel.w || img.height > spPanel.h){
+                spBlob = null; send.disabled = true;
+                hint.textContent = 'JPEG '+img.width+'×'+img.height+' більший за екран '+
+                    spPanel.w+'×'+spPanel.h+'. Зменште зображення — або зніміть галочку '+
+                    '«надсилати JPEG як є», і браузер впише його сам (файл буде більший).';
+                return;
+            }
+            if(spJpgMax && f.size > spJpgMax){
+                spBlob = null; send.disabled = true;
+                hint.textContent = 'JPEG важить '+Math.round(f.size/1024)+' КБ, а стеля — '+
+                    Math.round(spJpgMax/1024)+' КБ. Стисніть сильніше.';
+                return;
+            }
+            spBlob = f;
+            hint.textContent = 'Надсилаємо JPEG як є: '+img.width+'×'+img.height+', '+
+                Math.round(f.size/1024)+' КБ (у RGB565 було б '+
+                Math.round((spPanel.w*spPanel.h*2+8)/1024)+' КБ). Пристрій розкодує сам і '+
+                'відцентрує. Нова заставка з\'явиться при наступному вмиканні.';
+            send.disabled = false;
+            return;
+        }
+        spBlob = new Blob([out], {type:'application/octet-stream'});
+        hint.textContent = 'Готово до надсилання: '+W+'×'+H+' у RGB565, '+
                            Math.round(out.length/1024)+' КБ. Нова заставка з\'явиться '+
                            'при наступному вмиканні пристрою.';
         send.disabled = false;
@@ -2641,7 +2681,8 @@ async function spSend(){
     btn.disabled = true; btn.textContent = '⏳ НАДСИЛАННЯ…';
     try{
         const fd = new FormData();
-        fd.append('splash', spBlob, 'splash.bin');
+        fd.append('splash', spBlob,
+                  (spBlob.type && /jpe?g/i.test(spBlob.type)) ? 'splash.jpg' : 'splash.bin');
         const r = await fetch('/uploadsplash', {method:'POST', body:fd});
         const j = await r.json().catch(()=>({message:'невідома відповідь'}));
         alert(j.message || (r.ok ? 'Готово' : 'Помилка'));

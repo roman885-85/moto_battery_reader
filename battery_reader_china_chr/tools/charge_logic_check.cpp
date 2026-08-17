@@ -629,6 +629,105 @@ int main() {
         check(n == 1, "від'ємний струм — це голодування, а не надлишок");
     }
 
+    printf("\n16) відсічка «ПАКЕТ ВІД'ЄДНАНО»: показання вперлось у стелю АЦП\n");
+    {
+        // Скарга: «при досягненні максимального заряду — напруга 9.9 В,
+        // аварійна зупинка, перенапруга». Спершу показуємо, ЗВІДКИ 9.9 В.
+        printf("   стеля точного виміру  CHARGE_VSENSE_SAT_MV  = %d мВ\n",
+               (int)CHARGE_VSENSE_SAT_MV);
+        printf("   відлік 4095 дає       CHARGE_VSENSE_RAIL_MV = %d мВ  <-- «9.9 В» зі скарги\n",
+               (int)CHARGE_VSENSE_RAIL_MV);
+        printf("   аварійна межа         ціль+запас            = %d мВ\n",
+               (int)(CHARGE_TARGET_MV + CHARGE_HARD_MAX_HEADROOM_MV));
+
+        // Те саме число, що бачив користувач. Воно мусить виводитись із
+        // конфігурації, а не бути збігом: зміните подільник чи шкалу АЦП —
+        // рядок покаже нове число, а не збереже старе.
+        check(CHARGE_VSENSE_RAIL_MV == CHARGE_ADC_FULL_MV * 3,
+              "«9.9 В» — це відлік 4095 через подільник 20к/10к, а не напруга");
+
+        // Порядок трьох порогів. Та сама умова стоїть #error-ом у settings.h;
+        // тут вона ще й видима в звіті.
+        check(CHARGE_VSENSE_SAT_MV > CHARGE_TARGET_MV + CHARGE_HARD_MAX_HEADROOM_MV,
+              "поріг насичення ВИЩЕ аварійної межі — справжня перенапруга лишається перенапругою");
+        check(CHARGE_VSENSE_SAT_MV < CHARGE_VSENSE_RAIL_MV,
+              "поріг насичення НИЖЧЕ найбільшого можливого показання — відсічка досяжна");
+
+        // ⚑ СКВІЗНА ПЕРЕВІРКА, а не лише арифметика на константах: женемо
+        //  справжній chargePackMv() через справжній ланцюжок перерахунку і
+        //  дивимось, що він видає при відліку АЦП у стелі. Саме це число й
+        //  бачив користувач на екрані.
+        g_adcVsenseRaw = 4095;
+        uint16_t railed = chargePackMv();
+        printf("   chargePackMv() при відліку 4095 -> %u мВ\n", railed);
+        check(railed == (uint16_t)CHARGE_VSENSE_RAIL_MV,
+              "залиплий АЦП дає рівно CHARGE_VSENSE_RAIL_MV — те саме «9.9 В»");
+        check(chargeSenseSaturated(railed),
+              "і саме це показання відсічка розпізнає як «пакет від'єднано»");
+
+        // Для контрасту — повний пакет на тому ж ланцюжку: 8.25 В на клемі
+        // дають вузол 2750 мВ, тобто відлік ~3412. Відсічка мовчить.
+        g_adcVsenseRaw = CHARGE_TARGET_MV * CHARGE_VSENSE_R_BOT /
+                         (CHARGE_VSENSE_R_TOP + CHARGE_VSENSE_R_BOT) *
+                         CHARGE_ADC_MAX_RAW / CHARGE_ADC_FULL_MV;
+        uint16_t full = chargePackMv();
+        printf("   chargePackMv() на повному пакеті -> %u мВ (відлік %d)\n",
+               full, g_adcVsenseRaw);
+        check(!chargeSenseSaturated(full), "повний пакет відсічку не будить");
+        g_adcVsenseRaw = 0;
+
+        // Класифікатор.
+        check(chargeSenseSaturated(CHARGE_VSENSE_RAIL_MV),
+              "показання зі скарги — це насичення, а не напруга пакета");
+        check(chargeSenseSaturated(CHARGE_VSENSE_SAT_MV), "рівно на порозі — уже насичення");
+        check(!chargeSenseSaturated(CHARGE_VSENSE_SAT_MV - 1), "на мілівольт нижче — ще вимір");
+        check(!chargeSenseSaturated(CHARGE_TARGET_MV), "повний пакет (8.25 В) — не насичення");
+        check(!chargeSenseSaturated(CHARGE_TARGET_MV + CHARGE_HARD_MAX_HEADROOM_MV),
+              "аварійна межа — це перенапруга, а НЕ «пакет від'єднано»");
+
+        // Витримка — як у двох сусідніх відсічок.
+        uint8_t n = 0;
+        check(!chargeNoPackTrip(CHARGE_VSENSE_RAIL_MV, &n), "одного відліку в стелі замало");
+        check(chargeNoPackTrip(CHARGE_VSENSE_RAIL_MV, &n), "двох поспіль — досить");
+        check(n == CHARGE_NOPACK_POLLS, "спрацьовує рівно на CHARGE_NOPACK_POLLS");
+
+        n = 0;
+        for (int i = 0; i < 50; i++)
+            if (chargeNoPackTrip(8100, &n)) bad("штатний заряд зупинено як «пакет від'єднано»");
+        check(n == 0, "штатні 8.1 В відсічку не чіпають");
+
+        n = 0;
+        chargeNoPackTrip(CHARGE_VSENSE_RAIL_MV, &n);
+        chargeNoPackTrip(8100, &n);
+        check(n == 0, "одне нормальне показання скидає лічильник");
+
+        // І окремо — те, через що скарга виглядала саме так: у chargeTask()
+        // насичення перевіряється РАНІШЕ за перенапругу. Якби порядок був
+        // зворотний, повідомлення знову стало б «перенапруга».
+        check(chargeSenseSaturated(CHARGE_VSENSE_RAIL_MV) &&
+              CHARGE_VSENSE_RAIL_MV >= CHARGE_TARGET_MV + CHARGE_HARD_MAX_HEADROOM_MV,
+              "залипле показання підходить під ОБИДВІ умови — порядок перевірок вирішує діагноз");
+    }
+
+    printf("\n17) сторож (wdt.h): за IDLE-задачами він стежити НЕ мусить\n");
+    {
+        // Причина скарги «під час заряду або розряду пристрій періодично
+        // перезавантажується»: сторож був налаштований стежити за бездіяльними
+        // задачами обох ядер, а IDLE1 у цій прошивці не отримувала процесор
+        // ніколи — цикл Arduino не блокувався. Через 10 с (заряд) чи 30 с
+        // (розряд) прошивка падала в паніку. Маска мусить лишатись нульовою.
+        check(wdtWatchIdleMask() == 0,
+              "маска IDLE на час заряду/розряду — нульова");
+        check(WDT_WATCH_IDLE_MASK == 0u,
+              "константа маски теж нульова (її читає wdtGuard)");
+        // Найпростіша перевірка «від протилежного»: саме те значення, що
+        // стояло раніше, — 0b11 — мусить відрізнятись від нинішнього.
+        check(wdtWatchIdleMask() != 0x3u,
+              "стара маска 0b11 (обидва ядра) більше не використовується");
+        check(CHARGE_WDT_SEC > 0 && DISCHARGE_WDT_SEC > CHARGE_WDT_SEC,
+              "пороги сторожа лишились: розряд опитується рідше, тож і поріг більший");
+    }
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

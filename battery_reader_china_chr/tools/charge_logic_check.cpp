@@ -869,19 +869,23 @@ int main() {
               "аварійна межа — це перенапруга, а НЕ «пакет від'єднано»");
 
         // Витримка — як у двох сусідніх відсічок.
-        uint8_t n = 0;
-        check(!chargeNoPackTrip(CHARGE_VSENSE_RAIL_MV, &n), "одного відліку в стелі замало");
-        check(chargeNoPackTrip(CHARGE_VSENSE_RAIL_MV, &n), "двох поспіль — досить");
+        uint8_t n = 0; bool ok = false; uint16_t sat = 0;
+        chargeSatWitness(CHARGE_VSENSE_RAIL_MV, false, 0, &n, &ok, &sat);
+        check(!chargeSatTripped(n), "одного відліку в стелі замало");
+        chargeSatWitness(CHARGE_VSENSE_RAIL_MV, false, 0, &n, &ok, &sat);
+        check(chargeSatTripped(n), "двох поспіль — досить");
         check(n == CHARGE_NOPACK_POLLS, "спрацьовує рівно на CHARGE_NOPACK_POLLS");
 
-        n = 0;
-        for (int i = 0; i < 50; i++)
-            if (chargeNoPackTrip(8100, &n)) bad("штатний заряд зупинено як «пакет від'єднано»");
+        n = 0; ok = false; sat = 0;
+        for (int i = 0; i < 50; i++) {
+            chargeSatWitness(8100, false, 0, &n, &ok, &sat);
+            if (chargeSatTripped(n)) bad("штатний заряд зупинено як «пакет від'єднано»");
+        }
         check(n == 0, "штатні 8.1 В відсічку не чіпають");
 
-        n = 0;
-        chargeNoPackTrip(CHARGE_VSENSE_RAIL_MV, &n);
-        chargeNoPackTrip(8100, &n);
+        n = 0; ok = false; sat = 0;
+        chargeSatWitness(CHARGE_VSENSE_RAIL_MV, false, 0, &n, &ok, &sat);
+        chargeSatWitness(8100, false, 0, &n, &ok, &sat);
         check(n == 0, "одне нормальне показання скидає лічильник");
 
         // І окремо — те, через що скарга виглядала саме так: у chargeTask()
@@ -909,6 +913,96 @@ int main() {
               "стара маска 0b11 (обидва ядра) більше не використовується");
         check(CHARGE_WDT_SEC > 0 && DISCHARGE_WDT_SEC > CHARGE_WDT_SEC,
               "пороги сторожа лишились: розряд опитується рідше, тож і поріг більший");
+    }
+
+    printf("\n18) пакет ЗАКРИВАЄТЬСЯ САМ на своїй межі — це завершення, а не аварія\n");
+    {
+        // Скарга власника: «по досягненні 8.2 В акумулятор сам відключається
+        // від зарядки, а наш пристрій цього не розуміє й намагається заряджати;
+        // при відсутності навантаження напруга піднімається до 9.90 В, після
+        // чого спрацьовує захист по перенапрузі».
+        //
+        // Обидві половини поведінки були неправильні. 9.90 В — знову підпис
+        // відліку 4095, а не напруга. А «пакет розімкнувся» на 8.2 В — це
+        // штатне завершення заряду, і називати його аварією не можна.
+        const uint16_t tgt = CHARGE_TARGET_MV;
+
+        printf("   ціль %u мВ, допуск «повного» %d мВ, аварійна межа %u мВ\n",
+               tgt, (int)CHARGE_PACKFULL_TOL_MV,
+               (unsigned)(tgt + CHARGE_HARD_MAX_HEADROOM_MV));
+
+        // Головний випадок зі скарги: клема в стелі, монітор живий і каже 8.2 В.
+        check(chargeSatVerdict(true, 8200, tgt) == SATV_FULL,
+              "пакет закрився сам на 8.2 В — ЗАВЕРШЕНО, а не аварія");
+        // Монітор мовчить — пакета фізично немає (як і було).
+        check(chargeSatVerdict(false, 0, tgt) == SATV_GONE,
+              "монітор мовчить — пакета в колі немає");
+        check(chargeSatVerdict(false, 8200, tgt) == SATV_GONE,
+              "мовчання монітора важливіше за будь-яке старе його показання");
+        // Монітор живий, але напруга далеко не цільова — несправність пакета.
+        check(chargeSatVerdict(true, 7000, tgt) == SATV_OPEN,
+              "розімкнувся на 7.0 В — це НЕ повний пакет, а несправність");
+        // Монітор живий і бачить справжню перенапругу — уперше зсередини.
+        check(chargeSatVerdict(true, tgt + CHARGE_HARD_MAX_HEADROOM_MV, tgt) == SATV_OVER,
+              "рівно на аварійній межі за монітором — справжня перенапруга");
+        check(chargeSatVerdict(true, 9000, tgt) == SATV_OVER,
+              "9.0 В зсередини пакета — перенапруга, а не «повний»");
+
+        // Межі допуску — рівно там, де написано, без зсуву на одиницю.
+        check(chargeSatVerdict(true, tgt - CHARGE_PACKFULL_TOL_MV, tgt) == SATV_FULL,
+              "рівно на нижньому краї допуску — ще «повний»");
+        check(chargeSatVerdict(true, tgt - CHARGE_PACKFULL_TOL_MV - 1, tgt) == SATV_OPEN,
+              "на мілівольт нижче — уже «розімкнувся не за напругою»");
+        check(chargeSatVerdict(true, tgt + CHARGE_HARD_MAX_HEADROOM_MV - 1, tgt) == SATV_FULL,
+              "на мілівольт нижче аварійної межі — ще «повний»");
+
+        // ⚑ ГОЛОВНА ВЛАСТИВІСТЬ НАКОПИЧУВАЧА: одна невдала транзакція 1-Wire
+        //  посеред епізоду не сміє перетворити «повний» на «пакета немає».
+        //  Шина на цій платі читається нестабільно, і якби рішення бралось за
+        //  ОСТАННІМ проходом, власник отримував би аварію через раз.
+        uint8_t n = 0; bool ok = false; uint16_t sat = 0;
+        chargeSatWitness(CHARGE_VSENSE_RAIL_MV, true,  8200, &n, &ok, &sat);  // монітор відповів
+        chargeSatWitness(CHARGE_VSENSE_RAIL_MV, false,    0, &n, &ok, &sat);  // а тут змовчав
+        check(chargeSatTripped(n), "витримка набралась за два проходи");
+        check(ok && sat == 8200, "свідчення монітора з ПЕРШОГО проходу збереглось");
+        check(chargeSatVerdict(ok, sat, tgt) == SATV_FULL,
+              "збій 1-Wire посеред епізоду не перетворює «повний» на «пакета немає»");
+
+        // І дзеркально: якщо монітор мовчав УВЕСЬ епізод — це справді «немає».
+        n = 0; ok = false; sat = 0;
+        for (int i = 0; i < 5; i++)
+            chargeSatWitness(CHARGE_VSENSE_RAIL_MV, false, 0, &n, &ok, &sat);
+        check(chargeSatVerdict(ok, sat, tgt) == SATV_GONE,
+              "монітор мовчав увесь епізод — пакета немає");
+
+        // Вихід зі стелі стирає слід: наступний епізод починається з чистого.
+        chargeSatWitness(CHARGE_VSENSE_RAIL_MV, true, 8200, &n, &ok, &sat);
+        chargeSatWitness(8100, false, 0, &n, &ok, &sat);
+        check(n == 0 && !ok && sat == 0,
+              "клема вийшла зі стелі — лічильник і свідчення обнулено");
+
+        // «Завершено» — множина з двох, і саме тому вона питається однією
+        // функцією, а не порівнянням у кожному місці окремо.
+        check(chargeReasonIsDone(CHGR_TARGET),   "ціль за нашим виміром — завершено");
+        check(chargeReasonIsDone(CHGR_PACKFULL), "пакет закрився сам на своїй межі — теж завершено");
+        check(!chargeReasonIsDone(CHGR_PACKOPEN), "розімкнувся не за напругою — НЕ завершено");
+        check(!chargeReasonIsDone(CHGR_NOPACK),  "пакета немає — НЕ завершено");
+        check(!chargeReasonIsDone(CHGR_HARD_MAX), "перенапруга — НЕ завершено");
+        check(!chargeReasonIsDone(CHGR_USER),    "зупинка користувачем — не «завершено» саме собою");
+
+        // Тексти для двох нових результатів мусять існувати: порожній рядок на
+        // картці заряду — це рівно те, що власник побачить замість діагнозу.
+        check(chargeReasonText(CHGR_PACKFULL)[0] != '\0', "у CHGR_PACKFULL є свій текст");
+        check(chargeReasonText(CHGR_PACKOPEN)[0] != '\0', "у CHGR_PACKOPEN є свій текст");
+
+        // Вікно частого читання монітора мусить накривати весь допуск: інакше
+        // пакет закриється сам раніше, ніж ми почнемо читати монітор щосекунди.
+        check(CHARGE_CHIP_WATCH_MV >= CHARGE_PACKFULL_TOL_MV,
+              "монітор читається щосекунди вже там, де пакет має право закритись");
+        // І сам допуск не сміє дотягтись до аварійної межі — інакше «повним»
+        // оголошувався б будь-який пакет, що розімкнувся з будь-якої причини.
+        check(CHARGE_PACKFULL_TOL_MV < CHARGE_TARGET_MV - DISCHARGE_TARGET_MV,
+              "допуск «повного» вужчий за проміжок між ціллю заряду й ціллю розряду");
     }
 
     printf("\n%s (помилок: %d)\n",

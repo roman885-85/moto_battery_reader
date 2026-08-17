@@ -117,15 +117,44 @@ int main() {
         uint16_t p10 = chargeSetpointMaForPct(10,  100);
         uint16_t p50 = chargeSetpointMaForPct(50,  100);
         uint16_t p80 = chargeSetpointMaForPct(80,  100);
-        uint16_t p90 = chargeSetpointMaForPct(90,  100);
+        // Одразу ДО і одразу ПІСЛЯ порога дозаряду — межу перевіряємо саме
+        // тут, а не на круглих числах: поріг тепер константа, і тест мусить
+        // рухатись разом із нею, а не тримати зашите «95».
+        uint16_t pBefore = chargeSetpointMaForPct(CHARGE_TAPER_PCT - 1, 100);
+        uint16_t pAt     = chargeSetpointMaForPct(CHARGE_TAPER_PCT,     100);
         uint16_t p99 = chargeSetpointMaForPct(99,  100);
-        printf("   0%%=%u 10%%=%u 50%%=%u 80%%=%u 90%%=%u 99%%=%u мА\n",
-               p0, p10, p50, p80, p90, p99);
+        printf("   0%%=%u 10%%=%u 50%%=%u 80%%=%u | поріг дозаряду %d%%: до=%u на=%u | 99%%=%u мА\n",
+               p0, p10, p50, p80, (int)CHARGE_TAPER_PCT, pBefore, pAt, p99);
         check(p0 == CHARGE_MA_START, "старт із CHARGE_MA_START");
         check(p10 == CHARGE_MA_10 && p50 == CHARGE_MA_50 && p80 == CHARGE_MA_80,
                                      "точки перегину відтворюються точно");
-        check(p90 == CHARGE_MA_80,   "80..95 % — плато на CHARGE_MA_80");
-        check(p99 == CHARGE_MA_TAPER,"після 95 % — спад до CHARGE_MA_TAPER");
+        check(pBefore == CHARGE_MA_80,
+                                     "до порога дозаряду тримається плато CHARGE_MA_80");
+        check(pAt == CHARGE_MA_TAPER,
+                                     "НА порозі струм уже дозарядний — спад ступінчастий, без «майже»");
+        check(p99 == CHARGE_MA_TAPER,"і тримається таким до самої цілі");
+        // Дозаряд мусить бути справді малим — інакше він лише називається так.
+        check(CHARGE_MA_TAPER * 3 <= CHARGE_MA_80,
+                                     "дозарядний струм щонайменше втричі менший за крейсерський");
+        check(CHARGE_LED_TAPER_PCT <= CHARGE_TAPER_PCT,
+                                     "індикатор перемикається не пізніше, ніж падає струм");
+    }
+
+    printf("\n1б) ЦІЛЬ ЗАРЯДУ ЗА НАПРУГОЮ — нижче верху шкали, і це навмисно\n");
+    {
+        printf("   ціль заряду %d мВ, верх шкали паливоміра %d мВ -> наприкінці заряду покаже %d %%\n",
+               (int)CHARGE_TARGET_MV, (int)BATTERY_FULL_MV,
+               impresPercentFromMv(CHARGE_TARGET_MV));
+        check(CHARGE_TARGET_MV <= BATTERY_FULL_MV,
+              "ціль не виходить за верх шкали паливоміра");
+        check(CHARGE_TARGET_MV > DISCHARGE_TARGET_MV,
+              "ціль заряду вище цілі розряду — режими не тягнуть пакет у різні боки");
+        // ⚑ Це і є той наслідок, який легко прийняти за недозаряд: зупинка на
+        //  8.2 В на шкалі 6.35…8.25 В — це 97 %, а не 100 %. Тест фіксує число
+        //  явно, щоб воно не було несподіванкою ні для нас, ні для власника.
+        check(impresPercentFromMv(CHARGE_TARGET_MV) >= 95 &&
+              impresPercentFromMv(CHARGE_TARGET_MV) < 100,
+              "наприкінці повного заряду паливомір показує 95..99 % — це норма, а не збій");
     }
 
     printf("\n2) точки перегину МАСШТАБУЮТЬСЯ під обрану ціль\n");
@@ -332,6 +361,60 @@ int main() {
               "серії вистачає, щоб усереднення мало сенс (>=32 відліків)");
     }
 
+#if CHARGE_SW_IS_MOS
+    printf("\n9б) тепловий і струмовий бюджет ПОЛЬОВОГО ключа (%s)\n", CHARGE_SW_NAME);
+    {
+        // Польовий керується НАПРУГОЮ, тож головні числа тут зовсім інші, ніж
+        // у біполярника: не струм бази, а напруга на затворі; не Uнас × I, а
+        // I²R; не розсмоктування заряду бази, а перезаряд Qg нашим драйвером.
+        long ipeak = CHARGE_IPEAK_MA;
+        long p = CHARGE_P_COND_MW + CHARGE_P_SW_MW;
+        printf("   пік %ld мА (крейсер %d + ΔI/2 %lld), Id max %d мА\n",
+               ipeak, CHARGE_MA_80, (long long)(CHARGE_RIPPLE_MA_EST / 2),
+               (int)CHARGE_MOS_ID_MAX_MA);
+        printf("   дільник затвора %d/%d Ом -> Uзатв %d мВ, |VGS| %d мВ, наскрізний %d мкА\n",
+               (int)CHARGE_BASE_DRIVE_OHM, (int)CHARGE_BASE_PULLUP_OHM,
+               (int)CHARGE_MOS_VG_ON_MV, (int)CHARGE_MOS_VGS_ON_MV,
+               (int)CHARGE_MOS_IDIV_UA);
+        printf("   |VGS| на краях допуску: %d мВ (%d В) … %d мВ (%d В), поріг %d, межа %d\n",
+               (int)CHARGE_MOS_VGS_AT_MIN_PSU_MV, (int)CHARGE_PSU_MIN_MV / 1000,
+               (int)CHARGE_MOS_VGS_AT_MAX_PSU_MV, (int)CHARGE_PSU_MAX_MV / 1000,
+               (int)CHARGE_MOS_VGSTH_MAX_MV, (int)CHARGE_MOS_VGS_MAX_MV);
+        printf("   перемикання: вмик %ld нс + вимик %ld нс = %ld нс (%ld%% періоду)\n",
+               (long)CHARGE_MOS_TON_NS, (long)CHARGE_MOS_TOFF_NS, (long)CHARGE_MOS_TSW_NS,
+               (long)CHARGE_MOS_TSW_NS * CHARGE_PWM_FREQ / 10000000L);
+        printf("   розсіювання %ld мВт = провідні %lld (I²R) + перемикальні %lld, Pd %d\n",
+               p, (long long)CHARGE_P_COND_MW, (long long)CHARGE_P_SW_MW,
+               (int)CHARGE_MOS_PD_MW);
+
+        // Відкривання: запас над порогом мусить бути на НИЖНІЙ межі живлення —
+        // дільник живиться з тієї ж шини, тож просілий блок слабшає й керування.
+        check(CHARGE_MOS_VGS_AT_MIN_PSU_MV >= CHARGE_MOS_VGSTH_MAX_MV * 3 / 2,
+              "на просілому живленні |VGS| усе ще з запасом над порогом");
+        // Запирання: абсолютна межа затвора — на ВЕРХНІЙ межі живлення.
+        check(CHARGE_MOS_VGS_AT_MAX_PSU_MV <= CHARGE_MOS_VGS_MAX_MV * 4 / 5,
+              "на завищеному живленні затвор не пробиває");
+        // Ключ мусить бути ВІДКРИТИЙ, а не «трохи прочинений»: паспортний
+        // RDS(on) нормований при своїй напрузі затвора, і нижче неї опір
+        // більший за той, з яким рахувалися провідні втрати.
+        check(CHARGE_MOS_VGS_ON_MV >= CHARGE_MOS_RDSON_VGS_MV,
+              "|VGS| досягає точки, у якій паспорт дає RDS(on) — інакше втрати вищі за розрахункові");
+        check(ipeak <= CHARGE_MOS_ID_MAX_MA, "пік у межах Id max ключа");
+        check(p <= CHARGE_MOS_PD_MW * 4 / 5, "розсіювання в межах 80 % від Pd");
+        // Вимикання повільніше за вмикання — угору затвор тягне лише підтяжка,
+        // а вниз обидва плеча дільника. Це не дефект, це властивість схеми, і
+        // саме вимикання задає перемикальні втрати.
+        check(CHARGE_MOS_TOFF_NS > CHARGE_MOS_TON_NS,
+              "запирання повільніше за відкривання — його й обмежує підтяжка");
+        check((long)CHARGE_MOS_TSW_NS * CHARGE_PWM_FREQ <= 100000000L,
+              "перемикання займає не більше 10 % періоду ШІМ");
+        // І головна вигода заміни: у біполярника драйвер палив майже ват
+        // постійно, тут наскрізний струм дільника на порядок менший.
+        printf("   наскрізні втрати драйвера: %ld мВт (у біполярника було б %ld мВт)\n",
+               (long)CHARGE_SUPPLY_MV * CHARGE_MOS_IDIV_UA / 1000000L,
+               (long)CHARGE_SUPPLY_MV * CHARGE_BASE_DRIVE_UA / 1000000L);
+    }
+#else
     printf("\n9б) тепловий і струмовий бюджет БІПОЛЯРНОГО ключа\n");
     {
         // Біполярник керується струмом і помітно гріється — на відміну від
@@ -369,6 +452,7 @@ int main() {
         check(CHARGE_P_SW_MW > CHARGE_P_COND_MW,
               "перемикальні втрати переважають провідні — це і є ціна повільного вимикання");
     }
+#endif
 
     printf("\n9в) режим перетворювача на крейсерському струмі\n");
     {
@@ -517,6 +601,46 @@ int main() {
         setPsu(14000);
     }
 
+#if CHARGE_SW_IS_MOS
+    printf("\n13) обв'язка затвора: що дає ПЛАТА і чого вимагає розрахунок\n");
+    {
+        printf("   треба: R_drive %d Ом, база NPN %d Ом -> |VGS| %d мВ, Iб(NPN) %d мкА\n",
+               (int)CHARGE_BASE_DRIVE_OHM, (int)CHARGE_NPN_BASE_OHM,
+               (int)CHARGE_MOS_VGS_ON_MV, (int)CHARGE_NPN_IB_UA);
+        printf("   на платі: %d Ом і %d Ом -> |VGS| %d мВ, Iб(NPN) %d мкА, "
+               "наскрізний %d мкА\n",
+               (int)CHARGE_BASE_DRIVE_ASBUILT_OHM, (int)CHARGE_NPN_BASE_ASBUILT_OHM,
+               (int)CHARGE_MOS_VGS_ON_ASBUILT_MV, (int)CHARGE_ASBUILT_NPN_IB_UA,
+               (int)CHARGE_MOS_IDIV_ASBUILT_UA);
+        check(!CHARGE_HW_REWORK_DONE,
+              "плата ЩЕ НЕ доопрацьована — прапорець це визнає");
+
+        // ⚑ ГОЛОВНЕ, ЩО ЗМІНИЛА ЗАМІНА КЛЮЧА, і що варто бачити числами.
+        //  У біполярника обидві заміни були обов'язкові: 1 кОм у базі означав
+        //  ~22 мА заряду, тобто чотири доби. У польового 1 кОм дає |VGS|, якої
+        //  ВЖЕ вистачає, щоб відкрити ключ, — просто з гіршим опором каналу.
+        //  А ось 20 кОм у базі NPN лишається смертельним і тут.
+        check(CHARGE_MOS_VGS_ON_ASBUILT_MV > CHARGE_MOS_VGSTH_MAX_MV,
+              "на НИНІШНЬОМУ R_drive польовий ключ уже відкривається (біполярний — ні)");
+        check(CHARGE_MOS_VGS_ON_ASBUILT_MV < CHARGE_MOS_RDSON_VGS_MV,
+              "але не до паспортної точки RDS(on) — опір каналу буде більший за 0.18 Ом");
+        check(CHARGE_ASBUILT_NPN_IB_UA * CHARGE_NPN_HFE_FORCED < CHARGE_MOS_IDIV_ASBUILT_UA,
+              "а ось керуючий NPN при 20 кОм не пропускає навіть нинішній струм дільника");
+
+        printf("   на межах допуску: |VGS| при %d мВ = %d мВ (треба >= %d), "
+               "при %d мВ = %d мВ (межа %d)\n",
+               (int)CHARGE_PSU_MIN_MV, (int)CHARGE_MOS_VGS_AT_MIN_PSU_MV,
+               (int)(CHARGE_MOS_VGSTH_MAX_MV * 3 / 2),
+               (int)CHARGE_PSU_MAX_MV, (int)CHARGE_MOS_VGS_AT_MAX_PSU_MV,
+               (int)CHARGE_MOS_VGS_MAX_MV);
+        check(CHARGE_NPN_IB_UA >= CHARGE_MOS_IDIV_AT_MAX_PSU_UA / CHARGE_NPN_HFE_FORCED,
+              "на ВЕРХНІЙ межі живлення керуючий NPN ще насичується");
+        check(CHARGE_MOS_IDIV_AT_MAX_PSU_UA <= (long)CHARGE_NPN_IC_MAX_MA * 1000,
+              "наскрізний струм дільника у межах Ic max керуючого NPN");
+        check(CHARGE_NPN_IB_UA <= CHARGE_GPIO_UA_MAX,
+              "струм із піна ESP32 у безпечних межах і на новому номіналі");
+    }
+#else
     printf("\n13) обв'язка бази: що дає ПЛАТА і чого вимагає розрахунок\n");
     {
         // Тут перевіряється не прошивка, а ЧЕСНІСТЬ звіту про залізо: числа,
@@ -551,6 +675,7 @@ int main() {
         check(CHARGE_NPN_IB_UA <= CHARGE_GPIO_UA_MAX,
               "струм із піна ESP32 у безпечних межах і на новому номіналі");
     }
+#endif
 
     printf("\n14) відсічка за ЖИВЛЕННЯМ: рахує СТАЛИЙ стан, а не поодинокий провал\n");
     {
@@ -600,14 +725,25 @@ int main() {
             if (chargeNoDriveTrip(CHARGE_DUTY_MAX - 1, 0, 1000, &n)) bad("зупинено до виходу на стелю");
         check(n == 0, "поки є запас шпаруватості — даємо регулятору працювати");
 
-        // А ось це і є плата з нинішньою обв'язкою: стеля й ~34 мА замість 1000.
+        // А ось це і є плата з нинішньою обв'язкою. Причина недобору залежить
+        // від типу ключа, число — ні: відсічка міряє СТРУМ, а не те, чому його
+        // немає. Тому беремо характерне для кожного випадку.
+#if CHARGE_SW_IS_MOS
+        //  Польовий: керуючий NPN при 20 кОм у базі не притягує затвор,
+        //  ключ ледве прочинений. Точне число тут не обчислити (NPN у
+        //  лінійному режимі), тож беремо явно голодну сотню міліампер.
+        const int starvedMa = 100;
+#else
+        //  Біполярний: стеля насичення на нинішній обв'язці рахується точно.
+        const int starvedMa = CHARGE_ASBUILT_IC_MAX_MA;
+#endif
         n = 0;
         int polls = 0;
-        while (!chargeNoDriveTrip(CHARGE_DUTY_MAX, CHARGE_ASBUILT_IC_MAX_MA, 1000, &n)) {
+        while (!chargeNoDriveTrip(CHARGE_DUTY_MAX, starvedMa, 1000, &n)) {
             if (++polls > 100) { bad("відсічка так і не спрацювала"); break; }
         }
         printf("   плата як є (%d мА при уставці 1000): зупинка на %d-му опитуванні "
-               "(поріг %d, ~%lu с)\n", (int)CHARGE_ASBUILT_IC_MAX_MA, polls + 1,
+               "(поріг %d, ~%lu с)\n", starvedMa, polls + 1,
                (int)CHARGE_NODRIVE_POLLS,
                (unsigned long)((polls + 1) * CHARGE_POLL_MS / 1000));
         check(polls + 1 == CHARGE_NODRIVE_POLLS, "спрацьовує рівно на CHARGE_NODRIVE_POLLS");

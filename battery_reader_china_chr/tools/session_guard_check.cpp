@@ -443,6 +443,50 @@ int main() {
           fileCalls("settings.h", "CHARGE_VSENSE_RAIL_MV"),
                                              "обидва пороги виводяться з номіналів подільника");
 
+    printf("\n10) тип силового ключа — справжня опція, а не перейменований блок\n");
+    // Біполярний PNP і P-канальний MOSFET керуються різними величинами
+    // (струм бази проти напруги на затворі), тож майже кожна перевірка
+    // силової частини мусить мати ДВІ гілки. Найлегша тут помилка — додати
+    // гілку MOSFET і забути про якесь одне місце: воно тихо лишиться на
+    // біполярній арифметиці й дасть красиве неправильне число.
+    printf("   зібрано для: %s\n", CHARGE_SW_NAME);
+    check(fileCalls("settings.h", "CHARGE_SW_BJT_PNP") &&
+          fileCalls("settings.h", "CHARGE_SW_PMOS"),
+                                             "обидва варіанти оголошені");
+    check(fileCalls("settings.h", "CHARGE_SWITCH_TYPE"),
+                                             "вибір робиться однією константою");
+    // Гілка мусить бути в КОЖНОМУ файлі, де фізика розходиться.
+    check(fileCalls("settings.h", "CHARGE_SW_IS_MOS"),
+                                             "settings.h розгалужує перевірки за типом");
+    check(fileCalls("charge.h", "CHARGE_SW_IS_MOS"),
+                                             "charge.h розгалужує стартовий звіт");
+    check(fileCalls("web_server.h", "CHARGE_SW_IS_MOS"),
+                                             "web_server.h розгалужує підказку у відсічці «ключ не тягне»");
+    // Спільні перевірки мусять читати СПІЛЬНІ імена, інакше при виборі
+    // MOSFET вони мовчки рахували б паспорт біполярника.
+    check(fileCalls("settings.h", "CHARGE_SW_PD_MW") &&
+          fileCalls("settings.h", "CHARGE_SW_IMAX_MA") &&
+          fileCalls("settings.h", "CHARGE_SW_TSW_NS"),
+                                             "тепловий і струмовий бюджет рахується через спільні імена");
+    // Оцінка шпаруватості мусить брати повний опір контуру: у польового до
+    // нього входить RDS(on), у біполярного — ні.
+    check(fileCalls("charge.h", "CHARGE_LOOP_MOHM"),
+                                             "chargeStartDuty бере опір контуру, а не лише шунт із дротами");
+    // І арифметика справді різна, а не однакова під двома іменами.
+#if CHARGE_SW_IS_MOS
+    check(CHARGE_LOOP_MOHM == CHARGE_SERIES_MOHM + CHARGE_MOS_RDSON_MOHM,
+                                             "у польового RDS(on) входить в опір контуру");
+    check(CHARGE_SW_PD_MW == CHARGE_MOS_PD_MW && CHARGE_SW_IMAX_MA == CHARGE_MOS_ID_MAX_MA,
+                                             "спільні імена вказують на паспорт ПОЛЬОВОГО");
+    check(CHARGE_MOS_VGS_ON_MV > CHARGE_MOS_VGSTH_MAX_MV,
+                                             "напруга на затворі вища за поріг відкривання");
+#else
+    check(CHARGE_LOOP_MOHM == CHARGE_SERIES_MOHM,
+                                             "у біполярного опір контуру лишається без ключа");
+    check(CHARGE_SW_PD_MW == CHARGE_BJT_PC_MW && CHARGE_SW_IMAX_MA == CHARGE_BJT_IC_MAX_MA,
+                                             "спільні імена вказують на паспорт БІПОЛЯРНОГО");
+#endif
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

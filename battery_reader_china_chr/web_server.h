@@ -1826,6 +1826,17 @@ inline void chargeTask() {
     dischargeSettle(CHARGE_VSENSE_SETTLE_MS);   // той самий неблокуючий сон, що й у розряду
     uint16_t mv = chargePackMv();
 
+    // ⚑ КЛЕМА В СТЕЛІ — КЛЮЧ БІЛЬШЕ НЕ ВІДКРИВАЄМО ЦЬОГО ПРОХОДУ.
+    //  Стеля означає розімкнене коло: пакет або від'єднався, або закрив себе
+    //  сам. Гнати струм у невідомість, поки з'ясовується причина, немає жодної
+    //  потреби — навантаження там усе одно немає. Важливіше інше: регулятор,
+    //  побачивши нульовий струм, почав би ПІДНІМАТИ шпаруватість, і поки
+    //  триває витримка на з'ясування, ключ виходив би на стелю. Тому вимір
+    //  робимо, а привід до ключа лишаємо знятим — рішення ухвалить кінець
+    //  цього ж проходу.
+    bool satMv = chargeSenseSaturated(mv);
+    if (satMv) saveDuty = 0;
+
     // ── крок 2а: ЖИВЛЕННЯ — тут же, на закритому ключі ────────────────────
     //  Разом із напругою пакета й з тієї ж причини: під струмом на шині
     //  живлення є просадка від власного опору блока й проводів, і порівнювати
@@ -1855,7 +1866,19 @@ inline void chargeTask() {
     //  ж на шині, яка на цій платі читається нестабільно. Позначка стоїть ДО
     //  умови, щоб було видно навіть той прохід, де читання не виконувалось.
     pmStep(PM_STEP_DS2438);
-    bool tempRead = (g_chg.polls % CHARGE_TEMP_EVERY_N) == 0;
+    // ⚑ У КІНЦІ ЗАРЯДУ — КОЖНЕ ОПИТУВАННЯ, А НЕ РАЗ НА ДЕСЯТЬ.
+    //  Рідке читання коштувало нам саме того випадку, задля якого монітор і
+    //  потрібен. Пакет розмикає власний захист за секунди; при читанні раз на
+    //  CHARGE_TEMP_EVERY_N опитувань свідчення зсередини на цей момент могло
+    //  бути дев'ятисекундної давнини — тобто взяте ще до події. Щойно клема
+    //  підійшла на CHARGE_CHIP_WATCH_MV до цілі (або вже стоїть у стелі),
+    //  переходимо на щосекундне читання: тут воно і найточніше, і вирішальне.
+    //  Ціна — сотні мілісекунд на транзакцію — платиться лише в останні
+    //  хвилини сеансу, а не всі шість годин.
+    bool nearEnd = satMv ||
+                   ((uint32_t)mv + CHARGE_CHIP_WATCH_MV >= (uint32_t)g_chg.targetMv);
+    bool tempRead = ((g_chg.polls % CHARGE_TEMP_EVERY_N) == 0) || nearEnd;
+    bool chipFresh = false;      // монітор відповів САМЕ цього проходу
     int16_t t = g_chg.lastTempC10;
     if (tempRead) {
         // ⚑ Напругу з монітора БІЛЬШЕ НЕ ВИКИДАЄМО. Раніше вона йшла в змінну
@@ -1864,7 +1887,24 @@ inline void chargeTask() {
         //  розрізнити «банки перезаряджені» й «на клемі живлення, бо пакета
         //  немає»: зовнішній подільник у другому випадку бреше, а чип — ні.
         uint16_t chipMv = 0; int16_t maChip = 0;
-        if (!dischargeSample(&chipMv, &maChip, &t)) {
+        if (dischargeSample(&chipMv, &maChip, &t)) {
+            g_chg.readFails = 0;
+            chipFresh     = true;
+            g_chg.chipMv  = chipMv;
+            g_chg.lastCca = impresCca(batteryDump2438);
+            g_chg.lastIca = batteryDump2438[12];
+        } else if (satMv) {
+            // ⚑ ПОКИ КЛЕМА В СТЕЛІ, МОВЧАННЯ МОНІТОРА — ЦЕ СВІДЧЕННЯ, А НЕ ЗБІЙ.
+            //  Вихід звідси по CHGR_NOREAD («монітор не читається») був би
+            //  правильною відповіддю на неправильне питання. Коли клема стоїть
+            //  у стелі, ми з'ясовуємо не справність шини, а долю пакета — і
+            //  мовчання монітора тут не перешкода діагнозу, а сам діагноз:
+            //  пакета в колі немає. Тому не зупиняємось і не виходимо, а
+            //  доносимо цей факт до класифікації наприкінці проходу, де він
+            //  разом із витримкою CHARGE_NOPACK_POLLS дасть CHGR_NOPACK.
+            //  Лічильник невдач не чіпаємо: він міряє здоров'я шини, а шина
+            //  при вийнятому пакеті мовчить законно.
+        } else {
             chargeSetDuty(saveDuty);            // ключ назад, перш ніж вирішувати долю
             if (++g_chg.readFails >= CHARGE_MAX_READ_FAILS) {
                 chargeStop(CHGR_NOREAD);
@@ -1872,10 +1912,6 @@ inline void chargeTask() {
             }
             return;
         }
-        g_chg.readFails = 0;
-        g_chg.chipMv  = chipMv;
-        g_chg.lastCca = impresCca(batteryDump2438);
-        g_chg.lastIca = batteryDump2438[12];
     }
 
     // Ключ НЕГАЙНО назад у робочу шпаруватість — закритим його не лишаємо ні на
@@ -1886,11 +1922,25 @@ inline void chargeTask() {
     // ── крок 3: перерахунок уставки і шпаруватості ────────────────────────
     pmStep(PM_STEP_REGULATOR);
     int pct = impresPercentFromMv(mv);
-    g_chg.lastPct = (uint8_t)pct;
-    // Гістерезис: інакше уставка брязкає 1000 <-> 100 мА на межі (див. charge.h).
-    g_chg.setMa   = chargeSetpointMaForPctH(pct, g_chg.targetPct, &g_chg.inTaper);
-    g_chg.duty    = chargeNextDuty(g_chg.duty, (int32_t)avgMa, g_chg.setMa);
-    chargeSetDuty(g_chg.duty);
+    if (satMv) {
+        // ⚑ РЕГУЛЯТОР ПРИ РОЗІМКНЕНОМУ КОЛІ МОВЧИТЬ. Він працює за зворотним
+        //  зв'язком по струму, а струму в розімкненому колі немає й бути не
+        //  може: підняття шпаруватості нічого не виправить, зате виведе ключ
+        //  на стелю за лічені проходи. Так само не чіпаємо відсоток і уставку —
+        //  вони рахуються з напруги на клемі, а клема зараз не показує напругу
+        //  пакета, і записати 100 % за відліком 4095 означало б збрехати ще й
+        //  на екрані. Останні достовірні значення лишаються як були; долю
+        //  сеансу вирішить класифікація наприкінці цього ж проходу.
+        g_chg.duty = 0;
+        chargeSetDuty(0);
+        pct = g_chg.lastPct;
+    } else {
+        g_chg.lastPct = (uint8_t)pct;
+        // Гістерезис: інакше уставка брязкає 1000 <-> 100 мА на межі (див. charge.h).
+        g_chg.setMa   = chargeSetpointMaForPctH(pct, g_chg.targetPct, &g_chg.inTaper);
+        g_chg.duty    = chargeNextDuty(g_chg.duty, (int32_t)avgMa, g_chg.setMa);
+        chargeSetDuty(g_chg.duty);
+    }
 
     // ── «КЛЮЧ НЕ ТЯГНЕ»: стеля шпаруватості без струму ────────────────────
     //  Дзеркало пікової відсічки й з тією ж метою — врятувати силовий ключ.
@@ -1969,16 +2019,71 @@ inline void chargeTask() {
     //  були неправдою: 9.9 В — це підпис відліку 4095 (див. chargeSenseSaturated()
     //  у charge.h), а перенапруги не було взагалі. Правильний діагноз —
     //  на клемі стоїть живлення, тобто пакета в колі немає.
-    if (chargeNoPackTrip(mv, &g_chg.noPackPolls)) {
-        chargeStop(CHGR_NOPACK);
-        ledSet(LED_FAULT);
-        Serial.printf("=== Charge ABORT: на клемі %u мВ — це стеля подільника (%d мВ), "
-                      "а не напруга пакета. Пакета в колі немає: перевірте контакт клем, "
-                      "резистор 4.7 кОм між enable (GPIO%d) і +3.3 В, і чи не від'єднався "
-                      "пакет власним захистом. Монітор DS2438 показував %u мВ ===\n",
-                      mv, (int)CHARGE_VSENSE_SAT_MV, (int)PULLUP_PIN, g_chg.chipMv);
+    //
+    //  ⚑ І ВІДПОВІДЕЙ НА «КЛЕМА В СТЕЛІ» ЧОТИРИ, А НЕ ОДНА.
+    //  Спостереження власника: дійшовши до 8.2 В, пакет розмикає власний
+    //  захист — і клема йде в стелю точно так само, як від загубленого
+    //  контакту. Єдиний діагноз «пакета немає» на всі випадки перетворював
+    //  штатне завершення заряду на аварію. Розрізняє їх монітор усередині
+    //  пакета: він від силового ключа пакета не залежить (див. chargeSatVerdict()
+    //  у charge.h). Свідчення накопичуються за весь епізод, а не за останній
+    //  прохід: одна невдала транзакція 1-Wire не сміє перетворити «повний» на
+    //  «немає».
+    chargeSatWitness(mv, chipFresh, g_chg.chipMv,
+                     &g_chg.noPackPolls, &g_chg.satChipOk, &g_chg.satChipMv);
+    if (chargeSatTripped(g_chg.noPackPolls)) {
+        uint8_t v = chargeSatVerdict(g_chg.satChipOk, g_chg.satChipMv, g_chg.targetMv);
+        switch (v) {
+            case SATV_FULL:
+                chargeStop(CHGR_PACKFULL);
+                Serial.printf("=== Charge DONE: пакет закрився власним захистом на %u мВ "
+                              "(ціль %u мВ, допуск %d мВ) — заряд завершено. "
+                              "%lu mAh за %lus ===\n",
+                              g_chg.satChipMv, g_chg.targetMv, (int)CHARGE_PACKFULL_TOL_MV,
+                              (unsigned long)chargeMah(), (unsigned long)g_chg.elapsedS);
+                break;
+            case SATV_OVER:
+                chargeStop(CHGR_HARD_MAX);
+                ledSet(LED_FAULT);
+                Serial.printf("=== Charge ABORT: монітор пакета показує %u мВ — вище "
+                              "аварійної межі %u мВ. Це вимір ЗСЕРЕДИНИ пакета, "
+                              "справжня перенапруга ===\n",
+                              g_chg.satChipMv,
+                              (unsigned)(g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV));
+                break;
+            case SATV_OPEN:
+                chargeStop(CHGR_PACKOPEN);
+                ledSet(LED_FAULT);
+                Serial.printf("=== Charge ABORT: пакет розімкнув власний захист на %u мВ, "
+                              "а це на %u мВ нижче цілі %u мВ. За напругою він не повний, "
+                              "тож причина інша: розбіг банок, температура або струм. "
+                              "Пакет потребує перевірки ===\n",
+                              g_chg.satChipMv,
+                              (unsigned)(g_chg.targetMv - g_chg.satChipMv), g_chg.targetMv);
+                break;
+            default:
+                chargeStop(CHGR_NOPACK);
+                ledSet(LED_FAULT);
+                Serial.printf("=== Charge ABORT: на клемі %u мВ — це стеля подільника (%d мВ), "
+                              "а не напруга пакета, і монітор пакета мовчить. Пакета в колі "
+                              "немає: перевірте контакт клем і резистор 4.7 кОм між enable "
+                              "(GPIO%d) і +3.3 В ===\n",
+                              mv, (int)CHARGE_VSENSE_SAT_MV, (int)PULLUP_PIN);
+                break;
+        }
         return;
     }
+
+    // ⚑ ВІДЛІК У СТЕЛІ НЕ ГОДИТЬСЯ ДЛЯ ЖОДНОГО ПОРІВНЯННЯ З НАПРУГОЮ.
+    //  Саме тут ховалась причина «спрацювала перенапруга»: перевірка «пакета
+    //  немає» стоїть першою, але вона з ВИТРИМКОЮ у CHARGE_NOPACK_POLLS, а
+    //  аварійна межа спрацьовувала з ПЕРШОГО ж відліку. Тож на першому
+    //  насиченому проході керування спокійно проходило повз неї просто вниз —
+    //  і 9900 мВ, «формально вище межі», давало CHGR_HARD_MAX ще до того, як
+    //  витримка встигала набратись. Порядок перевірок цього не рятує; рятує
+    //  лише те, що насичений відлік узагалі не подається на порівняння з
+    //  напругою — він не є виміром напруги.
+    if (satMv) return;
 
     if (mv >= (uint32_t)g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV) {
         chargeStop(CHGR_HARD_MAX);
@@ -1992,6 +2097,23 @@ inline void chargeTask() {
     } else if (mv >= g_chg.targetMv) {
         chargeStop(CHGR_TARGET);
         Serial.printf("=== Charge DONE: %lu mAh in %lus ===\n",
+                      (unsigned long)chargeMah(), (unsigned long)g_chg.elapsedS);
+    } else if (chipFresh && g_chg.chipMv >= g_chg.targetMv) {
+        // ⚑ ДРУГИЙ, НЕЗАЛЕЖНИЙ КРИТЕРІЙ ЗАВЕРШЕННЯ — ЗА МОНІТОРОМ ПАКЕТА.
+        //  Перегони, які ми програвали. Пакет вимикає себе за власним виміром,
+        //  а ми зупинялись за своїм — через подільник із його похибкою і через
+        //  дроти з їхнім падінням. Досить було нам занизити на пів відсотка,
+        //  щоб пакет щоразу встигав першим, і штатне завершення заряду
+        //  приходило до нас у вигляді розімкненого кола.
+        //  Монітор міряє ті самі банки, що й захист пакета, тож ця перевірка
+        //  зупиняє заряд ДО того, як захисту буде що робити. Помилитись вона
+        //  може лише в безпечний бік: зупинити зарано, а не запізно.
+        //  chipFresh обов'язковий — g_chg.chipMv поза цією умовою може бути
+        //  показом кількох опитувань давнини (див. CHARGE_TEMP_EVERY_N).
+        chargeStop(CHGR_TARGET);
+        Serial.printf("=== Charge DONE: монітор пакета %u мВ >= ціль %u мВ "
+                      "(на клемі %u мВ). %lu mAh за %lus ===\n",
+                      g_chg.chipMv, g_chg.targetMv, mv,
                       (unsigned long)chargeMah(), (unsigned long)g_chg.elapsedS);
     }
 }

@@ -433,12 +433,17 @@ int main() {
     // перенапруга». 9.9 В — це підпис відліку 4095, а не напруга.
     check(fileCalls("charge.h", "chargeSenseSaturated"),
                                              "класифікатор насичення живе в charge.h — там, де його дістає тест");
-    check(fileCalls("charge.h", "chargeNoPackTrip"),
+    check(fileCalls("charge.h", "chargeSatTripped"),
                                              "і відсічка з витримкою поруч із двома сусідніми");
-    check(fileCalls("web_server.h", "chargeNoPackTrip"),
+    check(fileCalls("web_server.h", "chargeSatTripped"),
                                              "chargeTask() кличе саме її");
     check(fileCalls("web_server.h", "CHGR_NOPACK"),
                                              "і зупиняється з окремою причиною, а не з CHGR_HARD_MAX");
+    // ⚑ Двох майже однакових витримок із різними висновками бути не мусить:
+    //  розійшлись би, і живою лишилась би не та. chargeNoPackTrip() прибрано.
+    check(!fileCalls("charge.h", "chargeNoPackTrip") &&
+          !fileCalls("web_server.h", "chargeNoPackTrip"),
+                                             "стара однозначна відсічка прибрана, а не лишена поруч");
     // Незалежний свідок: напругу з DS2438 більше не викидаємо у dummy.
     check(fileCalls("web_server.h", "g_chg.chipMv"),
                                              "напруга з монітора пакета зберігається, а не викидається");
@@ -946,6 +951,61 @@ int main() {
     // саме на вимірі.
     check(fileCalls("web_server.h", "chargeWatchdogFeed"),
                                              "витримка перед виміром годує і сторож заряду");
+
+    printf("\n21) пакет закривається сам на 8.2 В — це завершення, а не аварія\n");
+    // Скарга власника: «по досягненні напруги 8.2 вольта, акумулятор сам
+    // відключається від зарядки, а наш пристрій цього не розуміє й намагається
+    // зарядити, а при відсутності навантаження підвищується напруга до 9.90 В,
+    // після чого спрацьовує захист по перенапрузі».
+    check(fileCalls("charge.h", "chargeSatVerdict") &&
+          fileCalls("charge.h", "chargeSatWitness"),
+                                             "класифікатор і накопичувач свідчень живуть у charge.h — там, де їх дістає тест");
+    check(fileCalls("charge.h", "CHGR_PACKFULL") &&
+          fileCalls("charge.h", "CHGR_PACKOPEN"),
+                                             "у «закрився повним» і «закрився несправним» РІЗНІ причини");
+    check(fileCalls("web_server.h", "SATV_FULL") &&
+          fileCalls("web_server.h", "SATV_OPEN") &&
+          fileCalls("web_server.h", "SATV_OVER"),
+                                             "chargeTask() розбирає всі чотири результати, а не два");
+    // ⚑ ГОЛОВНЕ. Саме тут ховалась «перенапруга»: відсічка «пакета немає» йде
+    //  першою, але вона з витримкою, а аварійна межа спрацьовувала з ПЕРШОГО
+    //  насиченого відліку — і проскакувала повз неї вниз. Порядок перевірок
+    //  цього не рятує; рятує лише те, що насичений відлік узагалі не подається
+    //  на порівняння з напругою.
+    check(fileCalls("web_server.h", "if (satMv) return;"),
+                                             "насичений відлік не доходить до жодного порівняння з напругою");
+    check(fileCalls("web_server.h", "if (satMv) saveDuty = 0;"),
+                                             "у розімкнене коло струм не женемо ані проходу");
+    // Регулятор при розімкненому колі мовчить: інакше він відповів би на
+    // нульовий струм підняттям шпаруватості й вивів ключ на стелю.
+    check(fileCalls("web_server.h", "pct = g_chg.lastPct;"),
+                                             "відсоток не переписується показанням зі стелі");
+    // Друге, незалежне завершення — за монітором усередині пакета. Без нього
+    // пакет щоразу встигав закритись першим.
+    check(fileCalls("web_server.h", "chipFresh && g_chg.chipMv >= g_chg.targetMv"),
+                                             "заряд завершується і за монітором пакета, не лише за клемою");
+    check(fileCalls("web_server.h", "bool chipFresh"),
+                                             "і тільки за СВІЖИМ показом монітора, а не за торішнім");
+    // Наприкінці заряду монітор читається щосекунди — інакше рішення бралось би
+    // за показом, зробленим ще до того, як пакет закрився.
+    check(fileCalls("web_server.h", "CHARGE_CHIP_WATCH_MV") &&
+          fileCalls("web_server.h", "nearEnd"),
+                                             "у кінці заряду монітор опитується кожен прохід");
+    // «Завершено» питається однією функцією — інакше два порівняння розійшлись
+    // би, і пакет, що закрився повним, світив би червоним при статусі «done».
+    check(fileCalls("charge.h", "chargeReasonIsDone"),
+                                             "«завершено» — множина, і питається вона в одному місці");
+    check(fileHasNo("charge.h", "(reason == CHGR_TARGET) ? CHG_DONE"),
+                                             "порівняння з одним значенням у chargeStop() більше немає");
+    check(fileHasNo("charge.h", "ledSet(reason == CHGR_TARGET"),
+                                             "і світлодіод теж не порівнює з одним значенням");
+    // Допуск і вікно спостереження — константи в settings.h під охороною
+    // #error, а не числа, вписані в логіку.
+    check(fileCalls("settings.h", "CHARGE_PACKFULL_TOL_MV") &&
+          fileCalls("settings.h", "CHARGE_CHIP_WATCH_MV"),
+                                             "обидва пороги названі в settings.h");
+    check(fileCalls("settings.h", "CHARGE_PACKFULL_TOL_MV) >= ((CHARGE_TARGET_MV"),
+                                             "і допуск «повного» стереже #error, а не добра воля");
 
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

@@ -48,6 +48,8 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>     // snprintf у btName(); під Arduino приходить транзитом,
+                        // але тримати чужий include як умову власної збірки не варто
 
 // Чи змінює команда стан пакета або пристрою. Рядок — велике латинське ім'я
 // команди, як його розбирає serialExec().
@@ -131,6 +133,18 @@ inline bool serCmdAllowed(const char *cmd, bool viaBt, bool authed) {
   #endif
   #include <BluetoothSerial.h>
   #include <esp_bt_device.h>
+  // ⚑ Версія ядра потрібна нижче для вибору сигнатури setPin(). Якщо макрос
+  //  невідомий, препроцесор мовчки вважає його нулем — і збірка на ядрі 3.x
+  //  пішла б гілкою для 2.x, тобто впала б на тій самій помилці, яку ця гілка
+  //  й покликана обійти. Та сама пастка, що вже описана у wdt.h.
+  #if defined(__has_include)
+    #if __has_include(<esp_arduino_version.h>)
+      #include <esp_arduino_version.h>
+    #endif
+  #endif
+  #if !defined(ESP_ARDUINO_VERSION_MAJOR)
+    #error "ESP_ARDUINO_VERSION_MAJOR невідомий: bt_link.h не може обрати правильну сигнатуру BluetoothSerial::setPin(). Підключіть <Arduino.h> раніше за bt_link.h."
+  #endif
 
 BluetoothSerial SerialBT;
 static bool g_btUp = false;
@@ -157,7 +171,19 @@ inline void btBegin() {
     // Простий числовий PIN (legacy pairing). Це не криптографія, а перший
     // бар'єр: без нього спарується будь-хто в радіусі дії. Другий бар'єр —
     // AUTH на командах запису (див. serCmdAllowed вище).
+    //
+    // ⚑ СИГНАТУРА setPin() РІЗНА В РІЗНИХ ЯДРАХ, і це не дрібниця — збірка
+    //  просто не проходить:
+    //    arduino-esp32 2.x:  bool setPin(const char *pin);
+    //    arduino-esp32 3.x:  bool setPin(const char *pin, uint8_t len);
+    //  Довжину беремо з самого літерала (sizeof - 1), а не пишемо числом:
+    //  інакше зміна BT_PIN тихо розійшлася б із переданою довжиною, і PIN
+    //  або обрізався б, або читався за межами рядка.
+  #if ESP_ARDUINO_VERSION_MAJOR >= 3
+    SerialBT.setPin(BT_PIN, (uint8_t)(sizeof(BT_PIN) - 1));
+  #else
     SerialBT.setPin(BT_PIN);
+  #endif
 #endif
     g_btUp = SerialBT.begin(btName());
     if (!g_btUp) {

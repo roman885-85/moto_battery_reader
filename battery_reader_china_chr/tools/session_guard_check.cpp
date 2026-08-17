@@ -742,6 +742,19 @@ int main() {
                                              "жодного BLE — інакше клієнтам знадобився б новий транспорт");
     check(fileCalls("motorola-battery-reader-web.ino", "btBegin"),
                                              "скетч піднімає Bluetooth при старті");
+    // ⚑ setPin() має РІЗНУ сигнатуру в ядрах 2.x і 3.x:
+    //     2.x: setPin(const char *pin)
+    //     3.x: setPin(const char *pin, uint8_t len)
+    // Виклик без довжини на ядрі 3.3.11 не збирається взагалі — саме на цьому
+    // впала перша збірка на залізі. Гілка мусить лишатись, і довжина мусить
+    // братися з самого літерала, а не писатись числом: інакше зміна BT_PIN
+    // тихо розійшлася б із переданою довжиною.
+    check(fileCalls("bt_link.h", "ESP_ARDUINO_VERSION_MAJOR"),
+                                             "сигнатура setPin() обирається за версією ядра");
+    check(fileCalls("bt_link.h", "sizeof(BT_PIN) - 1"),
+                                             "довжина PIN береться з літерала, а не пишеться числом");
+    check(fileHasNo("bt_link.h", "setPin(BT_PIN);\n#endif"),
+                                             "безумовного виклику setPin() з одним аргументом більше немає");
 
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

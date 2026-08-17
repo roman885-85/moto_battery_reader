@@ -125,13 +125,38 @@ inline uint32_t wdtBootIdleMask() {
 // виклику), щоб хостовий тест міг перевірити її напряму.
 inline uint32_t wdtWatchIdleMask() { return WDT_WATCH_IDLE_MASK; }
 
+#if defined(ARDUINO_ARCH_ESP32) && ESP_ARDUINO_VERSION_MAJOR >= 3
+// ── ЗАСТОСУВАТИ НАЛАШТУВАННЯ СТОРОЖА ──────────────────────────────────────
+//  ⚑ esp_task_wdt_init() ПРАЦЮЄ ЛИШЕ ОДИН РАЗ. Якщо сторож уже піднятий — а він
+//  піднятий, arduino-esp32 робить це ще до setup() (CONFIG_ESP_TASK_WDT_INIT), —
+//  він повертає ESP_ERR_INVALID_STATE і НІЧОГО НЕ МІНЯЄ. Мовчки.
+//
+//  Саме це й ловилось у журналі з пристрою:
+//      E (64046) task_wdt: esp_task_wdt_init(517): TWDT already initialized
+//  тобто ВСЯ наша настройка сторожа (і поріг, і нульова маска IDLE) не
+//  застосовувалась ЖОДНОГО разу. Помилка тим неприємніша, що виглядала як
+//  робочий код: підписка esp_task_wdt_add() далі відпрацьовувала успішно, і
+//  зовні все здавалось налаштованим.
+//
+//  Для ЗМІНИ налаштувань уже піднятого сторожа є окремий виклик —
+//  esp_task_wdt_reconfigure(). Пробуємо init (раптом сторожа й справді немає),
+//  а на ESP_ERR_INVALID_STATE переходимо на reconfigure.
+inline bool wdtApplyConfig(const esp_task_wdt_config_t *cfg) {
+    esp_err_t e = esp_task_wdt_init(cfg);
+    if (e == ESP_ERR_INVALID_STATE) e = esp_task_wdt_reconfigure(cfg);
+    if (e != ESP_OK)
+        Serial.printf("WDT: не вдалося застосувати налаштування (%d)\n", (int)e);
+    return e == ESP_OK;
+}
+#endif
+
 // Увімкнути/вимкнути сторожа на час операції. sec — поріг у секундах.
 inline void wdtGuard(bool on, uint32_t sec) {
 #if defined(ARDUINO_ARCH_ESP32)
   #if ESP_ARDUINO_VERSION_MAJOR >= 3
     if (on) {
         esp_task_wdt_config_t cfg = { sec * 1000U, wdtWatchIdleMask(), true };
-        esp_task_wdt_init(&cfg);
+        wdtApplyConfig(&cfg);
         esp_task_wdt_add(NULL);
     } else {
         esp_task_wdt_delete(NULL);
@@ -139,7 +164,7 @@ inline void wdtGuard(bool on, uint32_t sec) {
         // Повертаємо те, що було до нас, а не зносимо механізм.
         esp_task_wdt_config_t cfg = { (uint32_t)WDT_BOOT_SEC * 1000U,
                                       wdtBootIdleMask(), true };
-        esp_task_wdt_init(&cfg);
+        wdtApplyConfig(&cfg);
     #else
         esp_task_wdt_deinit();
     #endif

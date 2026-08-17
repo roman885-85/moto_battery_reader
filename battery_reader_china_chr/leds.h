@@ -61,10 +61,6 @@ inline void ledInit() {
 // (заряд/розряд/читання).
 inline LedMode ledMode() { return g_ledMode; }
 
-inline void ledWrite(bool g, bool r) {
-    digitalWrite(LED_GREEN_PIN, g ? HIGH : LOW);
-    digitalWrite(LED_RED_PIN,   r ? HIGH : LOW);
-}
 
 // --- ПЛАВНЕ дихання для розряду (помаранчеве) і заряду (зелене) ---------
 // Помаранчевий = зелений + червоний разом. Щоб яскравість наростала й спадала
@@ -107,6 +103,34 @@ static bool g_breathUp = false;                // куди йде поточна
 static bool g_breathArmed = false;             // чи запущено згасання
 static unsigned long g_breathUntil = 0;        // коли перевертати напрямок
 
+// Увімкнути/вимкнути світлодіоди «по-цифровому».
+//
+// ⚑ ПОКИ ПІНИ ПІД ШІМ — ПИШЕМО ЧЕРЕЗ ШІМ, а не digitalWrite.
+//  Раніше на кожен «не дихаючий» режим ledSet() відчіплював канали LEDC
+//  (ledcDetach), щоб можна було смикати піни звичайним digitalWrite. Це й
+//  виявилось причиною паніки під час заряду: у «дихаючих» режимах яскравість
+//  веде АПАРАТНЕ згасання ledcFade() тривалістю 1.5 с, і відчеплення каналу
+//  ПОСЕРЕД нього лишало службу згасання з обірваним контекстом — падіння
+//  LoadProhibited усередині її обробника переривання (PC у IRAM, зіпсований
+//  backtrace, EXCVADDR біля нуля).
+//
+//  Заряд був єдиним режимом, який робив це регулярно: на межі 90 % він
+//  перемикався між LED_CHARGE (дихає) і LED_CHARGE_TAPER (блимає) ЩОСЕКУНДИ.
+//  Звідси й «до впровадження заряду перезавантажень не було».
+//
+//  Тепер канали лишаються прикріпленими, а рівні 0/max через ledcWrite() дають
+//  ту саму «цифрову» поведінку. Цілий клас відмов зник разом із відчепленням.
+inline void ledWrite(bool g, bool r) {
+    uint32_t mx = (1UL << LED_BREATH_BITS) - 1;
+    if (g_ledPwmOn) {
+        ledcWrite(LED_GREEN_PIN, g ? mx : 0);
+        ledcWrite(LED_RED_PIN,   r ? mx : 0);
+    } else {
+        digitalWrite(LED_GREEN_PIN, g ? HIGH : LOW);
+        digitalWrite(LED_RED_PIN,   r ? HIGH : LOW);
+    }
+}
+
 inline void ledPwmAttach() {
     if (g_ledPwmOn) return;
     ledcAttach(LED_GREEN_PIN, LED_BREATH_FREQ, LED_BREATH_BITS);
@@ -114,16 +138,24 @@ inline void ledPwmAttach() {
     g_ledPwmOn = true;
     g_breathArmed = false;                     // згасання ще не запущено
 }
+// ⚑ ВІДЧЕПЛЕННЯ БІЛЬШЕ НЕ РОБИМО — І ЦЕ НЕ ЛІНОЩІ.
+//  Відчеплення каналу LEDC посеред апаратного згасання (ledcFade, 1.5 с) —
+//  саме те, на чому пристрій падав у паніку під час заряду. Заряд єдиний
+//  режим, який перемикався між «дихаючим» LED_CHARGE і «мигаючим»
+//  LED_CHARGE_TAPER на межі 90 %, і робив це ЩОСЕКУНДИ (див. гістерезис у
+//  charge.h) — тобто відчіпляв і чіпляв канали десятки разів поспіль.
+//
+//  Тримати канали прикріпленими нічого не коштує: рівні 0/max через
+//  ledcWrite() дають ту саму «цифрову» поведінку, що й digitalWrite, а цілий
+//  клас відмов зникає.
+//
+//  Функція лишена (її кличуть ззовні) і робить єдине безпечне: гасить обидва
+//  світлодіоди, не чіпаючи прикріплення.
 inline void ledPwmDetach() {
     if (!g_ledPwmOn) return;
-    ledcDetach(LED_GREEN_PIN);
-    ledcDetach(LED_RED_PIN);
-    pinMode(LED_GREEN_PIN, OUTPUT);
-    pinMode(LED_RED_PIN, OUTPUT);
-    digitalWrite(LED_GREEN_PIN, LOW);
-    digitalWrite(LED_RED_PIN, LOW);
-    g_ledPwmOn = false;
-    g_breathArmed = false;
+    ledcWrite(LED_GREEN_PIN, 0);
+    ledcWrite(LED_RED_PIN, 0);
+    g_breathArmed = false;      // наступний вхід у дихання почне півхвилю заново
 }
 
 // Червоний притлумлений на третину: на більшості двоколірних складок червоний

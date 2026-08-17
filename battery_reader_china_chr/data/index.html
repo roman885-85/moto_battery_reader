@@ -2638,27 +2638,55 @@ function spPick(){
         }
         hint.style.display = 'block';
         if(sendAsIs){
-            /* Пристрій розкодує сам — надсилаємо оригінал. Але він мусить
-               ВЛІЗТИ в екран: декодер не масштабує, а центрує. */
-            if(img.width > spPanel.w || img.height > spPanel.h){
-                spBlob = null; send.disabled = true;
-                hint.textContent = 'JPEG '+img.width+'×'+img.height+' більший за екран '+
-                    spPanel.w+'×'+spPanel.h+'. Зменште зображення — або зніміть галочку '+
-                    '«надсилати JPEG як є», і браузер впише його сам (файл буде більший).';
+            /* ⚑ НЕ ВІДПОВІДАЄ РОЗМІРУ — ПЕРЕКОДОВУЄМО, А НЕ ВІДМОВЛЯЄМО.
+               Картинку вище вже вписано в екран зі збереженням пропорцій
+               (той самий contain/cover), тож на полотні лежить готовий кадр
+               рівно розміру панелі. Лишається зберегти його назад у JPEG.
+
+               Чому саме тут, а не на пристрої: TJpgDec уміє зменшувати ЛИШЕ в
+               1/2/4/8 разів (властивість формату — блоки 8×8). Для 400×300 це
+               дало б 200×150, тобто «майже влізло» з зайвими полями. Браузер
+               масштабує з довільним коефіцієнтом і дає рівно 240×240.
+               Зменшення на пристрої лишається запобіжником для файлів, що
+               потрапили у SPIFFS іншим шляхом. */
+            const fits = (img.width <= spPanel.w && img.height <= spPanel.h);
+            if(fits && (!spJpgMax || f.size <= spJpgMax)){
+                spBlob = f;
+                hint.textContent = 'Надсилаємо JPEG як є: '+img.width+'×'+img.height+', '+
+                    Math.round(f.size/1024)+' КБ (у RGB565 було б '+
+                    Math.round((spPanel.w*spPanel.h*2+8)/1024)+' КБ). Пристрій розкодує сам і '+
+                    'відцентрує. Нова заставка з\'явиться при наступному вмиканні.';
+                send.disabled = false;
                 return;
             }
-            if(spJpgMax && f.size > spJpgMax){
-                spBlob = null; send.disabled = true;
-                hint.textContent = 'JPEG важить '+Math.round(f.size/1024)+' КБ, а стеля — '+
-                    Math.round(spJpgMax/1024)+' КБ. Стисніть сильніше.';
-                return;
-            }
-            spBlob = f;
-            hint.textContent = 'Надсилаємо JPEG як є: '+img.width+'×'+img.height+', '+
-                Math.round(f.size/1024)+' КБ (у RGB565 було б '+
-                Math.round((spPanel.w*spPanel.h*2+8)/1024)+' КБ). Пристрій розкодує сам і '+
-                'відцентрує. Нова заставка з\'явиться при наступному вмиканні.';
-            send.disabled = false;
+            /* Якість підбираємо згори вниз, поки не влізе у стелю: краще
+               трохи гірша картинка, ніж відмова з проханням «зменште самі». */
+            const why = !fits ? (img.width+'×'+img.height+' не збігається з екраном')
+                              : ('файл '+Math.round(f.size/1024)+' КБ понад стелю');
+            const qs = [0.92, 0.85, 0.75, 0.6, 0.45];
+            (function tryQ(i){
+                cv.toBlob(function(b){
+                    if(!b){                       /* браузер не дав JPEG — сирий формат */
+                        spBlob = new Blob([out], {type:'application/octet-stream'});
+                        hint.textContent = 'Браузер не зміг перекодувати в JPEG — '+
+                            'надсилаємо RGB565, '+Math.round(out.length/1024)+' КБ.';
+                        send.disabled = false; return;
+                    }
+                    if(spJpgMax && b.size > spJpgMax && i + 1 < qs.length){ tryQ(i + 1); return; }
+                    if(spJpgMax && b.size > spJpgMax){
+                        spBlob = new Blob([out], {type:'application/octet-stream'});
+                        hint.textContent = 'Навіть на низькій якості JPEG не влазить у стелю — '+
+                            'надсилаємо RGB565, '+Math.round(out.length/1024)+' КБ.';
+                        send.disabled = false; return;
+                    }
+                    spBlob = b;
+                    hint.textContent = why+', тому вписали в '+spPanel.w+'×'+spPanel.h+
+                        ' зі збереженням пропорцій і зберегли назад у JPEG: '+
+                        Math.round(b.size/1024)+' КБ (якість '+Math.round(qs[i]*100)+' %). '+
+                        'Нова заставка з\'явиться при наступному вмиканні.';
+                    send.disabled = false;
+                }, 'image/jpeg', qs[i]);
+            })(0);
             return;
         }
         spBlob = new Blob([out], {type:'application/octet-stream'});

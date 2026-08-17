@@ -75,12 +75,30 @@
 #include "web_server.h"   // dump-буфери, readAllChips/performReset/repairDumps,
                           // hexToBytes/fixHeaderChecksum/mirrorOk/headerChecksumOk
 
-static String g_serIn;         // накопичувач вхідного рядка
+#include "bt_link.h"      // той самий протокол по Bluetooth SPP
+
+// ── ТРАНСПОРТ ──────────────────────────────────────────────────────────────
+//  Протокол один, а каналів два: USB і Bluetooth. Обидва — Stream, тож усе,
+//  що нижче, працює через покажчик і не знає, куди саме пише.
+//
+//  ⚑ ВІДПОВІДЬ ІДЕ ТУДИ, ЗВІДКИ ПРИЙШЛА КОМАНДА. Це не дрібниця: якби sResp()
+//  завжди писав у Serial, клієнт по Bluetooth не бачив би ЖОДНОЇ відповіді, а
+//  чужі відповіді сипались би в USB-консоль. g_serOut перемикається на час
+//  виконання команди й повертається назад.
+//
+//  ⚑ І БУФЕРИ ВХОДУ ОКРЕМІ. Один спільний накопичувач означав би, що дві
+//  команди, які прийшли одночасно різними каналами, склеяться в одну — рідко,
+//  недетерміновано й дуже неприємно для пошуку.
+static Stream *g_serOut   = &Serial;   // куди відповідати ЗАРАЗ
+static bool    g_serViaBt = false;     // чи прийшла поточна команда по радіо
+
+static String g_serIn;         // накопичувач USB
+static String g_serInBt;       // накопичувач Bluetooth — окремий, див. вище
 static bool   g_serAuthed = false;  // чи авторизований клієнт (AUTH <пароль>)
 
 static void sResp(const String &json) {
-    Serial.print("#R#");
-    Serial.println(json);
+    g_serOut->print("#R#");
+    g_serOut->println(json);
 }
 
 static String serHex(const uint8_t *d, int n) {
@@ -459,6 +477,16 @@ static void serialExec(const String &line) {
     // AUTH лише звіряє пароль і виставляє прапорець для індикатора у клієнті;
     // команди запису НЕ блокуються його відсутністю — інакше без пароля запис не
     // відбувався б зовсім. Мережевий веб-інтерфейс, навпаки, вимагає пароль.
+    // ⚑ ПО РАДІО ПРАВИЛА ІНШІ. По USB перепусткою є сам кабель, тож усе
+    //  відкрито. По Bluetooth у радіусі дії опиняється будь-хто, а серед
+    //  команд є WIPE33 і WRITE33 — повне стирання пам'яті пакета. Тому читання
+    //  вільне, а зміна чогось — лише після AUTH (правило в bt_link.h, щоб його
+    //  міг перевірити хостовий тест).
+    if (!serCmdAllowed(cmd.c_str(), g_serViaBt, g_serAuthed)) {
+        sResp("{\"ok\":false,\"err\":\"по Bluetooth ця команда потребує AUTH <пароль>\",\"needAuth\":true}");
+        return;
+    }
+
     if (cmd == "AUTH") {
         g_serAuthed = (arg == ADMIN_PASSWORD);
         sResp(g_serAuthed ? "{\"ok\":true,\"authed\":true}"
@@ -710,21 +738,38 @@ static void serialExec(const String &line) {
     else if (cmd == "RECAL")    { String a = arg; a.trim(); a.toUpperCase();
                                   bool ok = performRecalPrepare(a == "DEEP");
                                   sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"read first / write failed\"}"); }
-    else if (cmd == "REBOOT")   { displayShow("ПЕРЕЗАВАНТАЖЕННЯ"); sResp("{\"ok\":true}"); Serial.flush(); delay(200); ESP.restart(); }
+    else if (cmd == "REBOOT")   { displayShow("ПЕРЕЗАВАНТАЖЕННЯ"); sResp("{\"ok\":true}");
+                                  g_serOut->flush(); Serial.flush(); delay(200); ESP.restart(); }
     else                          sResp(String("{\"ok\":false,\"err\":\"unknown cmd '") + cmd + "'\"}");
 }
 
 // Викликати в loop(): накопичує рядок і виконує команду по \n.
-inline void serialTask() {
-    while (Serial.available()) {
-        char c = (char)Serial.read();
+// Один прохід по каналу: добрати символи, і на кінці рядка виконати команду,
+// перемкнувши відповідь на ЦЕЙ канал.
+static void serialPump(Stream &io, String &buf, bool viaBt) {
+    while (io.available()) {
+        char c = (char)io.read();
         if (c == '\n' || c == '\r') {
-            if (g_serIn.length()) { serialExec(g_serIn); g_serIn = ""; }
+            if (buf.length()) {
+                Stream *prevOut = g_serOut; bool prevBt = g_serViaBt;
+                g_serOut = &io; g_serViaBt = viaBt;
+                serialExec(buf);
+                g_serOut = prevOut; g_serViaBt = prevBt;
+                buf = "";
+            }
         } else {
-            g_serIn += c;
-            if (g_serIn.length() > 4200) g_serIn = "";   // захист от переповнення
+            buf += c;
+            if (buf.length() > 4200) buf = "";   // захист от переповнення
         }
     }
+}
+
+inline void serialTask() {
+    serialPump(Serial, g_serIn, false);
+#ifdef BT_ENABLED
+    // Поки ніхто не під'єднаний, читати нема чого — і питати теж не варто.
+    if (btUp() && SerialBT.hasClient()) serialPump(SerialBT, g_serInBt, true);
+#endif
 }
 
 #endif

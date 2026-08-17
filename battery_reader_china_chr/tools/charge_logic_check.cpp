@@ -140,6 +140,53 @@ int main() {
                                      "індикатор перемикається не пізніше, ніж падає струм");
     }
 
+    printf("\n1а) ГІСТЕРЕЗИС на порозі дозаряду — уставка не брязкає\n");
+    {
+        // Реальний слід із пристрою: відсоток гуляв 89-91-90-89-90-89, і
+        // уставка стрибала 1000 <-> 100 мА ЩОСЕКУНДИ. Причина не в порозі, а в
+        // тому, що відсоток рахується з напруги, а вона на межі природно
+        // коливається на десятки мілівольт.
+        const int seq[] = { 87, 89, 91, 90, 89, 90, 89, 90, 91, 90 };
+
+        // БЕЗ гістерезису — рахуємо перемикання.
+        int flapsPlain = 0; uint16_t prev = 0;
+        for (int i = 0; i < 10; i++) {
+            uint16_t ma = chargeSetpointMaForPct(seq[i], 100);
+            if (i && ma != prev) flapsPlain++;
+            prev = ma;
+        }
+        // З гістерезисом.
+        bool taper = false; int flapsH = 0; prev = 0;
+        for (int i = 0; i < 10; i++) {
+            uint16_t ma = chargeSetpointMaForPctH(seq[i], 100, &taper);
+            if (i && ma != prev) flapsH++;
+            prev = ma;
+        }
+        printf("   послідовність 87,89,91,90,89,90,89,90,91,90 -> перемикань: "
+               "без гістерезису %d, з гістерезисом %d\n", flapsPlain, flapsH);
+        check(flapsPlain >= 4, "без гістерезису уставка справді брязкає (це і був дефект)");
+        check(flapsH == 1,     "з гістерезисом перехід рівно один — і назад не вертається");
+
+        // Вхід — на порозі; вихід — лише помітно нижче.
+        taper = false;
+        check(chargeSetpointMaForPctH(CHARGE_TAPER_PCT - 1, 100, &taper) == CHARGE_MA_80 && !taper,
+              "на піввідсотка нижче порога — ще крейсерський струм");
+        check(chargeSetpointMaForPctH(CHARGE_TAPER_PCT, 100, &taper) == CHARGE_MA_TAPER && taper,
+              "на порозі — перехід на дозаряд");
+        check(chargeSetpointMaForPctH(CHARGE_TAPER_PCT - 1, 100, &taper) == CHARGE_MA_TAPER && taper,
+              "просів на 1 % — НЕ повертаємось (це і є гістерезис)");
+        check(chargeSetpointMaForPctH(CHARGE_TAPER_PCT - CHARGE_TAPER_HYST_PCT, 100, &taper)
+                  == CHARGE_MA_TAPER && taper,
+              "рівно на межі повернення — ще тримаємось");
+        check(chargeSetpointMaForPctH(CHARGE_TAPER_PCT - CHARGE_TAPER_HYST_PCT - 1, 100, &taper)
+                  == CHARGE_MA_80 && !taper,
+              "нижче межі повернення — назад на крейсерський");
+        // Гістерезис мусить бути меншим за саму ділянку дозаряду, інакше він
+        // з'їв би її цілком.
+        check(CHARGE_TAPER_HYST_PCT > 0 && CHARGE_TAPER_HYST_PCT < 100 - CHARGE_TAPER_PCT,
+              "гістерезис вужчий за ділянку дозаряду");
+    }
+
     printf("\n1б) ЦІЛЬ ЗАРЯДУ ЗА НАПРУГОЮ — нижче верху шкали, і це навмисно\n");
     {
         printf("   ціль заряду %d мВ, верх шкали паливоміра %d мВ -> наприкінці заряду покаже %d %%\n",

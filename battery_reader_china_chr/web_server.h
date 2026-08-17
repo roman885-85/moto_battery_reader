@@ -1887,7 +1887,8 @@ inline void chargeTask() {
     pmStep(PM_STEP_REGULATOR);
     int pct = impresPercentFromMv(mv);
     g_chg.lastPct = (uint8_t)pct;
-    g_chg.setMa   = chargeSetpointMaForPct(pct, g_chg.targetPct);
+    // Гістерезис: інакше уставка брязкає 1000 <-> 100 мА на межі (див. charge.h).
+    g_chg.setMa   = chargeSetpointMaForPctH(pct, g_chg.targetPct, &g_chg.inTaper);
     g_chg.duty    = chargeNextDuty(g_chg.duty, (int32_t)avgMa, g_chg.setMa);
     chargeSetDuty(g_chg.duty);
 
@@ -1955,7 +1956,10 @@ inline void chargeTask() {
                   (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap(),
                   (unsigned long)uxTaskGetStackHighWaterMark(NULL));
     chargeMarkDirty(1);
-    ledSet(pct >= CHARGE_LED_TAPER_PCT ? LED_CHARGE_TAPER : LED_CHARGE);
+    // Індикатор — за ТИМ САМИМ станом, що й струм. Власне порівняння з порогом
+    // брязкало б разом із відсотком, і світлодіод стрибав би між двома режимами
+    // щосекунди — а кожен такий перехід ще й відчіплює/чіпляє ШІМ підсвітки.
+    ledSet(g_chg.inTaper ? LED_CHARGE_TAPER : LED_CHARGE);
 
     // ⚑ «ПАКЕТ ВІД'ЄДНАНО» ПЕРЕВІРЯЄМО ПЕРШИМ — ДО ПЕРЕНАПРУГИ.
     //  Порядок тут вирішує, що побачить користувач. Показання, що вперлось у

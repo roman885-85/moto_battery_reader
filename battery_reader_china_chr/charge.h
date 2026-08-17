@@ -457,7 +457,12 @@ inline uint16_t chargeStartDuty(uint16_t packMv, uint16_t setMa) {
         float L = CHARGE_L_UH / 1000000.0f;
         d = sqrtf(I * 2.0f * L * vp * (float)CHARGE_PWM_FREQ / ((vi - vp) * vi));
     } else {
-        d = (vp + I * (CHARGE_SERIES_MOHM / 1000.0f)) / vi;
+        // CHARGE_LOOP_MOHM, а не CHARGE_SERIES_MOHM: у польового ключа
+        // RDS(on) — це справжній послідовний опір контуру, і на 180 мОм проти
+        // 600 мОм дротів він додає до оцінки помітну третину. У біполярника
+        // падіння фіксоване (Uке_нас), опором його не подаси, тож там
+        // CHARGE_LOOP_MOHM дорівнює CHARGE_SERIES_MOHM — як і було.
+        d = (vp + I * (CHARGE_LOOP_MOHM / 1000.0f)) / vi;
     }
     if (d < 0.0f) d = 0.0f;
     uint32_t duty = (uint32_t)(d * CHARGE_DUTY_FULL);
@@ -529,14 +534,17 @@ inline uint16_t chargeSetpointMaForPct(int pct, int targetPct) {
     long bp10 = 10L * targetPct / 100;
     long bp50 = 50L * targetPct / 100;
     long bp80 = 80L * targetPct / 100;
-    long bp95 = 95L * targetPct / 100;
+    // Поріг дозаряду малим струмом. Був зашитий числом 95, тепер це
+    // CHARGE_TAPER_PCT: значення читає ще й перевірка в settings.h, а
+    // два джерела однієї величини рано чи пізно розходяться.
+    long bpTaper = (long)CHARGE_TAPER_PCT * targetPct / 100;
     // Захист від виродження на дуже малих цілях (нижче CHARGE_TARGET_PCT_MIN
     // не пускаємо взагалі, але межі рахуємо з long і на всяк випадок не ділимо
     // на нуль): кожен відрізок — щонайменше 1.
     if (bp10 < 1) bp10 = 1;
     if (bp50 <= bp10) bp50 = bp10 + 1;
     if (bp80 <= bp50) bp80 = bp50 + 1;
-    if (bp95 <= bp80) bp95 = bp80 + 1;
+    if (bpTaper <= bp80) bpTaper = bp80 + 1;
 
     if (pct == 0)     return CHARGE_MA_START;
     if (pct < bp10)   return (uint16_t)(CHARGE_MA_START +
@@ -546,8 +554,8 @@ inline uint16_t chargeSetpointMaForPct(int pct, int targetPct) {
                           (long)(CHARGE_MA_50 - CHARGE_MA_10) * (pct - bp10) / (bp50 - bp10));
     if (pct < bp80)   return (uint16_t)(CHARGE_MA_50 +
                           (long)(CHARGE_MA_80 - CHARGE_MA_50) * (pct - bp50) / (bp80 - bp50));
-    if (pct < bp95)   return CHARGE_MA_80;           // плато (див. коментар у settings.h)
-    return CHARGE_MA_TAPER;                          // останній відрізок перед ціллю — плавний спад
+    if (pct < bpTaper) return CHARGE_MA_80;          // плато (див. коментар у settings.h)
+    return CHARGE_MA_TAPER;                          // ДОЗАРЯД МАЛИМ СТРУМОМ до самої цілі
 }
 
 // ── ЦІЛЬ ЗАРЯДУ у ВІДСОТКАХ, обрана на пристрої ─────────────────────────────
@@ -657,28 +665,72 @@ inline void chargeInit() {
                   (long)((long)CHARGE_SUPPLY_MV * CHARGE_DUTY_MAX_PCT / 100));
     // Тепловий бюджет ключа — головне обмеження цієї схеми, тож друкуємо
     // числами, а не «десь у межах».
-    Serial.printf("CHARGE: ключ PNP Iб=%d мА (треба >=%d), розсіювання %ld мВт "
+#if CHARGE_SW_IS_MOS
+    //  Польовий ключ: керується напругою, тож і звітувати треба напругою на
+    //  затворі, а не струмом бази. Провідні втрати — I²R.
+    Serial.printf("CHARGE: ключ %s, RDS(on) %d мОм; дільник затвора %d/%d Ом -> "
+                  "|VGS|=%d мВ (поріг %d, паспорт RDS(on) при %d, межа %d), "
+                  "наскрізний %d мкА\n",
+                  CHARGE_SW_NAME, (int)CHARGE_MOS_RDSON_MOHM,
+                  (int)CHARGE_BASE_DRIVE_OHM, (int)CHARGE_BASE_PULLUP_OHM,
+                  (int)CHARGE_MOS_VGS_ON_MV, (int)CHARGE_MOS_VGSTH_MAX_MV,
+                  (int)CHARGE_MOS_RDSON_VGS_MV, (int)CHARGE_MOS_VGS_MAX_MV,
+                  (int)CHARGE_MOS_IDIV_UA);
+    Serial.printf("CHARGE: перемикання %ld нс (вмик %ld + вимик %ld) = %ld%% періоду; "
+                  "розсіювання %ld мВт (провід. I²R %ld + перемик. %ld) з Pd %d мВт%s\n",
+                  (long)CHARGE_MOS_TSW_NS, (long)CHARGE_MOS_TON_NS,
+                  (long)CHARGE_MOS_TOFF_NS,
+                  (long)CHARGE_MOS_TSW_NS * CHARGE_PWM_FREQ / 10000000L,
+                  (long)(CHARGE_P_COND_MW + CHARGE_P_SW_MW),
+                  (long)CHARGE_P_COND_MW, (long)CHARGE_P_SW_MW,
+                  (int)CHARGE_SW_PD_MW,
+                  (CHARGE_P_COND_MW + CHARGE_P_SW_MW) > CHARGE_SW_PD_MW / 2
+                      ? " — ПОТРІБЕН РАДІАТОР" : "");
+#else
+    Serial.printf("CHARGE: ключ %s Iб=%d мА (треба >=%d), розсіювання %ld мВт "
                   "(провід. %ld + перемик. %ld) з Pc %d мВт%s\n",
+                  CHARGE_SW_NAME,
                   (int)CHARGE_IB_MA, (int)(CHARGE_IPEAK_MA / CHARGE_BJT_HFE_FORCED),
                   (long)(CHARGE_P_COND_MW + CHARGE_P_SW_MW),
                   (long)CHARGE_P_COND_MW, (long)CHARGE_P_SW_MW,
-                  (int)CHARGE_BJT_PC_MW,
-                  (CHARGE_P_COND_MW + CHARGE_P_SW_MW) > CHARGE_BJT_PC_MW / 2
+                  (int)CHARGE_SW_PD_MW,
+                  (CHARGE_P_COND_MW + CHARGE_P_SW_MW) > CHARGE_SW_PD_MW / 2
                       ? " — ПОТРІБЕН РАДІАТОР" : "");
+#endif
     // ── ЗВІТ ПРО ОБВ'ЯЗКУ: «треба» проти «є на платі» ─────────────────────
     //  Різниця між розрахунковими й фактичними номіналами не має жити лише в
     //  коментарях: із нею прошивка технічно збереться, а ключ згорить.
 #if !CHARGE_HW_REWORK_DONE
-    Serial.printf("CHARGE: ⚠ ПЛАТА НЕ ДООПРАЦЬОВАНА — база PNP %d Ом (треба %d), "
+    Serial.printf("CHARGE: ⚠ ПЛАТА НЕ ДООПРАЦЬОВАНА — R_drive %d Ом (треба %d), "
                   "база NPN %d Ом (треба %d)\n",
                   (int)CHARGE_BASE_DRIVE_ASBUILT_OHM, (int)CHARGE_BASE_DRIVE_OHM,
                   (int)CHARGE_NPN_BASE_ASBUILT_OHM, (int)CHARGE_NPN_BASE_OHM);
+  #if CHARGE_SW_IS_MOS
+    //  ⚑ ІЗ ПОЛЬОВИМ КЛЮЧЕМ ДВІ ЗАМІНИ ПЕРЕСТАЛИ БУТИ РІВНОЗНАЧНИМИ, і мовчати
+    //  про це не можна: у біполярника обидві були смертельні, тут — лише одна.
+    //   • 20 кОм у базі NPN — СМЕРТЕЛЬНО Й ДОСІ. Керуючий каскад не пропускає
+    //     наскрізний струм дільника, затвор не притягується, ключ лишається
+    //     в лінійному режимі під повною напругою.
+    //   • 1 кОм у R_drive — уже НЕ смертельно: дільник дає |VGS|, якої досить,
+    //     щоб ключ відкрився. Але не до паспортної точки RDS(on), тож опір
+    //     каналу (а з ним і нагрів) вищий за розрахунковий.
+    Serial.printf("CHARGE: ⚠ на нинішніх номіналах |VGS|=%d мВ (треба %d для "
+                  "паспортних %d мОм), Iб(NPN)=%d мкА проти потрібних %d мкА.\n",
+                  (int)CHARGE_MOS_VGS_ON_ASBUILT_MV, (int)CHARGE_MOS_RDSON_VGS_MV,
+                  (int)CHARGE_MOS_RDSON_MOHM, (int)CHARGE_ASBUILT_NPN_IB_UA,
+                  (int)(CHARGE_MOS_IDIV_ASBUILT_UA / CHARGE_NPN_HFE_FORCED));
+    Serial.println("CHARGE: ⚠ КРИТИЧНА — база NPN 20 кОм -> 390 Ом: без неї затвор "
+                   "не притягується взагалі. Заміна R_drive на 120 Ом із польовим "
+                   "ключем БАЖАНА (менший RDS(on) і швидше перемикання), але не "
+                   "смертельна — на відміну від біполярного варіанта.");
+  #else
     Serial.printf("CHARGE: ⚠ на нинішніх номіналах Iб(NPN)=%d мкА, Iб(PNP)=%d мА -> "
                   "ключ насичується щонайбільше до ~%d мА замість %d мА. Заряд "
                   "спиниться сам (відсічка «ключ не тягне»), але СПЕРШУ "
                   "перепаяйте обидва резистори.\n",
                   (int)CHARGE_ASBUILT_NPN_IB_UA, (int)CHARGE_ASBUILT_IB_MA,
                   (int)CHARGE_ASBUILT_IC_MAX_MA, (int)CHARGE_IPEAK_MA);
+  #endif
 #endif
     // Живлення силової частини — читаємо одразу, ще до першого заряду.
 #ifdef CHARGE_PSU_PIN

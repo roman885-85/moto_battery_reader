@@ -1558,11 +1558,25 @@ inline void chargeTask() {
     if (chargeNoDriveTrip(g_chg.duty, (int32_t)avgMa, g_chg.setMa, &g_chg.lowDrivePolls)) {
         chargeStop(CHGR_NODRIVE);
         ledSet(LED_FAULT);
+        // Підказка залежить від типу ключа: у біполярного винен струм бази,
+        // у польового — напруга на затворі. Однакова порада для двох різних
+        // приладів відправила б шукати не туди.
+#if CHARGE_SW_IS_MOS
+        Serial.printf("=== Charge ABORT: стеля duty %u, а струм лише %u мА з %u мА. "
+                      "Ключ %s: перевірте напругу на затворі (дільник %d/%d Ом дає "
+                      "|VGS| %d мВ при порозі %d), базу керуючого NPN (%d Ом), "
+                      "дросель і контакти ===\n",
+                      (unsigned)CHARGE_DUTY_MAX, avgMa, g_chg.setMa, CHARGE_SW_NAME,
+                      (int)CHARGE_BASE_DRIVE_ASBUILT_OHM, (int)CHARGE_BASE_PULLUP_OHM,
+                      (int)CHARGE_MOS_VGS_ON_ASBUILT_MV, (int)CHARGE_MOS_VGSTH_MAX_MV,
+                      (int)CHARGE_NPN_BASE_ASBUILT_OHM);
+#else
         Serial.printf("=== Charge ABORT: стеля duty %u, а струм лише %u мА з %u мА. "
                       "Перевірте струм бази ключа (база PNP %d Ом, база NPN %d Ом), "
                       "дросель і контакти ===\n",
                       (unsigned)CHARGE_DUTY_MAX, avgMa, g_chg.setMa,
                       (int)CHARGE_BASE_DRIVE_ASBUILT_OHM, (int)CHARGE_NPN_BASE_ASBUILT_OHM);
+#endif
         return;
     }
 

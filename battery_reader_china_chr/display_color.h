@@ -27,6 +27,7 @@
 #include "battery_reader.h"
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — дії «Новий АКБ»
 #include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
+#include "battbar.h"      // коли шкалу батареї треба перемальовувати, а коли ні
 #include "discharge.h"    // стан керованого розряду для сторінки моніторингу
 #include "charge.h"       // стан керованого заряду для сторінки моніторингу
 
@@ -246,7 +247,6 @@ static char g_wizNext[48] = "";
 // displayAnimTick() «дихає» яскравістю всього заповнення, але НЕ чіпає рамку
 // цифр (g_pct*) — тож великий відсоток не блимає під час пульсації.
 static uint8_t g_animPhase = 0;
-static int g_animPrevX = -1;                 // (сумісність; більше не використ.)
 static int g_battX = 0, g_battY = 0, g_battW = 0, g_battH = 0;
 static int g_pctTx = 0, g_pctTy = 0, g_pctTw = 0, g_pctTh = 0;   // рамка цифр %
 
@@ -506,18 +506,51 @@ inline void drawFooterBar() {
     g_tFooter = true; tPut(EDGE, TFT_H - 8, f); g_tFooter = false;
 }
 
+// ── ШКАЛА БАТАРЕЇ: МАЛЮЄМО, ЛИШЕ ЯКЩО ЗМІНИВСЯ ГРАФІЧНИЙ РІВЕНЬ ───────────
+//  Що вже намальовано на екрані, і «покоління» екрана (міняється щоразу, коли
+//  екран чи тіло сторінки чистять повністю — інакше кеш брехав би після
+//  fillScreen: стан «той самий», а пікселів уже немає).
+static BattBarDrawn g_battDrawn;
+static uint32_t     g_screenGen = 1;
+
+// Кликати ПІСЛЯ кожного повного очищення екрана або тіла сторінки.
+inline void displayScreenCleared() { g_screenGen++; }
+
 // Іконка батареї зі шкалою заповнення; pct<0 — даних немає.
+//
+//  ⚑ ГОЛОВНЕ ТУТ — РАННІЙ ВИХІД. Під час заряду/розряду ця функція кличеться
+//  на КОЖНОМУ опитуванні (раз на секунду), а displayAnimTick() тим часом ганяє
+//  по заповненню градієнт ~9 к/с. Поки ми перемальовували шкалу беззастережно,
+//  кожне опитування клало поверх градієнта РІВНУ заливку — і раз на секунду
+//  було видно спалах, тобто «анімація скидається». Тепер, якщо графічний рівень
+//  (ширина заповнення в пікселях), колір і геометрія ті самі, ми не чіпаємо
+//  жодного пікселя, і градієнт біжить безперервно.
+//
+//  Порівнюється саме ШИРИНА В ПІКСЕЛЯХ, а не відсоток: шкала на 200 px має
+//  100 різних положень, тож зміна на 1 % часто не рухає нічого. Порівняння за
+//  відсотком лишило б той самий дефект, просто рідше.
 inline void drawBatteryBar(int x, int y, int w, int h, int pct, uint16_t col) {
     g_battX = x; g_battY = y; g_battW = w; g_battH = h;   // для displayAnimTick()
-    g_animPrevX = -1;                                     // скинути слід блику
+    int fw = battFillW(w, pct, 6);
+
+    if (!battBarChanged(g_battDrawn, x, y, w, h, fw, col, g_screenGen)) return;
+
+    // Чистимо ЛИШЕ власний слід (рамка + «плюсовий» вивід), а не смугу на всю
+    // ширину: на головній сторінці поруч стоять цифри відсотка, і широке
+    // затирання з'їдало б їх.
+    tft.fillRect(x - 1, y - 1, w + 6, h + 2, C_BG);
+
     tft.drawRoundRect(x, y, w, h, 4, C_TEXT);
     tft.drawRoundRect(x + 1, y + 1, w - 2, h - 2, 3, C_TEXT);
     tft.fillRect(x + w, y + h / 3, 4, h - 2 * (h / 3), C_TEXT);   // "плюсовий" вивід
-    if (pct < 0) return;
-    int fw = (w - 6) * pct / 100;
-    if (fw < 0) fw = 0;
-    if (fw > w - 6) fw = w - 6;
     if (fw > 0) tft.fillRect(x + 3, y + 3, fw, h - 6, col);
+
+    // Поле за полем, а не агрегатною ініціалізацією: у BattBarDrawn є типові
+    // значення полів, і сумісність такої ініціалізації залежить від стандарту.
+    // Виграшу від однорядковості тут нема, а причина відмови збірки була б
+    // геть неочевидною.
+    g_battDrawn.x = x; g_battDrawn.y = y; g_battDrawn.w = w; g_battDrawn.h = h;
+    g_battDrawn.fw = fw; g_battDrawn.col = col; g_battDrawn.gen = g_screenGen;
 }
 
 // ===================== Заставка =====================
@@ -605,6 +638,7 @@ inline bool splashDrawJpeg() {
     if (TJpgDec.drawFsJpg(0, 0, DISPLAY_SPLASH_JPG_PATH, SPIFFS) != JDR_OK) {
         // Кадр міг лягти наполовину — не лишаємо огризок на екрані.
         tft.fillScreen(C_BG);
+        displayScreenCleared();
         g_splashLast = SPLASH_ERR_SIZE;
         return false;
     }
@@ -654,7 +688,8 @@ inline bool splashDrawFromFs() {
         if (f.read((uint8_t *)line, want) != want) {   // файл обірвався на ходу
             tft.endWrite(); f.close();
             g_splashLast = SPLASH_ERR_SIZE;
-            tft.fillScreen(C_BG);                      // не лишати півкартинки
+            tft.fillScreen(C_BG);
+            displayScreenCleared();                      // не лишати півкартинки
             return false;
         }
         tft.writePixels(line, w, true, true);          // block=true, bigEndian=true
@@ -671,6 +706,7 @@ inline void displaySplash() {
     // напису зник би на низьких панелях.
     g_tFooter = true;
     tft.fillScreen(C_BG);
+    displayScreenCleared();
 
     // ⚑ ПОРЯДОК ДЖЕРЕЛ: спершу файл зі SPIFFS, потім вкомпільована картинка,
     //  потім типова. Саме так, а не навпаки: завантажена користувачем
@@ -1143,6 +1179,8 @@ inline void drawPagePsuFault() {
     uint8_t st = chargePsuState();
 
     tft.fillScreen(C_BG);
+
+    displayScreenCleared();
     tft.fillRect(0, 0, TFT_W, HDR_H, C_RED);
     tft.drawFastHLine(0, HDR_H - 1, TFT_W, C_YELLOW);
     tSet(FONT_HDR, C_TEXT, C_RED);
@@ -1247,7 +1285,10 @@ inline void drawPageDischarge() {
     const char *csrc; int chargePct = batteryPercent(&csrc);
     int by = HDR_H + 44, bh = 22;
     int bx = EDGE, bw = TFT_W - 2 * EDGE - 6;      // −6 px під «плюсовий» вивід
-    tft.fillRect(0, by - 2, TFT_W, bh + 4, C_BG);
+    // ⚑ Смугу тут БІЛЬШЕ НЕ ЗАТИРАЄМО. Саме це затирання й «скидало» анімацію
+    //  на кожному опитуванні: воно стирало градієнт, а drawBatteryBar() клав
+    //  рівну заливку. Тепер шкала чистить власний слід сама — і лише тоді,
+    //  коли графічний рівень справді змінився.
     drawBatteryBar(bx, by, bw, bh, chargePct, chargeColor(chargePct));
     g_pctTx = g_pctTy = g_pctTw = g_pctTh = 0;     // цифр усередині шкали немає
 
@@ -1328,7 +1369,10 @@ inline void drawPageCharge() {
     const char *csrc; int chargePct = batteryPercent(&csrc);
     int by = HDR_H + 44, bh = 22;
     int bx = EDGE, bw = TFT_W - 2 * EDGE - 6;
-    tft.fillRect(0, by - 2, TFT_W, bh + 4, C_BG);
+    // ⚑ Смугу тут БІЛЬШЕ НЕ ЗАТИРАЄМО. Саме це затирання й «скидало» анімацію
+    //  на кожному опитуванні: воно стирало градієнт, а drawBatteryBar() клав
+    //  рівну заливку. Тепер шкала чистить власний слід сама — і лише тоді,
+    //  коли графічний рівень справді змінився.
     drawBatteryBar(bx, by, bw, bh, chargePct, chargeColor(chargePct));
     g_pctTx = g_pctTy = g_pctTw = g_pctTh = 0;
 
@@ -1465,7 +1509,10 @@ inline void drawPageWizard() {
 // перекривають старі; фон і так чорний). Без чорного «спалаху» — для зміни лише
 // відтінку (червоний фільтр помилки), щоб екран НЕ блимав.
 inline void displayRenderBody(bool clearBody) {
-    if (clearBody) tft.fillRect(0, HDR_H, TFT_W, FOOT_Y - HDR_H, C_BG);
+    // Очищення тіла стирає й шкалу батареї, тож кеш «уже намальовано» після
+    // нього брехав би: стан той самий, а пікселів немає.
+    if (clearBody) { tft.fillRect(0, HDR_H, TFT_W, FOOT_Y - HDR_H, C_BG);
+                     displayScreenCleared(); }
     // Поки навантаження увімкнене — примусово показуємо моніторинг розряду,
     // хоч би яку сторінку було обрано: це довга операція із запобіжниками, її
     // стан має бути на екрані завжди, а не за кілька натискань кнопки.
@@ -1565,11 +1612,15 @@ inline void displayAnimTick() {
     if (g_ledMode == LED_READ || g_ledMode == LED_WRITE)
         return;                         // під час операції (читання/запис) — екран
                                         // статичний, без руху/блимання градієнта
-    const char *src; int pct = batteryPercent(&src);
-    if (pct < 0) return;
-    uint16_t col = chargeColor(pct);
-    int fw = (g_battW - 6) * pct / 100;
-    if (fw < 4) return;
+    // ⚑ БЕРЕМО ТЕ, ЩО СПРАВДІ НАМАЛЬОВАНО, а не рахуємо заново. Раніше тут
+    //  був власний перерахунок із batteryPercent(), тобто ДРУГЕ джерело тих
+    //  самих чисел. Поки воно збігалося з тим, що намалювала сторінка, все
+    //  виглядало гаразд; варто було б їм розійтися на піксель — і анімація
+    //  почала б малювати градієнт іншої довжини, ніж рамка, тобто вилазити за
+    //  заповнення або лишати смужку рівного кольору з краю.
+    if (g_battDrawn.fw < 4) return;          // немає даних або смужка надто вузька
+    int fw = g_battDrawn.fw;
+    uint16_t col = g_battDrawn.col;
     int fx = g_battX + 3, fy = g_battY + 3, fh = g_battH - 6;
     int tx0 = g_pctTx, tx1 = g_pctTx + g_pctTw;   // рамка цифр % (оминаємо)
     int ty0 = g_pctTy, ty1 = g_pctTy + g_pctTh;
@@ -1613,11 +1664,13 @@ inline void displayFadeInMain() {
     // повного затемнення й другого спалаху — м'який кросфейд заставка -> меню.
     for (int b = 255; b >= 40; b -= 12) { analogWrite(DISPLAY_BLK_PIN, b); delay(12); }
     tft.fillScreen(C_BG);
+    displayScreenCleared();
     displayRender();
     for (int b = 40; b <= 255; b += 10) { analogWrite(DISPLAY_BLK_PIN, b); delay(12); }
     analogWrite(DISPLAY_BLK_PIN, 255);
 #else
     tft.fillScreen(C_BG);
+    displayScreenCleared();
     displayRender();
 #endif
 }
@@ -1644,6 +1697,11 @@ inline void displayShow(const char *s) {
 inline void displaySetErrorTint(bool on) {
     if (g_errTint == on) return;
     g_errTint = on;
+    // Відтінок міняє ВСЮ палітру, тож те, що намальовано, більше не відповідає
+    // кешу шкали батареї. Колір заливки й так зміниться (chargeColor піде в
+    // червоне) і кеш це впіймає, але рамка малюється C_TEXT — а її кеш не
+    // стереже. Найпростіше й найнадійніше — оголосити покоління екрана новим.
+    displayScreenCleared();
     // Перемальовуємо ТУ Ж сторінку БЕЗ очищення тіла в чорне (displayRenderBody
     // з clearBody=false): елементи перезаписуються на місці, змінюється лише
     // відтінок. Жодного чорного спалаху й блимання — просто екран стає (чи
@@ -1682,10 +1740,12 @@ inline void displaySelfTest() {
     };
     for (auto &s : steps) {
         tft.fillScreen(s.c);
+        displayScreenCleared();
         Serial.printf("DISPLAY SELFTEST: %s\n", s.n);
         delay(700);
     }
     tft.fillScreen(C_BG);
+    displayScreenCleared();
     Serial.println("DISPLAY SELFTEST: завершено. Бачили кольори — обмін і "
                    "підсвітка справні; світлий екран без кольорів — немає "
                    "обміну; темний — немає підсвітки.");
@@ -1733,6 +1793,7 @@ inline void displayInit() {
                                               // під колір ділянки (без чорних ореолів)
     u8g2Fonts.setFontDirection(0);
     tft.fillScreen(C_BG);
+    displayScreenCleared();
     displaySelfTest();                        // порожньо, доки не увімкнено
                                               // DISPLAY_ST7789_SELFTEST
     // ── ЗВІТ ПРО КОНФІГУРАЦІЮ ЕКРАНА ──────────────────────────────────────

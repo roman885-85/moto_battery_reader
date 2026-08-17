@@ -498,9 +498,11 @@
   <!-- ══════════════ ЛИСТ 4 ══════════════ -->
   <section>
     <div class="sheet-head"><span class="sheet-no">ЛИСТ 4</span><h2>1-Wire і enable пакета</h2></div>
-    <p class="sheet-note">Тут <strong>два обов'язкові резистори на +3.3 В</strong>, і жоден не є
-       рекомендацією: 2.2…4.7 кОм на лінії даних (чипи живляться з неї паразитно) і 4.7 кОм на лінії
-       enable (без нього некоректно працюють усі чотири функції — читання, запис, заряд, розряд).</p>
+    <p class="sheet-note">На лінії ДАНИХ резистор 2.2…4.7 кОм на +3.3 В <strong>обов'язковий</strong> і не є
+       рекомендацією: чипи DS2433/DS2438 живляться з цієї лінії паразитно, і внутрішніх ~45 кОм ESP32
+       їм не вистачає. Резистор 4.7 кОм на лінії <strong>enable</strong> стоїть на платі, але
+       <strong>обов'язковим не є</strong> — його поставив власник для попереднього налагодження функцій;
+       прошивка веде цю лінію активно в обидва боки.</p>
 
     <figure>
       <svg viewBox="0 0 900 340" role="img" aria-label="Шина 1-Wire: GPIO13 дані з внутрішньою підтяжкою ESP32, GPIO12 enable пакета, чипи DS2433 і DS2438 з паразитним живленням, спільна земля через шунт">
@@ -534,7 +536,7 @@
           <line x1="250" y1="170" x2="600" y2="170" stroke="currentColor" stroke-width="2"/>
           <text x="330" y="162" font-size="12" font-weight="700">GPIO13 · DQ (дані)</text>
 
-          <!-- enable + ОБОВ'ЯЗКОВА підтяжка 4.7к -->
+          <!-- enable + НЕобов'язкова підтяжка 4.7к (стоїть для налагодження) -->
           <line x1="250" y1="212" x2="600" y2="212" stroke="currentColor" stroke-width="2"/>
           <text x="330" y="232" font-size="12" font-weight="700">GPIO12 · enable пакета</text>
           <circle cx="470" cy="212" r="3.5" fill="currentColor"/>
@@ -671,7 +673,7 @@
         <tbody>
           <tr><td class="pin">4</td><td>Підсвітка екрана (BLK)</td><td class="val">—</td><td>ШІМ, плавна поява заставки</td></tr>
           <tr><td class="pin">5</td><td>Екран CS</td><td class="val">—</td><td>На GMT130 виводу CS немає; пін заданий і нікуди не підключений</td></tr>
-          <tr><td class="pin">12</td><td>1-Wire enable пакета</td><td class="val">4.7к на 3.3 В</td><td><strong>обов'язковий</strong>. GPIO12 — strapping MTDI: працює, бо eFuse флеша пропалено</td></tr>
+          <tr><td class="pin">12</td><td>1-Wire enable пакета</td><td class="val">4.7к на 3.3 В</td><td><strong>не обов'язковий</strong> — стоїть для налагодження. GPIO12 — strapping MTDI: підтяжка працює, бо eFuse флеша пропалено</td></tr>
           <tr><td class="pin">13</td><td>1-Wire дані</td><td class="val">4.7к на 3.3 В</td><td>Зовнішня підтяжка <strong>обов'язкова</strong> — чипи живляться паразитно</td></tr>
           <tr><td class="pin">14</td><td>Світлодіод зелений</td><td class="val">~330 Ом</td><td>ШІМ для «дихання»</td></tr>
           <tr><td class="pin">15</td><td>Підсвітка кнопок</td><td class="val">—</td><td>Необов'язково</td></tr>
@@ -735,7 +737,7 @@
           <tr><td>Подільники вимірювання</td><td class="val">20к/10к, 1к</td><td class="val">без змін</td><td><span class="tag tag-ok">на місці</span></td></tr>
           <tr><td>Подільник живлення</td><td class="val">—</td><td class="val">68к/10к + 1к</td><td><span class="tag tag-rework">новий вузол</span></td></tr>
           <tr><td>Підтяжка даних (GPIO13 → 3.3 В)</td><td class="val">?</td><td class="val">2.2…4.7 кОм</td><td><span class="tag tag-rework">перевірити</span></td></tr>
-          <tr><td>Підтяжка enable (GPIO12 → 3.3 В)</td><td class="val">?</td><td class="val">4.7 кОм</td><td><span class="tag tag-rework">перевірити</span></td></tr>
+          <tr><td>Підтяжка enable (GPIO12 → 3.3 В)</td><td class="val">4.7 кОм</td><td class="val">не обов'язкова</td><td><span class="tag">стоїть для налагодження</span></td></tr>
           <tr><td>Спільна земля з пакетом</td><td class="val">?</td><td class="val">мінус пакета ↔ GND</td><td><span class="tag tag-rework">перевірити</span></td></tr>
         </tbody>
       </table>

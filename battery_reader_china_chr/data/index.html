@@ -933,6 +933,33 @@
             <button class="btn btn-info" style="width:100%" onclick="clockSync()">🕐 СИНХРОНІЗУВАТИ З ЦИМ ПРИСТРОЄМ</button>
         </div>
 <div class="card">
+            <h2>🖼️ Заставка екрана <span class="nochip">в АКБ не пише</span></h2>
+            <div class="note i">Картинка, яку пристрій показує при вмиканні. Раніше її треба було
+                вкомпільовувати в прошивку (<code>custom_splash.h</code>) і перепрошивати пристрій;
+                тепер вона просто лежить у файловій системі приладу, і замінити її можна звідси.
+                <b>Перетворення робить ваш браузер</b>, а не пристрій: беремо будь-який PNG/JPEG,
+                вписуємо в екран і надсилаємо готовий RGB565. Нічого встановлювати не треба.</div>
+            <div class="row"><span class="k">Екран пристрою</span><b id="spPanel">—</b></div>
+            <div class="row"><span class="k">Зараз завантажено</span><b id="spNow">—</b></div>
+            <div class="row"><span class="k">Вільно у файловій системі</span><b id="spFree">—</b></div>
+            <div class="row" style="gap:10px;flex-wrap:wrap">
+                <input type="file" id="spFile" accept="image/*" onchange="spPick()">
+                <label style="display:flex;align-items:center;gap:6px">Фон
+                    <input type="color" id="spBg" value="#000000" onchange="spPick()"
+                           style="width:44px;height:28px;border:none;background:none;cursor:pointer"></label>
+                <label style="display:flex;align-items:center;gap:6px">
+                    <input type="checkbox" id="spCover" onchange="spPick()"> Заповнити з обрізанням</label>
+            </div>
+            <div class="note" id="spHint" style="display:none"></div>
+            <div style="text-align:center;margin:10px 0">
+                <canvas id="spCv" style="max-width:240px;width:100%;image-rendering:pixelated;
+                        border:1px solid var(--line);border-radius:8px;display:none"></canvas></div>
+            <button class="btn btn-ok" style="width:100%" id="spSend" onclick="spSend()" disabled>
+                🖼️ НАДІСЛАТИ ЗАСТАВКУ</button>
+            <button class="btn btn-warn" style="width:100%;margin-top:6px" onclick="spDel()">
+                ↩️ ПОВЕРНУТИ ТИПОВУ</button>
+        </div>
+<div class="card">
             <h2>🔊 Налаштування звуку <span class="nochip">в АКБ не пише</span></h2>
             <div class="note i">Нічого не пише в акумулятор — це налаштування самого пристрою; воно
                 зберігається в його пам'яті й переживає перезавантаження. Заводські значення підібрані
@@ -2534,6 +2561,106 @@ async function sndLoad(){
 }
 // Повзунок шлють із затримкою: інакше кожен піксель руху — окремий POST і запис
 // у SPIFFS, а її ресурс перезапису не безмежний.
+/* ── ЗАСТАВКА ЕКРАНА: перетворення в браузері й завантаження у SPIFFS ──────
+   Пристрій не вміє (і не мусить) розбирати PNG: декодер у прошивці — це
+   бібліотека, пам'ять під розпакування і новий клас падінь на кривому файлі
+   заради картинки, яку показують півтори секунди. Тому конвертуємо тут:
+   canvas і так уміє відкрити будь-що, що вміє браузер.
+
+   Формат — той самий, що читає splash.h: 8 байтів заголовка
+   ('M','B','S','1', ширина LE, висота LE), далі RGB565 СТАРШИМ БАЙТОМ
+   УПЕРЕД, рядками зверху вниз. Big-endian тут не примха: саме в такому
+   порядку байти йдуть у шину ST7789, тож пристрій віддає їх напряму, без
+   перевертання кожного пікселя. */
+let spPanel = {w:240, h:240}, spBlob = null;
+
+async function spLoad(){
+    try{
+        const r = await fetch('/api/splash'); if(!r.ok) return;
+        const j = await r.json();
+        spPanel = {w:j.panelW||240, h:j.panelH||240};
+        document.getElementById('spPanel').textContent = spPanel.w+'×'+spPanel.h+' px';
+        document.getElementById('spNow').textContent =
+            !j.present ? 'типова (вбудована)' :
+            j.ok ? (j.w+'×'+j.h+', '+Math.round(j.bytes/1024)+' КБ')
+                 : ('файл є, але непридатний: '+j.err);
+        document.getElementById('spFree').textContent = Math.round((j.fsFree||0)/1024)+' КБ';
+    }catch(e){}
+}
+
+/* Намалювати вибрану картинку в екранному розмірі й зібрати .bin. */
+function spPick(){
+    const f = document.getElementById('spFile').files[0];
+    const send = document.getElementById('spSend'), cv = document.getElementById('spCv');
+    const hint = document.getElementById('spHint');
+    spBlob = null; send.disabled = true;
+    if(!f){ cv.style.display='none'; hint.style.display='none'; return; }
+
+    const img = new Image();
+    img.onload = function(){
+        const W = spPanel.w, H = spPanel.h;
+        cv.width = W; cv.height = H; cv.style.display = 'block';
+        const g = cv.getContext('2d');
+        g.fillStyle = document.getElementById('spBg').value;
+        g.fillRect(0, 0, W, H);
+        // contain — вписати повністю (лишається фон); cover — заповнити з обрізанням.
+        const cover = document.getElementById('spCover').checked;
+        const s = cover ? Math.max(W/img.width, H/img.height)
+                        : Math.min(W/img.width, H/img.height);
+        const dw = Math.round(img.width*s), dh = Math.round(img.height*s);
+        g.drawImage(img, Math.round((W-dw)/2), Math.round((H-dh)/2), dw, dh);
+
+        const px = g.getImageData(0, 0, W, H).data;
+        const out = new Uint8Array(8 + W*H*2);
+        out[0]=77; out[1]=66; out[2]=83; out[3]=49;          // 'MBS1'
+        out[4]=W&255; out[5]=(W>>8)&255; out[6]=H&255; out[7]=(H>>8)&255;
+        let o = 8;
+        for(let i=0;i<W*H;i++){
+            const v = ((px[i*4]&0xF8)<<8) | ((px[i*4+1]&0xFC)<<3) | (px[i*4+2]>>3);
+            out[o++] = (v>>8)&255;                            // старший байт ПЕРШИМ
+            out[o++] = v&255;
+        }
+        spBlob = new Blob([out], {type:'application/octet-stream'});
+        hint.style.display = 'block';
+        hint.textContent = 'Готово до надсилання: '+W+'×'+H+', '+
+                           Math.round(out.length/1024)+' КБ. Нова заставка з\'явиться '+
+                           'при наступному вмиканні пристрою.';
+        send.disabled = false;
+    };
+    img.onerror = function(){
+        hint.style.display='block';
+        hint.textContent='Не вдалося відкрити це зображення.';
+        cv.style.display='none';
+    };
+    img.src = URL.createObjectURL(f);
+}
+
+async function spSend(){
+    if(!spBlob){ return; }
+    const btn = document.getElementById('spSend');
+    btn.disabled = true; btn.textContent = '⏳ НАДСИЛАННЯ…';
+    try{
+        const fd = new FormData();
+        fd.append('splash', spBlob, 'splash.bin');
+        const r = await fetch('/uploadsplash', {method:'POST', body:fd});
+        const j = await r.json().catch(()=>({message:'невідома відповідь'}));
+        alert(j.message || (r.ok ? 'Готово' : 'Помилка'));
+        await spLoad();
+    }catch(e){ alert('Помилка надсилання: '+e); }
+    btn.textContent = '🖼️ НАДІСЛАТИ ЗАСТАВКУ';
+    btn.disabled = !spBlob;
+}
+
+async function spDel(){
+    if(!confirm('Прибрати завантажену заставку й повернути типову?')) return;
+    try{
+        const r = await fetch('/api/splash/delete', {method:'POST'});
+        const j = await r.json().catch(()=>({}));
+        alert(j.message || 'Готово');
+        await spLoad();
+    }catch(e){ alert('Помилка: '+e); }
+}
+
 function sndPush(test){
     clearTimeout(sndTimer);
     sndTimer=setTimeout(()=>sndSend(test),250);
@@ -2559,7 +2686,7 @@ async function sndReset(){
     }catch(e){ toast('Не вдалось скинути','err'); }
 }
 
-window.onload=function(){refreshAll();loadTemplates();sndLoad();clLoadSamples();setInterval(refreshAll,10000)};
+window.onload=function(){refreshAll();loadTemplates();sndLoad();spLoad();clLoadSamples();setInterval(refreshAll,10000)};
 </script>
 </body>
 </html>

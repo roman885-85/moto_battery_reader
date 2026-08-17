@@ -582,16 +582,24 @@ inline bool splashDrawJpeg() {
         g_splashLast = SPLASH_ERR_MAGIC;          // не розібрався — отже не JPEG
         return false;
     }
-    if (!splashJpegFits(w, h, TFT_W, TFT_H)) {
+    // ⚑ ЗАВЕЛИКУ КАРТИНКУ НЕ ВІДХИЛЯЄМО, А ЗМЕНШУЄМО. Коефіцієнт один на обидві
+    //  осі, тож пропорції зберігаються самі собою; докладно — у splash.h.
+    uint8_t sc = splashJpegScaleFor(w, h, TFT_W, TFT_H);
+    if (!sc) {
         g_splashLast = (w == 0 || h == 0) ? SPLASH_ERR_ZERO : SPLASH_ERR_TOO_BIG;
         return false;
     }
-    g_jpgOffX = (int16_t)((TFT_W - (int)w) / 2);
-    g_jpgOffY = (int16_t)((TFT_H - (int)h) / 2);
+    uint16_t dw = splashScaled(w, sc), dh = splashScaled(h, sc);
+
+    //  Зсув рахується від РОЗКОДОВАНОГО розміру, а не від вихідного: callback
+    //  отримує координати вже в зменшеному просторі. Узявши тут вихідні w/h,
+    //  ми б зсунули картинку за край рівно на різницю.
+    g_jpgOffX = (int16_t)((TFT_W - (int)dw) / 2);
+    g_jpgOffY = (int16_t)((TFT_H - (int)dh) / 2);
     if (g_jpgOffX < 0) g_jpgOffX = 0;
     if (g_jpgOffY < 0) g_jpgOffY = 0;
 
-    TJpgDec.setJpgScale(1);
+    TJpgDec.setJpgScale(sc);
     TJpgDec.setSwapBytes(true);
     TJpgDec.setCallback(splashJpegBlock);
     if (TJpgDec.drawFsJpg(0, 0, DISPLAY_SPLASH_JPG_PATH, SPIFFS) != JDR_OK) {
@@ -600,7 +608,9 @@ inline bool splashDrawJpeg() {
         g_splashLast = SPLASH_ERR_SIZE;
         return false;
     }
-    g_splashLast = SPLASH_OK; g_splashW = w; g_splashH = h;
+    g_splashLast = SPLASH_OK; g_splashW = dw; g_splashH = dh;
+    if (sc != 1)
+        Serial.printf("Splash: JPEG %ux%u зменшено в %u рази -> %ux%u\n", w, h, sc, dw, dh);
     return true;
 }
 #endif  // DISPLAY_SPLASH_JPEG

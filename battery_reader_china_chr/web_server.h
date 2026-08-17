@@ -415,11 +415,16 @@ void handleUploadSplashDone() {
                         "{\"status\":\"error\",\"message\":\"Файл починається як JPEG, але декодер його не розібрав\"}");
             return;
         }
-        if (!splashJpegFits(jw, jh, TFT_W, TFT_H)) {
+        // ⚑ ЗАВЕЛИКЕ НЕ ВІДХИЛЯЄМО — пристрій зменшить сам, кратно 2, зі
+        //  збереженням пропорцій (splashJpegScaleFor у splash.h). Відмова
+        //  лишається тільки там, де не рятує навіть /8.
+        uint8_t sc = splashJpegScaleFor(jw, jh, TFT_W, TFT_H);
+        if (!sc) {
             SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
-            char m[200];
+            char m[240];
             snprintf(m, sizeof(m),
-                     "{\"status\":\"error\",\"message\":\"JPEG %ux%u не влазить в екран %dx%d — зменште зображення\"}",
+                     "{\"status\":\"error\",\"message\":\"JPEG %ux%u більший за екран %dx%d понад увосьмеро — "
+                     "зменшити кратно 2 вже не вийде. Зменште зображення заздалегідь\"}",
                      jw, jh, (int)TFT_W, (int)TFT_H);
             server.send(400, "application/json", m);
             return;
@@ -434,12 +439,15 @@ void handleUploadSplashDone() {
             return;
         }
         if (SPIFFS.exists(DISPLAY_SPLASH_PATH)) SPIFFS.remove(DISPLAY_SPLASH_PATH);
-        Serial.printf("Splash JPEG збережено: %ux%u, %u байтів\n", jw, jh, (unsigned)sz);
-        char m[220];
+        uint16_t dw = splashScaled(jw, sc), dh = splashScaled(jh, sc);
+        Serial.printf("Splash JPEG збережено: %ux%u, %u байтів%s\n", jw, jh, (unsigned)sz,
+                      sc == 1 ? "" : " (буде зменшено при показі)");
+        char m[300];
         snprintf(m, sizeof(m),
-                 "{\"status\":\"success\",\"kind\":\"jpeg\",\"w\":%u,\"h\":%u,\"bytes\":%u,"
-                 "\"message\":\"JPEG %ux%u збережено — буде видно при наступному запуску\"}",
-                 jw, jh, (unsigned)sz, jw, jh);
+                 "{\"status\":\"success\",\"kind\":\"jpeg\",\"w\":%u,\"h\":%u,\"scale\":%u,\"bytes\":%u,"
+                 "\"message\":\"JPEG %ux%u збережено%s — буде видно при наступному запуску\"}",
+                 dw, dh, sc, (unsigned)sz, jw, jh,
+                 sc == 1 ? "" : " і буде зменшено до розміру екрана (пропорції збережено)");
         server.send(200, "application/json", m);
         return;
     }
@@ -498,9 +506,11 @@ void handleSplashInfo() {
         File jf = SPIFFS.open(DISPLAY_SPLASH_JPG_PATH, "r");
         if (jf) { sz = jf.size(); jf.close(); }
         uint16_t jw = 0, jh = 0;
+        uint8_t sc = 0;
         if (TJpgDec.getFsJpgSize(&jw, &jh, DISPLAY_SPLASH_JPG_PATH, SPIFFS) == JDR_OK &&
-            splashJpegFits(jw, jh, TFT_W, TFT_H)) { w = jw; h = jh; rc = SPLASH_OK; }
-        else rc = SPLASH_ERR_MAGIC;
+            (sc = splashJpegScaleFor(jw, jh, TFT_W, TFT_H)) != 0) {
+            w = splashScaled(jw, sc); h = splashScaled(jh, sc); rc = SPLASH_OK;
+        } else rc = SPLASH_ERR_MAGIC;
     } else
 #endif
     if (SPIFFS.exists(DISPLAY_SPLASH_PATH)) {

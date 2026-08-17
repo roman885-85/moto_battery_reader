@@ -56,6 +56,7 @@ static void ledSet(LedMode m) { g_led = m; }
 #include "settings.h"
 #include "discharge.h"
 #include "charge.h"
+#include "bt_link.h"       // правило доступу по радіо — чисте, збирається на хості
 #include "splash.h"          // формат завантаженої заставки — чистий, збирається на хості
 
 // Дзеркало fileCalls(): подекуди треба довести саме ВІДСУТНІСТЬ конструкції.
@@ -559,12 +560,45 @@ int main() {
         check(splashSniff(jpg,  2) == SPLASH_KIND_NONE, "двох байтів для висновку замало");
         check(splashSniff(good, 3) == SPLASH_KIND_NONE, "трьох байтів для сирого формату замало");
 
-        // JPEG теж мусить влазити в екран: декодер центрує, але не масштабує.
-        check(splashJpegFits(240, 240, PW, PH),  "JPEG рівно в екран — приймається");
+        // Чи влазить БЕЗ зменшення.
+        check(splashJpegFits(240, 240, PW, PH),  "JPEG рівно в екран — приймається як є");
         check(splashJpegFits(120,  90, PW, PH),  "менший — теж (відцентрують)");
-        check(!splashJpegFits(320, 240, PW, PH), "ширший за екран — ні");
-        check(!splashJpegFits(240, 320, PW, PH), "вищий за екран — ні");
+        check(!splashJpegFits(320, 240, PW, PH), "ширший за екран — як є не приймається");
         check(!splashJpegFits(0,   240, PW, PH), "нульовий розмір — ні");
+
+        // ── АВТОМАТИЧНЕ ЗМЕНШЕННЯ ЗАВЕЛИКОГО ─────────────────────────────
+        //  Завелику картинку тепер не відхиляють, а зменшують. Коефіцієнт один
+        //  на обидві осі — саме тому пропорції зберігаються самі собою.
+        check(splashJpegScaleFor(240, 240, PW, PH) == 1, "рівно в екран — зменшувати не треба");
+        check(splashJpegScaleFor(480, 480, PW, PH) == 2, "удвічі більший -> /2");
+        check(splashJpegScaleFor(960, 720, PW, PH) == 4, "960x720 -> /4 (240x180)");
+        check(splashJpegScaleFor(1920, 1080, PW, PH) == 8, "кадр Full HD -> /8 (240x135)");
+        check(splashJpegScaleFor(4000, 3000, PW, PH) == 0, "ширший за екран понад увосьмеро — чесна відмова");
+
+        // ⚑ ПРОПОРЦІЇ. Головна вимога: співвідношення сторін після зменшення
+        //  мусить збігатися з вихідним. Перевіряємо не «на око», а числом.
+        {
+            struct { uint16_t w, h; } cases[] = { {480,360}, {960,720}, {1600,1200}, {1920,1080}, {800,480} };
+            for (auto &c : cases) {
+                uint8_t sc = splashJpegScaleFor(c.w, c.h, PW, PH);
+                if (!sc) { bad("несподівана відмова зменшення"); continue; }
+                uint16_t dw = splashScaled(c.w, sc), dh = splashScaled(c.h, sc);
+                // Похибка не більша за один піксель — це заокруглення блоків 8×8.
+                long lhs = (long)dw * c.h, rhs = (long)dh * c.w;
+                long tol = (long)c.w + c.h;
+                printf("   %ux%u -> /%u -> %ux%u\n", c.w, c.h, sc, dw, dh);
+                if (labs(lhs - rhs) > tol) bad("пропорції поїхали при зменшенні");
+                if (dw > PW || dh > PH) bad("після зменшення все одно не влазить");
+            }
+            check(true, "пропорції зберігаються, і результат влазить в екран");
+        }
+
+        // Заокруглення ВГОРУ, а не вниз: декодер видає ceil(w/n) пікселів, і
+        // округливши вниз, ми вирішили б, що картинка влізла, а останній
+        // стовпчик поїхав би за край.
+        check(splashScaled(241, 2) == 121, "241/2 = 121 (вгору), а не 120");
+        check(splashJpegScaleFor(481, 240, PW, PH) == 4,
+              "481 при /2 дає 241 — на піксель більше за екран, тож береться /4");
 
         // Стелі двох форматів мусять розрізнятись: сенс JPEG саме в економії.
         printf("   стелі: сирий %lu КБ, JPEG %lu КБ\n",
@@ -637,6 +671,77 @@ int main() {
                                              "старого пізнього підйому enable більше немає");
     check(CHARGE_ENABLE_LEAD_MS >= 20 && CHARGE_ENABLE_LEAD_MS * 2 <= CHARGE_POLL_MS,
                                              "випередження помітне, але не з'їдає такт опитування");
+
+    printf("\n14) Bluetooth: по радіо читати вільно, ЗМІНЮВАТИ — лише з паролем\n");
+    {
+        // По USB перепусткою є кабель, тож усе відкрито. По Bluetooth у
+        // радіусі дії опиняється будь-хто, а серед команд є WIPE33 — повне
+        // стирання пам'яті пакета. Це і є те правило, яке тут перевіряється.
+        const char *readOnly[] = { "PING", "INFO", "READ", "GET33", "GET38",
+                                   "TEMPLATES", "SAMPLES", "OPS", "FIXES",
+                                   "RESTOREPLAN", "WIZLIST", "SOUND", "CLOCK", "AUTH" };
+        const char *writes[]   = { "WIPE33", "WIPE38", "WRITE33", "WRITE38", "WRITEFIX33",
+                                   "CLEAN", "RESET", "REPAIR", "RESTORE", "INITBAT",
+                                   "SETCAP", "SETMAH", "SETCHG", "SETETM", "SETMODEL",
+                                   "SETHEALTH", "HDRFIX", "RECAL", "CLONE", "CHARGE",
+                                   "DISCHARGE", "REBOOT", "WIZSTEP", "WIZRESET", "WIZDEL" };
+
+        for (const char *c : readOnly)
+            if (serCmdIsWrite(c)) { printf("   ЗБІЙ  «%s» позначена як запис\n", c); fails++; }
+        check(true, "усі читальні команди розпізнані як безпечні");
+        for (const char *c : writes)
+            if (!serCmdIsWrite(c)) { printf("   ЗБІЙ  «%s» НЕ позначена як запис\n", c); fails++; }
+        check(true, "усі змінювальні команди розпізнані як запис");
+
+        // ⚑ ПЕРЕЛІК ЗАКРИТИЙ І БІЛИЙ. Невідома команда мусить вважатися
+        //  записом: забути дописати нову в перелік дозволених — це відмова в
+        //  бік «попросить пароль». Чорний перелік при тій самій забудькуватості
+        //  пустив би її в ефір без пароля.
+        check(serCmdIsWrite("ЩОСЬ_НОВЕ"), "невідома команда вважається записом, а не читанням");
+        check(serCmdIsWrite(""),          "порожня команда — теж");
+
+        // Саме правило доступу.
+        check(serCmdAllowed("WIPE33", false, false), "по USB стирання дозволене без пароля (перепустка — кабель)");
+        check(!serCmdAllowed("WIPE33", true,  false), "по BT стирання БЕЗ пароля заборонене");
+        check(serCmdAllowed("WIPE33", true,  true),  "по BT стирання з паролем дозволене");
+        check(serCmdAllowed("PING",   true,  false), "по BT читання вільне — клієнт може знайти пристрій");
+        check(serCmdAllowed("AUTH",   true,  false), "сам AUTH по BT доступний, інакше пароль ніяк не надіслати");
+
+        // Найнебезпечніша пара в переліку — окремо й поіменно.
+        for (const char *c : { "WIPE33", "WIPE38", "WRITE33", "CLEAN" }) {
+            char m[96];
+            snprintf(m, sizeof(m), "«%s» по BT без пароля не пройде", c);
+            check(!serCmdAllowed(c, true, false), m);
+        }
+    }
+
+    printf("\n15) Bluetooth: відповідь іде туди, звідки прийшла команда\n");
+    // Якби sResp() завжди писав у Serial, клієнт по Bluetooth не побачив би
+    // ЖОДНОЇ відповіді, а чужі відповіді сипались би в USB-консоль. Це рівно
+    // той дефект, який на столі виглядає як «пристрій не відповідає».
+    check(fileCalls("serial_api.h", "g_serOut"),
+                                             "вивід іде через покажчик на потік, а не прямо в Serial");
+    check(fileHasNo("serial_api.h", "Serial.print(\"#R#\")"),
+                                             "жорсткого запису відповіді в USB більше немає");
+    check(fileCalls("serial_api.h", "serialPump"),
+                                             "обидва канали обслуговує спільна функція");
+    check(fileCalls("serial_api.h", "g_serInBt"),
+                                             "у Bluetooth власний накопичувач — команди двох каналів не склеюються");
+    check(fileCalls("serial_api.h", "serCmdAllowed"),
+                                             "правило доступу застосовується на вході в serialExec");
+    // Транспорт мусить бути саме SPP: він виглядає для системи звичайним
+    // COM-портом, і саме тому moto_gui.py, moto_bridge.py та client_usb.html
+    // працюють без змін. BLE довелося б обгортати власним GATT-сервісом і
+    // переписувати транспорт у кожному клієнті.
+    //  ⚑ Перевіряємо КОД, а не коментарі: fileCalls() навмисно пропускає
+    //  рядки, що починаються з «//», тож слово «SPP» із пояснення вище він не
+    //  побачить — і не мусить.
+    check(fileCalls("bt_link.h", "BluetoothSerial"),
+                                             "транспорт — BluetoothSerial (SPP), тобто звичайний COM-порт");
+    check(fileHasNo("bt_link.h", "BLEDevice") && fileHasNo("bt_link.h", "BLEServer"),
+                                             "жодного BLE — інакше клієнтам знадобився б новий транспорт");
+    check(fileCalls("motorola-battery-reader-web.ino", "btBegin"),
+                                             "скетч піднімає Bluetooth при старті");
 
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

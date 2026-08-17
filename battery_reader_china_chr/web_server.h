@@ -1506,6 +1506,7 @@ inline void dischargeTask() {
     (void)ma; (void)tLoaded;
     int sag = (int)mv - (int)mvLoaded;
     // Слід у чорний ящик і тренд пам'яті — так само, як у заряду (postmortem.h).
+    pmStep(PM_STEP_REPORT);
     pmNote(PM_MODE_DISCHARGE, g_dis.polls, g_dis.dutyPct, g_dis.lastMa, mv);
 
     Serial.printf("discharge: %u mV (sag %d mV), avg %d mA (peak %u, set %u, duty %u%%), "
@@ -1798,6 +1799,7 @@ inline void chargeTask() {
     //  середній струм у пакет, найбільший відлік — пік. Пік потрібен окремо:
     //  дроселя в схемі немає, тож у момент відкриття ключа струм обмежують лише
     //  різниця напруг і опір кола, і саме він вирішує долю шунта.
+    pmStep(PM_STEP_ISENSE);
     uint16_t peakMa = 0;
     uint16_t avgMa  = chargeMeasureMa(&peakMa);
 
@@ -1818,6 +1820,7 @@ inline void chargeTask() {
     //  ключ на CHARGE_VSENSE_SETTLE_MS: струм дроселя стікає через діод за
     //  мікросекунди, омічна просадка зникає, і вимір лишається ОДНАКОВИМ від
     //  початку до кінця заряду.
+    pmStep(PM_STEP_VSENSE);
     uint16_t saveDuty = g_chg.duty;
     chargeSetDuty(0);
     dischargeSettle(CHARGE_VSENSE_SETTLE_MS);   // той самий неблокуючий сон, що й у розряду
@@ -1829,6 +1832,7 @@ inline void chargeTask() {
     //  її з порогом означало б ловити не блок живлення, а кидки струму.
     //  Одиничний вихід за межі не зупиняє заряд — потрібно CHARGE_PSU_BAD_POLLS
     //  поспіль. Пропадання ж живлення видно одразу й безпомилково.
+    pmStep(PM_STEP_PSU);
     uint8_t psu = chargePsuPoll();
     if (chargePsuTrip(psu, &g_chg.badPsuPolls)) {
         chargeStop(CHGR_PSU);
@@ -1846,6 +1850,11 @@ inline void chargeTask() {
     //  й щоразу перезапускати струм дроселя з нуля. Температура міняється
     //  хвилинами, тож раз на CHARGE_TEMP_EVERY_N опитувань вистачає навіть
     //  для аварійної відсічки.
+    // ⚑ НАЙПІДОЗРІЛІШИЙ ЕТАП. Саме тут іде повний пошук шини й читання 64
+    //  байтів по 1-Wire — найдовша й найскладніша операція опитування, до того
+    //  ж на шині, яка на цій платі читається нестабільно. Позначка стоїть ДО
+    //  умови, щоб було видно навіть той прохід, де читання не виконувалось.
+    pmStep(PM_STEP_DS2438);
     bool tempRead = (g_chg.polls % CHARGE_TEMP_EVERY_N) == 0;
     int16_t t = g_chg.lastTempC10;
     if (tempRead) {
@@ -1875,6 +1884,7 @@ inline void chargeTask() {
     g_chg.polls++;
 
     // ── крок 3: перерахунок уставки і шпаруватості ────────────────────────
+    pmStep(PM_STEP_REGULATOR);
     int pct = impresPercentFromMv(mv);
     g_chg.lastPct = (uint8_t)pct;
     g_chg.setMa   = chargeSetpointMaForPct(pct, g_chg.targetPct);
@@ -1926,6 +1936,7 @@ inline void chargeTask() {
     // ⚑ СЛІД У ЧОРНИЙ ЯЩИК — раз на опитування. Переживає скидання, і саме він
     //  перетворює «періодично перезавантажується» на конкретні обставини
     //  (postmortem.h).
+    pmStep(PM_STEP_REPORT);
     pmNote(PM_MODE_CHARGE, g_chg.polls, g_chg.duty, g_chg.lastMa, mv);
 
     // Купа й запас стека — В КОЖНОМУ рядку журналу, а не лише при старті.
@@ -2082,6 +2093,7 @@ static String chargeJson() {
     j += ",\"pmValid\":" + String(g_pmPrevOk ? "true" : "false");
     if (g_pmPrevOk) {
         j += ",\"pmMode\":\"" + String(pmModeName(g_pmPrev.mode)) + "\"";
+        j += ",\"pmStep\":\"" + String(pmStepName(g_pmPrev.step)) + "\"";
         j += ",\"pmSec\":"   + String((unsigned long)(g_pmPrev.ms / 1000));
         j += ",\"pmPolls\":" + String(g_pmPrev.polls);
         j += ",\"pmDuty\":"  + String(g_pmPrev.duty);

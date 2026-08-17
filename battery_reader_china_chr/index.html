@@ -587,6 +587,8 @@
                 <div class="dmbar"><div class="dmfill" id="chgFill"></div>
                     <span class="dmbartxt" id="chgPctTxt"></span></div>
                 <div class="dmlab"><span>струм / уставка</span><span id="chgLim">—</span></div>
+                <div id="chgRst" class="note" style="display:none;border-left:3px solid var(--red);padding-left:8px;margin:6px 0"></div>
+                <div id="chgMem" class="note i" style="font-size:.82em;opacity:.75"></div>
                 <div class="dmtrack"><div class="dmcur" id="chgCurBar"></div></div>
                 <div class="dmlab"><span>шпаруватість ключа</span><span id="chgDutyTxt">—</span></div>
                 <div class="dmtrack"><div class="dmcur" id="chgDutyBar" style="background:var(--info)"></div></div>
@@ -1925,6 +1927,45 @@ async function chgPoll(){
       mon.className='dm abort';
     }
     $('chgState').textContent=st;
+
+    // ── ЧОМУ ПРИСТРІЙ ПЕРЕЗАВАНТАЖИВСЯ ────────────────────────────────────
+    //  Показуємо ТУТ, бо саме сюди дивиться людина, коли пристрій «періодично
+    //  перезавантажується». Консоль USB вона читати не зобов'язана, а без цих
+    //  чисел скарга лишається здогадкою.
+    //  Штатні причини (подача живлення, кнопка RESET, навмисний перезапуск)
+    //  не показуємо взагалі — інакше банер висів би завжди й на нього
+    //  перестали б зважати.
+    {
+      const box = $('chgRst');
+      if (box) {
+        if (d.rstAbnormal) {
+          let s = '\u26a0 Останнє скидання: ' + (d.rstText || '—');
+          if (d.pmValid) {
+            s += ' · перед ним: ' + d.pmMode + ', ' +
+                 Math.floor(d.pmSec / 60) + ' хв ' + (d.pmSec % 60) + ' с' +
+                 (d.pmDuty ? ', duty ' + d.pmDuty : '') +
+                 (d.pmMv ? ', ' + (d.pmMv / 1000).toFixed(2) + ' В' : '') +
+                 ' · купа ' + Math.round(d.pmHeap / 1024) + ' КБ (блок ' +
+                 Math.round(d.pmBlock / 1024) + ' КБ), стек ' + d.pmStack + ' Б';
+            if (d.pmStack < 512) s += ' · СХОЖЕ НА ПЕРЕПОВНЕННЯ СТЕКА';
+            else if (d.pmBlock < 20000 && d.pmHeap > d.pmBlock * 2)
+              s += ' · КУПА ФРАГМЕНТОВАНА';
+          }
+          box.textContent = s;
+          box.style.display = '';
+        } else {
+          box.style.display = 'none';
+        }
+      }
+    }
+    // Поточний стан пам'яті — дрібним: саме тренд, а не разове число, показує
+    // витік і фрагментацію ще ДО падіння.
+    {
+      const m = $('chgMem');
+      if (m) m.textContent = 'пам\u02bcять: купа ' + Math.round(d.heap / 1024) +
+            ' КБ, найбільший блок ' + Math.round(d.heapBlock / 1024) +
+            ' КБ, запас стека ' + d.stack + ' Б';
+    }
 
     $('chgMvBig').innerHTML=(d.mv/1000).toFixed(2)+'<small>В</small>';
     $('chgPctSub').textContent=d.pct+' % · старт '+(d.startMv/1000).toFixed(2)+' В → ціль '+(d.targetMv/1000).toFixed(2)+' В';

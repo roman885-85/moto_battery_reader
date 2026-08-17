@@ -130,7 +130,6 @@
 </style>
 </head>
 <body>
-
 <div class="sheet">
 
   <div class="titleblock">
@@ -226,7 +225,7 @@
           <path d="M564 250 H656" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#a1)"/>
           <text x="576" y="244" font-size="11">13 · дані</text>
           <path d="M564 276 H656" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#a1)"/>
-          <text x="576" y="270" font-size="11">12 · enable</text>
+          <text x="576" y="270" font-size="11">12 · enable (+4.7к)</text>
           <path d="M656 300 H600 V330 H564" fill="none" stroke="var(--sense)" stroke-width="1.5" marker-end="url(#a1)" color="var(--sense)"/>
           <text x="576" y="324" font-size="11" fill="var(--sense)">34·35 · U та I</text>
 
@@ -491,8 +490,9 @@
   <!-- ══════════════ ЛИСТ 4 ══════════════ -->
   <section>
     <div class="sheet-head"><span class="sheet-no">ЛИСТ 4</span><h2>1-Wire і enable пакета</h2></div>
-    <p class="sheet-note">Резистор підтяжки 2.2…4.7 кОм із лінії даних на 3.3 В — обов'язковий елемент,
-       а не рекомендація: чипи всередині пакета живляться паразитно з цієї ж лінії.</p>
+    <p class="sheet-note">Тут <strong>два обов'язкові резистори на +3.3 В</strong>, і жоден не є
+       рекомендацією: 2.2…4.7 кОм на лінії даних (чипи живляться з неї паразитно) і 4.7 кОм на лінії
+       enable (без нього некоректно працюють усі чотири функції — читання, запис, заряд, розряд).</p>
 
     <figure>
       <svg viewBox="0 0 900 340" role="img" aria-label="Шина 1-Wire: GPIO13 дані з внутрішньою підтяжкою ESP32, GPIO12 enable пакета, чипи DS2433 і DS2438 з паразитним живленням, спільна земля через шунт">
@@ -526,9 +526,17 @@
           <line x1="250" y1="170" x2="600" y2="170" stroke="currentColor" stroke-width="2"/>
           <text x="330" y="162" font-size="12" font-weight="700">GPIO13 · DQ (дані)</text>
 
-          <!-- enable -->
+          <!-- enable + ОБОВ'ЯЗКОВА підтяжка 4.7к -->
           <line x1="250" y1="212" x2="600" y2="212" stroke="currentColor" stroke-width="2"/>
           <text x="330" y="232" font-size="12" font-weight="700">GPIO12 · enable пакета</text>
+          <circle cx="470" cy="212" r="3.5" fill="currentColor"/>
+          <line x1="470" y1="212" x2="470" y2="186" stroke="var(--rework)" stroke-width="2"/>
+          <rect x="443" y="164" width="54" height="22" fill="none" stroke="var(--rework)" stroke-width="2.5"/>
+          <text x="470" y="180" text-anchor="middle" font-size="11" font-weight="700" fill="var(--rework)">4.7к</text>
+          <line x1="470" y1="164" x2="470" y2="146" stroke="var(--rework)" stroke-width="2"/>
+          <text x="470" y="140" text-anchor="middle" font-size="11" font-weight="700" fill="var(--rework)">+3.3 В</text>
+          <text x="506" y="180" font-size="10" fill="var(--rework)">ОБОВ'ЯЗКОВИЙ — без нього</text>
+          <text x="506" y="192" font-size="10" fill="var(--rework)">не працює жодна з чотирьох функцій</text>
 
           <!-- пакет -->
           <rect x="600" y="60" width="230" height="180" fill="none" stroke="currentColor" stroke-width="2"/>
@@ -559,6 +567,18 @@
       </svg>
       <figcaption>Шина живиться паразитно з лінії даних, а земля пакета відділена від землі ESP32 шунтом струму заряду.</figcaption>
     </figure>
+
+    <div class="callout">
+      <h3>GPIO12: підтяжка потрібна, але це strapping-пін</h3>
+      <p>Резистор <strong>4.7 кОм із enable на +3.3 В обов'язковий</strong>: цією лінією активується сам
+         пакет, і рівень на ній має бути визначеним навіть тоді, коли пін не веде її активно. Прошивка
+         лише притискає лінію вниз, коли пакет має бути неактивним.</p>
+      <p>Водночас GPIO12 — це <strong>MTDI</strong>: рівнем на ньому в момент скидання ESP32 вибирає
+         напругу флеш-пам'яті, і HIGH означає «флеш 1.8 В». Те, що ця плата з резистором стартує,
+         означає, що eFuse напруги флеша вже пропалено (<code>espefuse.py set_flash_voltage 3.3V</code>)
+         або флеш там справді 1.8 В. При переносі на інший модуль перше, що треба перевірити, — чи він
+         узагалі завантажується.</p>
+    </div>
 
     <div class="callout">
       <h3>Внутрішня підтяжка зовнішню НЕ замінює</h3>
@@ -643,7 +663,7 @@
         <tbody>
           <tr><td class="pin">4</td><td>Підсвітка екрана (BLK)</td><td class="val">—</td><td>ШІМ, плавна поява заставки</td></tr>
           <tr><td class="pin">5</td><td>Екран CS</td><td class="val">—</td><td>На GMT130 виводу CS немає; пін заданий і нікуди не підключений</td></tr>
-          <tr><td class="pin">12</td><td>1-Wire enable / підтяжка</td><td class="val">без резисторів</td><td><strong>strapping MTDI</strong> — підтяжки вгору бути не може</td></tr>
+          <tr><td class="pin">12</td><td>1-Wire enable пакета</td><td class="val">4.7к на 3.3 В</td><td><strong>обов'язковий</strong>. GPIO12 — strapping MTDI: працює, бо eFuse флеша пропалено</td></tr>
           <tr><td class="pin">13</td><td>1-Wire дані</td><td class="val">4.7к на 3.3 В</td><td>Зовнішня підтяжка <strong>обов'язкова</strong> — чипи живляться паразитно</td></tr>
           <tr><td class="pin">14</td><td>Світлодіод зелений</td><td class="val">~330 Ом</td><td>ШІМ для «дихання»</td></tr>
           <tr><td class="pin">15</td><td>Підсвітка кнопок</td><td class="val">—</td><td>Необов'язково</td></tr>
@@ -703,7 +723,8 @@
           <tr><td>Запираюча підтяжка бази PNP</td><td class="val">1 кОм</td><td class="val">1 кОм</td><td><span class="tag tag-ok">на місці</span></td></tr>
           <tr><td>Подільники вимірювання</td><td class="val">20к/10к, 1к</td><td class="val">без змін</td><td><span class="tag tag-ok">на місці</span></td></tr>
           <tr><td>Подільник живлення</td><td class="val">—</td><td class="val">68к/10к + 1к</td><td><span class="tag tag-rework">новий вузол</span></td></tr>
-          <tr><td>Підтяжка 1-Wire (GPIO13 → 3.3 В)</td><td class="val">?</td><td class="val">2.2…4.7 кОм</td><td><span class="tag tag-rework">перевірити</span></td></tr>
+          <tr><td>Підтяжка даних (GPIO13 → 3.3 В)</td><td class="val">?</td><td class="val">2.2…4.7 кОм</td><td><span class="tag tag-rework">перевірити</span></td></tr>
+          <tr><td>Підтяжка enable (GPIO12 → 3.3 В)</td><td class="val">?</td><td class="val">4.7 кОм</td><td><span class="tag tag-rework">перевірити</span></td></tr>
           <tr><td>Спільна земля з пакетом</td><td class="val">?</td><td class="val">мінус пакета ↔ GND</td><td><span class="tag tag-rework">перевірити</span></td></tr>
         </tbody>
       </table>

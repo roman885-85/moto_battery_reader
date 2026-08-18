@@ -1686,6 +1686,20 @@ const char *chargeStart(uint8_t targetPct) {
     // targetPct прийшов ззовні (клієнт міг надіслати щось дивне).
     uint16_t targetMv = (uint16_t)impresMvFromPercent(targetPct);
     if (targetMv > CHARGE_TARGET_MV) targetMv = CHARGE_TARGET_MV;
+    // ⚑ ПІСЛЯ ЗАТИСКУ ЦІЛЬ У ВІДСОТКАХ ТРЕБА ПЕРЕРАХУВАТИ — інакше профіль
+    //  струму масштабується під ціль, якої не буде.
+    //
+    //  Раніше цього не було видно, бо шкала була лінійна й 100 % збігались із
+    //  CHARGE_TARGET_MV. З правильною кривою 2S 100 % — це 8.40 В, а
+    //  заряджаємо ми до 8.20 В, тобто до 90 %. Якби targetPct лишився 100,
+    //  поріг дозаряду рахувався б як 90 % від 100 = 90 % — а це РІВНО та
+    //  напруга, на якій заряд і закінчується. Дозаряд малим струмом просто
+    //  зник би: пакет добивався б повним струмом до самого кінця.
+    //
+    //  Тепер targetPct = відсоток тієї напруги, на якій ми справді зупинимось,
+    //  і всі точки перегину профілю (10/50/80/дозаряд) стискаються під неї.
+    targetPct = (uint8_t)impresPercentFromMv(targetMv);
+    if (targetPct < CHARGE_TARGET_PCT_MIN) targetPct = CHARGE_TARGET_PCT_MIN;
     uint16_t hardMaxMv = (uint16_t)(targetMv + CHARGE_HARD_MAX_HEADROOM_MV);
 
     // ⚑ ENABLE — НАЙПЕРШИМ, І ЛИШЕ ПОТІМ УСЕ ІНШЕ.

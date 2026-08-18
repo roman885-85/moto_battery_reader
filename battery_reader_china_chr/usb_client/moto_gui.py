@@ -2342,7 +2342,7 @@ class App:
 
     # Межі лінійки приходять від пристрою (див. dischargeJson); поки не
     # опитали — типові з settings.h.
-    disRamp = {"rampHiMv": 8250, "maHi": 1000, "maLo": 300,
+    disRamp = {"rampHiMv": 8400, "maHi": 1000, "maLo": 300,
                "tgtMinMv": 6800, "tgtMaxMv": 8000, "tgtDefMv": 7200}
 
     def _dis_target_mv(self):

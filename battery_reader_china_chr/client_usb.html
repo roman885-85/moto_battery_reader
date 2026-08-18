@@ -1539,7 +1539,7 @@ async function disStatus(){ if(!connected){toast('Підключіться');ret
 // --- цільова напруга розряду ------------------------------------------------
 // Межі й лінійка струму приходять від пристрою (DISCHARGE ?): тримати їхню
 // копію тут означало б розійтися з discharge.h після наступної правки.
-let disRampCfg={rampHiMv:8250,maHi:1000,maLo:300,tgtMinMv:6800,tgtMaxMv:8000,tgtDefMv:7200};
+let disRampCfg={rampHiMv:8400,maHi:1000,maLo:300,tgtMinMv:6800,tgtMaxMv:8000,tgtDefMv:7200};
 function disTargetMv(){
   const e=$('disTarget');
   let t=parseInt(e&&e.value)||disRampCfg.tgtDefMv||7200;

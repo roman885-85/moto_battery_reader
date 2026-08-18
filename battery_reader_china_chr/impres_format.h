@@ -105,6 +105,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include "soc.h"   // таблична крива заряду за напругою (2S)
 
 #define IMPRES_33_SIZE        512
 #define IMPRES_38_SIZE        64
@@ -496,31 +497,24 @@ inline int impresRatedMahFor(const uint8_t *d33, const char *model) {
     return m ? m : impresRatedMah(model);
 }
 
-// Заряд, % за напругою (межі — BATTERY_EMPTY_MV/BATTERY_FULL_MV у settings.h,
-// уточнені власником на реальних пакетах)
-// на реальних пакетах:
-// показання паливоміра після ремонту не відповідають реальному стану, а ЗП
-// потім сама їх уточнить.
-#ifndef IMPRES_EMPTY_MV
-  #define IMPRES_EMPTY_MV 6350
-#endif
-#ifndef IMPRES_FULL_MV
-  #define IMPRES_FULL_MV  8250
-#endif
-inline int impresPercentFromMv(int mv) {
-    long p = ((long)mv - IMPRES_EMPTY_MV) * 100 / (IMPRES_FULL_MV - IMPRES_EMPTY_MV);
-    if (p < 0) p = 0;
-    if (p > 100) p = 100;
-    return (int)p;
-}
+// ── ЗАРЯД У ВІДСОТКАХ ЗА НАПРУГОЮ ────────────────────────────────────────
+//  ⚑ ТУТ БУЛА ЛІНІЙКА, І ЦЕ БУЛА ПОМИЛКА. Відсоток рахувався прямою між
+//  «порожньо» і «повно»:
+//
+//      p = (mv - 6350) * 100 / (8250 - 6350)
+//
+//  Для літію пряма не годиться: крива напруги спокою — полога сходинка з
+//  довгим плато посередині. На 7.00 В лінійка казала 34 %, тоді як у пакета
+//  лишалось близько 8 %. Помилка була найбільша саме там, де вона найдорожча.
+//
+//  Тепер обидві функції — тонкі обгортки над табличною кривою 2S (soc.h).
+//  Власної арифметики тут більше немає навмисно: два джерела однієї шкали
+//  розійшлись би, і половина поверхонь показувала б інше число.
+inline int impresPercentFromMv(int mv) { return socPctFromMv(mv); }
+
 // Обернена функція — потрібна для вибору ЦІЛІ заряду відсотком (керований
-// заряд через DC/DC, charge.h): відсоток -> напруга. Та сама лінійна шкала,
-// просто в інший бік.
-inline int impresMvFromPercent(int pct) {
-    if (pct < 0) pct = 0;
-    if (pct > 100) pct = 100;
-    return IMPRES_EMPTY_MV + (int)((long)pct * (IMPRES_FULL_MV - IMPRES_EMPTY_MV) / 100);
-}
+// заряд, charge.h): відсоток -> напруга. Та сама крива, просто в інший бік.
+inline int impresMvFromPercent(int pct) { return socMvFromPct(pct); }
 // ICA, що відповідає заданому відсотку. Шкала АПАРАТНА (див. блок нижче), тож
 // 100 % — це не 255, а стільки одиниць, скільки важить повний пакет:
 // ratedMah * Rsense / 0.4882. Без відомого шунта лишається стара шкала 0..255.

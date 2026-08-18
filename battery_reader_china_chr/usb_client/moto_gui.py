@@ -202,6 +202,13 @@ def _dnum(v):
     """Дата з плану (число YYYYMMDD) у людський вигляд; 0 -> прочерк."""
     return "%04d-%02d-%02d" % (v // 10000, (v // 100) % 100, v % 100) if v else "—"
 
+# Лічильники, які обидва чипи ведуть по-різному. Назви й одиниці тримає
+# КЛІЄНТ: у прошивці кожен рядок тексту — це флеш, а його щойно не вистачило.
+# Порядок рядків задає пристрій (MVAL_* у mirror_plan.h) і він однаковий скрізь.
+MIR_VAL_ROWS = [("Наробіток (ETM)", "діб"),
+                ("Заряджено (CCA)", "циклів"),
+                ("Розряджено (DCA)", "циклів")]
+
 def etm_foreign_text(etm_d, age_d, mfg=None):
     """Єдине формулювання «наробіток більший за вік пакета».
 
@@ -1425,11 +1432,12 @@ class App:
         #  спершу видно, ЩО зміниться, і кожен байт можна лишити старим.
         #  Це важливо, коли монітор чужий: сліпе копіювання тоді закріплює
         #  чужу ідентичність замість ремонту.
-        b2m = ttk.LabelFrame(p_rep, text="Синхронізація дзеркала DS2438 → DS2433  ·  пише в DS2433",
+        b2m = ttk.LabelFrame(p_rep, text="Синхронізація чипів DS2438 ↔ DS2433  ·  пише в обидва",
                              padding=8); b2m.pack(fill="x", pady=4)
-        ttk.Label(b2m, text="Ті самі 26 байтів ідентичності лежать у двох чипах:\n"
-                            "DS2433[0x01–0x1A] і DS2438[0x18–0x31]. Нижче — побайтова різниця;\n"
-                            "зніміть галочку з байта, який треба лишити старим.",
+        ttk.Label(b2m, text="Спільні дані лежать у двох чипах ДВОМА шарами.\n"
+                            "Байти ідентичності (26 шт., DS2433[0x01–0x1A] ≡ DS2438[0x18–0x31])\n"
+                            "беруться з монітора. Лічильники — навпаки, з пакета: наробіток і\n"
+                            "накопичений заряд монітор веде своїми числами, і саме вони розходяться.",
                   foreground="#b9bd86", justify="left").pack(anchor="w")
         self.lblMir = ttk.Label(b2m, text="план не побудовано", foreground="#c8b04a")
         self.lblMir.pack(anchor="w", pady=(4, 2))
@@ -1440,6 +1448,41 @@ class App:
         self.lblMirWarn = ttk.Label(b2m, text="", foreground=MIL["maroon"],
                                     wraplength=560, justify="left")
         self.lblMirWarn.pack(anchor="w")
+
+        # ── ЛІЧИЛЬНИКИ: ЩО КАЖЕ ПАКЕТ І ЩО КАЖЕ МОНІТОР ──────────────────
+        #  Головна частина операції. Рація рахує «дату першого користування»
+        #  як «сьогодні мінус наробіток», тобто читає DS2438, а не дату з
+        #  DS2433; коли числа розійшлись, вона показує чужий вік і чужий знос.
+        #  Напрямок тут ЗВОРОТНИЙ до байтового: пише в монітор.
+        ttk.Label(b2m, text="Лічильники: що каже пакет (DS2433) і що каже монітор (DS2438).\n"
+                            "Порожнє поле «вручну» — брати число пакета; вписане — сильніше за нього.",
+                  foreground="#b9bd86", justify="left").pack(anchor="w", pady=(6, 2))
+        vhdr = ttk.Frame(b2m); vhdr.pack(fill="x")
+        for txt, w in (("", 3), ("Показник", 20), ("У пакеті", 12),
+                       ("У моніторі", 12), ("Буде", 12), ("Вручну", 8)):
+            ttk.Label(vhdr, text=txt, width=w, foreground="#9a9c82").pack(side="left")
+        self.mirValVar, self.mirValCells, self.mirValEnt, self.mirValChk = [], [], [], []
+        self._mirValShown = [""] * len(MIR_VAL_ROWS)
+        for i, (name, unit) in enumerate(MIR_VAL_ROWS):
+            row = ttk.Frame(b2m); row.pack(fill="x", pady=1)
+            var = tk.BooleanVar(value=False)
+            chk = ttk.Checkbutton(row, variable=var,
+                                  command=lambda k=i: self._mirror_val_toggle(k))
+            chk.pack(side="left")
+            ttk.Label(row, text=name, width=20).pack(side="left")
+            cells = []
+            for _ in range(3):
+                lb = ttk.Label(row, text="—", width=12); lb.pack(side="left"); cells.append(lb)
+            ent = ttk.Entry(row, width=8); ent.pack(side="left", padx=2)
+            ent.bind("<Return>",   lambda _e, k=i: self._mirror_val_set(k))
+            ent.bind("<FocusOut>", lambda _e, k=i: self._mirror_val_set(k))
+            ttk.Label(row, text=unit, foreground="#9a9c82").pack(side="left")
+            self.mirValVar.append(var); self.mirValCells.append(cells)
+            self.mirValEnt.append(ent);  self.mirValChk.append(chk)
+        self.lblMirVal = ttk.Label(b2m, text="", foreground="#c8b04a",
+                                   wraplength=560, justify="left")
+        self.lblMirVal.pack(anchor="w", pady=(2, 4))
+
         mrow = ttk.Frame(b2m); mrow.pack(anchor="w", pady=2)
         ttk.Label(mrow, text="Паспортна ємність, мА·год:").pack(side="left")
         self.eMirRated = ttk.Entry(mrow, width=8); self.eMirRated.pack(side="left", padx=4)
@@ -3321,6 +3364,7 @@ class App:
         else:
             warn = ""
         self.lblMirWarn.config(text=warn)
+        self._mirror_vals_show(p)
 
         self.mirBox.delete(0, "end")
         for i, b in enumerate(p.get("b", [])):
@@ -3330,6 +3374,57 @@ class App:
             self.mirBox.insert("end", "%s %s 0x%03X  зараз %02X   DS2438 %02X   ->  %02X%s"
                                % (mark, diff, p.get("at33", 1) + i,
                                   b.get("now", 0), b.get("src", 0), b.get("out", 0), rated))
+
+    def _mirror_vals_show(self, p):
+        """Три рядки лічильників: пакет / монітор / буде + ручне число."""
+        rows = p.get("v") or []
+        for i, (_name, unit) in enumerate(MIR_VAL_ROWS):
+            r = rows[i] if i < len(rows) else {}
+            avail = bool(r.get("a"))
+            self.mirValVar[i].set(bool(r.get("t")))
+            self.mirValChk[i].config(state=("normal" if avail else "disabled"))
+            pack = ("%d %s" % (r.get("p", 0), unit)) if r.get("pk") else "—"
+            self.mirValCells[i][0].config(text=pack)
+            self.mirValCells[i][1].config(text="%d %s" % (r.get("m", 0), unit))
+            self.mirValCells[i][2].config(text="%d %s" % (r.get("o", 0), unit))
+            # Поле правки чіпаємо, лише коли число справді інше: інакше воно
+            # стрибало б під пальцями під час набору.
+            want = str(r.get("u")) if r.get("u", -1) >= 0 else ""
+            if self._mirValShown[i] != want:
+                self.mirValEnt[i].delete(0, "end")
+                if want:
+                    self.mirValEnt[i].insert(0, want)
+                self._mirValShown[i] = want
+
+        # Порожня таблиця без пояснення читалася б як «розбіжностей немає».
+        if not p.get("have38"):
+            m = "DS2438 не зчитано — лічильники монітора писати нікуди."
+        elif not p.get("rsChip"):
+            m = ("Шунт у DS2438 не записаний — цикли з накопиченого заряду не перерахувати. "
+                 "Наробіток правити можна: він від шунта не залежить.")
+        elif rows and not rows[0].get("pk"):
+            m = ("Наробіток пакета не порахувати: немає читаної дати першого користування "
+                 "(потрібен ключ із ROM-ID). Число можна вписати вручну.")
+        elif not p.get("vChanges"):
+            m = "Лічильники збігаються — синхронізувати нема чого."
+        else:
+            m = ""
+        self.lblMirVal.config(text=m)
+
+    def _mirror_val_toggle(self, i):
+        self._mirror_send("VAL=%d ON=%d" % (i, 1 if self.mirValVar[i].get() else 0))
+
+    def _mirror_val_set(self, i):
+        raw = (self.mirValEnt[i].get() or "").strip()
+        if raw == self._mirValShown[i]:
+            return                      # нічого не міняли — не смикаємо пристрій
+        try:
+            v = int(raw) if raw else -1
+        except ValueError:
+            messagebox.showwarning("Лічильники", "Вкажіть ціле число (порожньо — брати з пакета)")
+            return
+        self._mirValShown[i] = raw
+        self._mirror_send("VSET=%d V=%d" % (i, v))
 
     def _mirror_send(self, arg):
         if not self.need_conn():
@@ -3365,16 +3460,22 @@ class App:
         if not p:
             messagebox.showwarning("Синхронізація", "Спершу перечитайте план")
             return
-        if not messagebox.askyesno("Синхронізація дзеркала",
-                "Записати %d байт(ів) у DS2433?\n\n"
-                "Пишеться ЛИШЕ дзеркало ідентичності й сума заголовка.\n"
-                "Модель, крива, навчена калібровка й лічильники не чіпаються."
-                % p.get("changes", 0)):
+        # Називаємо ОБИДВА чипи: операція пише в два різні чипи в протилежних
+        # напрямках, і мовчазний другий запис був би несподіванкою.
+        nv = p.get("vChanges", 0)
+        if not messagebox.askyesno("Синхронізація чипів",
+                "Записати %d байт(ів) ідентичності в DS2433%s?\n\n"
+                "У DS2433 — лише дзеркало ідентичності й сума заголовка;\n"
+                "модель, крива й навчена калібровка не чіпаються.%s"
+                % (p.get("changes", 0),
+                   (" і %d лічильник(ів) у DS2438" % nv) if nv else "",
+                   "\nУ DS2438 — лише позначені лічильники." if nv else "")):
             return
 
         def done(r):
             ok = isinstance(r, dict) and r.get("ok")
-            self.status(("✅ Змінено байтів: %d" % r.get("changed", 0)) if ok
+            self.status(("✅ Байтів у DS2433: %d, лічильників у DS2438: %d"
+                         % (r.get("changed", 0), r.get("changed38", 0))) if ok
                         else ("Помилка: " + str((r or {}).get("err", ""))), ok)
             if ok and isinstance(r.get("plan"), dict):
                 self._mirror_show(r["plan"])

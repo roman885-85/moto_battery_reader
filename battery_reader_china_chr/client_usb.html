@@ -389,11 +389,18 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <button class="btn b-inf" onclick="hdrFix()">🔌 ДОБУДУВАТИ ЗАГОЛОВОК</button>
     </div>
     <div class="card" style="border-color:var(--inf)">
-      <h2>🔗 Синхронізація дзеркала DS2438 → DS2433 <span class="chipb">пише в DS2433</span></h2>
-      <div class="note i">Ті самі 26 байтів ідентичності лежать у двох чипах. Кнопка вище копіює їх
-        усі наосліп; тут спершу видно, що зміниться, і кожен байт можна лишити старим.</div>
+      <h2>🔗 Синхронізація чипів DS2438 ↔ DS2433 <span class="chipb">пише в обидва</span></h2>
+      <div class="note i">Спільні дані лежать у двох чипах двома шарами. <b>Байти ідентичності</b>
+        (26 шт.) беруться з монітора й пишуться в DS2433. <b>Лічильники</b> — навпаки, з пакета:
+        наробіток і накопичений заряд монітор веде своїми числами, і саме вони розходяться.</div>
       <div class="note w" id="mirWarn" style="display:none"></div>
       <div class="row"><span class="k">Стан</span><span class="v" id="mirState">—</span></div>
+      <div class="note i" style="margin-top:8px">📊 <b>Лічильники: пакет проти монітора</b>. Рація рахує
+        «дату першого користування» як <i>сьогодні − наробіток</i>, тобто читає DS2438, а не дату з
+        DS2433. Записується в DS2438; лічильники самого пакета не чіпаються.</div>
+      <div class="rpwrap"><table class="rpt" id="mirVals"></table></div>
+      <div class="note i" id="mirValNote" style="display:none"></div>
+      <div class="note i" style="margin-top:8px">🧬 <b>Байти ідентичності</b> — з монітора в DS2433.</div>
       <div class="row"><span class="k">Паспортна ємність</span>
         <span><span class="v" id="mirRated">—</span>
           <input type="number" id="mirRatedInp" placeholder="вручну" min="1000" max="6000" step="25"
@@ -1144,6 +1151,7 @@ function mirRender(){
       : '⚠️ Годинник пристрою не заведено (дату шле клієнт), тому наробіток нема з чим порівняти. '
         +'Перечитайте план — запит уже несе сьогоднішню дату.');
   if(msg){w.style.display='';w.innerHTML=msg;} else w.style.display='none';
+  mirRenderVals(p);
   $('mirRated').textContent='у чипі '+(p.ratedNow?p.ratedNow+' мА·год':'—')
     +' · у моніторі '+(p.ratedSrc?p.ratedSrc+' мА·год':'—')
     +(p.ratedUser?(' · вручну '+p.ratedUser+' мА·год'):'');
@@ -1160,6 +1168,40 @@ function mirRender(){
   }
   t.innerHTML=h;
 }
+// Лічильники, які чипи ведуть по-різному. Назви й одиниці — у клієнті: у
+// прошивці кожен рядок тексту це флеш. Порядок рядків задає пристрій (MVAL_*).
+const MIR_VALS=[{n:'Наробіток (ETM)',u:'діб'},
+                {n:'Заряджено (CCA)',u:'циклів'},
+                {n:'Розряджено (DCA)',u:'циклів'}];
+function mirRenderVals(p){
+  const t=$('mirVals'), note=$('mirValNote');
+  if(!p||!p.v){t.innerHTML='';note.style.display='none';return;}
+  let h='<tr><th></th><th>Показник</th><th>У пакеті</th><th>У моніторі</th><th>Буде</th><th>Вручну</th></tr>';
+  for(let i=0;i<p.v.length && i<MIR_VALS.length;i++){
+    const r=p.v[i], d=MIR_VALS[i];
+    h+='<tr'+((r.a&&r.p!==r.m)?' style="color:var(--org)"':'')+'>'
+      +'<td><input type="checkbox" '+(r.t?'checked':'')+(r.a?'':' disabled')
+      +' onchange="mirVal('+i+',this.checked)"></td>'
+      +'<td>'+d.n+'</td><td>'+(r.pk?(r.p+' '+d.u):'—')+'</td><td>'+r.m+' '+d.u+'</td>'
+      +'<td><b>'+r.o+' '+d.u+'</b></td>'
+      +'<td><input type="number" id="mirV'+i+'" min="0" step="1" style="width:78px" '
+      +'value="'+(r.u>=0?r.u:'')+'" placeholder="—" onchange="mirValSet('+i+')"></td></tr>';
+  }
+  t.innerHTML=h;
+  let m='';
+  if(!p.have38) m='⚠️ DS2438 не зчитано — лічильники монітора писати нікуди.';
+  else if(!p.rsChip) m='⚠️ Шунт у DS2438 не записаний — цикли з накопиченого заряду не перерахувати. '
+    +'Наробіток правити можна: він від шунта не залежить.';
+  else if(!p.v[0].pk) m='ℹ️ Наробіток пакета не порахувати: немає читаної дати першого користування '
+    +'(потрібен ключ). Число можна вписати вручну.';
+  else if(!p.vChanges) m='ℹ️ Лічильники збігаються — синхронізувати нема чого.';
+  if(m){note.style.display='';note.textContent=m;} else note.style.display='none';
+}
+function mirVal(i,on){ mirSend('VAL='+i+' ON='+(on?1:0)); }
+function mirValSet(i){
+  const e=$('mirV'+i), v=(e&&e.value!=='')?(+e.value|0):-1;
+  mirSend('VSET='+i+' V='+v);
+}
 async function mirSend(a){
   if(!connected){toast('Підключіться');return;}
   await ensureAuth();
@@ -1171,11 +1213,16 @@ function mirByte(i,on){ mirSend('BYTE='+i+' ON='+(on?1:0)); }
 function mirSetRated(){ const v=$('mirRatedInp').value; mirSend('RATED='+(v?(+v|0):0)); }
 async function mirApply(){
   if(!mirPlan){toast('Спершу перечитайте план');return;}
-  if(!confirm('🔗 Записати '+mirPlan.changes+' байт(ів) у DS2433?\n\n'
-            +'Пишеться лише дзеркало ідентичності й сума заголовка.'))return;
+  // Називаємо обидва чипи: операція пише в два різні чипи в протилежних
+  // напрямках, і мовчазний другий запис був би несподіванкою.
+  if(!confirm('🔗 Записати '+mirPlan.changes+' байт(ів) ідентичності в DS2433'
+            +(mirPlan.vChanges?(' і '+mirPlan.vChanges+' лічильник(ів) у DS2438'):'')+'?\n\n'
+            +'У DS2433 — лише дзеркало ідентичності й сума заголовка.'
+            +(mirPlan.vChanges?'\nУ DS2438 — лише позначені лічильники.':'')))return;
   await ensureAuth();
   const r=await cmd('MIRROR APPLY TODAY='+rpToday(),20000);
-  if(r&&r.ok){toast('✅ Змінено байтів: '+r.changed); if(r.plan){mirPlan=r.plan;mirRender();} await refresh();}
+  if(r&&r.ok){toast('✅ Байтів у DS2433: '+r.changed+', лічильників у DS2438: '+(r.changed38||0));
+              if(r.plan){mirPlan=r.plan;mirRender();} await refresh();}
   else toast('Помилка: '+((r&&r.err)||''),'err');
 }
 

@@ -325,6 +325,160 @@ int main() {
         check(!p.take[5], "без придатного джерела «перенести» нема чого — і галочка не стає");
     }
 
+    printf("\n9) значення, обліковані двічі — на числах із поля\n");
+    // Скарга власника з натури (PMNN4409B, обидва дампи в листуванні):
+    //   ETM у DS2438 …… 552 727 405 с = 6397 діб = 17 років
+    //   а пакет за DS2433: виготовлений 2026-08-03, уперше ввімкнений
+    //   2026-08-18 — тобто йому 15 діб, і наробітку в нього нуль;
+    //   CCA raw 195 -> 31 еквівалентний цикл, DCA raw 238 -> 37 циклів,
+    //   а лічильники Motorola кажуть 1 цикл IMPRES + 5 не-IMPRES.
+    // Байтове дзеркало в цьому пакеті збігається ПОВНІСТЮ — тобто стара
+    // синхронізація сказала б «усе гаразд» і не полагодила б нічого.
+    {
+        const int   RATED = 2150;        // DS2433[0x008] = 0x56 -> 86 * 25
+        const float RS    = 0.04565f;    // DS2438[56..57] = 0x11D5 -> 45.65 мОм
+
+        uint8_t a33[DUMP_SIZE], a38[DS2438_MEM_SIZE];
+        memset(a33, 0, sizeof(a33)); memset(a38, 0, sizeof(a38));
+        for (int i = 0; i < IMPRES_MIRROR_LEN; i++) {          // дзеркало збігається
+            a33[IMPRES_MIRROR_D33_AT + i] = (uint8_t)(0x40 + i);
+            a38[IMPRES_MIRROR_D38_AT + i] = (uint8_t)(0x40 + i);
+        }
+        MirrorPlan p;
+        mirrorPlanBuild(p, a33, a38);
+        check(p.diffCount == 0, "байтове дзеркало збігається — байтам синхронізація не потрібна");
+        check(!p.haveVals, "поки числа не повідомили — значеннєвих рядків немає");
+
+        MirrorValIn in;
+        memset(&in, 0, sizeof(in));
+        in.have38 = true; in.ratedMah = RATED; in.rsense = RS; in.rsFromChip = true;
+        in.monEtmDays = 552727405L / 86400L;      // 6397
+        in.monCca = 195; in.monDca = 238;
+        in.packEtmKnown = true; in.packEtmDays = 0;      // перший запуск сьогодні
+        in.packCycKnown = true; in.packCycles = 1 + 5;   // IMPRES + не-IMPRES
+        mirrorPlanSetVals(p, in);
+
+        printf("   ETM: пакет %ld діб, монітор %ld діб\n", p.val[MVAL_ETM].pack, p.val[MVAL_ETM].mon);
+        printf("   CCA: пакет %ld циклів, монітор %ld;  DCA: %ld / %ld\n",
+               p.val[MVAL_CCA].pack, p.val[MVAL_CCA].mon,
+               p.val[MVAL_DCA].pack, p.val[MVAL_DCA].mon);
+        check(p.haveVals, "значеннєві рядки з'явились");
+        check(p.val[MVAL_ETM].mon == 6397, "наробіток монітора розібрано як 6397 діб");
+        check(p.val[MVAL_CCA].mon == 31, "CCA 195 -> 31 цикл (як і показує картка даних)");
+        check(p.val[MVAL_DCA].mon == 37, "DCA 238 -> 37 циклів");
+        check(p.val[MVAL_CCA].pack == 6 && p.val[MVAL_DCA].pack == 6,
+              "пакет каже 6 циклів (1 IMPRES + 5 не-IMPRES)");
+        // ⚑ Типово беремо лише те, що СПРАВДІ розходиться, — так само, як на
+        //  байтовому боці. Тут розходяться всі три.
+        check(p.val[MVAL_ETM].take && p.val[MVAL_CCA].take && p.val[MVAL_DCA].take,
+              "усі три рядки розходяться — типово вони й обрані");
+        check(mirrorValChanges(p) == 3, "зміняться всі три");
+
+        // Запис у монітор.
+        uint8_t w38[DS2438_MEM_SIZE];
+        memcpy(w38, a38, sizeof(w38));
+        // Покладемо в дамп саме ті числа, що були в пакеті власника.
+        w38[8] = 0x6D; w38[9] = 0xF3; w38[10] = 0xF1; w38[11] = 0x20;
+        w38[0x3C] = 195; w38[0x3D] = 0; w38[0x3E] = 238; w38[0x3F] = 0;
+        int n = mirrorPlanApply38(p, w38);
+        check(n == 3, "у монітор записано три значення");
+        check(impresEtm(w38) == 0, "наробіток став 0 — стільки, скільки пакет і прожив");
+        uint16_t cca = (uint16_t)w38[0x3C] | ((uint16_t)w38[0x3D] << 8);
+        uint16_t dca = (uint16_t)w38[0x3E] | ((uint16_t)w38[0x3F] << 8);
+        printf("   записано CCA raw %u, DCA raw %u\n", cca, dca);
+        check(mirrorCyclesFromRaw(cca, RATED, RS) == 6, "після запису монітор показує 6 циклів заряду");
+        check(mirrorCyclesFromRaw(dca, RATED, RS) == 6, "…і 6 циклів розряду");
+
+        // Повторний прохід не сміє знайти нових розбіжностей.
+        MirrorPlan q;
+        mirrorPlanBuild(q, a33, w38);
+        MirrorValIn in2 = in;
+        in2.monEtmDays = (long)(impresEtm(w38) / 86400UL);
+        in2.monCca = cca; in2.monDca = dca;
+        mirrorPlanSetVals(q, in2);
+        check(mirrorValChanges(q) == 0, "повторна синхронізація нічого не змінює");
+        check(!q.val[MVAL_CCA].take && !q.val[MVAL_DCA].take && !q.val[MVAL_ETM].take,
+              "…і жоден рядок уже не позначений");
+    }
+
+    printf("\n10) значеннєвий бік: правка, межі й доступність\n");
+    {
+        const int RATED = 2150; const float RS = 0.04565f;
+        uint8_t a33[DUMP_SIZE], a38[DS2438_MEM_SIZE];
+        memset(a33, 0, sizeof(a33)); memset(a38, 0, sizeof(a38));
+        MirrorPlan p;
+        mirrorPlanBuild(p, a33, a38);
+
+        MirrorValIn in; memset(&in, 0, sizeof(in));
+        in.have38 = true; in.ratedMah = RATED; in.rsense = RS; in.rsFromChip = true;
+        in.monEtmDays = 6397; in.monCca = 195; in.monDca = 238;
+        in.packEtmKnown = false;                 // ключа немає — дата нечитана
+        in.packCycKnown = true; in.packCycles = 6;
+        mirrorPlanSetVals(p, in);
+        check(!p.val[MVAL_ETM].avail, "без читаної дати рядок наробітку недоступний");
+        check(p.val[MVAL_CCA].avail, "а цикли ключа не потребують — рядок доступний");
+        mirrorValTake(p, MVAL_ETM, true);
+        check(!p.val[MVAL_ETM].take, "недоступний рядок не вмикається галочкою");
+
+        // ⚑ Вписане руками оживляє рядок: «монітор бреше, а скільки насправді
+        //  — я знаю» — законний і типовий випадок.
+        long got = mirrorValSetUser(p, MVAL_ETM, 15);
+        check(got == 15 && p.val[MVAL_ETM].take, "вписане число вмикає рядок навіть без пакета");
+        check(p.val[MVAL_ETM].out == 15 && p.val[MVAL_ETM].outRaw == 15L * 86400L,
+              "…і йде в чип секундами");
+        check(mirrorValSetUser(p, MVAL_ETM, -1) == -1 && !p.val[MVAL_ETM].take,
+              "скасування ручного числа знімає й галочку");
+
+        // Ручне сильніше за пакет.
+        mirrorValSetUser(p, MVAL_CCA, 2);
+        check(p.val[MVAL_CCA].out == 2, "ручне число сильніше за те, що каже пакет");
+        // Межі: наробіток понад 20 років і понад 9999 циклів — це вже сміття.
+        check(mirrorValSetUser(p, MVAL_ETM, 99999) == 20L * 365L, "наробіток затиснуто 20 роками");
+        check(mirrorValSetUser(p, MVAL_CCA, 100000) == 9999, "цикли затиснуто 9999");
+
+        // Без шунта з чипа цикли перерахувати нічим — рядки мовчать.
+        MirrorPlan q; mirrorPlanBuild(q, a33, a38);
+        MirrorValIn in3 = in; in3.rsense = 0.0f; in3.rsFromChip = false;
+        mirrorPlanSetVals(q, in3);
+        check(!q.val[MVAL_CCA].avail && !q.val[MVAL_DCA].avail,
+              "без шунта з чипа цикли не рахуються — і рядок не пропонується");
+
+        // Без монітора писати нікуди.
+        MirrorPlan r; mirrorPlanBuild(r, a33, nullptr);
+        MirrorValIn in4 = in; in4.have38 = false;
+        mirrorPlanSetVals(r, in4);
+        check(!r.haveVals, "без прочитаного DS2438 значеннєвих рядків немає");
+        uint8_t dummy[DS2438_MEM_SIZE];
+        memset(dummy, 0xAB, sizeof(dummy));
+        check(mirrorPlanApply38(r, dummy) == 0, "…і в чип нічого не пишеться");
+    }
+
+    printf("\n11) перерахунок циклів стійкий на всьому корпусі\n");
+    // Перетворення «цикли -> сирі одиниці -> цикли» мусить давати те саме
+    // число: інакше після синхронізації картка показувала б на цикл менше,
+    // ніж вписали, і людина тиснула б кнопку знову й знову.
+    {
+        std::vector<std::string> files; collect(files);
+        int seen = 0, bad = 0, pairs = 0;
+        for (auto &f : files) {
+            if (!load(f.c_str(), d33, DUMP_SIZE)) continue;
+            if (!load(p38(f).c_str(), d38, DS2438_MEM_SIZE)) continue;
+            int rated = impresRatedFromDump(d33);
+            float rs  = impresBmsRsense(d38);
+            if (rated <= 0 || rs <= 0.0f) continue;
+            seen++;
+            for (long c = 0; c <= 400; c++) {
+                uint16_t raw = mirrorRawFromCycles(c, rated, rs);
+                long back = mirrorCyclesFromRaw(raw, rated, rs);
+                pairs++;
+                if (back != c && raw < 65535) { bad++; break; }
+            }
+        }
+        printf("   пар «ємність × шунт»: %d, перевірок: %d\n", seen, pairs);
+        check(seen > 20, "є на чому перевіряти");
+        check(bad == 0, "зворотний перерахунок завжди дає те саме число циклів");
+    }
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

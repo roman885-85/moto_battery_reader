@@ -737,10 +737,12 @@ static void serialExec(const String &line) {
     // MIRROR TAKE=ALL|NONE         -> правка перед синхронізацією
     // MIRROR BYTE=<0..25> ON=0|1   -> те саме, по одному байту
     // MIRROR RATED=<мА·год>        -> вписати паспортну ємність руками (0 — скасувати)
+    // MIRROR VAL=<0..2> ON=0|1     -> значеннєвий рядок (0 ETM, 1 CCA, 2 DCA)
+    // MIRROR VSET=<0..2> V=<число> -> вписати число руками (доби або цикли; -1 — скасувати)
     // MIRROR APPLY                 -> записати те, що показано в плані
     // TODAY=РРРРММДД можна додати до будь-якої з форм — так само, як до плану
     // відновлення. Без дати не порахувати вік пакета, а без віку не сказати,
-    // чи монітор узагалі від нього (див. mirrorPlanEtmRefresh).
+    // чи монітор узагалі від нього (див. mirrorPlanFactsRefresh).
     else if (cmd == "MIRROR")   { String a4 = arg; a4.trim(); a4.toUpperCase();
                                   { // дату виймаємо ПЕРШОЮ: вона потрібна вже під час побудови плану
                                       int tp = a4.indexOf("TODAY=");
@@ -750,7 +752,7 @@ static void serialExec(const String &line) {
                                           long had = deviceClockNum();
                                           mirrorPlanClock(tv.toInt());
                                           if (g_mirPlanReady && had != deviceClockNum())
-                                              mirrorPlanEtmRefresh();   // план не чіпаємо: галочки людські
+                                              mirrorPlanFactsRefresh();   // план не чіпаємо: галочки людські
                                           a4 = a4.substring(0, tp) + ((te < 0) ? String("") : a4.substring(te + 1));
                                           a4.trim();
                                       } }
@@ -762,11 +764,22 @@ static void serialExec(const String &line) {
                                           int n = mirrorPlanApply(g_mirPlan, batteryDump);
                                           bool w = battery.writeBattery(batteryDump, DUMP_SIZE);
                                           if (w) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+                                          // Значеннєві рядки живуть у ДРУГОМУ чипі — пишемо і його.
+                                          int n38 = 0;
+                                          if (w && hasDump2438) {
+                                              n38 = mirrorPlanApply38(g_mirPlan, batteryDump2438);
+                                              if (n38) {
+                                                  displayShow("USB СИНХР 2438");
+                                                  w = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+                                                  if (w) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+                                              }
+                                          }
                                           ledSet(w ? LED_OK : LED_ERROR);
                                           displayShow(w ? "USB СИНХР OK" : "USB СИНХР ЗБІЙ");
                                           mirrorPlanRefresh();
                                           String r = "{\"ok\":"; r += w ? "true" : "false";
                                           r += ",\"changed\":"; r += n;
+                                          r += ",\"changed38\":"; r += n38;
                                           r += ",\"plan\":"; r += mirrorPlanJson(); r += "}";
                                           sResp(r);
                                       } else {
@@ -792,6 +805,30 @@ static void serialExec(const String &line) {
                                                       tail.trim();
                                                   }
                                                   mirrorPlanTakeOne(g_mirPlan, idx, on);
+                                              }
+                                              // Значеннєві рядки — тим самим розбором: VAL= бере
+                                              // наступний ON=, VSET= — наступний V=.
+                                              else if (tok.startsWith("VAL=")) {
+                                                  int idx = tok.substring(4).toInt();
+                                                  bool on = true;
+                                                  if (tail.startsWith("ON=")) {
+                                                      on = (tail.substring(3, 4) == "1");
+                                                      int q2 = tail.indexOf(' ');
+                                                      tail = (q2 < 0) ? String("") : tail.substring(q2 + 1);
+                                                      tail.trim();
+                                                  }
+                                                  mirrorValTake(g_mirPlan, idx, on);
+                                              }
+                                              else if (tok.startsWith("VSET=")) {
+                                                  int idx = tok.substring(5).toInt();
+                                                  long v = -1;
+                                                  if (tail.startsWith("V=")) {
+                                                      int q2 = tail.indexOf(' ');
+                                                      v = ((q2 < 0) ? tail.substring(2) : tail.substring(2, q2)).toInt();
+                                                      tail = (q2 < 0) ? String("") : tail.substring(q2 + 1);
+                                                      tail.trim();
+                                                  }
+                                                  mirrorValSetUser(g_mirPlan, idx, v);
                                               }
                                           }
                                           sResp(mirrorPlanJson());

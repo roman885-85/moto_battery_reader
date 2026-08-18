@@ -25,14 +25,64 @@
 //  Тут чиста арифметика без вводу-виводу — щоб її перевіряв хостовий тест.
 // ===========================================================================
 
+//  ⚑ ДРУГА ПОЛОВИНА ЗАДАЧІ — І ВОНА ГОЛОВНА. Крім 26 однакових БАЙТІВ, чипи
+//  ведуть ОДНІ Й ТІ САМІ ФАКТИ різними числами, і саме вони розходяться в
+//  натурі. Приклад із поля (PMNN4409B, дамп власника):
+//
+//      наробіток ETM у DS2438 …… 6397 діб (17 років)
+//      а пакет за DS2433 …………… виготовлений 2026-08-03, уперше ввімкнений
+//                                2026-08-18, тобто йому 15 діб
+//      заряджено (CCA) …………… 31 еквівалентний цикл
+//      розряджено (DCA) ………… 37 циклів
+//      а лічильники Motorola ……… 1 цикл IMPRES + 5 не-IMPRES
+//
+//  Байтове дзеркало в цьому пакеті збігається ПОВНІСТЮ — тобто «синхронізація»
+//  зі старим змістом сказала б «усе гаразд» і не полагодила нічого. Рація ж
+//  показує «дату першого користування» як «сьогодні мінус ETM», тож бачить
+//  2009 рік і рахує знос від нього.
+//
+//  Тому нижче — другий, ЗНАЧЕННЄВИЙ бік плану: ті самі факти в обох чипах,
+//  побачені поруч, із правкою перед записом. Напрямок тут ЗВОРОТНИЙ до
+//  байтового: ідентичність ми беремо з монітора, а лічильники — з ПАКЕТА,
+//  бо саме DS2433 веде рація й станція, а DS2438 — це накопичувач, який
+//  міняється разом із платою монітора.
+
 #include <stdint.h>
 #include <string.h>
 #include "impres_format.h"
 #include "impres_audit.h"   // impresEtmForeign(): чи монітор узагалі від цього пакета
+#include "impres_bms.h"     // impresCcaRawFromMah(): цикли -> сирі одиниці CCA/DCA
 
 // Зсув паспортної ємності ВСЕРЕДИНІ дзеркала. DS2433[0x008] — а дзеркало
 // починається з 0x001, отже сьомий байт.
 #define MIRROR_RATED_IDX (IMPRES_RATED_BYTE - IMPRES_MIRROR_D33_AT)
+
+// ── ФАКТИ, ЯКІ ВЕДУТЬ ОБИДВА ЧИПИ ───────────────────────────────────────────
+//  Рядків свідомо три, і кожен — не «поле», а ТВЕРДЖЕННЯ ПРО ПАКЕТ, яке кожен
+//  чип записує по-своєму:
+//
+//   MVAL_ETM  скільки пакет пропрацював. DS2438 має лічильник секунд; DS2433
+//             має дату першого вмикання, і рація рахує «сьогодні − ETM».
+//   MVAL_CCA  скільки в пакет залито заряду. DS2438 накопичує мА·год; DS2433
+//             веде лічильник циклів (IMPRES + не-IMPRES).
+//   MVAL_DCA  скільки з пакета взято. Симетрично до CCA; окремого лічильника
+//             розряду в DS2433 немає, тож пакетна сторона в нього та сама —
+//             повний цикл це заряд І розряд.
+//
+//  Одиниці — ЛЮДСЬКІ (доби, цикли), а не сирі: правити людина буде саме їх, і
+//  перерахунок у чипові одиниці мусить бути в одному місці — тут.
+enum { MVAL_ETM = 0, MVAL_CCA, MVAL_DCA, MVAL_COUNT };
+
+struct MirrorVal {
+    bool avail;      // обидві сторони прочитались — є що порівнювати
+    bool packKnown;  // пакетна сторона відома (без неї нема що пропонувати)
+    bool take;       // цей рядок переносимо
+    long pack;       // що каже DS2433, у людських одиницях
+    long mon;        // що зараз у DS2438, у тих самих одиницях
+    long user;       // вписано руками; -1 — не вписано
+    long out;        // що буде в моніторі після запису
+    long outRaw;     // …воно ж у чипових одиницях (секунди / сирі CCA)
+};
 
 struct MirrorPlan {
     bool     have33, have38;
@@ -61,6 +111,13 @@ struct MirrorPlan {
     bool     haveAge;                      // чи є з чим порівнювати (дата + годинник)
     long     etmDays, ageDays;             // наробіток і вік, доби
     bool     etmForeign;                   // наробіток більший за вік + допуск
+
+    // ── ЗНАЧЕННЯ, ОБЛІКОВАНІ ДВІЧІ (див. шапку файла) ────────────────────
+    MirrorVal val[MVAL_COUNT];
+    bool      haveVals;                    // хоч один рядок є з чим порівняти
+    int       ratedMah;                    // паспортна ємність пакета, мА·год
+    float     rsense;                      // шунт монітора, Ом
+    bool      rsFromChip;                  // шунт узято з чипа, а не з налаштувань
 };
 
 // Перерахунок «байт <-> мА·год» — той самий крок 25 мА·год, що й у решті
@@ -93,6 +150,9 @@ inline void mirrorPlanRecalc(MirrorPlan &p) {
 // усе одно показує, що зараз лежить у DS2433.
 inline void mirrorPlanBuild(MirrorPlan &p, const uint8_t *d33, const uint8_t *d38) {
     memset(&p, 0, sizeof(p));
+    // «Не вписано» — це −1, а не 0: нуль тут повноцінне значення («монітор як
+    // новий»), і сплутати їх означало б мовчки писати нулі в чип.
+    for (int i = 0; i < MVAL_COUNT; i++) p.val[i].user = -1;
     p.have33 = (d33 != nullptr);
     p.have38 = (d38 != nullptr);
     if (!p.have33) return;
@@ -132,6 +192,189 @@ inline void mirrorPlanSetEtm(MirrorPlan &p, long etmDays, long ageDays) {
     p.ageDays = ageDays;
     p.haveAge = ageDays > 0;
     p.etmForeign = impresEtmForeign(etmDays, ageDays);
+}
+
+// ── ЗНАЧЕННЄВА ЧАСТИНА ПЛАНУ ────────────────────────────────────────────────
+
+// Перерахунок «цикли <-> сирі одиниці CCA/DCA». Один еквівалентний цикл — це
+// паспортна ємність пакета; далі мА·год перетворює impresCcaRawFromMah() за
+// шунтом цього монітора.
+//
+//  ⚑ ОКРУГЛЕННЯ ПІДТЯГУЄМО ВГОРУ, доки зворотний перерахунок не дасть рівно те
+//  саме число циклів. Показ рахує цикли з відкиданням дробової частини
+//  (impresBmsParse), тож просте округлення інколи давало б на цикл менше, ніж
+//  вписали, — і людина тиснула б «синхронізувати» знову й знову, щоразу
+//  бачачи ту саму розбіжність.
+inline long mirrorCyclesFromRaw(uint16_t raw, int ratedMah, float rsOhm) {
+    if (ratedMah <= 0 || rsOhm <= 0.0f) return -1;
+    return impresCcaMahFromRaw(raw, rsOhm) / ratedMah;
+}
+inline uint16_t mirrorRawFromCycles(long cycles, int ratedMah, float rsOhm) {
+    if (cycles <= 0 || ratedMah <= 0 || rsOhm <= 0.0f) return 0;
+    uint16_t raw = impresCcaRawFromMah(cycles * (long)ratedMah, rsOhm);
+    for (int guard = 0; guard < 64 && raw < 65535; guard++) {
+        if (mirrorCyclesFromRaw(raw, ratedMah, rsOhm) >= cycles) break;
+        raw++;
+    }
+    return raw;
+}
+
+// Перерахувати «що буде в моніторі» для значеннєвих рядків.
+inline void mirrorValsRecalc(MirrorPlan &p) {
+    p.haveVals = false;
+    for (int i = 0; i < MVAL_COUNT; i++) {
+        MirrorVal &v = p.val[i];
+        if (v.avail) p.haveVals = true;
+        // Вписане руками сильніше за пакет: його вписують саме тоді, коли
+        // жодному з чипів не вірять (типово після заміни банок або монітора).
+        long want = (v.user >= 0) ? v.user : v.pack;
+        v.out    = v.take ? want : v.mon;
+        v.outRaw = (i == MVAL_ETM) ? v.out * 86400L
+                                   : (long)mirrorRawFromCycles(v.out, p.ratedMah, p.rsense);
+    }
+}
+
+// Вхідні числа для значеннєвої частини. Рахує їх викликач: щоб дістати дату
+// першого вмикання, треба ключ і розшифрування, а щоб дату «сьогодні» —
+// годинник; ні того, ні того в чистій арифметиці немає.
+struct MirrorValIn {
+    bool  have38;                 // монітор прочитано
+    bool  packEtmKnown;           // у DS2433 є читана дата першого вмикання
+    long  packEtmDays;            // …і скільки діб від неї до сьогодні
+    bool  packCycKnown;           // гістограма циклів ціла
+    long  packCycles;             // цикли IMPRES + не-IMPRES
+    long  monEtmDays;             // наробіток монітора, доби
+    uint16_t monCca, monDca;      // сирі лічильники монітора
+    int   ratedMah;               // паспортна ємність пакета
+    float rsense;                 // шунт монітора, Ом
+    bool  rsFromChip;
+};
+
+// Чи розходяться сторони. Для наробітку — з допуском в одну добу: пакетна
+// сторона рахується цілими добами від дати, а лічильник монітора йде
+// безперервно, тож розбіжність «пів доби» тут — не розбіжність, а спосіб
+// запису. Без допуску картка вимагала б синхронізації щодня.
+#define MVAL_ETM_SLACK_D 1
+inline bool mirrorValDiffers(const MirrorVal &v, int i) {
+    if (!v.avail) return false;
+    long d = v.pack - v.mon;
+    if (d < 0) d = -d;
+    return d > ((i == MVAL_ETM) ? MVAL_ETM_SLACK_D : 0);
+}
+
+inline void mirrorPlanSetVals(MirrorPlan &p, const MirrorValIn &in) {
+    // ⚑ ПЕРШЕ ЗАПОВНЕННЯ ЧИ ПОВТОРНЕ. Числа перераховуються й тоді, коли
+    //  клієнт приніс дату (див. web_server.h), тобто вже ПІСЛЯ того, як людина
+    //  розставила галочки. Тому типові значення ставимо лише один раз, а далі
+    //  чіпаємо самі числа — вибір лишається людський.
+    bool first = !p.haveVals;
+
+    p.ratedMah   = in.ratedMah;
+    p.rsense     = in.rsense;
+    p.rsFromChip = in.rsFromChip;
+
+    long monCyc  = mirrorCyclesFromRaw(in.monCca, in.ratedMah, in.rsense);
+    long monDcyc = mirrorCyclesFromRaw(in.monDca, in.ratedMah, in.rsense);
+
+    // Рядок доступний, коли є куди писати (монітор прочитано) І є що
+    // пропонувати — або з пакета, або вписане людиною. Друге не рідкість:
+    // «монітор бреше, а скільки насправді — я знаю».
+    MirrorVal &e = p.val[MVAL_ETM];
+    e.packKnown = in.packEtmKnown;
+    e.pack      = in.packEtmKnown ? in.packEtmDays : 0;
+    e.mon       = in.monEtmDays;
+    e.avail     = in.have38 && (in.packEtmKnown || e.user >= 0);
+
+    MirrorVal &c = p.val[MVAL_CCA];
+    c.packKnown = in.packCycKnown;
+    c.pack      = in.packCycKnown ? in.packCycles : 0;
+    c.mon       = monCyc < 0 ? 0 : monCyc;
+    c.avail     = in.have38 && monCyc >= 0 && (in.packCycKnown || c.user >= 0);
+
+    MirrorVal &d = p.val[MVAL_DCA];
+    d.packKnown = in.packCycKnown;
+    d.pack      = in.packCycKnown ? in.packCycles : 0;
+    d.mon       = monDcyc < 0 ? 0 : monDcyc;
+    d.avail     = in.have38 && monDcyc >= 0 && (in.packCycKnown || d.user >= 0);
+
+    for (int i = 0; i < MVAL_COUNT; i++) {
+        MirrorVal &v = p.val[i];
+        if (first) {
+            v.user = -1;
+            // Типово беремо те саме, що й на байтовому боці: лише те, що
+            // СПРАВДІ розходиться. Однакове переписувати нема сенсу, а
+            // вмикати все підряд — означало б тихо переписати монітор.
+            v.take = mirrorValDiffers(v, i);
+        } else {
+            v.take = v.take && v.avail;
+        }
+        if (!v.avail) v.take = false;
+    }
+    mirrorValsRecalc(p);            // тут же перераховується й haveVals
+}
+
+// Увімкнути/вимкнути рядок. Недоступний увімкнути не можна: брати нема звідки.
+inline void mirrorValTake(MirrorPlan &p, int i, bool on) {
+    if (i < 0 || i >= MVAL_COUNT) return;
+    p.val[i].take = on && p.val[i].avail;
+    mirrorValsRecalc(p);
+}
+
+// Вписати число руками (доби або цикли); -1 — скасувати ручне значення.
+//  Повертає збережене число — щоб клієнт показав саме те, що піде в чип.
+//  ⚑ Ручне число ДОЗВОЛЯЄ ввімкнути рядок навіть тоді, коли пакетна сторона
+//  невідома: «монітор бреше, а скільки насправді — я знаю» — це законний і
+//  типовий випадок (пакет із заміненими банками, історія відома майстрові).
+inline long mirrorValSetUser(MirrorPlan &p, int i, long v) {
+    if (i < 0 || i >= MVAL_COUNT) return -1;
+    MirrorVal &r = p.val[i];
+    if (v < 0) {
+        r.user = -1;
+        if (!r.packKnown) r.take = false;   // пропала єдина підстава
+        // Рядок лишається доступним лише коли є що пропонувати з пакета.
+        r.avail = r.avail && r.packKnown;
+    } else {
+        // Стеля свідома: 20 років наробітку й 9999 циклів — уже не показник
+        // пакета, а сміття (ті самі межі, що в майстрі відновлення).
+        long lim = (i == MVAL_ETM) ? 20L * 365L : 9999L;
+        if (v > lim) v = lim;
+        r.user  = v;
+        r.avail = r.avail || p.have38;      // є що писати — рядок оживає
+        r.take  = r.avail;
+    }
+    mirrorValsRecalc(p);
+    return r.user;
+}
+
+// Скільки значеннєвих рядків справді зміниться.
+inline int mirrorValChanges(const MirrorPlan &p) {
+    int n = 0;
+    for (int i = 0; i < MVAL_COUNT; i++) if (p.val[i].take && p.val[i].out != p.val[i].mon) n++;
+    return n;
+}
+
+// Записати значеннєву частину в дамп монітора. Повертає кількість змінених
+// полів. Байти беремо ті самі, що й решта проєкту: ETM 0x08..0x0B (LE),
+// CCA 0x3C..0x3D, DCA 0x3E..0x3F.
+inline int mirrorPlanApply38(const MirrorPlan &p, uint8_t *d38) {
+    if (!d38) return 0;
+    int n = 0;
+    if (p.val[MVAL_ETM].take) {
+        uint32_t s = (uint32_t)p.val[MVAL_ETM].outRaw;
+        uint8_t b[4] = { (uint8_t)(s & 0xFF), (uint8_t)((s >> 8) & 0xFF),
+                         (uint8_t)((s >> 16) & 0xFF), (uint8_t)((s >> 24) & 0xFF) };
+        if (memcmp(d38 + 8, b, 4) != 0) { memcpy(d38 + 8, b, 4); n++; }
+    }
+    const int at[2] = { 0x3C, 0x3E };
+    for (int k = 0; k < 2; k++) {
+        const MirrorVal &v = p.val[MVAL_CCA + k];
+        if (!v.take) continue;
+        uint8_t lo = (uint8_t)(v.outRaw & 0xFF), hi = (uint8_t)((v.outRaw >> 8) & 0xFF);
+        if (d38[at[k]] != lo || d38[at[k] + 1] != hi) {
+            d38[at[k]] = lo; d38[at[k] + 1] = hi; n++;
+        }
+    }
+    return n;
 }
 
 // Увімкнути/вимкнути перенесення всіх РІЗНИХ байтів одразу.

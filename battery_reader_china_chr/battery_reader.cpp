@@ -707,11 +707,45 @@ bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
         return false;
     }
 
+    // ⚑ ЛІЧИЛЬНИКИ ЗАРЯДУ — ЦЕ НЕ ПАМ'ЯТЬ, А ЖИВІ РЕГІСТРИ.
+    //  ICA (стор. 1) і CCA/DCA (стор. 7) — регістри накопичувача заряду. Поки
+    //  в статусі стоїть біт IAD, чіп сам оновлює їх приблизно кожні 27 мс, і
+    //  щойно записане число затирається власним значенням чипа — даташит
+    //  DS2438 прямо застерігає писати ці регістри при увімкненому вимірі
+    //  струму. Тому на час запису вимикаємо вимір (IAD) і накопичення (CA), а
+    //  потім повертаємо конфігурацію такою, якою її задав викликач.
+    //
+    //  Чому це виявилось важливим. Власник скидав лічильники, ставив пакет на
+    //  зарядну станцію — і бачив старі числа знову. Розбір двох його дампів
+    //  показав: станція НЕ чіпає DS2438 (CCA/DCA байт-у-байт ті самі), зате
+    //  переписує лічильник циклів у DS2433 РІВНО тим числом, яке дає CCA
+    //  монітора (31). Тобто станція вважає монітор першоджерелом, а наш запис
+    //  у монітор до чипа не доїжджав.
+    uint8_t cfgWant = buffer[0];
+    uint8_t cfgHold = (uint8_t)(cfgWant & ~0x03);   // без IAD і CA
+    bool    needHold = (cfgWant & 0x03) != 0;
+    if (needHold) {
+        uint8_t p0[DS2438_PAGE_SIZE];
+        memcpy(p0, buffer, DS2438_PAGE_SIZE);
+        p0[0] = cfgHold;
+        _ow->reset(); _ow->select(ds2438_addr);
+        _ow->write(DS2438_WRITE_SCRATCH); _ow->write((uint8_t)0);
+        for (int i = 0; i < DS2438_PAGE_SIZE; i++) _ow->write(p0[i]);
+        _ow->reset(); _ow->select(ds2438_addr);
+        _ow->write(DS2438_COPY_SCRATCH); _ow->write((uint8_t)0);
+        delay(11);
+    }
+
     // --- Фаза 1: пишемо всі сторінки (Write Scratchpad -> Copy Scratchpad). ---
     // Перевірку scratchpad тут НЕ робимо: для "живих" сторінок (0-2, 7 —
     // Temp/U/I/ETM/ICA/CCA/DCA) вона давала хибну "write failed" і блокувала
     // весь запис. Реальне збереження перевіряємо нижче читанням пам'яті назад.
-    for (uint8_t page = 0; page < DS2438_PAGES; page++) {
+    //
+    // ⚑ Сторінку 0 пишемо ОСТАННЬОЮ (див. цикл нижче): саме вона повертає
+    // вимір струму, і повертати його треба вже після того, як лічильники
+    // лягли на місце.
+    for (uint8_t k = 1; k <= DS2438_PAGES; k++) {
+        uint8_t page = (uint8_t)(k % DS2438_PAGES);      // 1,2,…,7,0
         const uint8_t *pageData = buffer + page * DS2438_PAGE_SIZE;
         _ow->reset();
         _ow->select(ds2438_addr);
@@ -794,9 +828,79 @@ bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
         }
     }
 
+    // --- Фаза 4: ЛІЧИЛЬНИКИ ЗАРЯДУ (CCA/DCA, сторінка 7, байти 4..7).
+    // Раніше сторінку 7 не звіряв ніхто — «чіп її сам оновлює». Формально так,
+    // але саме через це невдалий запис лічильників був НЕВИДИМИЙ: користувач
+    // бачив «записано», а в чипі лишалися старі числа. А зарядна станція, як
+    // виявилось, бере лічильник циклів пакета саме звідси — і повертає старе
+    // число в DS2433. Тому звіряємо точно: на столі струм ≈ 0, і за кілька
+    // мілісекунд чіп не встигає нічого накопичити.
+    {
+        _ow->reset();
+        _ow->select(ds2438_addr);
+        _ow->write(DS2438_RECALL_MEMORY);
+        _ow->write((uint8_t)7);
+        _ow->reset();
+        _ow->select(ds2438_addr);
+        _ow->write(DS2438_READ_SCRATCH);
+        _ow->write((uint8_t)7);
+        uint8_t rb[9];
+        for (int i = 0; i < 9; i++) rb[i] = _ow->read();
+        if (OneWire::crc8(rb, 8) == rb[8]) {
+            const uint8_t *want = buffer + 7 * DS2438_PAGE_SIZE;
+            if (memcmp(rb + 4, want + 4, 4) != 0) {
+                Serial.printf("ERROR: DS2438 CCA/DCA NOT persisted. want %02X%02X/%02X%02X "
+                              "got %02X%02X/%02X%02X\n",
+                              want[5], want[4], want[7], want[6],
+                              rb[5], rb[4], rb[7], rb[6]);
+                ok = false;
+            } else {
+                Serial.printf("DS2438 CCA/DCA verified: %u / %u\n",
+                              (unsigned)((rb[5] << 8) | rb[4]),
+                              (unsigned)((rb[7] << 8) | rb[6]));
+            }
+        } else {
+            Serial.println("WARN: DS2438 CCA/DCA verify CRC noise — skip");
+        }
+    }
+
+    // --- Фаза 5: конфігурація ПОВЕРНУТА. Ми знімали біти виміру струму на час
+    // запису; якщо останній запис сторінки 0 не пройшов (шум на шині), монітор
+    // лишився б без вимірювання струму — а це вимкнений паливомір і мертві
+    // лічильники до наступного запису. Тому перевіряємо й пробуємо ще раз.
+    if (needHold) {
+        for (int attempt = 0; attempt < 2; attempt++) {
+            _ow->reset();
+            _ow->select(ds2438_addr);
+            _ow->write(DS2438_RECALL_MEMORY);
+            _ow->write((uint8_t)0);
+            _ow->reset();
+            _ow->select(ds2438_addr);
+            _ow->write(DS2438_READ_SCRATCH);
+            _ow->write((uint8_t)0);
+            uint8_t rb[9];
+            for (int i = 0; i < 9; i++) rb[i] = _ow->read();
+            if (OneWire::crc8(rb, 8) != rb[8]) break;          // шум — не наполягаємо
+            if ((rb[0] & 0x03) == (cfgWant & 0x03)) break;     // все на місці
+            if (attempt) {
+                Serial.printf("ERROR: DS2438 config NOT restored (%02X замість %02X) — "
+                              "вимір струму лишився вимкненим\n", rb[0], cfgWant);
+                ok = false;
+                break;
+            }
+            Serial.println("WARN: DS2438 config не повернулась — пишемо ще раз");
+            _ow->reset(); _ow->select(ds2438_addr);
+            _ow->write(DS2438_WRITE_SCRATCH); _ow->write((uint8_t)0);
+            for (int i = 0; i < DS2438_PAGE_SIZE; i++) _ow->write(buffer[i]);
+            _ow->reset(); _ow->select(ds2438_addr);
+            _ow->write(DS2438_COPY_SCRATCH); _ow->write((uint8_t)0);
+            delay(11);
+        }
+    }
+
     _ow->reset();
     pullupOff();
-    Serial.println(ok ? "DS2438 write completed (calib pages 3-6 + ETM verified)"
+    Serial.println(ok ? "DS2438 write completed (pages 3-6 + ETM + CCA/DCA verified)"
                       : "DS2438 write: something did NOT persist (див. вище)");
     return ok;
 }

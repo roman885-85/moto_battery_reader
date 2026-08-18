@@ -210,6 +210,21 @@ inline float impresBmsRsense(const uint8_t *d38) {
     return raw / 100000.0f;
 }
 
+// ── CCA/DCA: сирі одиниці <-> мА·год ────────────────────────────────────────
+//  Обидва напрямки поруч і в одному місці. Зворотний потрібен для
+//  синхронізації лічильників (mirror_plan.h): накопичений заряд у моніторі
+//  доводиться ПЕРЕРАХОВУВАТИ з циклів, які веде сам пакет у DS2433.
+inline long impresCcaMahFromRaw(uint16_t raw, float rsOhm) {
+    return (rsOhm > 0.0f) ? (long)(BMS_CCA_MVH * raw / rsOhm + 0.5f) : 0;
+}
+inline uint16_t impresCcaRawFromMah(long mah, float rsOhm) {
+    if (rsOhm <= 0.0f || mah <= 0) return 0;
+    long r = (long)(mah * rsOhm / BMS_CCA_MVH + 0.5f);
+    if (r < 0) r = 0;
+    if (r > 65535) r = 65535;
+    return (uint16_t)r;
+}
+
 // Цикли заряду з гістограми доданого заряду — БЕЗ ключа. Саме це число фірмове
 // ПЗ показує як «Total IMPRES charge cycles» (звірено з 53 знімками екрана).
 // Нульовий кошик містить суму, решта — розподіл; алгоритм відновлює обидва.
@@ -250,8 +265,8 @@ inline bool impresBmsParse(const uint8_t *d33, const uint8_t *d38,
         o->dca = bmsLE(d38, 62);
         if (o->rsense > 0.0f) {
             o->icaMah = (int)(BMS_ICA_MVH * o->ica / o->rsense + 0.5f);
-            o->ccaMah = (long)(BMS_CCA_MVH * o->cca / o->rsense + 0.5f);
-            o->dcaMah = (long)(BMS_CCA_MVH * o->dca / o->rsense + 0.5f);
+            o->ccaMah = impresCcaMahFromRaw(o->cca, o->rsense);
+            o->dcaMah = impresCcaMahFromRaw(o->dca, o->rsense);
             if (o->ratedMah > 0) o->ccaCycles = (int)(o->ccaMah / o->ratedMah);
         }
     }

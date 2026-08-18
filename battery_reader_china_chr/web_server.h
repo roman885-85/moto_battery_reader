@@ -2474,26 +2474,62 @@ static bool       g_mirPlanReady = false;
 //  ⚑ ОКРЕМО ВІД ПОБУДОВИ ПЛАНУ — НАВМИСНО. Дата приходить із клієнтом (у
 //  пристрої годинника реального часу немає, див. device_clock.h), тобто вже
 //  ПІСЛЯ того, як план побудовано й людина розставила галочки. Перебудова
-//  плану скинула б їх; тут же чіпаються лише чотири поля свідчення.
-static void mirrorPlanEtmRefresh() {
+//  плану скинула б їх; тут же чіпаються лише числа, а вибір лишається людський.
+//
+//  ⚑ ТУТ ЖЕ Й ДРУГИЙ, ЗНАЧЕННЄВИЙ БІК ПЛАНУ — і зроблено це в одному місці
+//  свідомо: обидва потребують того самого — розшифрованого DS2433 і дати. Той
+//  бік і є головним: у пакеті власника байтове дзеркало збігалося ПОВНІСТЮ, а
+//  розходились саме числа (ETM 6397 діб проти віку 15, CCA/DCA 31/37 циклів
+//  проти 1+5 у лічильниках Motorola).
+static void mirrorPlanFactsRefresh() {
     long etmD = 0, age = 0;
+    MirrorValIn in;
+    memset(&in, 0, sizeof(in));
+
     if (hasDump && hasDump2438) {
         ImpresBms b;
         int ty = 0, tm = 0, td = 0;
-        if (deviceClockToday(&ty, &tm, &td) &&
-            impresBmsParse(batteryDump, batteryDump2438,
+        bool haveToday = deviceClockToday(&ty, &tm, &td);
+        if (impresBmsParse(batteryDump, batteryDump2438,
                            hasSN2433 ? chipSN2433 : nullptr, 0.0f, &b)) {
             if (b.haveKey) impresBmsDecrypt(batteryDump, &b);
-            if (b.ok && b.haveKey && impresBmsDateSane(b.mfgY, b.mfgM, b.mfgD)) {
+
+            in.have38    = true;
+            in.ratedMah  = b.ratedMah;
+            in.rsense    = b.rsense;              // 0, якщо в чипі поля немає
+            in.rsFromChip = b.rsenseFromChip;
+            in.monEtmDays = (long)(b.etmSec / 86400UL);
+            in.monCca    = b.cca;
+            in.monDca    = b.dca;
+
+            // Лічильники циклів пакета ключа не потребують — вони в гістограмі.
+            // Порівнюємо з накопиченим зарядом монітора СУМУ обох: CCA не
+            // розрізняє, від IMPRES-станції прийшов заряд чи від простої ЗП.
+            if (b.cycles >= 0) {
+                in.packCycKnown = true;
+                in.packCycles   = (long)b.cycles + (long)b.nonImpresCycles;
+            }
+
+            if (haveToday && b.ok && b.haveKey &&
+                impresBmsDateSane(b.mfgY, b.mfgM, b.mfgD)) {
                 age  = impresBmsToDays(ty, tm, td) -
                        impresBmsToDays(b.mfgY, b.mfgM, b.mfgD);
-                etmD = (long)(impresEtm(batteryDump2438) / 86400UL);
+                etmD = in.monEtmDays;
+                // Наробіток, який ПАКЕТ вважає своїм: від дати першого вмикання
+                // (вона в зашифрованому блоці) до сьогодні. Саме це число рація
+                // читає навпаки — показує «перше користування = зараз − ETM».
+                if (impresBmsDateSane(b.useY, b.useM, b.useD)) {
+                    long d = impresBmsToDays(ty, tm, td) -
+                             impresBmsToDays(b.useY, b.useM, b.useD);
+                    if (d >= 0) { in.packEtmKnown = true; in.packEtmDays = d; }
+                }
             }
         }
     }
     // Нулі теж записуємо: якщо дата зникла (перечитали інший пакет), свідчення
     // мусить зникнути разом із нею, а не лишитись від попереднього.
     mirrorPlanSetEtm(g_mirPlan, etmD, age);
+    mirrorPlanSetVals(g_mirPlan, in);
 }
 
 // Дата від клієнта. Її несуть усі запити плану — синхронізація не виняток:
@@ -2508,7 +2544,7 @@ static void mirrorPlanRefresh() {
                     hasDump ? batteryDump : nullptr,
                     hasDump2438 ? batteryDump2438 : nullptr);
     g_mirPlanReady = hasDump;
-    mirrorPlanEtmRefresh();
+    mirrorPlanFactsRefresh();
 }
 
 static String mirrorPlanJson() {
@@ -2539,6 +2575,30 @@ static String mirrorPlanJson() {
     // виглядає як «усе гаразд», хоча насправді просто не заведено годинник.
     j += ",\"today\":";     j += deviceClockNum();
     j += ",\"todaySrc\":\""; j += deviceClockSrcName(); j += "\"";
+    // ── значеннєвий бік: ті самі факти, які чипи ведуть різними числами ──
+    //  Назви рядків тримають КЛІЄНТИ: у прошивці кожен рядок тексту — це флеш,
+    //  а його щойно не вистачило (див. «Sketch too big»). Порядок рядків
+    //  задано перерахуванням MVAL_* і однаковий скрізь.
+    j += ",\"haveVals\":"; j += p.haveVals ? "true" : "false";
+    j += ",\"vChanges\":"; j += mirrorValChanges(p);
+    j += ",\"rated\":";    j += p.ratedMah;
+    j += ",\"rsRaw\":";    j += (long)(p.rsense * 100000.0f + 0.5f);
+    j += ",\"rsChip\":";   j += p.rsFromChip ? "true" : "false";
+    j += ",\"v\":[";
+    for (int i = 0; i < MVAL_COUNT; i++) {
+        const MirrorVal &v = p.val[i];
+        if (i) j += ",";
+        j += "{\"a\":";   j += v.avail ? "1" : "0";
+        j += ",\"pk\":";  j += v.packKnown ? "1" : "0";
+        j += ",\"t\":";   j += v.take ? "1" : "0";
+        j += ",\"p\":";   j += (long)v.pack;
+        j += ",\"m\":";   j += (long)v.mon;
+        j += ",\"u\":";   j += (long)v.user;
+        j += ",\"o\":";   j += (long)v.out;
+        j += ",\"raw\":"; j += (long)v.outRaw;
+        j += "}";
+    }
+    j += "]";
     j += ",\"b\":[";
     char t[8];
     for (int i = 0; i < IMPRES_MIRROR_LEN; i++) {
@@ -2576,7 +2636,7 @@ void handleMirrorEdit() {
     // Дата змінилась (годинник щойно завели або настала нова доба) — свідчення
     // про наробіток перераховуємо, але план НЕ перебудовуємо: галочки поставила
     // людина, і вони мусять лишитись.
-    else if (hadClock != deviceClockNum()) mirrorPlanEtmRefresh();
+    else if (hadClock != deviceClockNum()) mirrorPlanFactsRefresh();
     if (!g_mirPlan.have33) {
         server.send(400, "application/json",
                     "{\"ok\":false,\"err\":\"Спочатку зчитайте АКБ\"}");
@@ -2591,6 +2651,12 @@ void handleMirrorEdit() {
                           server.arg("on") == "1");
     if (server.hasArg("rated"))
         mirrorPlanSetRated(g_mirPlan, server.arg("rated").toInt());
+    // Значеннєві рядки: галочка й вписане число (v=-1 — скасувати ручне).
+    if (server.hasArg("val"))
+        mirrorValTake(g_mirPlan, server.arg("val").toInt(), server.arg("on") == "1");
+    if (server.hasArg("vset"))
+        mirrorValSetUser(g_mirPlan, server.arg("vset").toInt(),
+                         server.hasArg("v") ? server.arg("v").toInt() : -1);
     server.send(200, "application/json", mirrorPlanJson());
 }
 
@@ -2608,12 +2674,26 @@ void handleMirrorApply() {
     int n = mirrorPlanApply(g_mirPlan, batteryDump);
     bool ok = battery.writeBattery(batteryDump, DUMP_SIZE);
     if (ok) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+    // ── і другий чип, якщо в плані є значеннєві рядки ────────────────────
+    //  Пишемо ПІСЛЯ DS2433 і лише коли справді є що змінювати: зайвий цикл
+    //  запису монітора нікому не потрібен, а сторінки 0-2 ще й «живі».
+    int n38 = 0;
+    if (ok && hasDump2438) {
+        n38 = mirrorPlanApply38(g_mirPlan, batteryDump2438);
+        if (n38) {
+            displayShow("СИНХР. 2438...");
+            ok = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+            if (ok) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+        }
+    }
     displayShow(ok ? "СИНХР. OK" : "СИНХР. ЗБІЙ");
     ledSet(ok ? LED_OK : LED_ERROR);
-    Serial.printf("MIRROR: змінено %d байт, запис %s\n", n, ok ? "OK" : "FAIL");
+    Serial.printf("MIRROR: змінено %d байт DS2433, %d значень DS2438, запис %s\n",
+                  n, n38, ok ? "OK" : "FAIL");
     mirrorPlanRefresh();
     String j = "{\"ok\":"; j += ok ? "true" : "false";
     j += ",\"changed\":"; j += n;
+    j += ",\"changed38\":"; j += n38;
     j += ",\"plan\":"; j += mirrorPlanJson(); j += "}";
     server.send(ok ? 200 : 500, "application/json", j);
 }

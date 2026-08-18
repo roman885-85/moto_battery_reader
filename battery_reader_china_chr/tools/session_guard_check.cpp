@@ -1181,6 +1181,54 @@ int main() {
     check(fileCalls("web_server.h", "targetPct = (uint8_t)impresPercentFromMv(targetMv)"),
                                              "профіль струму масштабується під ДОСЯЖНУ ціль");
 
+    printf("\n29) синхронізація дзеркала DS2438 -> DS2433 з правкою\n");
+    // Прохання власника: «є дані з 2438, які дублюються в 2433. Потрібна
+    // функція синхронізації цих даних з 2438, а також правка даних перед
+    // синхронізацією».
+    check(fileCalls("mirror_plan.h", "mirrorPlanBuild") &&
+          fileCalls("mirror_plan.h", "mirrorPlanApply"),
+                                             "логіка плану живе в mirror_plan.h — там, де її дістає тест");
+    check(fileCalls("mirror_plan.h", "mirrorPlanTakeOne") &&
+          fileCalls("mirror_plan.h", "mirrorPlanSetRated"),
+                                             "правка ПЕРЕД синхронізацією: побайтово й по ємності");
+    check(fileCalls("web_server.h", "handleMirrorPlan") &&
+          fileCalls("web_server.h", "handleMirrorEdit") &&
+          fileCalls("web_server.h", "handleMirrorApply"),
+                                             "три обробники: показати, поправити, записати");
+    check(fileCalls("web_server.h", "/api/mirror/apply"),
+                                             "маршрути зареєстровані");
+    check(fileCalls("serial_api.h", "cmd == \"MIRROR\""),
+                                             "та сама операція доступна по USB");
+    // ⚑ Зсуви дзеркала мусять бути НАЗВАНІ, а не вписані числами: до цього
+    //  «1 +» і «24 +» стояли літералами в кількох місцях і розходились поодинці.
+    check(fileCalls("impres_format.h", "IMPRES_MIRROR_D33_AT") &&
+          fileCalls("impres_format.h", "IMPRES_MIRROR_D38_AT"),
+                                             "зсуви дзеркала мають імена");
+    check(fileHasNo("impres_format.h", "d33[1 + i] != d38[24 + i]"),
+                                             "…і числами в циклах більше не стоять");
+    // Усі три поверхні вміють те саме — інакше «є у вебі, нема в .exe».
+    check(fileCalls("index.html", "mirApply"),           "веб-інтерфейс уміє синхронізувати");
+    check(fileCalls("client_usb.html", "mirApply"),      "USB-клієнт теж");
+    check(fileCalls("usb_client/moto_gui.py", "mirror_apply"), "і програма .exe теж");
+
+    printf("\n30) зручність: липка шапка й одна назва заліза\n");
+    // Прохання власника: «при скролінгу меню верхня шапка залишається зверху
+    // фіксовано для швидкого переходу по закладках».
+    check(fileCalls("index.html", "position:sticky;top:0"),
+                                             "смуга вкладок липне до верху у веб-інтерфейсі");
+    check(fileCalls("client_usb.html", "position:sticky;top:0"),
+                                             "…і в USB-клієнті");
+    check(fileCalls("index.html", "position:sticky;top:64px"),
+                                             "підвкладки липнуть ПІД головною смугою, а не за нею");
+    // ⚑ Назву силового ключа тримає ПРИСТРІЙ. Клієнти мали свою («PNP B772M»),
+    //  і після заміни на P-MOSFET усі троє почали підписувати чуже залізо.
+    check(fileCalls("web_server.h", "swName") && fileCalls("serial_api.h", "swName"),
+                                             "пристрій повідомляє ім'я силового ключа");
+    check(fileHasNo("index.html", "B772M") &&
+          fileHasNo("client_usb.html", "B772M") &&
+          fileHasNo("usb_client/moto_gui.py", "B772M"),
+                                             "жоден клієнт більше не називає залізо сам");
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

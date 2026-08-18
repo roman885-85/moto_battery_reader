@@ -376,18 +376,38 @@ inline uint16_t impresDca(const uint8_t *d38) { return (uint16_t)d38[62] | ((uin
 inline uint16_t impresVoltageMv(const uint8_t *d38) {
     return (uint16_t)(((uint16_t)d38[3] | ((uint16_t)d38[4] << 8)) * 10);
 }
+// ── ДЗЕРКАЛО ІДЕНТИЧНОСТІ: ОДНІ Й ТІ САМІ 26 БАЙТІВ У ДВОХ ЧИПАХ ──────────
+//  DS2433[0x01..0x1A] і DS2438[0x18..0x31] несуть ОДНЕ І ТЕ САМЕ. Це не
+//  надлишковість «про всяк випадок»: саме завдяки їй пакет зі стертим DS2433
+//  ще можна впізнати, а зарядна станція WPLN4226A вміє відновити заголовок,
+//  переписавши ці байти назад із монітора.
+//
+//  ⚑ ЗСУВИ — ОДНИМ ІМЕНЕМ, А НЕ ЧИСЛАМИ В ЦИКЛАХ. До цього «1 +» і «24 +»
+//  стояли літералами щонайменше в п'яти місцях (тут, у sync, у двох клієнтських
+//  обробниках і в режимі копії). Такі числа не помічають при правці й
+//  розходяться поодинці.
+#define IMPRES_MIRROR_D33_AT  0x01   // де дзеркало лежить у DS2433
+#define IMPRES_MIRROR_D38_AT  0x18   // …і де воно ж у DS2438
+#define IMPRES_MIRROR_LEN     26
+
 inline bool impresMirrorOk(const uint8_t *d33, const uint8_t *d38) {
-    for (int i = 0; i < 26; i++) if (d33[1 + i] != d38[24 + i]) return false;
+    for (int i = 0; i < IMPRES_MIRROR_LEN; i++)
+        if (d33[IMPRES_MIRROR_D33_AT + i] != d38[IMPRES_MIRROR_D38_AT + i]) return false;
     return true;
 }
 // Чи придатне дзеркало як ДЖЕРЕЛО (не суцільні 0x00/0xFF).
 inline bool impresMirrorUsable(const uint8_t *d38) {
     bool z = true, f = true;
-    for (int i = 24; i < 50; i++) { if (d38[i]) z = false; if (d38[i] != 0xFF) f = false; }
+    for (int i = 0; i < IMPRES_MIRROR_LEN; i++) {
+        uint8_t b = d38[IMPRES_MIRROR_D38_AT + i];
+        if (b) z = false;
+        if (b != 0xFF) f = false;
+    }
     return !z && !f;
 }
 inline void impresSyncMirror(uint8_t *d33, const uint8_t *d38) {
-    for (int i = 0; i < 26; i++) d33[1 + i] = d38[24 + i];
+    for (int i = 0; i < IMPRES_MIRROR_LEN; i++)
+        d33[IMPRES_MIRROR_D33_AT + i] = d38[IMPRES_MIRROR_D38_AT + i];
     impresFixHeader(d33);
 }
 

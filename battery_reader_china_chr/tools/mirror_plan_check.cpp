@@ -239,6 +239,92 @@ int main() {
         check(notIdem == 0, "повторна синхронізація нічого не змінює");
     }
 
+    printf("\n7) свідчення «чи монітор від цього пакета» всередині плану\n");
+    // Скарга власника, дослівно: «Напрацювання ETM (6397 діб) більше за вік
+    // пакета (15 діб від 2026-08-03)… — нудно добавить в пункт синхронизации».
+    // Питання справді належить саме сюди: синхронізація переносить
+    // ідентичність З МОНІТОРА, тож із чужим монітором вона не лікує пакет, а
+    // приписує йому чужу особу — і робить це «за планом», тобто впевнено.
+    {
+        uint8_t a33[DUMP_SIZE], a38[DS2438_MEM_SIZE];
+        memset(a33, 0, sizeof(a33)); memset(a38, 0, sizeof(a38));
+        for (int i = 0; i < IMPRES_MIRROR_LEN; i++) {
+            a33[IMPRES_MIRROR_D33_AT + i] = (uint8_t)(0x20 + i);
+            a38[IMPRES_MIRROR_D38_AT + i] = (uint8_t)(0x20 + i);
+        }
+        a38[IMPRES_MIRROR_D38_AT + 7] = 0xCC;      // одна розбіжність, щоб було що знімати
+
+        MirrorPlan p;
+        mirrorPlanBuild(p, a33, a38);
+        check(!p.haveAge && !p.etmForeign, "поки віку не повідомили — мовчимо");
+
+        mirrorPlanSetEtm(p, 6397, 15);             // числа з натури
+        check(p.haveAge && p.etmForeign, "наробіток 6397 діб при віці 15 — підозра");
+        check(p.etmDays == 6397 && p.ageDays == 15, "числа доїжджають до клієнта як є");
+
+        mirrorPlanSetEtm(p, 6397, 0);
+        check(!p.haveAge && !p.etmForeign,
+              "без дати не звинувачуємо: нема з чим порівнювати — нема й підозри");
+
+        // ⚑ Межа допуску — та сама, що в аудиті. Тут це перевіряється НЕ на
+        //  числі 180, а на самій функції: якби план мав власну копію правила,
+        //  вони розійшлися б саме на межі, тобто там, де це найдорожче.
+        for (long age = 1; age <= 900; age += 37)
+            for (long etm = 0; etm <= 4000; etm += 311) {
+                mirrorPlanSetEtm(p, etm, age);
+                if (p.etmForeign != impresEtmForeign(etm, age)) {
+                    check(false, "план і аудит відповідають однаково");
+                    age = 10000; break;
+                }
+            }
+        mirrorPlanSetEtm(p, 400, 100);
+        check(p.etmForeign == impresEtmForeign(400, 100), "план і аудит відповідають однаково");
+
+        // ⚑ СВІДЧЕННЯ НЕ СМІЄ ЧІПАТИ ПЛАН. Дату приносить клієнт уже після
+        //  того, як людина розставила галочки; якби її поява перебудовувала
+        //  план, галочки тихо злітали б — і записалось би не те, що показано.
+        //  Стан галочок перед приходом дати мусить бути НЕПОРОЖНІМ — інакше
+        //  «нічого не змінилось» вийде саме по собі й перевірка нічого не
+        //  доведе (перша редакція цього тесту саме так і мовчала).
+        mirrorPlanTakeOne(p, 3, true);         // однаковий байт — руками
+        check(p.take[7] && p.take[3], "перед приходом дати галочки справді стоять");
+        uint8_t before[IMPRES_MIRROR_LEN];
+        bool    takeBefore[IMPRES_MIRROR_LEN];
+        memcpy(before, p.out, sizeof(before));
+        memcpy(takeBefore, p.take, sizeof(takeBefore));
+        mirrorPlanSetEtm(p, 6397, 15);
+        check(memcmp(before, p.out, sizeof(before)) == 0 &&
+              memcmp(takeBefore, p.take, sizeof(takeBefore)) == 0,
+              "поява дати не скидає розставлених галочок");
+    }
+
+    printf("\n8) однаковий байт можна відмітити ПАЛЬЦЕМ\n");
+    // Скарга власника: «Bridge/web — не выбираются пункты плана». Причина була
+    // не в клієнтах: галочка жила лише в рядка, де байти РІЗНІ, а на цілих
+    // пакетах дзеркало здебільшого вже збігається (див. секцію 5) — тобто в
+    // натурі жодна галочка не натискалась.
+    {
+        uint8_t a33[DUMP_SIZE], a38[DS2438_MEM_SIZE];
+        memset(a33, 0, sizeof(a33)); memset(a38, 0, sizeof(a38));
+        for (int i = 0; i < IMPRES_MIRROR_LEN; i++) {
+            a33[IMPRES_MIRROR_D33_AT + i] = (uint8_t)(0x30 + i);
+            a38[IMPRES_MIRROR_D38_AT + i] = (uint8_t)(0x30 + i);
+        }
+        MirrorPlan p;
+        mirrorPlanBuild(p, a33, a38);
+        check(p.srcUsable && p.diffCount == 0, "чипи вже збігаються — типовий стан цілого пакета");
+        check(!p.take[5], "типово не беремо нічого: зайвий запис EEPROM ні до чого");
+        mirrorPlanTakeOne(p, 5, true);
+        check(p.take[5], "…але вручну байт відмічається");
+        check(mirrorPlanChanges(p) == 0, "значення від цього не змінюється — воно й так однакове");
+
+        // Єдина умова лишилась: щоб було ЗВІДКИ брати.
+        memset(a38, 0xFF, sizeof(a38));
+        mirrorPlanBuild(p, a33, a38);
+        mirrorPlanTakeOne(p, 5, true);
+        check(!p.take[5], "без придатного джерела «перенести» нема чого — і галочка не стає");
+    }
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

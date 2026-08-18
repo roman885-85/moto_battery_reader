@@ -43,6 +43,21 @@ enum {
 // dumps/ воно не перевищувало 44 діб.
 #define AUD_ETM_SLACK_D 180
 
+// ⚑ САМЕ ПОРІВНЯННЯ — ОКРЕМОЮ ФУНКЦІЄЮ, І ЦЕ НЕ ПРИКРАСА.
+//  Це правило живе в проєкті В ЧОТИРЬОХ місцях: тут, у веб-інтерфейсі, в
+//  USB-клієнті й у програмі .exe — кожен зі своєю копією допуску 180 і своєю
+//  арифметикою. Поки правило не змінювалось, копії збігались. Тепер його
+//  питає ще й синхронізація дзеркала (там воно найважливіше: якщо монітор
+//  чужий, його ідентичність не можна переносити в DS2433), і п'ята копія була
+//  б уже перебором. Пристрій рахує один раз і віддає готову відповідь.
+//
+//  Допуск потрібен тому, що лічильник стартує ДО того, як у чип запишуть дату
+//  виготовлення: на 31 рідній парі з dumps/ перевищення не було більше за
+//  44 доби.
+inline bool impresEtmForeign(long etmDays, long ageDays) {
+    return ageDays > 0 && etmDays > ageDays + AUD_ETM_SLACK_D;
+}
+
 // Блоки, чиї суми має сенс перевіряти й лагодити. Заголовок, профіль моделі й
 // запис моделі сюди НЕ входять: у них своя логіка ремонту (див. repairDumps).
 static const int AUD_BLOCKS[] = {
@@ -140,7 +155,7 @@ inline uint32_t impresAudit(const uint8_t *d33, const uint8_t *d38,
     if (d38 && dateOk && ty > 0) {
         long age  = impresBmsToDays(ty, tm, td) - impresBmsToDays(b.mfgY, b.mfgM, b.mfgD);
         long etmD = (long)(impresEtm(d38) / 86400UL);
-        if (age > 0 && etmD > age + AUD_ETM_SLACK_D) f |= AUD_ETM_FOREIGN;
+        if (impresEtmForeign(etmD, age)) f |= AUD_ETM_FOREIGN;
     }
 
     return f;

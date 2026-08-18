@@ -1135,17 +1135,23 @@ function warnForeign2438(d, etmSec){
     const etmD = Math.floor(etmSec/86400);
     if(etmD > ageD + ETM_AGE_SLACK_D){
         w.style.display='';
-        w.innerHTML='⚠️ Напрацювання ETM (<b>'+etmD+' діб</b>) більше за вік пакета ('+ageD+
-            ' діб від '+mfg+'). Причин дві:<br>'+
-            '• <b>монітор не від цього АКБ</b> — перечитайте DS2438; доти струм, залишок і '+
-            'знос рахуються за чужим шунтом і будуть неправильні;<br>'+
-            '• <b>цикл на зарядній станції</b> — ЗП переписує ETM своїм числом '+
-            '(у dumps/13 наробіток після станції став 923 доби замість наших 0, '+
-            'у dumps/06 — 49 років). Тому наробіток правлять <b>ПІСЛЯ</b> калібрування, '+
-            'а не до нього: інакше станція затре правку.';
+        w.innerHTML=etmForeignHtml(etmD, ageD, mfg);
     } else {
         w.style.display='none';
     }
+}
+// ⚑ Текст цього попередження — ОДИН на весь інтерфейс. Він потрібен у двох
+//  місцях (картка даних і синхронізація дзеркала), і друга копія неминуче
+//  розійшлася б із першою.
+function etmForeignHtml(etmD, ageD, mfg){
+    return '⚠️ Напрацювання ETM (<b>'+etmD+' діб</b>) більше за вік пакета ('+ageD+
+        ' діб'+(mfg?(' від '+mfg):'')+'). Причин дві:<br>'+
+        '• <b>монітор не від цього АКБ</b> — перечитайте DS2438; доти струм, залишок і '+
+        'знос рахуються за чужим шунтом і будуть неправильні;<br>'+
+        '• <b>цикл на зарядній станції</b> — ЗП переписує ETM своїм числом '+
+        '(у dumps/13 наробіток після станції став 923 доби замість наших 0, '+
+        'у dumps/06 — 49 років). Тому наробіток правлять <b>ПІСЛЯ</b> калібрування, '+
+        'а не до нього: інакше станція затре правку.';
 }
 
 // Штатні поля Motorola із /api/info2438 → картка «Штатні лічильники».
@@ -1422,7 +1428,10 @@ async function cloneRestore(){
 let mirPlan=null;
 async function mirLoad(){
     try{
-        const r=await (await fetch('/api/mirror')).json();
+        // today= — так само, як його несуть усі інші запити плану. Годинника
+        // реального часу в пристрої немає, а без «сьогодні» не порахувати вік
+        // пакета, тобто й не перевірити, чи монітор узагалі від нього.
+        const r=await (await fetch('/api/mirror?today='+rpToday())).json();
         if(!r.ok){ mirPlan=null; $('mirState').textContent=r.err||'немає дампа'; mirRender(); return; }
         mirPlan=r; mirRender();
     }catch(e){ toast('Помилка: '+e.message,'err'); }
@@ -1430,16 +1439,38 @@ async function mirLoad(){
 function mirRender(){
     const p=mirPlan, t=$('mirTable'), w=$('mirWarn');
     if(!p){ t.innerHTML=''; w.style.display='none'; return; }
-    $('mirState').textContent = p.inSync
+    // Числа наробітку показуємо ЗАВЖДИ, коли є з чим порівнювати, — не лише в
+    // разі підозри. Операторові потрібне саме співвідношення, а не вирок.
+    $('mirState').textContent = (p.inSync
         ? ('чипи збігаються' + (p.hdrOk?'' : ', але сума заголовка побита'))
-        : (p.diffCount+' байт(ів) різняться, буде записано '+p.changes);
-    // Попередження — там, де воно справді потрібне: коли джерела немає.
-    if(!p.have38 || !p.srcUsable){
-        w.style.display='';
-        w.innerHTML = !p.have38
-            ? '⚠️ DS2438 не зчитано — переносити нема звідки. Можна лише виправити суму заголовка.'
-            : '⚠️ У DS2438 дзеркала немає (суцільні 0x00/0xFF) — переносити нема звідки.';
-    } else w.style.display='none';
+        : (p.diffCount+' байт(ів) різняться, буде записано '+p.changes))
+        + (p.haveAge?(' · наробіток '+p.etmDays+' діб при віці '+p.ageDays+' діб'):'');
+    // Пояснення станів. Порядок від найважчого до найлегшого: спершу «монітор
+    // може бути чужий» (це ставить під сумнів усю операцію), потім «немає
+    // джерела», і лише потім «нема чого переносити».
+    let msg='';
+    if(p.etmForeign) msg = etmForeignHtml(p.etmDays, p.ageDays)
+        + '<br><b>Для синхронізації це головне питання:</b> вона переносить ідентичність '
+        + '<b>із монітора</b> в пам\'ять пакета. Якщо монітор чужий, ви не полагодите пакет, '
+        + 'а припишете йому чужу особу. Спершу перечитайте DS2438; якщо число не змінилось — '
+        + 'вирішіть, чи це той самий пакет, і аж потім тисніть «синхронізувати».';
+    else if(!p.have38) msg='⚠️ DS2438 не зчитано — переносити нема звідки. Можна лише виправити суму заголовка.';
+    else if(!p.srcUsable) msg='⚠️ У DS2438 дзеркала немає (суцільні 0x00/0xFF) — переносити нема звідки.';
+    else if(p.diffCount===0) msg='ℹ️ Чипи вже збігаються — переносити нема чого. '
+        + 'Синхронізація в такому стані лише перерахує суму заголовка (саме це й потрібно після '
+        + 'зарядної станції). Галочки активні: за потреби байт можна перезаписати навмисно.';
+    // ⚑ ОКРЕМИМ РЯДКОМ, А НЕ ЗАМІСТЬ. «Нема чого переносити» і «перевірити,
+    //  чи монітор свій, не вдалося» — різні речі, і жодна не скасовує другу.
+    //  Мовчання тут читалося б як «усе гаразд», хоча перевірки просто не було.
+    if(!p.etmForeign && p.have38 && p.srcUsable && !p.haveAge)
+        msg += (msg?'<br>':'') + (p.today
+            ? 'ℹ️ Вік пакета порахувати не вдалось: у заголовку немає читаної дати виготовлення '
+              +'(немає ключа або дата не схожа на дату). Отже перевірити наробітком, чи монітор '
+              +'від цього пакета, тут нема з чим — звіряйте за серійним номером.'
+            : '⚠️ Годинник пристрою не заведено (дату шле клієнт — свого годинника в пристрої немає), '
+              +'тому вік пакета невідомий і наробіток нема з чим порівняти. Перечитайте план: '
+              +'запит уже несе сьогоднішню дату, — або заведіть годинник у «Налаштуваннях».');
+    if(msg){ w.style.display=''; w.innerHTML=msg; } else w.style.display='none';
     $('mirRated').textContent = 'у чипі ' + (p.ratedNow?p.ratedNow+' мА·год':'—')
         + ' · у моніторі ' + (p.ratedSrc?p.ratedSrc+' мА·год':'—')
         + (p.ratedUser?(' · вручну '+p.ratedUser+' мА·год'):'');
@@ -1450,7 +1481,7 @@ function mirRender(){
         const hx=v=>v.toString(16).toUpperCase().padStart(2,'0');
         const mark=(i===p.ratedIdx)?' <span style="opacity:.7">(ємність)</span>':'';
         h+='<tr'+(b.d?' style="color:var(--warn)"':'')+'>'
-          +'<td><input type="checkbox" '+(b.t?'checked':'')+(b.d&&p.srcUsable?'':' disabled')
+          +'<td><input type="checkbox" '+(b.t?'checked':'')+(p.srcUsable?'':' disabled')
           +' onchange="mirByte('+i+',this.checked)"></td>'
           +'<td>0x'+addr+mark+'</td><td>'+hx(b.now)+'</td><td>'+hx(b.src)+'</td>'
           +'<td><b>'+hx(b.out)+'</b></td></tr>';
@@ -1459,6 +1490,7 @@ function mirRender(){
 }
 async function mirEdit(params){
     params.password=$('pwMir').value;
+    params.today=rpToday();
     try{
         const r=await postForm('/api/mirror/edit',params);
         if(r.ok!==false){ mirPlan=r; mirRender(); } else toast('Помилка: '+(r.err||''),'err');
@@ -1477,7 +1509,7 @@ async function mirApply(){
               +'навчена калібровка й лічильники не чіпаються.'))return;
     prog(true,'Синхронізація...');
     try{
-        const r=await postForm('/api/mirror/apply',{password:$('pwMir').value});
+        const r=await postForm('/api/mirror/apply',{password:$('pwMir').value,today:rpToday()});
         toast(r.ok?('✅ Змінено байтів: '+r.changed):('Помилка: '+(r.err||'')),r.ok?'ok':'err');
         if(r.plan){ mirPlan=r.plan; mirRender(); }
         await refresh();

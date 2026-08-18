@@ -179,6 +179,26 @@ static bool fileHasText(const char *path, const char *needle) {
     return found;
 }
 
+// Скільки разів текст трапляється у файлі. Потрібен там, де важлива не
+// наявність, а ЄДИНІСТЬ: попередження «наробіток більший за вік» вирішує долю
+// пакета, і два його формулювання рано чи пізно розійшлися б — а розійшлись би
+// саме тоді, коли людина за ними вирішує.
+static int fileCountText(const char *path, const char *needle) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;                         // файла немає — не «нуль копій»
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    char *buf = (char *)malloc((size_t)n + 1);
+    if (!buf) { fclose(f); return -1; }
+    size_t rd = fread(buf, 1, (size_t)n, f);
+    buf[rd] = '\0';
+    fclose(f);
+    int cnt = 0;
+    size_t len = strlen(needle);
+    for (const char *p = buf; len && (p = strstr(p, needle)) != nullptr; p += len) cnt++;
+    free(buf);
+    return cnt;
+}
+
 // Чи йде визначення РАНІШЕ за виклик — у C++ це умова збірки, а не стиль.
 static bool fileDefinesBefore(const char *path, const char *def, const char *use) {
     FILE *f = fopen(path, "rb");
@@ -1272,6 +1292,76 @@ int main() {
                                              "пристрій друкує реальний розмір розділу програми");
     check(fileCalls("motorola-battery-reader-web.ino", "ФЛЕШ МАЙЖЕ ЗАПОВНЕНО"),
                                              "…і попереджає завчасно, а не постфактум");
+
+    printf("\n32) синхронізація: чи монітор від цього пакета, дата й вибір байтів\n");
+    // Прохання власника (дослівно): «Напрацювання ETM (6397 діб) більше за вік
+    // пакета… — нудно добавить в пункт синхронизации», і далі три зауваги з
+    // натури: «шапка налазит на верхнюю панель статуса», «Bridge/web — не
+    // выбираются пункты плана», «Отсутствует синхронизация даты в планировщике».
+
+    // ⚑ ПРАВИЛО ОДНЕ. Аудит і план синхронізації відповідають на те саме
+    //  питання; два його втілення розійшлися б рівно там, де людина за ними
+    //  вирішує долю пакета.
+    check(fileCalls("impres_audit.h", "impresEtmForeign(etmD, age)"),
+                                             "правило «наробіток більший за вік» назване окремо");
+    // ⚑ Тут потрібен саме ВИКЛИК із аргументами, а не ім'я: у mirror_plan.h
+    //  воно ще й у коментарі біля #include, і перевірка «просто на ім'я»
+    //  лишалась зеленою навіть після того, як правило вписали заново руками
+    //  (виявлено звіркою від протилежного).
+    check(fileCalls("mirror_plan.h", "p.etmForeign = impresEtmForeign("),
+                                             "…і план синхронізації бере саме його");
+    check(fileHasNo("mirror_plan.h", "AUD_ETM_SLACK_D"),
+                                             "…а не переписує допуск удруге");
+    check(fileCalls("web_server.h", "mirrorPlanSetEtm") &&
+          fileCalls("web_server.h", "etmForeign"),
+                                             "пристрій кладе свідчення в план і віддає його клієнту");
+    // Текст попередження — теж один на клієнта, а не по копії на картку.
+    check(fileCountText("index.html", "function etmForeignHtml") == 1 &&
+          fileCalls("index.html", "etmForeignHtml(p.etmDays"),
+                                             "веб: одне формулювання, і картка синхронізації його бере");
+    check(fileCountText("client_usb.html", "function etmForeignHtml") == 1 &&
+          fileCalls("client_usb.html", "etmForeignHtml(p.etmDays"),
+                                             "USB-клієнт: так само");
+    check(fileCountText("usb_client/moto_gui.py", "Напрацювання ETM (%d діб)") == 1 &&
+          fileCalls("usb_client/moto_gui.py", "etm_foreign_text"),
+                                             "програма .exe: так само");
+    check(fileCalls("usb_client/moto_gui.py", "self.lblMirWarn.config(text=warn)"),
+                                             "…і має де це показати в картці синхронізації");
+
+    // ⚑ ДАТА. Годинника реального часу в пристрої немає (device_clock.h), тож
+    //  «сьогодні» приносить клієнт. Синхронізація була єдиним планом, який
+    //  дати НЕ ніс, — і мовчки лишалась без перевірки віку.
+    // ⚑ ВСІ ТРИ обробники (показати, поправити, записати) — а не «хоч один»:
+    //  без лічильника перевірка лишалась зеленою після того, як дату прибрали
+    //  саме з показу плану, тобто з єдиного місця, де вона й потрібна першою.
+    check(fileCountText("web_server.h", "mirrorPlanClock(server.hasArg(\"today\")") == 3,
+                                             "план синхронізації приймає дату від клієнта");
+    check(fileCalls("serial_api.h", "mirrorPlanClock(tv.toInt())"),
+                                             "…і по USB теж");
+    check(fileCalls("index.html", "/api/mirror?today=") &&
+          fileCalls("client_usb.html", "MIRROR TODAY=") &&
+          fileCalls("usb_client/moto_gui.py", "MIRROR TODAY="),
+                                             "усі три клієнти шлють сьогоднішню дату");
+    // Нова дата оновлює СВІДЧЕННЯ, але не перебудовує план: галочки розставила
+    // людина, і перебудова тихо скинула б їх просто через настання доби.
+    check(fileCalls("web_server.h", "deviceClockNum()) mirrorPlanEtmRefresh();"),
+                                             "дата оновлює лише свідчення, не скидаючи галочок");
+
+    // ⚑ ВИБІР БАЙТІВ. Було: галочка жила лише в рядка, де байти РІЗНІ, — а на
+    //  46 з 52 пакетів у dumps/ дзеркало вже збігається, тож у натурі жодна
+    //  галочка не натискалась. Умова лишилась одна: щоб було звідки брати.
+    check(fileCalls("mirror_plan.h", "on && p.have38 && p.srcUsable"),
+                                             "вручну можна відмітити й однаковий байт");
+    check(fileHasNo("index.html", "(b.d&&p.srcUsable?'':' disabled')") &&
+          fileHasNo("client_usb.html", "(b.d&&p.srcUsable?'':' disabled')"),
+                                             "…і клієнти більше не гасять такі рядки");
+
+    // ⚑ ЛИПКА ШАПКА. Два елементи з top:0 не діляться місцем — той, у кого
+    //  z-index більший, просто закриває інший. Смуга вкладок накривала шапку.
+    check(fileCalls("client_usb.html", "top:var(--hdrH)"),
+                                             "смуга вкладок липне ПІД шапкою, а не поверх неї");
+    check(fileHasNo("client_usb.html", "position:sticky;top:0;z-index:5}"),
+                                             "…а шапка лишається вище за неї");
 
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

@@ -159,6 +159,26 @@ static bool filesIdentical(const char *a, const char *b) {
     return same;
 }
 
+
+// Простий пошук ТЕКСТУ, без фільтра коментарів. Потрібен саме для перевірок
+// ДОКУМЕНТАЦІЇ: fileCalls() свідомо пропускає рядки, що починаються з «//», бо
+// його завдання — ловити виклики, а закоментований виклик викликом не є. Але
+// коли ми перевіряємо ПОЯСНЕННЯ в коді (а вони саме в коментарях і живуть),
+// той самий фільтр робить перевірку сліпою.
+static bool fileHasText(const char *path, const char *needle) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    char *buf = (char *)malloc((size_t)n + 1);
+    if (!buf) { fclose(f); return false; }
+    size_t rd = fread(buf, 1, (size_t)n, f);
+    buf[rd] = '\0';
+    fclose(f);
+    bool found = strstr(buf, needle) != nullptr;
+    free(buf);
+    return found;
+}
+
 // Чи йде визначення РАНІШЕ за виклик — у C++ це умова збірки, а не стиль.
 static bool fileDefinesBefore(const char *path, const char *def, const char *use) {
     FILE *f = fopen(path, "rb");
@@ -1228,6 +1248,30 @@ int main() {
           fileHasNo("client_usb.html", "B772M") &&
           fileHasNo("usb_client/moto_gui.py", "B772M"),
                                              "жоден клієнт більше не називає залізо сам");
+
+    printf("\n31) схема розділів: інструкція не обіцяє того, що не збирається\n");
+    // Скарга власника: «Sketch uses 1313447 bytes (100%) of program storage
+    // space. Maximum is 1310720 bytes. Sketch too big».
+    //
+    // 1310720 — це розділ програми у схемі «Default 4MB with spiffs», і саме її
+    // інструкція називала достатньою («прошивка ~80 % флеша»). Була достатньою
+    // — до того, як прошивка виросла. Помилку зробила НЕ установка користувача,
+    // а наш застарілий рядок у документації.
+    check(fileCalls("INSTRUCTION.md", "Huge APP (3MB No OTA/1MB SPIFFS)"),
+                                             "інструкція називає потрібну схему розділів");
+    check(fileHasNo("INSTRUCTION.md", "прошивка ~80 % флеша"),
+                                             "…і більше не обіцяє, що типової схеми досить");
+    check(fileCalls("README.md", "Partition Scheme"),
+                                             "швидкий старт у README теж називає схему");
+    check(fileHasText("settings.h", "ПОТРІБНА ЗАВЖДИ"),
+                                             "у settings.h схема більше не подана як «лише для Bluetooth»");
+    // ⚑ І пристрій каже це вголос після прошивки: схема задається в IDE, тож
+    //  перевірити її на компіляції неможливо, але мовчати про неї не варто —
+    //  наступний, хто впреться в стелю, побачить попередження ЗАЗДАЛЕГІДЬ.
+    check(fileCalls("motorola-battery-reader-web.ino", "esp_ota_get_running_partition"),
+                                             "пристрій друкує реальний розмір розділу програми");
+    check(fileCalls("motorola-battery-reader-web.ino", "ФЛЕШ МАЙЖЕ ЗАПОВНЕНО"),
+                                             "…і попереджає завчасно, а не постфактум");
 
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

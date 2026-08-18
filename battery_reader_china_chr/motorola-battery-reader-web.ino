@@ -34,6 +34,7 @@ void pmStep(uint8_t step) { g_pmTrace.step = step; }
 #include "settings.h"
 #include "leds.h"
 #include "battery_reader.h"
+#include <esp_ota_ops.h>   // esp_ota_get_running_partition() — звіт про флеш
 #include "display.h"
 #include "web_server.h"
 #include "serial_api.h"
@@ -297,6 +298,31 @@ void setup() {
     // Вільна купа — головний обмежувач, коли ввімкнено і Wi-Fi, і Bluetooth.
     Serial.printf("Вільна купа: %u байтів (найбільший суцільний блок %u)\n",
                   (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+
+    // ── СКІЛЬКИ ЛИШИЛОСЬ ФЛЕША ПІД ПРОГРАМУ ───────────────────────────────
+    //  ⚑ Навіщо друкувати те, що видно в IDE. Бо в IDE це видно ЛИШЕ тому, хто
+    //  щойно збирав, і лише доти, доки не закрив вікно. А впирається в стелю
+    //  той, хто через півроку додасть одну функцію й отримає «Sketch too big»
+    //  без жодної підказки, ЯКА схема розділів у нього обрана.
+    //
+    //  Схема задається в IDE, а не в коді, тож перевірити її на компіляції
+    //  неможливо — залишається сказати вголос після прошивки. Поріг 90 %
+    //  попереджає ЗАЗДАЛЕГІДЬ: між «тісно» і «не збирається» тут буває одна
+    //  невелика правка.
+    {
+        const esp_partition_t *app = esp_ota_get_running_partition();
+        if (app) {
+            uint32_t used = ESP.getSketchSize(), cap = app->size;
+            unsigned pct = cap ? (unsigned)((uint64_t)used * 100 / cap) : 0;
+            Serial.printf("Флеш під програму: %u з %u байтів (%u%%), розділ «%s»\n",
+                          (unsigned)used, (unsigned)cap, pct, app->label);
+            if (pct >= 90)
+                Serial.println("⚠ ФЛЕШ МАЙЖЕ ЗАПОВНЕНО. Наступна правка може не зібратись. "
+                               "Оберіть в Arduino IDE: Інструменти -> Partition Scheme -> "
+                               "«Huge APP (3MB No OTA/1MB SPIFFS)» — програмі стане 3 МБ, "
+                               "SPIFFS лишиться 1 МБ (вистачає з запасом).");
+        }
+    }
     Serial.println("==============================================");
     
     // Переходимо в режим очікування (зелений «пульс» раз на 3 с)

@@ -309,8 +309,14 @@ python tools/make_color_splash.py logo.png -W 240 -H 280   # під свою р�
 ## 3. Збірка і прошивка
 
 1. Оберіть плату ESP32 і порт.
-2. Скомпілюйте та завантажте `motorola-battery-reader-web.ino`.
-3. **Залийте вміст теки `data/`** (`index.html`, `logo.png`) у SPIFFS —
+2. **Оберіть схему розділів: *Tools → Partition Scheme → Huge APP
+   (3MB No OTA/1MB SPIFFS)*.** Це умова збірки, а не порада: у типовій
+   «Default 4MB with spiffs» під програму лишається 1 310 720 байтів, а
+   прошивка займає ~1.31 МБ і не влазить —
+   `Sketch too big; text section exceeds available space in board`.
+   З «Huge APP» вона займає ~42 % від 3 МБ, а SPIFFS у 1 МБ вистачає з запасом.
+3. Скомпілюйте та завантажте `motorola-battery-reader-web.ino`.
+4. **Залийте вміст теки `data/`** (`index.html`, `logo.png`) у SPIFFS —
    *Tools → ESP32 Sketch Data Upload* (плагін ESP32FS для Arduino IDE 1.8.x).
    **Без цього веб-сторінка не відкриється.**
    - Помилка `No port specified` = не вибрано порт або відкритий Serial Monitor.

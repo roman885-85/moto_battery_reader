@@ -44,6 +44,7 @@
 //   HDRFIX               -> добудувати заголовок DS2433 із дзеркала DS2438
 //                          (коли зарядна станція сама почала, але не завершила)
 //   CHARGE MA=<мА>       -> ручна уставка струму заряду (0 = автомат)
+//   MIRROR [APPLY|TAKE=|BYTE=|RATED=] -> синхронізація дзеркала 2438 -> 2433
 //   SAMPLES              -> вбудовані зразки моніторів копій (для CLONE)
 //   CLONE <hex128> [RATED=] [RSENSE=] [MODEL=] [MFG=] [USE=] [HEALTH=] [ID33=1]
 //                  [ZERO=0] [RECHECK=0]
@@ -178,6 +179,10 @@ static String serBuildInfo() {
         j += ",\"emptyMv\":" + String(BATTERY_EMPTY_MV);
         j += ",\"fullMv\":"  + String(BATTERY_FULL_MV);
         j += ",\"scaleTxt\":\"" BATTERY_SCALE_TXT "\"";
+        // ⚑ Ім'я силового ключа теж віддає ПРИСТРІЙ. Клієнти тримали його
+        //  рядком у себе («PNP B772M»), і після заміни на P-MOSFET усі троє
+        //  почали називати чуже залізо. Тепер назва одна — з settings.h.
+        j += ",\"swName\":\"" CHARGE_SW_NAME "\"";
         j += ",\"serial\":\"" + serial + "\"";
         if (hasSN2433) {
             char b[3]; String s33 = "";
@@ -728,6 +733,55 @@ static void serialExec(const String &line) {
                                   else { const char *e = chargeStart((uint8_t)a3.toInt());
                                          if (e) { String r = "{\"ok\":false,\"err\":\""; r += e; r += "\"}"; sResp(r); }
                                          else sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}"); } }
+    // MIRROR                      -> план синхронізації дзеркала (нічого не пише)
+    // MIRROR TAKE=ALL|NONE         -> правка перед синхронізацією
+    // MIRROR BYTE=<0..25> ON=0|1   -> те саме, по одному байту
+    // MIRROR RATED=<мА·год>        -> вписати паспортну ємність руками (0 — скасувати)
+    // MIRROR APPLY                 -> записати те, що показано в плані
+    else if (cmd == "MIRROR")   { String a4 = arg; a4.trim(); a4.toUpperCase();
+                                  if (!hasDump) { sResp("{\"ok\":false,\"err\":\"спочатку READ\"}"); }
+                                  else {
+                                      if (!g_mirPlanReady) mirrorPlanRefresh();
+                                      if (a4 == "APPLY") {
+                                          ledSet(LED_WRITE); displayShow("USB СИНХР 2433");
+                                          int n = mirrorPlanApply(g_mirPlan, batteryDump);
+                                          bool w = battery.writeBattery(batteryDump, DUMP_SIZE);
+                                          if (w) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+                                          ledSet(w ? LED_OK : LED_ERROR);
+                                          displayShow(w ? "USB СИНХР OK" : "USB СИНХР ЗБІЙ");
+                                          mirrorPlanRefresh();
+                                          String r = "{\"ok\":"; r += w ? "true" : "false";
+                                          r += ",\"changed\":"; r += n;
+                                          r += ",\"plan\":"; r += mirrorPlanJson(); r += "}";
+                                          sResp(r);
+                                      } else {
+                                          // Розбір ключів у тому ж стилі, що й у CLONE/WIZSTEP.
+                                          String tail = a4;
+                                          while (tail.length()) {
+                                              int q = tail.indexOf(' ');
+                                              String tok = (q < 0) ? tail : tail.substring(0, q);
+                                              tail = (q < 0) ? String("") : tail.substring(q + 1);
+                                              tail.trim();
+                                              if      (tok.startsWith("TAKE="))
+                                                  mirrorPlanTakeAll(g_mirPlan, tok.substring(5) == "ALL");
+                                              else if (tok.startsWith("RATED="))
+                                                  mirrorPlanSetRated(g_mirPlan, tok.substring(6).toInt());
+                                              else if (tok.startsWith("BYTE=")) {
+                                                  int idx = tok.substring(5).toInt();
+                                                  // ON= може йти наступним токеном; типово вмикаємо.
+                                                  bool on = true;
+                                                  if (tail.startsWith("ON=")) {
+                                                      on = (tail.substring(3, 4) == "1");
+                                                      int q2 = tail.indexOf(' ');
+                                                      tail = (q2 < 0) ? String("") : tail.substring(q2 + 1);
+                                                      tail.trim();
+                                                  }
+                                                  mirrorPlanTakeOne(g_mirPlan, idx, on);
+                                              }
+                                          }
+                                          sResp(mirrorPlanJson());
+                                      }
+                                  } }
     else if (cmd == "WIZARD")   { sResp(wizStart()); }
     // WIZSTEP <idx> [MODEL] [FIXES=…] [RATED=…] [RSENSE=…|RSMODEL=…] [MFG=…] [HEALTH=…] [USE=…] [CAL=…] [CYC=…] [NONIMP=…] [TODAY=…] [ETMSRC=USE|PACK]
     else if (cmd == "WIZSTEP")  { int s2 = arg.indexOf(' ');

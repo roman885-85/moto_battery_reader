@@ -31,7 +31,17 @@
         .brand h1 .ua{color:var(--ua-yellow)}
         .brand .sub{color:var(--muted);font-size:.8em;margin-top:4px}
         /* --- tabs --- */
-        .tabs{display:flex;gap:8px;margin:16px 0;flex-wrap:wrap}
+        /* ⚑ ШАПКА З ВКЛАДКАМИ ЛИПНЕ ДО ВЕРХУ.
+           Сторінки тут довгі — у «Ремонті» півтора десятка карток, — і щоб
+           перейти на сусідню вкладку, доводилось прокручувати весь екран
+           назад угору. Тепер смуга вкладок лишається на місці при прокрутці.
+           z-index потрібен, бо нижче є картки з власним тлом і тінями:
+           без нього вони проїжджали б ПОВЕРХ смуги.
+           Тло непрозоре навмисно — крізь напівпрозоре просвічував би текст,
+           що проходить під смугою, і читати вкладки стало б неможливо. */
+        .tabs{display:flex;gap:8px;margin:0 0 16px;flex-wrap:wrap;
+              position:sticky;top:0;z-index:50;background:var(--bg);
+              padding:10px 0 8px;border-bottom:1px solid var(--line)}
         .tab{flex:1;min-width:90px;padding:12px;border:1px solid var(--line);background:var(--card2);
              color:var(--muted);border-radius:12px;cursor:pointer;font-size:.95em;font-weight:600;
              text-align:center;transition:.2s}
@@ -88,7 +98,10 @@
         .rpg{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:6px;margin-top:6px}
         .rpf{display:flex;align-items:center;gap:6px;justify-content:space-between}
         .rpf span{color:var(--dim);font-size:.9em}
-        .subnav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px}
+        /* Підвкладки липнуть ПІД головною смугою — звідси top не 0, а її висота.
+           Інакше вони або сховались би за нею, або залишили б щілину. */
+        .subnav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px;
+                position:sticky;top:64px;z-index:40;background:var(--bg);padding:8px 0}
         .subtab{padding:8px 14px;border:1px solid var(--line);border-radius:8px;
                 background:var(--card2);color:var(--dim);cursor:pointer;font-size:.92em;
                 user-select:none}
@@ -480,6 +493,33 @@
                 «навчений», хоч чіп мав бути порожнім) — тут вона зупинилась, суму не виправила. Кнопка
                 нижче добудовує РІВНО те, що почала станція; профіль і модель цим не відновлюються.</div>
             <button class="btn btn-info" style="width:100%" onclick="hdrFix()">🔌 ДОБУДУВАТИ ЗАГОЛОВОК ПІСЛЯ СТАНЦІЇ</button>
+        </div>
+<div class="card" style="border-color:var(--info)">
+            <h2>🔗 Синхронізація дзеркала DS2438 → DS2433 <span class="chipb">пише в DS2433</span></h2>
+            <div class="note i">Ті самі <b>26 байтів</b> ідентичності лежать у двох чипах:
+                <code>DS2433[0x01–0x1A]</code> і <code>DS2438[0x18–0x31]</code>. Кнопка вище копіює їх
+                <b>усі й наосліп</b>. Тут — те саме, але спершу <b>видно, що зміниться</b>, і кожен байт
+                можна лишити старим. Це важливо, коли монітор чужий: сліпе копіювання тоді не лікує,
+                а закріплює чужу ідентичність.</div>
+            <div class="note w" id="mirWarn" style="display:none"></div>
+            <div class="row"><span class="k">Стан</span><span class="v" id="mirState">—</span></div>
+            <div class="row"><span class="k">Паспортна ємність</span>
+                <span>
+                  <span class="v" id="mirRated">—</span>
+                  <input type="number" id="mirRatedInp" placeholder="вручну" min="1000" max="6000" step="25"
+                         style="border-radius:8px;border:none;padding:6px;width:110px;margin-left:8px">
+                  <span style="opacity:.7">мА·год</span>
+                  <button type="button" class="btn btn-info" style="padding:6px 10px"
+                          onclick="mirSetRated()">Задати</button>
+                </span></div>
+            <div class="rpwrap"><table class="rpt" id="mirTable"></table></div>
+            <div class="btns">
+                <button class="btn btn-info" onclick="mirLoad()">🔄 Перечитати план</button>
+                <button class="btn btn-info" onclick="mirTake('all')">☑ Взяти все</button>
+                <button class="btn btn-info" onclick="mirTake('none')">☐ Не брати нічого</button>
+            </div>
+            <input type="password" class="pw" id="pwMir" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-warn" style="width:100%" onclick="mirApply()">🔗 СИНХРОНІЗУВАТИ ЗА ПЛАНОМ</button>
         </div>
     </div>
     <div class="sub" id="fw-cal">
@@ -1056,6 +1096,9 @@ function showSub(el){
     el.classList.add('active'); $(el.dataset.s).classList.add('active');
     window.scrollTo(0,0);
     if(el.dataset.s==='fw-id' && $('restModel') && $('restModel').value) rpLoad(false);
+    // План синхронізації дзеркала будуємо при вході на «Ремонт»: він читає
+    // обидва чипи, тож тягнути його на кожному оновленні статусу немає сенсу.
+    if(el.dataset.s==='fw-rep') mirLoad();
 }
 function toast(m,t='ok'){const e=$('toast');e.className='t-'+t;e.textContent=m;e.style.display='block';
     setTimeout(()=>e.style.display='none',4500)}
@@ -1369,6 +1412,76 @@ async function cloneRestore(){
         if(r.status==='success'){toast('✅ '+r.message,'ok');await refreshAll();}
         else toast('Помилка: '+r.message,'err');
     }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+// ═══════════ СИНХРОНІЗАЦІЯ ДЗЕРКАЛА DS2438 -> DS2433 ═══════════
+//  План будує ПРИСТРІЙ (mirror_plan.h) — тут лише показ і правки. Другої
+//  реалізації різниці байтів у браузері немає навмисно: вона розійшлася б із
+//  прошивкою, і користувач бачив би не те, що запишеться.
+let mirPlan=null;
+async function mirLoad(){
+    try{
+        const r=await (await fetch('/api/mirror')).json();
+        if(!r.ok){ mirPlan=null; $('mirState').textContent=r.err||'немає дампа'; mirRender(); return; }
+        mirPlan=r; mirRender();
+    }catch(e){ toast('Помилка: '+e.message,'err'); }
+}
+function mirRender(){
+    const p=mirPlan, t=$('mirTable'), w=$('mirWarn');
+    if(!p){ t.innerHTML=''; w.style.display='none'; return; }
+    $('mirState').textContent = p.inSync
+        ? ('чипи збігаються' + (p.hdrOk?'' : ', але сума заголовка побита'))
+        : (p.diffCount+' байт(ів) різняться, буде записано '+p.changes);
+    // Попередження — там, де воно справді потрібне: коли джерела немає.
+    if(!p.have38 || !p.srcUsable){
+        w.style.display='';
+        w.innerHTML = !p.have38
+            ? '⚠️ DS2438 не зчитано — переносити нема звідки. Можна лише виправити суму заголовка.'
+            : '⚠️ У DS2438 дзеркала немає (суцільні 0x00/0xFF) — переносити нема звідки.';
+    } else w.style.display='none';
+    $('mirRated').textContent = 'у чипі ' + (p.ratedNow?p.ratedNow+' мА·год':'—')
+        + ' · у моніторі ' + (p.ratedSrc?p.ratedSrc+' мА·год':'—')
+        + (p.ratedUser?(' · вручну '+p.ratedUser+' мА·год'):'');
+    let h='<tr><th></th><th>Байт</th><th>Зараз</th><th>З DS2438</th><th>Буде</th></tr>';
+    for(let i=0;i<p.b.length;i++){
+        const b=p.b[i];
+        const addr=(p.at33+i).toString(16).toUpperCase().padStart(3,'0');
+        const hx=v=>v.toString(16).toUpperCase().padStart(2,'0');
+        const mark=(i===p.ratedIdx)?' <span style="opacity:.7">(ємність)</span>':'';
+        h+='<tr'+(b.d?' style="color:var(--warn)"':'')+'>'
+          +'<td><input type="checkbox" '+(b.t?'checked':'')+(b.d&&p.srcUsable?'':' disabled')
+          +' onchange="mirByte('+i+',this.checked)"></td>'
+          +'<td>0x'+addr+mark+'</td><td>'+hx(b.now)+'</td><td>'+hx(b.src)+'</td>'
+          +'<td><b>'+hx(b.out)+'</b></td></tr>';
+    }
+    t.innerHTML=h;
+}
+async function mirEdit(params){
+    params.password=$('pwMir').value;
+    try{
+        const r=await postForm('/api/mirror/edit',params);
+        if(r.ok!==false){ mirPlan=r; mirRender(); } else toast('Помилка: '+(r.err||''),'err');
+    }catch(e){ toast('Помилка: '+e.message,'err'); }
+}
+function mirTake(what){ mirEdit({take:what}); }
+function mirByte(i,on){ mirEdit({byte:i,on:on?1:0}); }
+function mirSetRated(){
+    const v=$('mirRatedInp').value;
+    mirEdit({rated:v?(+v|0):0});
+}
+async function mirApply(){
+    if(!mirPlan){toast('Спершу перечитайте план');return;}
+    if(!confirm('🔗 Записати '+mirPlan.changes+' байт(ів) у DS2433?\n\n'
+              +'Пишеться ЛИШЕ дзеркало ідентичності й сума заголовка. Модель, крива, '
+              +'навчена калібровка й лічильники не чіпаються.'))return;
+    prog(true,'Синхронізація...');
+    try{
+        const r=await postForm('/api/mirror/apply',{password:$('pwMir').value});
+        toast(r.ok?('✅ Змінено байтів: '+r.changed):('Помилка: '+(r.err||'')),r.ok?'ok':'err');
+        if(r.plan){ mirPlan=r.plan; mirRender(); }
+        await refresh();
+    }catch(e){ toast('Помилка: '+e.message,'err'); }
     prog(false);
 }
 
@@ -2006,7 +2119,7 @@ async function chgPoll(){
     $('chgLim').textContent=d.pwm?('уставка '+d.setMa+' мА · зараз '+d.ma+' мА')
                                  :'⚠ ШІМ недоступний';
     $('chgLim').style.color=d.pwm?'var(--ok)':'var(--accent)';
-    // Керування тепер — ШПАРУВАТІСТЬ ключа (PNP B772M через керуючий NPN), а не «цільова
+    // Керування тепер — ШПАРУВАТІСТЬ силового ключа (через керуючий NPN), а не «цільова
     // напруга DC/DC»: смужку заповнюємо відносно РОБОЧОЇ стелі dutyMax, бо саме
     // вона, а не повна шкала, є максимумом, до якого регулятор може дійти.
     $('chgDutyBar').style.width=(d.pwm?(d.duty*100/(d.dutyMax||1)):100)+'%';

@@ -569,7 +569,7 @@ class ChargeMonitor(ttk.Frame):
         ma, setMa, pwm = d.get("ma", 0), d.get("setMa", 0), d.get("pwm", False)
         self.lblLim.config(text=("уставка %d мА · зараз %d мА" % (setMa, ma)) if pwm else "⚠ керування недоступне",
                             foreground=MIL["olive"] if pwm else MIL["maroon"])
-        # Керування тепер — ШПАРУВАТІСТЬ ключа (PNP B772M через керуючий NPN), а не «цільова
+        # Керування тепер — ШПАРУВАТІСТЬ силового ключа (через керуючий NPN), а не «цільова
         # напруга DC/DC». Поруч — вершина пульсацій струму дроселя: вона злітає,
         # коли дросель фактично випав із кола (обрив, насичення, пробитий ключ).
         duty, dutyFull = d.get("duty", 0), d.get("dutyFull", 1) or 1
@@ -1407,6 +1407,40 @@ class App:
         ttk.Button(b2b, text="🔌 Добудувати заголовок після станції",
                    command=self.hdr_fix).pack(anchor="w", pady=3)
 
+        # ── СИНХРОНІЗАЦІЯ ДЗЕРКАЛА З ПРАВКОЮ ─────────────────────────────
+        #  Кнопка вище копіює всі 26 байтів наосліп. Тут — те саме, але
+        #  спершу видно, ЩО зміниться, і кожен байт можна лишити старим.
+        #  Це важливо, коли монітор чужий: сліпе копіювання тоді закріплює
+        #  чужу ідентичність замість ремонту.
+        b2m = ttk.LabelFrame(p_rep, text="Синхронізація дзеркала DS2438 → DS2433  ·  пише в DS2433",
+                             padding=8); b2m.pack(fill="x", pady=4)
+        ttk.Label(b2m, text="Ті самі 26 байтів ідентичності лежать у двох чипах:\n"
+                            "DS2433[0x01–0x1A] і DS2438[0x18–0x31]. Нижче — побайтова різниця;\n"
+                            "зніміть галочку з байта, який треба лишити старим.",
+                  foreground="#b9bd86", justify="left").pack(anchor="w")
+        self.lblMir = ttk.Label(b2m, text="план не побудовано", foreground="#c8b04a")
+        self.lblMir.pack(anchor="w", pady=(4, 2))
+        mrow = ttk.Frame(b2m); mrow.pack(anchor="w", pady=2)
+        ttk.Label(mrow, text="Паспортна ємність, мА·год:").pack(side="left")
+        self.eMirRated = ttk.Entry(mrow, width=8); self.eMirRated.pack(side="left", padx=4)
+        ttk.Button(mrow, text="Задати", width=8,
+                   command=self.mirror_set_rated).pack(side="left", padx=2)
+        # Список байтів — з прокруткою: 26 рядків не мусять розпирати картку.
+        self.mirBox = tk.Listbox(b2m, height=9, font=fnt("Consolas", 9),
+                                 bg=MIL["field"], fg="#b9bd86",
+                                 selectbackground=MIL["btn_act"], relief="flat",
+                                 activestyle="none", exportselection=False)
+        self.mirBox.pack(fill="x", pady=3)
+        self.mirBox.bind("<Double-Button-1>", self._mirror_toggle)
+        ttk.Label(b2m, text="Подвійний клац по рядку — перемкнути перенесення цього байта.",
+                  foreground="#9a9c82").pack(anchor="w")
+        mbtn = ttk.Frame(b2m); mbtn.pack(anchor="w", pady=3)
+        ttk.Button(mbtn, text="🔄 Перечитати план", command=self.mirror_load).pack(side="left", padx=2)
+        ttk.Button(mbtn, text="☑ Взяти все", command=lambda: self.mirror_take("ALL")).pack(side="left", padx=2)
+        ttk.Button(mbtn, text="☐ Не брати нічого", command=lambda: self.mirror_take("NONE")).pack(side="left", padx=2)
+        ttk.Button(b2m, text="🔗 Синхронізувати за планом",
+                   command=self.mirror_apply).pack(anchor="w", pady=3)
+
         b2d = ttk.LabelFrame(p_cal, text="Розряд перед калібруванням (навантаження MOSFET)  ·  пише в DS2438", padding=8); b2d.pack(fill="x", pady=4)
         ttk.Label(b2d, text="Розряд — це приймальний контроль після перепайки: він міряє реальну ємність нових\n"
                             "банок. Для калібрування він НЕ обов'язковий — фірмова станція бере в цикл навіть\n"
@@ -1445,9 +1479,11 @@ class App:
         # чекати періоду, коли й так стоїш біля пристрою.
         self.monDis = DischargeMonitor(b2d); self.monDis.pack(anchor="w", pady=(6, 0))
 
-        b2e = ttk.LabelFrame(p_cal, text="Керований заряд (понижувач на PNP B772M)  ·  пише в DS2438", padding=8); b2e.pack(fill="x", pady=4)
+        b2e = ttk.LabelFrame(p_cal, text="Керований заряд (понижувач на силовому ключі)  ·  пише в DS2438", padding=8); b2e.pack(fill="x", pady=4)
+        self.lblSwName = ttk.Label(b2e, text="силовий ключ: —", foreground="#c8b04a")
+        self.lblSwName.pack(anchor="w")
         ttk.Label(b2e, text="Понижувальний перетворювач на власному ключі: ШІМ 25 кГц -> керуючий NPN ->\n"
-                            "силовий PNP B772M -> діод Шотткі й дросель 104 мкГн. Струм і напруга — з\n"
+                            "силовий ключ -> діод Шотткі й дросель 104 мкГн. Струм і напруга — з\n"
                             "власних давачів (шунт 0.5 Ом, подільник 20к/10к); DS2438 — для температури.\n"
                             "Профіль струму масштабується під обрану ціль — заряд завжди закінчується плавним\n"
                             "спадом струму перед самою ціллю, хай яку обрано.\n"
@@ -2063,6 +2099,11 @@ class App:
         self.info = d
         # Шкалу «заряд за напругою» називає ПРИСТРІЙ — підпис кнопки й текст
         # діалогу беремо звідти, щоб вони не розійшлися з прошивкою.
+        # Ім'я силового ключа теж називає ПРИСТРІЙ — клієнт своєї назви заліза
+        # не тримає (після заміни PNP на P-MOSFET саме через це всі три
+        # поверхні почали підписувати чужий транзистор).
+        if d.get("swName") and hasattr(self, "lblSwName"):
+            self.lblSwName.config(text="силовий ключ: %s" % d["swName"])
         if d.get("scaleTxt"):
             self.scaleTxt = d["scaleTxt"]
             if hasattr(self, "btnChgAuto"):
@@ -3206,6 +3247,96 @@ class App:
             return
         self._cloneHex = subs[i].get("hex", "")
         self.lblClone.config(text="%s · %d мА·год" % (subs[i].get("note", ""), subs[i].get("rated", 0)))
+
+    # ── СИНХРОНІЗАЦІЯ ДЗЕРКАЛА DS2438 -> DS2433 ──────────────────────────
+    #  План будує ПРИСТРІЙ (mirror_plan.h) — тут лише показ і правки. Другої
+    #  реалізації різниці байтів тут немає навмисно: вона розійшлася б із
+    #  прошивкою, і користувач бачив би не те, що запишеться.
+    def mirror_load(self):
+        if not self.need_conn():
+            return
+        self.cmd("MIRROR", 10.0, cb=self._mirror_show)
+
+    def _mirror_show(self, r):
+        if not (isinstance(r, dict) and r.get("ok")):
+            self.lblMir.config(text="Помилка: " + str((r or {}).get("err", "")))
+            return
+        self._mirPlan = r
+        p = r
+        if p.get("inSync"):
+            st = "чипи збігаються" + ("" if p.get("hdrOk") else ", але сума заголовка побита")
+        else:
+            st = "%d байт(ів) різняться, буде записано %d" % (p.get("diffCount", 0), p.get("changes", 0))
+        if not p.get("have38"):
+            st += "  ⚠️ DS2438 не зчитано"
+        elif not p.get("srcUsable"):
+            st += "  ⚠️ у DS2438 дзеркала немає"
+        st += "   ·  ємність: чип %s, монітор %s" % (
+            (str(p.get("ratedNow")) + " мА·год") if p.get("ratedNow") else "—",
+            (str(p.get("ratedSrc")) + " мА·год") if p.get("ratedSrc") else "—")
+        if p.get("ratedUser"):
+            st += ", вручну %d мА·год" % p["ratedUser"]
+        self.lblMir.config(text=st)
+
+        self.mirBox.delete(0, "end")
+        for i, b in enumerate(p.get("b", [])):
+            mark = "[x]" if b.get("t") else "[ ]"
+            diff = "≠" if b.get("d") else " "
+            rated = " (ємність)" if i == p.get("ratedIdx") else ""
+            self.mirBox.insert("end", "%s %s 0x%03X  зараз %02X   DS2438 %02X   ->  %02X%s"
+                               % (mark, diff, p.get("at33", 1) + i,
+                                  b.get("now", 0), b.get("src", 0), b.get("out", 0), rated))
+
+    def _mirror_send(self, arg):
+        if not self.need_conn():
+            return
+        self.maybe_auth(lambda: self.cmd("MIRROR " + arg, 10.0, cb=self._mirror_show))
+
+    def mirror_take(self, what):
+        self._mirror_send("TAKE=" + what)
+
+    def _mirror_toggle(self, _e):
+        sel = self.mirBox.curselection()
+        if not sel:
+            return
+        i = sel[0]
+        p = getattr(self, "_mirPlan", None)
+        if not p or i >= len(p.get("b", [])):
+            return
+        on = 0 if p["b"][i].get("t") else 1
+        self._mirror_send("BYTE=%d ON=%d" % (i, on))
+
+    def mirror_set_rated(self):
+        raw = (self.eMirRated.get() or "").strip()
+        try:
+            v = int(raw) if raw else 0
+        except ValueError:
+            messagebox.showwarning("Ємність", "Вкажіть ціле число мА·год (порожньо — скасувати)")
+            return
+        self._mirror_send("RATED=%d" % v)
+
+    def mirror_apply(self):
+        p = getattr(self, "_mirPlan", None)
+        if not p:
+            messagebox.showwarning("Синхронізація", "Спершу перечитайте план")
+            return
+        if not messagebox.askyesno("Синхронізація дзеркала",
+                "Записати %d байт(ів) у DS2433?\n\n"
+                "Пишеться ЛИШЕ дзеркало ідентичності й сума заголовка.\n"
+                "Модель, крива, навчена калібровка й лічильники не чіпаються."
+                % p.get("changes", 0)):
+            return
+
+        def done(r):
+            ok = isinstance(r, dict) and r.get("ok")
+            self.status(("✅ Змінено байтів: %d" % r.get("changed", 0)) if ok
+                        else ("Помилка: " + str((r or {}).get("err", ""))), ok)
+            if ok and isinstance(r.get("plan"), dict):
+                self._mirror_show(r["plan"])
+            self.refresh()
+
+        self.maybe_auth(lambda: (self.status("Синхронізація..."),
+                                 self.cmd("MIRROR APPLY", 20.0, cb=done)))
 
     def hdr_fix(self):
         """Добудова заголовка DS2433, яку почала (але не завершила) станція

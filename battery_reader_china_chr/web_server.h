@@ -14,6 +14,7 @@
 #include "device_clock.h"     // системна дата пристрою (джерело «сьогодні»)
 #include "impres_audit.h"     // аудит змісту: шифрування й узгодженість даних
 #include "impres_clone.h"     // крайній засіб: відновлення за зразком копії
+#include "mirror_plan.h"      // синхронізація дзеркала DS2438 -> DS2433 з правкою
 #include "discharge.h"         // керований розряд навантаженням (MOSFET)
 #include "charge.h"            // керований заряд понижувачем на власному ключі (PNP B772M)
 #include "leds.h"
@@ -721,6 +722,10 @@ void handleDumpInfo2438() {
     json += ",\"emptyMv\":" + String(BATTERY_EMPTY_MV);
     json += ",\"fullMv\":"  + String(BATTERY_FULL_MV);
     json += ",\"scaleTxt\":\"" BATTERY_SCALE_TXT "\"";
+    // ⚑ Ім'я силового ключа теж віддає ПРИСТРІЙ. Клієнти тримали його
+    //  рядком у себе («PNP B772M»), і після заміни на P-MOSFET усі троє
+    //  почали називати чуже залізо. Тепер назва одна — з settings.h.
+    json += ",\"swName\":\"" CHARGE_SW_NAME "\"";
     // ETM (DS2438[8..11], сек наробітку). Рація показує «дату першого користування»
     // як (свій поточний час − ETM) — перевірено діффом до/після калібрування.
     uint32_t etm = ((uint32_t)batteryDump2438[11] << 24) | ((uint32_t)batteryDump2438[10] << 16) |
@@ -2446,6 +2451,113 @@ bool performHeaderComplete(String *note) {
     Serial.printf("HDRFIX: mirror %s, write %s\n", already ? "already ok" : "restored",
                   ok ? "OK" : "FAIL");
     return ok;
+}
+
+// ═══════════ СИНХРОНІЗАЦІЯ ДЗЕРКАЛА DS2438 -> DS2433 З ПРАВКОЮ ═══════════
+//  «Добудова заголовка» вище — сліпа: копіює всі 26 байтів і виправляє суму.
+//  Це правильно рівно в одному випадку — коли монітор ТОЧНО свій. А він буває
+//  чужий, і тоді сліпе копіювання не лікує, а закріплює чужу ідентичність.
+//
+//  Тому поруч живе план: показати побайтову різницю, дати зняти зайве, дати
+//  вписати паспортну ємність руками — і лише потім писати. Логіка плану чиста
+//  й лежить у mirror_plan.h; тут — лише стан сеансу й перекладання в JSON.
+static MirrorPlan g_mirPlan;
+static bool       g_mirPlanReady = false;
+
+static void mirrorPlanRefresh() {
+    mirrorPlanBuild(g_mirPlan,
+                    hasDump ? batteryDump : nullptr,
+                    hasDump2438 ? batteryDump2438 : nullptr);
+    g_mirPlanReady = hasDump;
+}
+
+static String mirrorPlanJson() {
+    String j; j.reserve(1024);
+    const MirrorPlan &p = g_mirPlan;
+    j  = "{\"ok\":";        j += p.have33 ? "true" : "false";
+    j += ",\"have38\":";    j += p.have38 ? "true" : "false";
+    j += ",\"srcUsable\":"; j += p.srcUsable ? "true" : "false";
+    j += ",\"inSync\":";    j += p.mirrorOkNow ? "true" : "false";
+    j += ",\"hdrOk\":";     j += p.hdrSumOkNow ? "true" : "false";
+    j += ",\"diffCount\":"; j += p.diffCount;
+    j += ",\"changes\":";   j += mirrorPlanChanges(p);
+    j += ",\"at33\":";      j += (int)IMPRES_MIRROR_D33_AT;
+    j += ",\"at38\":";      j += (int)IMPRES_MIRROR_D38_AT;
+    j += ",\"len\":";       j += (int)IMPRES_MIRROR_LEN;
+    j += ",\"ratedIdx\":";  j += (int)MIRROR_RATED_IDX;
+    j += ",\"ratedNow\":";  j += p.ratedNow;
+    j += ",\"ratedSrc\":";  j += p.ratedSrc;
+    j += ",\"ratedUser\":"; j += p.ratedUser;
+    j += ",\"ratedStep\":"; j += (int)IMPRES_RATED_STEP;
+    j += ",\"b\":[";
+    char t[8];
+    for (int i = 0; i < IMPRES_MIRROR_LEN; i++) {
+        if (i) j += ",";
+        j += "{\"now\":";  snprintf(t, sizeof(t), "%u", p.now[i]); j += t;
+        j += ",\"src\":";  snprintf(t, sizeof(t), "%u", p.src[i]); j += t;
+        j += ",\"out\":";  snprintf(t, sizeof(t), "%u", p.out[i]); j += t;
+        j += ",\"d\":";    j += p.diff[i] ? "1" : "0";
+        j += ",\"t\":";    j += p.take[i] ? "1" : "0";
+        j += "}";
+    }
+    j += "]}";
+    return j;
+}
+
+// GET /api/mirror — побудувати й віддати план (нічого не пише).
+void handleMirrorPlan() {
+    if (!hasDump) {
+        server.send(400, "application/json",
+                    "{\"ok\":false,\"err\":\"Спочатку зчитайте АКБ\"}");
+        return;
+    }
+    mirrorPlanRefresh();
+    server.send(200, "application/json", mirrorPlanJson());
+}
+
+// POST /api/mirror/edit — правка ПЕРЕД синхронізацією, без запису в чип.
+//  take=all|none | byte=<0..25>&on=0|1 | rated=<мА·год>
+void handleMirrorEdit() {
+    if (!requireAdmin()) return;
+    if (!g_mirPlanReady) mirrorPlanRefresh();
+    if (!g_mirPlan.have33) {
+        server.send(400, "application/json",
+                    "{\"ok\":false,\"err\":\"Спочатку зчитайте АКБ\"}");
+        return;
+    }
+    if (server.hasArg("take")) {
+        String t = server.arg("take");
+        mirrorPlanTakeAll(g_mirPlan, t == "all");
+    }
+    if (server.hasArg("byte"))
+        mirrorPlanTakeOne(g_mirPlan, server.arg("byte").toInt(),
+                          server.arg("on") == "1");
+    if (server.hasArg("rated"))
+        mirrorPlanSetRated(g_mirPlan, server.arg("rated").toInt());
+    server.send(200, "application/json", mirrorPlanJson());
+}
+
+// POST /api/mirror/apply — записати те, що показано в плані.
+void handleMirrorApply() {
+    if (!requireAdmin()) return;
+    if (!g_mirPlanReady) mirrorPlanRefresh();
+    if (!g_mirPlan.have33) {
+        server.send(400, "application/json",
+                    "{\"ok\":false,\"err\":\"Спочатку зчитайте АКБ\"}");
+        return;
+    }
+    ledSet(LED_WRITE); displayShow("СИНХР. 2433...");
+    int n = mirrorPlanApply(g_mirPlan, batteryDump);
+    bool ok = battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (ok) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+    displayShow(ok ? "СИНХР. OK" : "СИНХР. ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    Serial.printf("MIRROR: змінено %d байт, запис %s\n", n, ok ? "OK" : "FAIL");
+    mirrorPlanRefresh();
+    String j = "{\"ok\":"; j += ok ? "true" : "false";
+    j += ",\"changed\":"; j += n;
+    j += ",\"plan\":"; j += mirrorPlanJson(); j += "}";
+    server.send(ok ? 200 : 500, "application/json", j);
 }
 
 // POST /api/hdrfix
@@ -4232,6 +4344,9 @@ void setupWebServer() {
     server.on("/api/ops", HTTP_GET, handleOps);                  // каталог операцій (operations.h)
     server.on("/api/sethealth", HTTP_POST, handleSetHealth);     // знос/здоров'я одним рухом
     server.on("/api/hdrfix", HTTP_POST, handleHeaderComplete);   // добудова заголовка після станції
+    server.on("/api/mirror", HTTP_GET, handleMirrorPlan);        // план синхронізації дзеркала
+    server.on("/api/mirror/edit", HTTP_POST, handleMirrorEdit);  // правка перед синхронізацією
+    server.on("/api/mirror/apply", HTTP_POST, handleMirrorApply);// запис за планом
     server.on("/api/clock", HTTP_GET, handleClockGet);           // системна дата пристрою
     server.on("/api/clock", HTTP_POST, handleClockSet);          // завести годинник
     server.on("/api/sound", HTTP_GET, handleSoundGet);           // налаштування звуку

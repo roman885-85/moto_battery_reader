@@ -29,7 +29,10 @@ header h1{font-size:1.05em;margin:0;color:var(--gold)}
 .dot{width:11px;height:11px;border-radius:50%;background:var(--red);display:inline-block;margin-right:6px}
 .dot.on{background:var(--grn)}
 .wrap{max-width:820px;margin:0 auto;padding:12px}
-.tabs{display:flex;gap:6px;margin:10px 0}
+/* Липка смуга вкладок — те саме, що й у веб-інтерфейсі: сторінки довгі,
+   і повертатись угору заради переходу на сусідню вкладку незручно. */
+.tabs{display:flex;gap:6px;margin:0 0 10px;position:sticky;top:0;z-index:50;
+      background:var(--bg);padding:8px 0;border-bottom:1px solid var(--line)}
 .tab{flex:1;text-align:center;padding:10px;background:var(--card);border-radius:10px;cursor:pointer;color:var(--mut);border:1px solid var(--line)}
 .tab.active{color:var(--txt);border-color:var(--gold)}
 .tab-wiz{border-color:var(--maroon);color:var(--khaki);font-weight:700}
@@ -140,7 +143,8 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 .rpg{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:6px;margin-top:6px}
 .rpf{display:flex;align-items:center;gap:6px;justify-content:space-between}
 .rpf span{color:#9a9c82;font-size:.9em}
-.subnav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+.subnav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px;
+        position:sticky;top:54px;z-index:40;background:var(--bg);padding:6px 0}
 .subtab{padding:7px 13px;border:1px solid #3c4530;border-radius:8px;background:#252b1c;
         color:#9a9c82;cursor:pointer;font-size:.9em;user-select:none}
 .subtab:hover{color:#e7e3d2;border-color:#b9bd86}
@@ -374,6 +378,24 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         це; профіль і модель цим не відновлюються.</div>
       <button class="btn b-inf" onclick="hdrFix()">🔌 ДОБУДУВАТИ ЗАГОЛОВОК</button>
     </div>
+    <div class="card" style="border-color:var(--inf)">
+      <h2>🔗 Синхронізація дзеркала DS2438 → DS2433 <span class="chipb">пише в DS2433</span></h2>
+      <div class="note i">Ті самі 26 байтів ідентичності лежать у двох чипах. Кнопка вище копіює їх
+        усі наосліп; тут спершу видно, що зміниться, і кожен байт можна лишити старим.</div>
+      <div class="note w" id="mirWarn" style="display:none"></div>
+      <div class="row"><span class="k">Стан</span><span class="v" id="mirState">—</span></div>
+      <div class="row"><span class="k">Паспортна ємність</span>
+        <span><span class="v" id="mirRated">—</span>
+          <input type="number" id="mirRatedInp" placeholder="вручну" min="1000" max="6000" step="25"
+                 style="width:110px;margin-left:8px"> <span style="opacity:.7">мА·год</span>
+          <button type="button" class="btn b-inf" style="padding:4px 10px" onclick="mirSetRated()">Задати</button>
+        </span></div>
+      <div class="rpwrap"><table class="rpt" id="mirTable"></table></div>
+      <button class="btn b-inf" onclick="mirLoad()">🔄 Перечитати план</button>
+      <button class="btn b-inf" onclick="mirTake('ALL')">☑ Взяти все</button>
+      <button class="btn b-inf" onclick="mirTake('NONE')">☐ Не брати нічого</button>
+      <button class="btn b-wrn" onclick="mirApply()">🔗 СИНХРОНІЗУВАТИ ЗА ПЛАНОМ</button>
+    </div>
   </div>
   <div class="sub" id="fwcal">
     <div class="subintro">Розряд перед калібруванням і сама процедура на IMPRES-ЗП. Прошивкою вона не замінюється.</div>
@@ -445,7 +467,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
     <div class="card" style="border-color:var(--blu)">
       <h2>🔋 Керований заряд <span class="chipb">пише в DS2438</span></h2>
       <div class="note i">Понижувальний перетворювач на власному ключі: ШІМ 25 кГц → керуючий NPN → силовий
-        PNP B772M → діод Шотткі й дросель 104 мкГн. Струм і напруга — з власних давачів (шунт 0.5 Ом у
+        силовий ключ <b id="swName">—</b> → діод Шотткі й дросель 104 мкГн. Струм і напруга — з власних давачів (шунт 0.5 Ом у
         мінусі, подільник 20к/10к на плюсі); DS2438 лишається для температури. Профіль струму
         масштабується під ОБРАНУ ціль — заряд завжди закінчується плавним спадом перед самою ціллю.
         Пакет не прийме струм, доки не піднято enable-сигнал (та сама лінія, що й для читання/запису
@@ -788,7 +810,10 @@ function sub(el,id){const box=el.closest('.page');
   box.querySelectorAll('.subtab').forEach(t=>t.classList.remove('active'));
   box.querySelectorAll('.sub').forEach(p=>p.classList.remove('active'));
   el.classList.add('active');$(id).classList.add('active');window.scrollTo(0,0);
-  if(id==='fwid'&&$('restModel')&&$('restModel').value) rpLoad(false);}
+  if(id==='fwid'&&$('restModel')&&$('restModel').value) rpLoad(false);
+  // План дзеркала читає ОБИДВА чипи — будуємо його при вході на «Ремонт»,
+  // а не на кожному оновленні статусу.
+  if(id==='fwrep'&&connected) mirLoad();}
 function log(s){const l=$('log');l.textContent+=s+'\n';l.scrollTop=l.scrollHeight;}
 function toast(m){$('st').textContent=m;}
 function setBusy(b){document.querySelectorAll('.btn').forEach(x=>{if(x.id!=='btnConn')x.disabled=b;});}
@@ -814,7 +839,9 @@ async function connect(){
     log('> порт відкрито, очікування завантаження ESP32 (1.6 с)...');
     await new Promise(r=>setTimeout(r,1600));   // ESP32 перезавантажується при відкритті порту
     const p=await cmd('PING',3000);
-    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')'; await refresh(); await loadTemplates(); await sndLoad(); await clLoadSamples();
+    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')';
+    // Ім'я силового ключа — з ПРИСТРОЮ: власної назви заліза клієнт не тримає.
+    if(p.swName&&$('swName')) $('swName').textContent=p.swName; await refresh(); await loadTemplates(); await sndLoad(); await clLoadSamples();
                  await disTick(); await chgTick(); }   // одразу підхопити розряд/заряд, якщо вже йде
     else { $('st').textContent='Немає відповіді (перевірте порт/швидкість)'; }
   }catch(e){ log('! '+e.message); $('st').textContent='Помилка: '+e.message; disconnect(); }
@@ -1066,6 +1093,60 @@ async function cloneRestore(){
 }
 // Добудова заголовка після зарядної станції WPLN4226A — див. картку «Ремонт
 // цілісності». Окрема функція, а не op(): треба показати r.note, не просто «Готово».
+// Синхронізація дзеркала DS2438 -> DS2433. План будує ПРИСТРІЙ (команда
+// MIRROR), тут лише показ і правки — другої реалізації різниці байтів немає.
+let mirPlan=null;
+async function mirLoad(){
+  if(!connected){toast('Підключіться');return;}
+  const r=await cmd('MIRROR',10000);
+  if(r&&r.ok){mirPlan=r;mirRender();} else {mirPlan=null;toast('Помилка: '+((r&&r.err)||''),'err');}
+}
+function mirRender(){
+  const p=mirPlan,t=$('mirTable'),w=$('mirWarn');
+  if(!p){t.innerHTML='';w.style.display='none';return;}
+  $('mirState').textContent=p.inSync
+    ? ('чипи збігаються'+(p.hdrOk?'':', але сума заголовка побита'))
+    : (p.diffCount+' байт(ів) різняться, буде записано '+p.changes);
+  if(!p.have38||!p.srcUsable){
+    w.style.display='';
+    w.textContent=!p.have38 ? '⚠️ DS2438 не зчитано — переносити нема звідки.'
+                            : '⚠️ У DS2438 дзеркала немає — переносити нема звідки.';
+  } else w.style.display='none';
+  $('mirRated').textContent='у чипі '+(p.ratedNow?p.ratedNow+' мА·год':'—')
+    +' · у моніторі '+(p.ratedSrc?p.ratedSrc+' мА·год':'—')
+    +(p.ratedUser?(' · вручну '+p.ratedUser+' мА·год'):'');
+  let h='<tr><th></th><th>Байт</th><th>Зараз</th><th>З DS2438</th><th>Буде</th></tr>';
+  for(let i=0;i<p.b.length;i++){
+    const b=p.b[i], hx=v=>v.toString(16).toUpperCase().padStart(2,'0');
+    const addr=(p.at33+i).toString(16).toUpperCase().padStart(3,'0');
+    const mark=(i===p.ratedIdx)?' (ємність)':'';
+    h+='<tr'+(b.d?' style="color:var(--org)"':'')+'>'
+      +'<td><input type="checkbox" '+(b.t?'checked':'')+(b.d&&p.srcUsable?'':' disabled')
+      +' onchange="mirByte('+i+',this.checked)"></td>'
+      +'<td>0x'+addr+mark+'</td><td>'+hx(b.now)+'</td><td>'+hx(b.src)+'</td>'
+      +'<td><b>'+hx(b.out)+'</b></td></tr>';
+  }
+  t.innerHTML=h;
+}
+async function mirSend(a){
+  if(!connected){toast('Підключіться');return;}
+  await ensureAuth();
+  const r=await cmd('MIRROR '+a,10000);
+  if(r&&r.ok){mirPlan=r;mirRender();} else toast('Помилка: '+((r&&r.err)||''),'err');
+}
+function mirTake(w){ mirSend('TAKE='+w); }
+function mirByte(i,on){ mirSend('BYTE='+i+' ON='+(on?1:0)); }
+function mirSetRated(){ const v=$('mirRatedInp').value; mirSend('RATED='+(v?(+v|0):0)); }
+async function mirApply(){
+  if(!mirPlan){toast('Спершу перечитайте план');return;}
+  if(!confirm('🔗 Записати '+mirPlan.changes+' байт(ів) у DS2433?\n\n'
+            +'Пишеться лише дзеркало ідентичності й сума заголовка.'))return;
+  await ensureAuth();
+  const r=await cmd('MIRROR APPLY',20000);
+  if(r&&r.ok){toast('✅ Змінено байтів: '+r.changed); if(r.plan){mirPlan=r.plan;mirRender();} await refresh();}
+  else toast('Помилка: '+((r&&r.err)||''),'err');
+}
+
 async function hdrFix(){
   if(!connected){toast('Підключіться');return;}
   if(!confirm('🔌 Добудувати заголовок із дзеркала DS2438?\nПрофіль і модель цим не відновлюються.'))return;
@@ -1660,7 +1741,7 @@ function chgShow(d){
   }
   $('chgLim').textContent=d.pwm?('уставка '+d.setMa+' мА · зараз '+d.ma+' мА'):'⚠ керування недоступне';
   $('chgLim').style.color=d.pwm?'var(--grn)':'var(--red)';
-  // Керування тепер — ШПАРУВАТІСТЬ ключа (PNP B772M через керуючий NPN), а не «цільова
+  // Керування тепер — ШПАРУВАТІСТЬ силового ключа (через керуючий NPN), а не «цільова
   // напруга DC/DC»: смужку заповнюємо відносно РОБОЧОЇ стелі dutyMax.
   $('chgDutyBar').style.width=(d.pwm?(d.duty*100/(d.dutyMax||1)):100)+'%';
   $('chgDutyTxt').textContent=d.pwm

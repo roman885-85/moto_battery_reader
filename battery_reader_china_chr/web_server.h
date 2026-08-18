@@ -1798,7 +1798,13 @@ const char *chargeStart(uint8_t targetPct) {
     //  Оцінка спирається на приблизні L і R — і це нормально: далі все веде
     //  замкнутий контур за реальним струмом, а крок регулятора пропорційний
     //  похибці, тож промах моделі закривається за кілька опитувань.
-    g_chg.setMa = chargeSetpointMaForPct(g_chg.lastPct, targetPct);
+    // ⚑ Ручну уставку враховуємо ВЖЕ НА СТАРТІ, а не з другого опитування.
+    //  Інакше chargeStartDuty() цілився б у автоматичний струм, і перший
+    //  прохід ішов би з чужою шпаруватістю — рівно та «сходинка» на початку,
+    //  задля усунення якої розрахунок стартової точки й робився.
+    //  inTaper на старті ще false, тож тут це просто «ручне замість профілю».
+    g_chg.setMa = chargeApplyManual(chargeSetpointMaForPct(g_chg.lastPct, targetPct),
+                                    chargeManualMa(), false);
     g_chg.duty  = chargeStartDuty(mv, g_chg.setMa);
     chargeSetDuty(g_chg.duty);
 
@@ -2000,7 +2006,11 @@ inline void chargeTask() {
     } else {
         g_chg.lastPct = (uint8_t)pct;
         // Гістерезис: інакше уставка брязкає 1000 <-> 100 мА на межі (див. charge.h).
-        g_chg.setMa   = chargeSetpointMaForPctH(pct, g_chg.targetPct, &g_chg.inTaper);
+        // Ручна уставка (якщо задана) накладається ПОВЕРХ профілю, але дозаряду
+        // не скасовує — у зоні дозаряду береться менше з двох (див. charge.h).
+        g_chg.setMa   = chargeApplyManual(
+                            chargeSetpointMaForPctH(pct, g_chg.targetPct, &g_chg.inTaper),
+                            chargeManualMa(), g_chg.inTaper);
         g_chg.duty    = chargeNextDuty(g_chg.duty, (int32_t)avgMa, g_chg.setMa);
         chargeSetDuty(g_chg.duty);
     }
@@ -2256,6 +2266,11 @@ static String chargeJson() {
     j += ",\"elapsedS\":" + String((unsigned long)g_chg.elapsedS);
     j += ",\"polls\":"    + String(g_chg.polls);
     j += ",\"setMa\":"    + String(g_chg.setMa);
+    // Ручна уставка: 0 — автомат. Разом із межами, щоб клієнт не тримав власну
+    // копію діапазону (вона розійшлася б із settings.h на першій же правці).
+    j += ",\"manualMa\":" + String(chargeManualMa());
+    j += ",\"manMinMa\":" + String((unsigned)CHARGE_MANUAL_MA_MIN);
+    j += ",\"manMaxMa\":" + String((unsigned)CHARGE_MANUAL_MA_MAX);
     // Керування тепер — шпаруватість ключа, а не «цільова напруга DC/DC».
     // Клієнти показують duty/dutyMax у відліках і dutyPct у відсотках.
     j += ",\"duty\":"     + String(g_chg.duty);
@@ -3528,9 +3543,37 @@ void handleDischargeStatus() {
 
 // Заряд: старт/зупинка/стан. Так само, як розряд — небезпечна операція,
 // тому старт вимагає явного підтвердження з клієнта.
+// Ручний струм заряду. ma=0 — повернутись до автоматичного профілю.
+//  Окремий обробник, а не параметр старту: струм міняють САМЕ ПІД ЧАС заряду,
+//  дивлячись на нагрів і на поведінку пакета. Вимагати для цього зупинки й
+//  повторного старту означало б щоразу збивати накопичену ємність сеансу.
+void handleChargeMa() {
+    if (!requireAdmin()) return;
+    if (!server.hasArg("ma")) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"No ma\"}");
+        return;
+    }
+    long want = server.arg("ma").toInt();
+    if (want < 0) want = 0;
+    uint16_t got = chargeSetManualMa((uint16_t)want);
+    Serial.printf("charge: ручна уставка %ld мА -> %u мА (%s)\n",
+                  want, got, got ? "ручний режим" : "автомат");
+    String j = "{\"status\":\"success\",\"manualMa\":"; j += got;
+    j += ",\"asked\":"; j += want;
+    j += ",\"charge\":"; j += chargeJson(); j += "}";
+    server.send(200, "application/json", j);
+}
+
 void handleChargeStart() {
     if (!requireAdmin()) return;
     uint8_t target = server.hasArg("target") ? (uint8_t)server.arg("target").toInt() : 0;
+    // Дозволяємо задати струм тим самим запитом, що й старт: інакше між
+    // «почати» і «поставити струм» був би прохід на автоматичній уставці.
+    if (server.hasArg("ma")) {
+        long m = server.arg("ma").toInt();
+        chargeSetManualMa(m > 0 ? (uint16_t)m : 0);
+    }
     const char *err = chargeStart(target);
     if (err) {
         String j = "{\"status\":\"error\",\"message\":\""; j += err; j += "\"}";
@@ -4185,6 +4228,7 @@ void setupWebServer() {
     server.on("/api/discharge/stop", HTTP_POST, handleDischargeStop);    // зупинити розряд
     server.on("/api/charge", HTTP_GET, handleChargeStatus);              // стан заряду
     server.on("/api/charge/start", HTTP_POST, handleChargeStart);        // почати заряд
+    server.on("/api/charge/ma", HTTP_POST, handleChargeMa);     // ручний струм заряду
     server.on("/api/charge/stop", HTTP_POST, handleChargeStop);          // зупинити заряд
     server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
     server.on("/api/clone", HTTP_POST, handleCloneRestore);      // крайній засіб: режим копії

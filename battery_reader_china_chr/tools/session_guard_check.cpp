@@ -125,10 +125,38 @@ static bool fileCalls(const char *path, const char *name) {
         const char *t = ls;
         while (*t == ' ' || *t == '\t') t++;
         if (t[0] == '/' && t[1] == '/') continue;
+        // Те саме для Python-клієнта: там цілий виклик коментують «#».
+        // Символ «#» посеред рядка не чіпаємо — у HTML це кольори (#20241a)
+        // і якорі, а в C++ — директиви препроцесора на початку рядка, які
+        // якраз є кодом, тож перевіряємо ЛИШЕ файли .py.
+        {
+            size_t pl = strlen(path);
+            bool isPy = pl > 3 && !strcmp(path + pl - 3, ".py");
+            if (isPy && t[0] == '#') continue;
+        }
         found = true; break;
     }
     free(buf);
     return found;
+}
+
+
+// Два файли мусять збігатися ПОБАЙТОВО. Потрібно рівно для одного випадку, і
+// він вартий окремої функції: index.html лежить у проєкті ДВІЧІ — як вихідний
+// файл і як data/index.html, який заливають у SPIFFS. Пристрій віддає саме
+// копію з SPIFFS, тож правка в оригіналі, не перенесена в data/, просто не
+// доїжджає до користувача — при цьому все збирається й усі тести зелені.
+static bool filesIdentical(const char *a, const char *b) {
+    FILE *fa = fopen(a, "rb"); if (!fa) return false;
+    FILE *fb = fopen(b, "rb"); if (!fb) { fclose(fa); return false; }
+    bool same = true;
+    for (;;) {
+        int ca = fgetc(fa), cb = fgetc(fb);
+        if (ca != cb) { same = false; break; }
+        if (ca == EOF) break;
+    }
+    fclose(fa); fclose(fb);
+    return same;
 }
 
 // Чи йде визначення РАНІШЕ за виклик — у C++ це умова збірки, а не стиль.
@@ -1061,6 +1089,64 @@ int main() {
                                              "обидва виклики перевіряють результат");
     check(fileCalls("web_server.h", "hasSN2433"),
                                              "наявність ROM-ID перевіряється перед скиданням");
+
+    printf("\n25) ручне регулювання струму заряду\n");
+    // Побажання власника: «додати функцію ручного регулювання струму заряду».
+    check(fileCalls("charge.h", "chargeApplyManual") &&
+          fileCalls("charge.h", "chargeManualClamp"),
+                                             "накладання й затиск живуть у charge.h — там, де їх дістає тест");
+    // ⚑ Перевіряти просто «chargeApplyManual зустрічається у файлі» замало:
+    //  виклик є ще й на старті заряду, тож прибрати його з РЕГУЛЯТОРА можна
+    //  було б непомітно (перевірено від протилежного — охоронець лишався
+    //  зеленим). Тому шукаємо саме той аргумент, який є лише в регуляторі.
+    check(fileCalls("web_server.h", "chargeManualMa(), g_chg.inTaper)"),
+                                             "регулятор справді бере ручну уставку щоопитування");
+    // ⚑ Уставку треба врахувати ще НА СТАРТІ: інакше стартова шпаруватість
+    //  цілиться в автоматичний струм і перший прохід іде «сходинкою».
+    check(fileCalls("web_server.h", "chargeApplyManual(chargeSetpointMaForPct("),
+                                             "і на старті теж, а не з другого опитування");
+    check(fileCalls("web_server.h", "handleChargeMa") &&
+          fileCalls("web_server.h", "/api/charge/ma"),
+                                             "HTTP-обробник ручного струму зареєстровано");
+    check(fileCalls("serial_api.h", "MA="),  "команда CHARGE MA= є і в USB-протоколі");
+    check(fileCalls("web_server.h", "manualMa"),
+                                             "чинна уставка віддається клієнтам у стані заряду");
+    // Межі — з settings.h під #error, а не числами в логіці.
+    check(fileCalls("settings.h", "CHARGE_MANUAL_MA_MAX") &&
+          fileCalls("settings.h", "CHARGE_MANUAL_MA_MAX) > (CHARGE_MA_80"),
+                                             "ручну стелю стереже #error, а не добра воля");
+    // Усі три поверхні мусять уміти те саме — інакше «є у вебі, нема в EXE».
+    check(fileCalls("index.html", "chgSetMa"),         "веб-інтерфейс уміє задавати струм");
+    check(fileCalls("client_usb.html", "chgSetMa"),    "USB-клієнт теж");
+    check(fileCalls("usb_client/moto_gui.py", "charge_set_ma"), "і програма .exe теж");
+
+    printf("\n26) клієнт .exe: прокрутка й вибір зразка копії\n");
+    // Скарга власника: «у програмі відсутня прокрутка у вкладці даних».
+    check(fileCalls("usb_client/moto_gui.py", "self._scroll_area(self.tabData)"),
+                                             "вкладка «Дані» має прокрутку");
+    check(fileCalls("usb_client/moto_gui.py", "self._scroll_area(self.tabOv)"),
+                                             "і «Огляд» теж — та сама вада, просто менш помітна");
+    check(fileHasNo("usb_client/moto_gui.py", "        f = self.tabData"),
+                                             "вкладка «Дані» більше не вкладається просто у фрейм");
+    check(fileHasNo("usb_client/moto_gui.py", "        f = self.tabOv"),
+                                             "і «Огляд» теж");
+    // Колесо не мусить гаснути, щойно курсор зайшов на сам вміст.
+    check(fileCalls("usb_client/moto_gui.py", "for w in (canvas, inner):"),
+                                             "обробник колеса висить і на полотні, і на вмісті");
+    // Повернення до «свій файл» мусить СКИДАТИ раніше обраний зразок.
+    check(fileCalls("usb_client/moto_gui.py", "self._cloneHex = \"\""),
+                                             "вибір «свій файл» скидає раніше обраний зразок");
+    // Запис лише монітора — окремо від повного режиму копії, який стирає DS2433.
+    check(fileCalls("usb_client/moto_gui.py", "clone_write38_only"),
+                                             "є запис ЛИШЕ DS2438, без стирання DS2433");
+
+    printf("\n27) сторінка в SPIFFS не відстає від вихідної\n");
+    // ⚑ index.html лежить у проєкті ДВІЧІ. Пристрій віддає /index.html із
+    //  SPIFFS, тобто копію з data/. Правка в кореневому файлі, не перенесена
+    //  в data/, збирається, проходить усі тести — і просто не доїжджає до
+    //  користувача. Саме це мало не сталося з полем ручного струму заряду.
+    check(filesIdentical("index.html", "data/index.html"),
+                                             "index.html і data/index.html побайтово однакові");
 
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

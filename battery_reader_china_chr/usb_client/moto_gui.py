@@ -1075,12 +1075,22 @@ class App:
         def _wheel(e):
             d = -1 if (getattr(e, "delta", 0) > 0 or getattr(e, "num", 0) == 4) else 1
             canvas.yview_scroll(d * 3, "units")
-        canvas.bind("<Enter>", lambda e: (canvas.bind_all("<MouseWheel>", _wheel),
-                                          canvas.bind_all("<Button-4>", _wheel),
-                                          canvas.bind_all("<Button-5>", _wheel)))
-        canvas.bind("<Leave>", lambda e: (canvas.unbind_all("<MouseWheel>"),
-                                          canvas.unbind_all("<Button-4>"),
-                                          canvas.unbind_all("<Button-5>")))
+        # ⚑ <Enter>/<Leave> вішаємо і на полотно, і на ВНУТРІШНІЙ фрейм.
+        #  Вміст лежить у полотні через create_window, тобто це його дочірні
+        #  віджети — і щойно курсор заходить на них, полотно отримує <Leave>.
+        #  Прив'язавши обробник лише до полотна, ми знімали б колесо рівно тоді,
+        #  коли курсор над тим, що треба крутити.
+        def _enter(_e):
+            canvas.bind_all("<MouseWheel>", _wheel)
+            canvas.bind_all("<Button-4>", _wheel)
+            canvas.bind_all("<Button-5>", _wheel)
+        def _leave(_e):
+            canvas.unbind_all("<MouseWheel>")
+            canvas.unbind_all("<Button-4>")
+            canvas.unbind_all("<Button-5>")
+        for w in (canvas, inner):
+            w.bind("<Enter>", _enter)
+            w.bind("<Leave>", _leave)
         return inner
 
     def _kv(self, parent, label, r):
@@ -1090,7 +1100,10 @@ class App:
         return v
 
     def _build_overview(self):
-        f = self.tabOv
+        # Той самий недогляд, що й у «Даних» (див. там): вкладка без скролу.
+        # Тут вміст менший і в звичайному вікні влазить, тож про це не
+        # повідомляли, — але на ноутбуці з низьким екраном обрізається так само.
+        f = self._scroll_area(self.tabOv)
         ttk.Button(f, text="🔍 Зчитати АКБ", command=self.do_read).grid(row=0, column=0, sticky="w", pady=4)
         ttk.Button(f, text="🔄 Оновити", command=self.refresh).grid(row=0, column=1, sticky="w", padx=6)
         box = ttk.LabelFrame(f, text="Стан", padding=8); box.grid(row=1, column=0, columnspan=2, sticky="we", pady=8)
@@ -1297,7 +1310,12 @@ class App:
         self.cmd("WIZRESET", 5.0, cb=lambda _: self.wiz_analyze())
 
     def _build_data(self):
-        f = self.tabData
+        # ⚑ Скарга власника: «у програмі відсутня прокрутка у вкладці даних».
+        #  Так і було: із шести вкладок скрол мали лише «Майстер», «Ремонт»,
+        #  «Редактор» і «Журнал», а «Дані» й «Огляд» вкладались просто у фрейм
+        #  вкладки. Поки вікно велике, це непомітно; щойно воно менше за вміст —
+        #  нижні рядки просто зникають, і дістати їх нічим.
+        f = self._scroll_area(self.tabData)
         box = ttk.LabelFrame(f, text="DS2438 / ідентичність", padding=8); box.pack(fill="x")
         self.dSerial = self._kv(box, "Серійний (ROM):", 0)
         self.dModel = self._kv(box, "Модель:", 1)
@@ -1449,6 +1467,24 @@ class App:
         ttk.Label(tfc, text="або, %:").pack(side="left", padx=(8, 2))
         self.eChgTarget = ttk.Entry(tfc, width=4)
         self.eChgTarget.pack(side="left")
+        # Ручний струм заряду. 0/порожньо — автоматичний профіль за відсотком.
+        # Межі приходять із пристрою (manMinMa/manMaxMa у стані заряду), власної
+        # копії діапазону тут немає: вона розійшлася б із settings.h.
+        mfc = ttk.Frame(b2e); mfc.pack(anchor="w", pady=(4, 0))
+        ttk.Label(mfc, text="Струм заряду:").pack(side="left")
+        self.chgManual = tk.IntVar(value=0)
+        for ma, lbl in ((0, "Авто"), (200, "200"), (400, "400"), (700, "700"), (1000, "1000")):
+            ttk.Radiobutton(mfc, text=lbl, value=ma, variable=self.chgManual,
+                            command=lambda v=ma: self.charge_set_ma(v)).pack(side="left", padx=2)
+        ttk.Label(mfc, text="або, мА:").pack(side="left", padx=(8, 2))
+        self.eChgMa = ttk.Entry(mfc, width=6)
+        self.eChgMa.pack(side="left")
+        ttk.Button(mfc, text="Задати", width=8,
+                   command=lambda: self.charge_set_ma(None)).pack(side="left", padx=3)
+        self.lblChgMa = ttk.Label(b2e, text="Автоматичний профіль за відсотком заряду.",
+                                  foreground="#b9bd86")
+        self.lblChgMa.pack(anchor="w")
+
         cf = ttk.Frame(b2e); cf.pack(anchor="w", pady=3)
         ttk.Button(cf, text="🔋 Почати заряд", command=self.charge_start).pack(side="left", padx=2)
         ttk.Button(cf, text="⏹ Зупинити", command=self.charge_stop).pack(side="left", padx=2)
@@ -1617,6 +1653,17 @@ class App:
                         variable=self.vClId33).pack(anchor="w", pady=(2, 0))
         ttk.Button(bcl, text="🧬 Відновити за зразком копії",
                    command=self.clone_restore).pack(anchor="w", pady=2)
+        # ⚑ ДВІ РІЗНІ ОПЕРАЦІЇ, ЯКІ ЛЕГКО СПЛУТАТИ — І САМЕ ТОМУ ВОНИ ПОРУЧ.
+        #  «Відновити за зразком копії» — це РЕЖИМ КОПІЇ цілком: монітор зі
+        #  зразка, лічильники в нуль, паливомір із поточної напруги, а DS2433
+        #  СТИРАЄТЬСЯ (або отримує експериментальну ідентичність).
+        #  «Записати лише DS2438» — рівно те, що написано: 64 байти в монітор,
+        #  DS2433 не чіпається взагалі. Якщо потрібен «китайський еталон 2438,
+        #  що працює на всіх АКБ», то потрібна саме ця кнопка: після повного
+        #  режиму копії пакет лишається без ідентичності в DS2433, і рація його
+        #  не впізнає — хоч монітор записано правильно.
+        ttk.Button(bcl, text="🔬 Записати лише DS2438 (DS2433 не чіпати)",
+                   command=self.clone_write38_only).pack(anchor="w", pady=2)
 
         b6 = ttk.LabelFrame(p_dang, text="⛔ Небезпечна зона (незворотно!)  ·  стирає обрану мікросхему повністю", padding=8); b6.pack(fill="x", pady=4)
         rf = ttk.Frame(b6); rf.pack(fill="x", pady=2)
@@ -1951,7 +1998,6 @@ class App:
             then()
 
     def refresh_ports(self):
-        ports = [f"{p.device} — {(p.description or '')[:28]}" for p in serial.tools.list_ports.comports()]
         self._portmap = {}
         vals = []
         for p in serial.tools.list_ports.comports():
@@ -2403,6 +2449,33 @@ class App:
         d = (r or {}).get("charge") if isinstance(r, dict) else None
         self.monChg.update_state(d)
         self.psu_alert_update(d)          # смуга аварії живлення — над вкладками
+        self._chg_manual_show(d)          # ручна уставка струму
+
+    def _chg_manual_show(self, d):
+        """Показати уставку, яка ДІЄ на пристрої, а не ту, яку тут набрали.
+
+        Струм можна задати і з веб-інтерфейсу, і з іншого клієнта, і командою по
+        USB. Якщо показувати власне поле вводу, дві поверхні розійшлися б —
+        і користувач вирішував би за цифрою, якої на пристрої немає."""
+        try:
+            if not isinstance(d, dict) or "manualMa" not in d:
+                return
+            got = int(d.get("manualMa", 0) or 0)
+            lo = int(d.get("manMinMa", 0) or 0)
+            hi = int(d.get("manMaxMa", 0) or 0)
+            # Радіокнопку підсвічуємо лише коли значення збігається з пресетом,
+            # інакше знімаємо позначку зовсім (-1 не збігається з жодним).
+            self.chgManual.set(got if got in (0, 200, 400, 700, 1000) else -1)
+            if self.root.focus_get() is not self.eChgMa:
+                self.eChgMa.delete(0, "end")
+                if got:
+                    self.eChgMa.insert(0, str(got))
+            self.lblChgMa.config(
+                text=("Ручний режим: %d мА (межі %d…%d мА). Дозаряд наприкінці це "
+                      "значення не скасовує — береться менше з двох." % (got, lo, hi))
+                if got else "Автоматичний профіль за відсотком заряду.")
+        except tk.TclError:
+            pass
 
     # ── АВАРІЯ ЖИВЛЕННЯ: смуга вгорі вікна ────────────────────────────────
     # Ті самі поля /api/charge, що малює екран пристрою й веб-інтерфейс, тож
@@ -2494,6 +2567,38 @@ class App:
                 self._chgBusy = False
                 self.status("Помилка: " + str((r or {}).get("err", "")))
         self.maybe_auth(lambda: self.cmd("CHARGE %d" % pct, 15.0, cb=done))
+
+    def charge_set_ma(self, ma):
+        """Ручна уставка струму. ma=None — узяти з поля вводу; 0 — автомат.
+
+        Діє й ПІД ЧАС заряду: струм саме тоді й підбирають, дивлячись на нагрів.
+        Дозаряд наприкінці ручне значення не скасовує — пристрій бере менше з
+        двох (див. chargeApplyManual у charge.h)."""
+        if not self.need_conn():
+            return
+        if ma is None:
+            raw = (self.eChgMa.get() or "").strip()
+            try:
+                ma = int(raw) if raw else 0
+            except ValueError:
+                messagebox.showwarning("Струм", "Вкажіть ціле число мА (0 — автомат)")
+                return
+        if ma < 0:
+            ma = 0
+
+        def done(r):
+            if not (isinstance(r, dict) and r.get("ok")):
+                self.status("Помилка: " + str((r or {}).get("err", "")), False)
+                return
+            got = int(r.get("manualMa", 0) or 0)
+            asked = int(r.get("asked", got) or 0)
+            if got and asked and got != asked:
+                self.status("Уставку затиснуто в межі: %d мА" % got)
+            else:
+                self.status(("✅ Струм %d мА" % got) if got else "✅ Автоматичний профіль")
+            self._chg_show(r)
+
+        self.maybe_auth(lambda: self.cmd("CHARGE MA=%d" % ma, 10.0, cb=done))
 
     def charge_stop(self):
         if not self.need_conn():
@@ -3082,9 +3187,22 @@ class App:
         self.cbClSample["values"] = ["— свій файл —"] + [s.get("name", "?") for s in self._clSamples]
 
     def _clone_sample_pick(self):
+        """Обрано вбудований зразок монітора копії.
+
+        ⚑ Повернення до «свій файл» МУСИТЬ скидати вибір, а не мовчки лишати
+        попередній. Раніше гілка «i < 0» просто виходила, і в _cloneHex
+        зберігався зразок, обраний до того: користувач бачив «свій файл»,
+        натискав «Відновити» — і в пакет ішов зовсім інший монітор. Одна з тих
+        помилок, які не дають ані повідомлення, ані сліду в журналі."""
         i = self.cbClSample.current() - 1        # 0 = «свій файл»
         subs = getattr(self, "_clSamples", [])
-        if i < 0 or i >= len(subs):
+        if i < 0:
+            self._cloneHex = ""
+            self.lblClone.config(text="Оберіть файл дампа DS2438 (64 Б)")
+            return
+        if i >= len(subs):
+            self._cloneHex = ""
+            self.lblClone.config(text="Зразок недоступний — перепідключіться")
             return
         self._cloneHex = subs[i].get("hex", "")
         self.lblClone.config(text="%s · %d мА·год" % (subs[i].get("note", ""), subs[i].get("rated", 0)))
@@ -3125,6 +3243,30 @@ class App:
             return
         self._cloneHex = d.hex()
         self.lblClone.config(text="%s (64 Б)" % os.path.basename(p))
+
+    def clone_write38_only(self):
+        """Записати обраний зразок ПРОСТО В DS2438, нічого більше не роблячи.
+
+        Навіщо окремо від «Відновити за зразком копії»: та операція — режим
+        копії цілком, і вона СТИРАЄ DS2433. Коли треба лише підмінити монітор
+        (перевірений «китайський» еталон 2438), стирання ідентичності —
+        побічний ефект, якого ніхто не замовляв, і саме він робить пакет
+        невпізнаваним після начебто вдалого запису."""
+        if not self.need_conn():
+            return
+        hx = getattr(self, "_cloneHex", "")
+        if len(hx) != 128:
+            messagebox.showwarning("Запис DS2438",
+                                   "Спершу оберіть зразок або файл дампа DS2438 (64 байти)")
+            return
+        if not messagebox.askyesno("Запис DS2438",
+                "Записати 64 байти В МОНІТОР DS2438?\n\n"
+                "DS2433 (модель, ідентичність, калібрування) НЕ чіпається.\n"
+                "Лічильники й паливомір беруться зі зразка як є.\n\nПродовжити?"):
+            return
+        self.maybe_auth(lambda: (self.status("Запис DS2438..."),
+                                 self.cmd("WRITE38 " + hx, 25.0,
+                                          cb=lambda r: self._after_write(r, "✅ DS2438 записано"))))
 
     def clone_restore(self):
         if not self.need_conn():

@@ -1005,6 +1005,61 @@ int main() {
               "допуск «повного» вужчий за проміжок між ціллю заряду й ціллю розряду");
     }
 
+    printf("\n19) ручне регулювання струму заряду\n");
+    {
+        // Скарга-побажання власника: «додати функцію ручного регулювання
+        // струму заряду». Ручна уставка накладається поверх профілю, але не
+        // скасовує дозаряду — саме це тут і перевіряється.
+        printf("   межі: %d..%d мА, дозаряд %d мА\n",
+               (int)CHARGE_MANUAL_MA_MIN, (int)CHARGE_MANUAL_MA_MAX, (int)CHARGE_MA_TAPER);
+
+        check(chargeApplyManual(700, 0, false) == 700, "0 — це автомат, профіль не чіпаємо");
+        check(chargeApplyManual(700, 0, true)  == 700, "…і в дозаряді теж автомат");
+        check(chargeApplyManual(700, 300, false) == 300, "поза дозарядом діє ручне значення");
+
+        // ⚑ ГОЛОВНЕ: у дозаряді ручне значення не має права ПІДНЯТИ струм.
+        check(chargeApplyManual(CHARGE_MA_TAPER, 800, true) == CHARGE_MA_TAPER,
+              "у дозаряді ручні 800 мА НЕ піднімають струм вище дозарядного");
+        check(chargeApplyManual(CHARGE_MA_TAPER, 60, true) == 60,
+              "…а зменшити струм у дозаряді можна завжди");
+        check(chargeApplyManual(CHARGE_MA_TAPER, CHARGE_MA_TAPER, true) == CHARGE_MA_TAPER,
+              "рівно дозарядне значення проходить як є");
+
+        // Затиск у межі — з обох боків, і рівно на межах.
+        check(chargeManualClamp(1) == CHARGE_MANUAL_MA_MIN, "нижче мінімуму піднімається до нього");
+        check(chargeManualClamp(60000) == CHARGE_MANUAL_MA_MAX, "вище стелі опускається до неї");
+        check(chargeManualClamp(CHARGE_MANUAL_MA_MIN) == CHARGE_MANUAL_MA_MIN, "рівно мінімум — як є");
+        check(chargeManualClamp(CHARGE_MANUAL_MA_MAX) == CHARGE_MANUAL_MA_MAX, "рівно стеля — як є");
+        check(chargeApplyManual(700, 60000, false) == CHARGE_MANUAL_MA_MAX,
+              "затиск діє й через накладання, а не лише через clamp");
+
+        // Стеля ручного режиму не сміє перевищувати стелю профілю: увесь
+        // тепловий розрахунок зроблено для CHARGE_MA_80.
+        check(CHARGE_MANUAL_MA_MAX <= CHARGE_MA_80,
+              "ручна стеля не вище за стелю профілю (тепловий бюджет)");
+
+        // Уставка живе ОКРЕМО від стану сеансу: зупинка заряду її не скидає.
+        chargeSetManualMa(450);
+        check(chargeManualMa() == 450, "уставка запам'ятовується");
+        g_chg = ChargeState{};                       // саме це робить chargeStop/Start
+        check(chargeManualMa() == 450, "і переживає обнулення стану сеансу");
+        chargeSetManualMa(0);
+        check(chargeManualMa() == 0, "повернення в автомат");
+
+        // І наскрізна перевірка разом із гістерезисом: ручні 800 мА тримаються
+        // до порога дозаряду, а за ним автоматично падають до дозарядних.
+        bool tp = false;
+        int lo = 0, hi = 0;
+        for (int pct = 80; pct <= 100; pct++) {
+            uint16_t a = chargeSetpointMaForPctH(pct, 100, &tp);
+            uint16_t m = chargeApplyManual(a, 800, tp);
+            if (pct < CHARGE_TAPER_PCT) lo = m; else hi = m;
+        }
+        printf("   ручні 800 мА: до порога %d мА, у дозаряді %d мА\n", lo, hi);
+        check(lo == 800, "до порога дозаряду тримаються ручні 800 мА");
+        check(hi == CHARGE_MA_TAPER, "у дозаряді струм сам падає до дозарядного");
+    }
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

@@ -614,6 +614,22 @@
                   <span style="opacity:.7">%</span>
                 </span></div>
             <div class="note i" id="chgTargetNote"></div>
+            <div class="row" id="chgMaRow" style="margin-top:10px"><span class="k">Струм заряду</span>
+                <span>
+                  <button type="button" class="tgtb" onclick="chgSetMa(0)">Авто</button>
+                  <button type="button" class="tgtb" onclick="chgSetMa(200)">200</button>
+                  <button type="button" class="tgtb" onclick="chgSetMa(400)">400</button>
+                  <button type="button" class="tgtb" onclick="chgSetMa(700)">700</button>
+                  <button type="button" class="tgtb" onclick="chgSetMa(1000)">1000</button>
+                  <input type="number" id="chgMaInp" placeholder="авто" min="0" step="50"
+                         style="border-radius:8px;border:none;padding:6px;width:90px">
+                  <span style="opacity:.7">мА</span>
+                  <button type="button" class="btn btn-info" style="padding:6px 10px"
+                          onclick="chgSetMa(+(document.getElementById('chgMaInp').value||0))">Задати</button>
+                </span></div>
+            <div class="note i" id="chgMaNote">Порожньо або «Авто» — струм веде профіль за відсотком заряду.
+                Ручне значення діє й <b>під час</b> заряду. Дозаряд наприкінці воно не скасовує: у зоні
+                дозаряду береться <b>менше</b> з двох, бо добивати майже повний пакет великим струмом не можна.</div>
             <input type="password" class="pw" id="pwChg" placeholder="🔑 Пароль адміністратора">
             <div class="btns">
                 <button class="btn btn-ok" onclick="chgStart()">🔋 ПОЧАТИ ЗАРЯД</button>
@@ -1973,6 +1989,20 @@ async function chgPoll(){
 
     const ma=Math.abs(d.ma), scale=Math.max(d.setMa*1.25,ma*1.05,1);
     $('chgCurBar').style.width=Math.min(100,ma*100/scale)+'%';
+    // Ручна уставка приходить із пристрою — щоб поле й підсвітка показували
+    // те, що ДІЄ, навіть коли струм задали з іншого клієнта або з USB.
+    if(d.manualMa!==undefined){
+        const mi=$('chgMaInp');
+        if(mi && document.activeElement!==mi) mi.value = d.manualMa ? d.manualMa : '';
+        if(mi) mi.max = d.manMaxMa || 1000;
+        chgMaPaint(d.manualMa|0);
+        const nn=$('chgMaNote');
+        if(nn) nn.innerHTML = (d.manualMa
+            ? ('Зараз <b>ручний</b> режим: '+d.manualMa+' мА (межі '+d.manMinMa+'…'+d.manMaxMa+' мА). ')
+            : 'Зараз <b>автоматичний</b> профіль за відсотком заряду. ')
+            + 'Ручне значення діє й <b>під час</b> заряду. Дозаряд наприкінці воно не скасовує: '
+            + 'у зоні дозаряду береться <b>менше</b> з двох.';
+    }
     $('chgLim').textContent=d.pwm?('уставка '+d.setMa+' мА · зараз '+d.ma+' мА')
                                  :'⚠ ШІМ недоступний';
     $('chgLim').style.color=d.pwm?'var(--ok)':'var(--accent)';
@@ -2037,6 +2067,35 @@ function chgTargetPaint(){
     });
 }
 chgTargetPaint();
+// Ручний струм заряду. 0 (або порожньо) — автомат.
+//  ⚑ Межі й підсвітку кнопок беремо з ВІДПОВІДІ пристрою (manMinMa/manMaxMa),
+//  а не з власних констант: друга копія діапазону розійшлася б із settings.h
+//  на першій же правці профілю.
+async function chgSetMa(ma){
+    ma = ma|0; if(ma<0) ma=0;
+    prog(true, ma?('Струм '+ma+' мА...'):'Автоматичний струм...');
+    try{
+        const r=await postForm('/api/charge/ma',{password:$('pwChg').value,ma:ma});
+        if(r.status==='success'){
+            const got=r.manualMa|0;
+            $('chgMaInp').value = got ? got : '';
+            if(got && r.asked && got!==(r.asked|0))
+                toast('Уставку затиснуто в межі: '+got+' мА','info');
+            else toast(got?('✅ Струм '+got+' мА'):'✅ Автоматичний профіль','ok');
+            chgMaPaint(got);
+        } else toast('Помилка: '+r.message,'err');
+        await chgPoll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+// Підсвітити кнопку, що збігається з чинною уставкою («Авто» при 0).
+function chgMaPaint(cur){
+    document.querySelectorAll('#chgMaRow .tgtb').forEach(b=>{
+        const t=b.textContent.trim();
+        const v=(t==='Авто')?0:parseInt(t,10);
+        b.classList.toggle('on', !isNaN(v) && v===(cur|0));
+    });
+}
 async function chgStart(){
     const t=chgTargetPct();
     if(!confirm('🔋 Почати заряд до '+t+'%?\n\nСтрум керується за профілем, масштабованим під цю ціль '+
@@ -2044,7 +2103,8 @@ async function chgStart(){
               'Не залишайте пристрій без нагляду. Зупинити можна кнопкою «ЗУПИНИТИ».'))return;
     prog(true,'Запуск заряду...');
     try{
-        const r=await postForm('/api/charge/start',{password:$('pwChg').value,target:t});
+        const mi=$('chgMaInp'); const ma=mi&&mi.value?(+mi.value|0):0;
+        const r=await postForm('/api/charge/start',{password:$('pwChg').value,target:t,ma:ma});
         toast(r.status==='success'?'✅ Заряд почато':('Помилка: '+r.message),r.status==='success'?'ok':'err');
         await chgPoll();
     }catch(e){toast('Помилка: '+e.message,'err')}

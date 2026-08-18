@@ -1007,6 +1007,61 @@ int main() {
     check(fileCalls("settings.h", "CHARGE_PACKFULL_TOL_MV) >= ((CHARGE_TARGET_MV"),
                                              "і допуск «повного» стереже #error, а не добра воля");
 
+    printf("\n22) банер помилки живлення: індикатор не малюється поверх нього\n");
+    // Скарга власника: «при помилці живлення на дисплеї поверх попередження
+    // відмальовується індикатор заряду».
+    check(fileCalls("display_color.h", "g_battDrawn.gen != g_screenGen"),
+                                             "анімація малює лише ту шкалу, що на ЦЬОМУ екрані");
+    // Перелік сторінок-перехоплювачів у цій умові був би пасткою: наступна
+    // така сторінка про неї не знатиме. Порівняння поколінь працює для всіх.
+    check(fileHasNo("display_color.h", "if (chargePsuScreenActive()) return;   // анімація"),
+                                             "і робить це через покоління екрана, а не перелік сторінок");
+    check(fileCalls("display_color.h", "displayScreenCleared()") &&
+          fileCalls("display_color.h", "g_battDrawn.gen = g_screenGen"),
+                                             "покоління піднімається на очищенні й запам'ятовується при малюванні");
+
+    printf("\n23) текст банера не вилазить за його межі\n");
+    check(fileCalls("textwrap.h", "txtWrap") && fileCalls("textwrap.h", "txtGlyphs"),
+                                             "механізм переносу живе в textwrap.h — там, де його дістає тест");
+    check(fileCalls("display_color.h", "tPutWrapCenter"),
+                                             "банер малюється через переносник, а не голим tPut");
+    check(fileCalls("display_color.h", "PSU_INNER_W"),
+                                             "центрування йде по ширині ПЛАШКИ, а не всього екрана");
+    // ⚑ Головне: центрувати по всій панелі більше не можна. Саме
+    //  (TFT_W - ширина)/2 давало від'ємний x і виносило текст за обидва краї.
+    check(fileHasNo("display_color.h", "tPut((TFT_W - tWidth(big)) / 2"),
+                                             "заголовок банера більше не центрується по всій панелі");
+    check(fileHasNo("display_color.h", "tPut((TFT_W - tWidth(sub)) / 2"),
+                                             "пояснення банера — теж");
+    check(fileHasNo("display_color.h", "\"блок живлення просів або не той\""),
+                                             "напис зі скарги (31 гліф) прибрано");
+    // Ширина комірки шрифту мусить стояти поруч із самим шрифтом: інакше
+    // перемкнуть шрифт і забудуть про ширину.
+    check(fileCalls("display_color.h", "FONT_BODY_W") &&
+          fileCalls("display_color.h", "FONT_MODEL_W"),
+                                             "ширина комірки оголошена поруч зі шрифтом");
+
+    printf("\n24) скидання лічильників узгоджене між ДВОМА чипами\n");
+    // Скарга власника: «повністю робочий акумулятор після обнулення
+    // лічильників, напрацювання, вироблення перестає бачитись як
+    // оригінальний». Обнуляли лише DS2438, DS2433 лишався повен історії.
+    check(fileCalls("impres_crypt.h", "impresHistoryZero"),
+                                             "узгоджене скидання історії живе в impres_crypt.h");
+    check(fileCalls("impres_crypt.h", "impresUsageReset"),
+                                             "і окремо — обнулення історії зі збереженням дати");
+    check(fileCalls("web_server.h", "impresHistoryZero"),
+                                             "resetBatteryData() справді його кличе");
+    check(fileCalls("impres_audit.h", "AUD_MONITOR_ZEROED"),
+                                             "аудит уміє назвати цей стан окремою знахідкою");
+    // Без ROM-ID шифроване не переписати — тоді не можна чіпати й монітор.
+    check(fileCalls("web_server.h", "bool resetBatteryData()"),
+                                             "скидання звітує про відмову, а не мовчки псує пакет");
+    check(fileCalls("web_server.h", "if (!resetBatteryData())") &&
+          fileCalls("web_server.h", "if (!factoryCleanData())"),
+                                             "обидва виклики перевіряють результат");
+    check(fileCalls("web_server.h", "hasSN2433"),
+                                             "наявність ROM-ID перевіряється перед скиданням");
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

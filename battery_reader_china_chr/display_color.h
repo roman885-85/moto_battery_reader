@@ -28,6 +28,7 @@
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — дії «Новий АКБ»
 #include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
 #include "battbar.h"      // коли шкалу батареї треба перемальовувати, а коли ні
+#include "textwrap.h"     // перенос по словах: текст не вилазить за плашку
 #include "discharge.h"    // стан керованого розряду для сторінки моніторингу
 #include "charge.h"       // стан керованого заряду для сторінки моніторингу
 
@@ -194,17 +195,31 @@ inline uint16_t TC(uint16_t c) { return g_errTint ? redFilter(c) : c; }
 // ВАЖЛИВО: беремо ЛИШЕ ті кириличні шрифти, що зашиті в U8g2_for_Adafruit_GFX
 // (це підмножина u8g2: 4x6/5x8/6x12/7x13/8x13/9x15/10x20 *_t_cyrillic).
 // Немає 9x18_t_cyrillic і fub* — тому великий % малюємо вбудованим шрифтом GFX.
+// ⚑ ШИРИНА КОМІРКИ ЙДЕ ПОРУЧ ІЗ ІМЕНЕМ ШРИФТА, А НЕ ОКРЕМО. Усі ці шрифти
+//  МОНОШИРИННІ, і число в їхній назві — це і є ширина гліфа в пікселях. Саме
+//  вона дозволяє порахувати, скільки символів улізе в плашку, ДО того як
+//  малювати (див. textwrap.h). Тримати ці два числа в різних місцях означало б
+//  одного дня перемкнути шрифт і забути про ширину — і текст знову поповз би
+//  за межі.
 #if TFT_W < 200                                   // вузькі панелі (135/170/172)
   #define FONT_HDR    u8g2_font_7x13_t_cyrillic
   #define FONT_BODY   u8g2_font_6x12_t_cyrillic
   #define FONT_SMALL  u8g2_font_5x8_t_cyrillic
   #define FONT_MODEL  u8g2_font_8x13_t_cyrillic
+  #define FONT_HDR_W    7
+  #define FONT_BODY_W   6
+  #define FONT_SMALL_W  5
+  #define FONT_MODEL_W  8
   #define BIG_TSIZE   3                           // масштаб вбудованого шрифту GFX
 #else                                             // 240-піксельні панелі
   #define FONT_HDR    u8g2_font_10x20_t_cyrillic
   #define FONT_BODY   u8g2_font_9x15_t_cyrillic
   #define FONT_SMALL  u8g2_font_6x12_t_cyrillic
   #define FONT_MODEL  u8g2_font_10x20_t_cyrillic
+  #define FONT_HDR_W   10
+  #define FONT_BODY_W   9
+  #define FONT_SMALL_W  6
+  #define FONT_MODEL_W 10
   #define BIG_TSIZE   4
 #endif
 
@@ -463,6 +478,37 @@ inline void tPut(int x, int y, const char *s) {
     u8g2Fonts.drawUTF8(x, y, s);
 }
 inline int  tWidth(const char *s) { return u8g2Fonts.getUTF8Width(s); }
+
+// Текст ПО ЦЕНТРУ ділянки [x0 .. x0+w) з ПЕРЕНОСОМ по словах. Шрифт і кольори
+// має виставити викликач (tSet) — сюди приходить лише геометрія.
+//
+//  ⚑ Навіщо власний центрувальник, коли поруч є tWidth(). Бо центрування
+//  саме по собі нічого не гарантує: (TFT_W - ширина)/2 при задовгому рядку дає
+//  ВІД'ЄМНИЙ x, і текст їде за лівий край, а хвостом — за правий. Саме це й
+//  бачив власник у банері помилки живлення. Тут ширина спершу обмежується, а
+//  вже потім центрується те, що точно влізе.
+//
+// cellW — ширина гліфа виставленого шрифту (FONT_*_W). Повертає y ПІСЛЯ
+// останнього намальованого рядка.
+inline int tPutWrapCenter(int x0, int w, int y, int lineH,
+                          const char *s, int cellW, int maxLines) {
+    if (!s || cellW <= 0 || w <= 0) return y;
+    int maxG = w / cellW;
+    if (maxG < 1) maxG = 1;
+    TxtLine ln[4];
+    if (maxLines > 4) maxLines = 4;
+    int n = txtWrap(s, maxG, ln, maxLines);
+    char buf[80];
+    for (int i = 0; i < n; i++) {
+        int len = ln[i].len;
+        if (len > (int)sizeof(buf) - 1) len = (int)sizeof(buf) - 1;
+        memcpy(buf, s + ln[i].off, len);
+        buf[len] = '\0';
+        tPut(x0 + (w - tWidth(buf)) / 2, y, buf);
+        y += lineH;
+    }
+    return y;
+}
 
 inline uint16_t chargeColor(int pct) {
     if (pct < 0)   return C_MUTED;
@@ -1121,7 +1167,37 @@ inline void drawPageRaw2433() { drawRawColor("DS2433 (hex)", batteryDump, hasDum
 //  Правильно навпаки: БЛИМАЄ ПЛАШКА (тло й рамка), а текст усередині стоїть
 //  нерухомо й читається в обидві фази. Рух привертає увагу, зміст лишається.
 #define PSU_PLATE_Y  (HDR_H + 8)
-#define PSU_PLATE_H  108
+
+// ── ГЕОМЕТРІЯ ПЛАШКИ РАХУЄТЬСЯ, А НЕ ПІДБИРАЄТЬСЯ ─────────────────────────
+//  Висота була константою 108, і трималась вона рівно доти, доки написи
+//  вміщались у рядок. Не вміщались: «блок живлення просів або не той» — це 31
+//  гліф, тобто 279 px шрифтом 9x15, при плашці 236 px і панелі 240 px.
+//
+//  Тепер під кожен напис ЗАРЕЗЕРВОВАНО стільки рядків, скільки може
+//  знадобитись після переносу, і висота складається з них. Резерв, а не
+//  вимір за фактом: плашка ще й БЛИМАЄ, перемальовуючись на місці, і плаваюча
+//  висота лишала б смуги від попереднього стану.
+#define PSU_PAD       4                       // поле від рамки до тексту
+#define PSU_PLATE_W   (TFT_W - 2 * (EDGE - PSU_PAD))
+#define PSU_INNER_W   (PSU_PLATE_W - 2 * PSU_PAD)
+// ⚑ СКІЛЬКИ РЯДКІВ РЕЗЕРВУВАТИ — РАХУЄМО, А НЕ ВГАДУЄМО ЗА ШИРИНОЮ ПАНЕЛІ.
+//  Спроба прив'язатись до «TFT_W < 200» тут уже провалилась: на панелі 240 зі
+//  СКРУГЛЕНИМИ кутами (EDGE 22) у плашку влазить лише 21 гліф, а найдовше
+//  пояснення — 22. Тобто справа не в панелі, а в тому, скільки лишається
+//  ПІСЛЯ відступів, і рахувати треба саме це.
+//
+//  Числа нижче — довжина найдовшого зі штатних написів у гліфах. Вони не
+//  «підібрані»: display_fit_check перевіряє КОЖЕН напис проти цього резерву на
+//  всіх підтримуваних панелях, тож змінити текст і не помітити не вийде.
+#define PSU_HEAD_MAX_GLYPHS 16                // «НАПРУГА ЗАНИЖЕНА»
+#define PSU_SUB_MAX_GLYPHS  22                // «блок просів або не той»
+#define PSU_HEAD_LINES ((PSU_INNER_W / FONT_MODEL_W) >= PSU_HEAD_MAX_GLYPHS ? 1 : 2)
+#define PSU_SUB_LINES  ((PSU_INNER_W / FONT_BODY_W)  >= PSU_SUB_MAX_GLYPHS  ? 1 : 2)
+#define PSU_NUM_LINES  3                      // «є X В», «треба Y В», допуск
+#define PSU_LH_HEAD   22                      // крок рядка заголовка
+#define PSU_LH_BODY   18                      // крок рядка пояснень
+#define PSU_PLATE_H   (12 + PSU_HEAD_LINES * PSU_LH_HEAD + \
+                       PSU_SUB_LINES * PSU_LH_BODY + PSU_NUM_LINES * PSU_LH_BODY + 8)
 
 // Текст помилки — одним місцем на всі поверхні, щоб екран, веб і USB-клієнт
 // не розповідали різне. Перший рядок — крупно, другий — пояснення.
@@ -1130,10 +1206,16 @@ inline const char *psuHeadline(uint8_t st) {
          : (st == PSU_LOW)    ? "НАПРУГА ЗАНИЖЕНА"
                               : "НАПРУГА ЗАВИЩЕНА";
 }
+// ⚑ Написи навмисно КОРОТКІ. Перенос нижче — запобіжник на випадок правки й
+//  вузьких панелей, а не спосіб верстки: два рядки там, де досить одного,
+//  читаються гірше. Слово «живлення» з пояснень прибрано не заради економії —
+//  воно вже стоїть і в шапці сторінки («ПОМИЛКА ЖИВЛЕННЯ»), і в заголовку
+//  плашки, тож утретє нічого не додає. Хостовий тест стежить, щоб усі три
+//  вміщались у рядок на штатній панелі.
 inline const char *psuSubline(uint8_t st) {
-    return (st == PSU_ABSENT) ? "блок живлення не під'єднано"
-         : (st == PSU_LOW)    ? "блок живлення просів або не той"
-                              : "блок живлення не той (19 В?)";
+    return (st == PSU_ABSENT) ? "блок не під'єднано"
+         : (st == PSU_LOW)    ? "блок просів або не той"
+                              : "не той блок (19 В?)";
 }
 
 inline void drawPsuPlate(bool on) {
@@ -1144,35 +1226,48 @@ inline void drawPsuPlate(bool on) {
     // Дві фази — яскраво-червона й темна. Текст білий в обидві: він мусить
     // читатись завжди, а не лише на «яскравій» половині періоду.
     uint16_t bg = on ? C_RED : C_DARKRED;
-    tft.fillRect(EDGE - 4, PSU_PLATE_Y, TFT_W - 2 * (EDGE - 4), PSU_PLATE_H, bg);
-    tft.drawRect(EDGE - 4, PSU_PLATE_Y, TFT_W - 2 * (EDGE - 4), PSU_PLATE_H,
-                 on ? C_YELLOW : C_RED);
+    const int px = EDGE - PSU_PAD;                 // ліва межа плашки
+    const int tx = px + PSU_PAD;                   // ліва межа ТЕКСТУ всередині
+    tft.fillRect(px, PSU_PLATE_Y, PSU_PLATE_W, PSU_PLATE_H, bg);
+    tft.drawRect(px, PSU_PLATE_Y, PSU_PLATE_W, PSU_PLATE_H, on ? C_YELLOW : C_RED);
 
-    int y = PSU_PLATE_Y + 26;
+    // ⚑ Усе, що нижче, центрується В МЕЖАХ ПЛАШКИ і переноситься, якщо не
+    //  влазить. Раніше центрували по всій ширині екрана й без обмеження —
+    //  довгий рядок їхав за обидва краї одразу.
+    int y = PSU_PLATE_Y + 12 + PSU_LH_HEAD - 4;
     tSet(FONT_MODEL, C_TEXT, bg);
-    const char *big = psuHeadline(st);
-    tPut((TFT_W - tWidth(big)) / 2, y, big);
+    tPutWrapCenter(tx, PSU_INNER_W, y, PSU_LH_HEAD,
+                   psuHeadline(st), FONT_MODEL_W, PSU_HEAD_LINES);
+    y += PSU_HEAD_LINES * PSU_LH_HEAD;
 
-    y += 22;
     tSet(FONT_BODY, C_TEXT, bg);
-    const char *sub = psuSubline(st);
-    tPut((TFT_W - tWidth(sub)) / 2, y, sub);
+    tPutWrapCenter(tx, PSU_INNER_W, y, PSU_LH_BODY,
+                   psuSubline(st), FONT_BODY_W, PSU_SUB_LINES);
+    y += PSU_SUB_LINES * PSU_LH_BODY;
 
-    y += 22;
     snprintf(b, sizeof(b), "є %u.%02u В", mv / 1000, (mv % 1000) / 10);
-    tPut((TFT_W - tWidth(b)) / 2, y, b);
+    tPutWrapCenter(tx, PSU_INNER_W, y, PSU_LH_BODY, b, FONT_BODY_W, 1);
+    y += PSU_LH_BODY;
 
     // ⚑ Головне число тут — НОМІНАЛ («треба 14 В»), а не допуск. Допуск
     // відповідає на питання «чому цей блок відхилено», а користувачеві
     // потрібна відповідь на «який тоді під'єднати» — тож номінал іде першим і
-    // тим самим шрифтом, а межі — у дужках.
-    y += 18;
+    // тим самим шрифтом, а межі — окремим рядком під ним.
+    //
+    // ⚑ І САМЕ ТОМУ ЦЕ ДВА РЯДКИ, А НЕ ОДИН. Разом («треба 14 В (12.6…15.6)»)
+    //  виходило 22 гліфи — на штатній панелі влазить, а на 135-піксельній і
+    //  на будь-якій зі скругленими кутами вже ні. Розбивши на номінал і
+    //  допуск, отримуємо 12 і 11 гліфів: вміщається скрізь без переносу.
     char nom[8];
-    snprintf(b, sizeof(b), "треба %s В (%u.%u…%u.%u)",
-             chargeMvShort(CHARGE_SUPPLY_MV, nom, sizeof(nom)),
+    snprintf(b, sizeof(b), "треба %s В",
+             chargeMvShort(CHARGE_SUPPLY_MV, nom, sizeof(nom)));
+    tPutWrapCenter(tx, PSU_INNER_W, y, PSU_LH_BODY, b, FONT_BODY_W, 1);
+    y += PSU_LH_BODY;
+
+    snprintf(b, sizeof(b), "(%u.%u…%u.%u)",
              CHARGE_PSU_MIN_MV / 1000, (CHARGE_PSU_MIN_MV % 1000) / 100,
              CHARGE_PSU_MAX_MV / 1000, (CHARGE_PSU_MAX_MV % 1000) / 100);
-    tPut((TFT_W - tWidth(b)) / 2, y, b);
+    tPutWrapCenter(tx, PSU_INNER_W, y, PSU_LH_BODY, b, FONT_BODY_W, 1);
 }
 
 inline void drawPagePsuFault() {
@@ -1189,13 +1284,17 @@ inline void drawPagePsuFault() {
     drawPsuPlate(true);                       // плашка з текстом — вона й блимає
 
     // Нижче плашки — нерухомі пояснення: що робити і що при цьому ще працює.
-    int y = PSU_PLATE_Y + PSU_PLATE_H + 20;
+    //  Крок і відступ підібрані так, щоб УСІ ТРИ рядки лишались вище смуги
+    //  статусу після того, як плашка підросла під перенос (див. PSU_PLATE_H).
+    //  Третій рядок — «читання пам'яті працює» — саме той, який заспокоює
+    //  користувача, що пристрій не помер; втратити його було б найгірше.
+    int y = PSU_PLATE_Y + PSU_PLATE_H + 16;
     tSet(FONT_BODY, C_TEXT, C_BG);
     auto row = [&](const char *txt, uint16_t col) {
         if (y > FOOT_Y - 6) return;
         tSet(FONT_BODY, col, C_BG);
         tPut(EDGE, y, txt);
-        y += 18;
+        y += 17;
     };
     row(st == PSU_ABSENT ? "Під'єднайте блок живлення."
       : st == PSU_LOW    ? "Потрібен 14 В під струмом."
@@ -1607,6 +1706,23 @@ inline void displayAnimTick() {
     // такий самий, і статична шкала під час довгої операції виглядала б як
     // «завис»).
     if (!(g_displayPage == 0 || dischargeScreenActive() || chargeScreenActive()) || g_battW == 0) return;
+    // ⚑ АНІМУЄМО ЛИШЕ ТУ ШКАЛУ, ЩО СПРАВДІ ЗАРАЗ НА ЕКРАНІ.
+    //  Скарга власника: «при помилці живлення поверх попередження малюється
+    //  індикатор заряду». Так і було. Сторінка помилки живлення виводиться
+    //  ПОВЗ звичайний перемикач сторінок (chargePsuScreenActive() перехоплює
+    //  малювання першим), а g_displayPage при цьому лишається нулем — тобто
+    //  «головна». Анімація дивилась саме на нього, бачила «головна», брала
+    //  ЗАПАМ'ЯТОВАНІ координати шкали й ~9 разів на секунду клала градієнт
+    //  просто поверх червоної плашки з попередженням.
+    //
+    //  Перелічувати тут сторінки-перехоплювачі — програшна гра: наступна така
+    //  сторінка знову про це не знатиме. Тому питання ставиться інакше й
+    //  однозначно: чи та шкала, координати якої ми пам'ятаємо, намальована на
+    //  ЦЬОМУ екрані. Кожне очищення екрана піднімає лічильник поколінь
+    //  (displayScreenCleared), а drawBatteryBar() запам'ятовує покоління, у
+    //  якому малював. Розійшлись — на екрані вже інша сторінка, і чіпати його
+    //  анімації нема чого.
+    if (g_battDrawn.gen != g_screenGen) return;
     if (g_errTint) return;              // під час оповіщення про помилку — статичний
                                         // червоний екран (без руху градієнта)
     if (g_ledMode == LED_READ || g_ledMode == LED_WRITE)

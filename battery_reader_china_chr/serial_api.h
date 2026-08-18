@@ -43,6 +43,7 @@
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
 //   HDRFIX               -> добудувати заголовок DS2433 із дзеркала DS2438
 //                          (коли зарядна станція сама почала, але не завершила)
+//   CHARGE MA=<мА>       -> ручна уставка струму заряду (0 = автомат)
 //   SAMPLES              -> вбудовані зразки моніторів копій (для CLONE)
 //   CLONE <hex128> [RATED=] [RSENSE=] [MODEL=] [MFG=] [USE=] [HEALTH=] [ID33=1]
 //                  [ZERO=0] [RECHECK=0]
@@ -714,6 +715,16 @@ static void serialExec(const String &line) {
     else if (cmd == "CHARGE")   { String a3 = arg; a3.trim(); a3.toUpperCase();
                                   if (a3 == "STOP") { chargeStop(CHGR_USER); sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}"); }
                                   else if (a3 == "?" || a3 == "STATUS") sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}");
+                                  // CHARGE MA=<мА> — ручна уставка струму; MA=0 повертає автомат.
+                                  // Діє і під час заряду: струм саме тоді й підбирають.
+                                  else if (a3.startsWith("MA=")) {
+                                      long want = a3.substring(3).toInt();
+                                      if (want < 0) want = 0;
+                                      uint16_t got = chargeSetManualMa((uint16_t)want);
+                                      String r = "{\"ok\":true,\"manualMa\":"; r += got;
+                                      r += ",\"asked\":"; r += want;
+                                      r += ",\"charge\":"; r += chargeJson(); r += "}";
+                                      sResp(r); }
                                   else { const char *e = chargeStart((uint8_t)a3.toInt());
                                          if (e) { String r = "{\"ok\":false,\"err\":\""; r += e; r += "\"}"; sResp(r); }
                                          else sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}"); } }

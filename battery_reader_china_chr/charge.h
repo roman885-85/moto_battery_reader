@@ -590,6 +590,45 @@ inline uint16_t chargeSetpointMaForPct(int pct, int targetPct) {
 //  повертаємось назад лише коли відсоток впаде на CHARGE_TAPER_HYST_PCT нижче.
 //  Стан тримає викликач (g_chg), а функція лишається чистою — щоб її й далі
 //  міг ганяти хостовий тест.
+// ═══════════════════ РУЧНЕ РЕГУЛЮВАННЯ СТРУМУ ЗАРЯДУ ══════════════════════
+//  0 — автомат (профіль за відсотком, як було). Будь-яке інше значення —
+//  уставка, задана користувачем.
+//
+//  ⚑ ЖИВЕ ОКРЕМО ВІД ChargeState НАВМИСНО. chargeStop() і chargeStart()
+//  обнуляють стан сеансу цілком (`g_chg = {}`), а ручний струм — це не стан
+//  сеансу, а НАЛАШТУВАННЯ користувача: зупинив заряд, поміняв пакет, запустив
+//  знову — уставка мусить лишитись тією самою. Поклавши її в ChargeState, ми
+//  отримали б поле, яке мовчки скидається в автомат на кожній зупинці.
+static uint16_t g_chgManualMa = 0;
+
+inline uint16_t chargeManualClamp(uint16_t ma) {
+    if (ma < CHARGE_MANUAL_MA_MIN) return CHARGE_MANUAL_MA_MIN;
+    if (ma > CHARGE_MANUAL_MA_MAX) return CHARGE_MANUAL_MA_MAX;
+    return ma;
+}
+inline uint16_t chargeManualMa() { return g_chgManualMa; }
+// Повертає те, що справді встановлено (після затиску), щоб клієнт показав
+// РЕАЛЬНУ уставку, а не те, що просив.
+inline uint16_t chargeSetManualMa(uint16_t ma) {
+    g_chgManualMa = ma ? chargeManualClamp(ma) : 0;
+    return g_chgManualMa;
+}
+
+// Накласти ручну уставку на автоматичну.
+//
+//  ⚑ ДОЗАРЯД РУЧНИЙ РЕЖИМ НЕ СКАСОВУЄ. Це головне рішення тут. Дозаряд малим
+//  струмом від CHARGE_TAPER_PCT — не «ще один режим зручності», а те, що не
+//  дає добивати майже повний пакет великим струмом; саме через його межу ми
+//  нещодавно ловили і брязкіт уставки, і паніку на світлодіоді. Тож у зоні
+//  дозаряду ручне значення бере участь ЛИШЕ якщо воно МЕНШЕ за автоматичне:
+//  зменшити струм користувач має право завжди, збільшити — не в кінці заряду.
+inline uint16_t chargeApplyManual(uint16_t autoMa, uint16_t manualMa, bool inTaper) {
+    if (!manualMa) return autoMa;                 // автомат — усе як було
+    uint16_t m = chargeManualClamp(manualMa);
+    if (!inTaper) return m;
+    return (m < autoMa) ? m : autoMa;             // у дозаряді — менше з двох
+}
+
 inline uint16_t chargeSetpointMaForPctH(int pct, int targetPct, bool *inTaper) {
     long bpTaper = (long)CHARGE_TAPER_PCT * targetPct / 100;
     long back    = bpTaper - (long)CHARGE_TAPER_HYST_PCT * targetPct / 100;

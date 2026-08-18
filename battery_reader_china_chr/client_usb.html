@@ -484,6 +484,19 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
           <input type="number" id="chgTarget" value="100" min="50" max="100" step="5"
                  oninput="this.dataset.touched=1;chgTargetPaint()" style="width:90px"> <span style="opacity:.7">%</span>
         </span></div>
+      <div class="row" id="chgMaRow"><span class="k">Струм заряду</span>
+        <span>
+          <button type="button" class="tgtb" onclick="chgSetMa(0)">Авто</button>
+          <button type="button" class="tgtb" onclick="chgSetMa(200)">200</button>
+          <button type="button" class="tgtb" onclick="chgSetMa(400)">400</button>
+          <button type="button" class="tgtb" onclick="chgSetMa(700)">700</button>
+          <button type="button" class="tgtb" onclick="chgSetMa(1000)">1000</button>
+          <input type="number" id="chgMaInp" placeholder="авто" min="0" step="50" style="width:90px">
+          <span style="opacity:.7">мА</span>
+          <button type="button" class="btn b-inf" style="padding:4px 10px"
+                  onclick="chgSetMa(+(document.getElementById('chgMaInp').value||0))">Задати</button>
+        </span></div>
+      <div class="note i" id="chgMaNote">Порожньо або «Авто» — струм веде профіль за відсотком заряду.</div>
       <button class="btn b-ok" id="btnChgStart" onclick="chgStart()">🔋 ПОЧАТИ ЗАРЯД</button>
       <button class="btn b-dng" onclick="chgStop()">⏹ ЗУПИНИТИ</button>
       <button class="btn b-inf" onclick="chgStatus()">🔄 Оновити зараз</button>
@@ -1634,6 +1647,17 @@ function chgShow(d){
 
   const ma=Math.abs(d.ma), scale=Math.max(d.setMa*1.25,ma*1.05,1);
   $('chgCurBar').style.width=Math.min(100,ma*100/scale)+'%';
+  if(d.manualMa!==undefined){
+    var mi=$('chgMaInp');
+    if(mi&&document.activeElement!==mi) mi.value=d.manualMa?d.manualMa:'';
+    if(mi) mi.max=d.manMaxMa||1000;
+    chgMaPaint(d.manualMa|0);
+    var nn=$('chgMaNote');
+    if(nn) nn.innerHTML=(d.manualMa
+      ? ('Зараз <b>ручний</b> режим: '+d.manualMa+' мА (межі '+d.manMinMa+'…'+d.manMaxMa+' мА).')
+      : 'Зараз <b>автоматичний</b> профіль за відсотком заряду.')
+      + ' Дозаряд наприкінці ручне значення не скасовує: береться менше з двох.';
+  }
   $('chgLim').textContent=d.pwm?('уставка '+d.setMa+' мА · зараз '+d.ma+' мА'):'⚠ керування недоступне';
   $('chgLim').style.color=d.pwm?'var(--grn)':'var(--red)';
   // Керування тепер — ШПАРУВАТІСТЬ ключа (PNP B772M через керуючий NPN), а не «цільова
@@ -1706,6 +1730,28 @@ async function chgStart(){
   await ensureAuth();
   const r=await cmd('CHARGE '+t,15000);
   if(r&&r.ok){toast('✅ Заряд почато');chgShow(r.charge);} else toast('Помилка: '+((r&&r.err)||''),'err');
+}
+// Ручний струм заряду; 0 — автомат. Межі приходять із пристрою (manMinMa/
+// manMaxMa), власної копії діапазону тут немає навмисно.
+async function chgSetMa(ma){
+  if(!connected){toast('Підключіться');return;}
+  ma=ma|0; if(ma<0)ma=0;
+  await ensureAuth();
+  const r=await cmd('CHARGE MA='+ma,10000);
+  if(r&&r.ok){
+    const got=r.manualMa|0;
+    $('chgMaInp').value=got?got:'';
+    if(got&&r.asked&&got!==(r.asked|0))toast('Уставку затиснуто в межі: '+got+' мА');
+    else toast(got?('✅ Струм '+got+' мА'):'✅ Автоматичний профіль');
+    chgMaPaint(got);
+    if(r.charge)chgShow(r.charge);
+  } else toast('Помилка: '+((r&&r.err)||''),'err');
+}
+function chgMaPaint(cur){
+  document.querySelectorAll('#chgMaRow .tgtb').forEach(function(b){
+    var t=b.textContent.trim(); var v=(t==='Авто')?0:parseInt(t,10);
+    b.classList.toggle('on', !isNaN(v)&&v===(cur|0));
+  });
 }
 async function chgStop(){
   if(!connected){toast('Підключіться');return;}

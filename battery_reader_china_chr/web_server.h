@@ -2464,11 +2464,51 @@ bool performHeaderComplete(String *note) {
 static MirrorPlan g_mirPlan;
 static bool       g_mirPlanReady = false;
 
+// ⚑ ГОЛОВНЕ ПИТАННЯ ПЕРЕД СИНХРОНІЗАЦІЄЮ: А ЦЕЙ МОНІТОР ВІД ЦЬОГО ПАКЕТА?
+//  Операція переносить ідентичність З МОНІТОРА в пам'ять пакета. Якщо монітор
+//  чужий, ми не полагодимо пакет, а припишемо йому чужу особу — і зробимо це
+//  впевнено, «за планом». Ознака в нас є: наробіток ETM більший за вік пакета.
+//  Рахуємо тут, бо саме тут є і розшифрована дата, і годинник; сам план
+//  лишається чистою арифметикою.
+//
+//  ⚑ ОКРЕМО ВІД ПОБУДОВИ ПЛАНУ — НАВМИСНО. Дата приходить із клієнтом (у
+//  пристрої годинника реального часу немає, див. device_clock.h), тобто вже
+//  ПІСЛЯ того, як план побудовано й людина розставила галочки. Перебудова
+//  плану скинула б їх; тут же чіпаються лише чотири поля свідчення.
+static void mirrorPlanEtmRefresh() {
+    long etmD = 0, age = 0;
+    if (hasDump && hasDump2438) {
+        ImpresBms b;
+        int ty = 0, tm = 0, td = 0;
+        if (deviceClockToday(&ty, &tm, &td) &&
+            impresBmsParse(batteryDump, batteryDump2438,
+                           hasSN2433 ? chipSN2433 : nullptr, 0.0f, &b)) {
+            if (b.haveKey) impresBmsDecrypt(batteryDump, &b);
+            if (b.ok && b.haveKey && impresBmsDateSane(b.mfgY, b.mfgM, b.mfgD)) {
+                age  = impresBmsToDays(ty, tm, td) -
+                       impresBmsToDays(b.mfgY, b.mfgM, b.mfgD);
+                etmD = (long)(impresEtm(batteryDump2438) / 86400UL);
+            }
+        }
+    }
+    // Нулі теж записуємо: якщо дата зникла (перечитали інший пакет), свідчення
+    // мусить зникнути разом із нею, а не лишитись від попереднього.
+    mirrorPlanSetEtm(g_mirPlan, etmD, age);
+}
+
+// Дата від клієнта. Її несуть усі запити плану — синхронізація не виняток:
+// без «сьогодні» вік пакета не порахувати, а отже й не перевірити, чи монітор
+// від нього. Клієнти шлють її з кожним MIRROR/api-mirror запитом.
+static void mirrorPlanClock(long today) {
+    if (today > 0) deviceClockSetNum(today);
+}
+
 static void mirrorPlanRefresh() {
     mirrorPlanBuild(g_mirPlan,
                     hasDump ? batteryDump : nullptr,
                     hasDump2438 ? batteryDump2438 : nullptr);
     g_mirPlanReady = hasDump;
+    mirrorPlanEtmRefresh();
 }
 
 static String mirrorPlanJson() {
@@ -2489,6 +2529,16 @@ static String mirrorPlanJson() {
     j += ",\"ratedSrc\":";  j += p.ratedSrc;
     j += ",\"ratedUser\":"; j += p.ratedUser;
     j += ",\"ratedStep\":"; j += (int)IMPRES_RATED_STEP;
+    // Свідчення «чи монітор від цього пакета» — числами, без готового тексту:
+    // довгі пояснення у прошивці коштували б флеша, а він у нас на рахунку.
+    j += ",\"haveAge\":";   j += p.haveAge ? "true" : "false";
+    j += ",\"etmDays\":";   j += (long)p.etmDays;
+    j += ",\"ageDays\":";   j += (long)p.ageDays;
+    j += ",\"etmForeign\":"; j += p.etmForeign ? "true" : "false";
+    // Якою датою рахували вік — і звідки вона. Без цього «свідчення немає»
+    // виглядає як «усе гаразд», хоча насправді просто не заведено годинник.
+    j += ",\"today\":";     j += deviceClockNum();
+    j += ",\"todaySrc\":\""; j += deviceClockSrcName(); j += "\"";
     j += ",\"b\":[";
     char t[8];
     for (int i = 0; i < IMPRES_MIRROR_LEN; i++) {
@@ -2504,8 +2554,9 @@ static String mirrorPlanJson() {
     return j;
 }
 
-// GET /api/mirror — побудувати й віддати план (нічого не пише).
+// GET /api/mirror[?today=РРРРММДД] — побудувати й віддати план (у чип не пише).
 void handleMirrorPlan() {
+    mirrorPlanClock(server.hasArg("today") ? server.arg("today").toInt() : 0);
     if (!hasDump) {
         server.send(400, "application/json",
                     "{\"ok\":false,\"err\":\"Спочатку зчитайте АКБ\"}");
@@ -2516,10 +2567,16 @@ void handleMirrorPlan() {
 }
 
 // POST /api/mirror/edit — правка ПЕРЕД синхронізацією, без запису в чип.
-//  take=all|none | byte=<0..25>&on=0|1 | rated=<мА·год>
+//  take=all|none | byte=<0..25>&on=0|1 | rated=<мА·год> [| today=РРРРММДД]
 void handleMirrorEdit() {
     if (!requireAdmin()) return;
+    long hadClock = deviceClockNum();
+    mirrorPlanClock(server.hasArg("today") ? server.arg("today").toInt() : 0);
     if (!g_mirPlanReady) mirrorPlanRefresh();
+    // Дата змінилась (годинник щойно завели або настала нова доба) — свідчення
+    // про наробіток перераховуємо, але план НЕ перебудовуємо: галочки поставила
+    // людина, і вони мусять лишитись.
+    else if (hadClock != deviceClockNum()) mirrorPlanEtmRefresh();
     if (!g_mirPlan.have33) {
         server.send(400, "application/json",
                     "{\"ok\":false,\"err\":\"Спочатку зчитайте АКБ\"}");
@@ -2537,9 +2594,10 @@ void handleMirrorEdit() {
     server.send(200, "application/json", mirrorPlanJson());
 }
 
-// POST /api/mirror/apply — записати те, що показано в плані.
+// POST /api/mirror/apply[&today=РРРРММДД] — записати те, що показано в плані.
 void handleMirrorApply() {
     if (!requireAdmin()) return;
+    mirrorPlanClock(server.hasArg("today") ? server.arg("today").toInt() : 0);
     if (!g_mirPlanReady) mirrorPlanRefresh();
     if (!g_mirPlan.have33) {
         server.send(400, "application/json",

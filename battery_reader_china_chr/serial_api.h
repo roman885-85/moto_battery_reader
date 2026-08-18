@@ -44,7 +44,7 @@
 //   HDRFIX               -> добудувати заголовок DS2433 із дзеркала DS2438
 //                          (коли зарядна станція сама почала, але не завершила)
 //   CHARGE MA=<мА>       -> ручна уставка струму заряду (0 = автомат)
-//   MIRROR [APPLY|TAKE=|BYTE=|RATED=] -> синхронізація дзеркала 2438 -> 2433
+//   MIRROR [APPLY|TAKE=|BYTE=|RATED=|TODAY=] -> синхронізація дзеркала 2438 -> 2433
 //   SAMPLES              -> вбудовані зразки моніторів копій (для CLONE)
 //   CLONE <hex128> [RATED=] [RSENSE=] [MODEL=] [MFG=] [USE=] [HEALTH=] [ID33=1]
 //                  [ZERO=0] [RECHECK=0]
@@ -738,7 +738,22 @@ static void serialExec(const String &line) {
     // MIRROR BYTE=<0..25> ON=0|1   -> те саме, по одному байту
     // MIRROR RATED=<мА·год>        -> вписати паспортну ємність руками (0 — скасувати)
     // MIRROR APPLY                 -> записати те, що показано в плані
+    // TODAY=РРРРММДД можна додати до будь-якої з форм — так само, як до плану
+    // відновлення. Без дати не порахувати вік пакета, а без віку не сказати,
+    // чи монітор узагалі від нього (див. mirrorPlanEtmRefresh).
     else if (cmd == "MIRROR")   { String a4 = arg; a4.trim(); a4.toUpperCase();
+                                  { // дату виймаємо ПЕРШОЮ: вона потрібна вже під час побудови плану
+                                      int tp = a4.indexOf("TODAY=");
+                                      if (tp >= 0) {
+                                          int te = a4.indexOf(' ', tp);
+                                          String tv = (te < 0) ? a4.substring(tp + 6) : a4.substring(tp + 6, te);
+                                          long had = deviceClockNum();
+                                          mirrorPlanClock(tv.toInt());
+                                          if (g_mirPlanReady && had != deviceClockNum())
+                                              mirrorPlanEtmRefresh();   // план не чіпаємо: галочки людські
+                                          a4 = a4.substring(0, tp) + ((te < 0) ? String("") : a4.substring(te + 1));
+                                          a4.trim();
+                                      } }
                                   if (!hasDump) { sResp("{\"ok\":false,\"err\":\"спочатку READ\"}"); }
                                   else {
                                       if (!g_mirPlanReady) mirrorPlanRefresh();

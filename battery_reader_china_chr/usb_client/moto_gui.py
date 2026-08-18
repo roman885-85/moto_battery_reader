@@ -202,6 +202,19 @@ def _dnum(v):
     """Дата з плану (число YYYYMMDD) у людський вигляд; 0 -> прочерк."""
     return "%04d-%02d-%02d" % (v // 10000, (v // 100) % 100, v % 100) if v else "—"
 
+def etm_foreign_text(etm_d, age_d, mfg=None):
+    """Єдине формулювання «наробіток більший за вік пакета».
+
+    Один текст на два місця — картку даних і план синхронізації. Копія
+    розійшлася б саме тоді, коли людині треба вирішувати: два різні пояснення
+    того самого факту суперечили б одне одному. Так само зроблено в
+    браузерних клієнтах (etmForeignHtml)."""
+    return ("⚠️ Напрацювання ETM (%d діб) більше за вік пакета (%d діб%s). Або монітор не від "
+            "цього АКБ (перечитайте DS2438 — доти струм, залишок і знос неправильні), або пакет "
+            "пройшов цикл на станції: ЗП переписує ETM своїм числом. Тому наробіток правлять "
+            "ПІСЛЯ калібрування, а не до нього."
+            % (etm_d, age_d, (" від " + mfg) if mfg else ""))
+
 CTRL_MASK = 0x0004
 _CTRL_KEYS = {"c": ("c", "cyrillic_es"),      # С
               "v": ("v", "cyrillic_em"),      # М
@@ -1420,6 +1433,13 @@ class App:
                   foreground="#b9bd86", justify="left").pack(anchor="w")
         self.lblMir = ttk.Label(b2m, text="план не побудовано", foreground="#c8b04a")
         self.lblMir.pack(anchor="w", pady=(4, 2))
+        # ⚑ ЧИ ЦЕЙ МОНІТОР УЗАГАЛІ ВІД ЦЬОГО ПАКЕТА. Питання саме тут, а не лише
+        #  на картці даних: синхронізація переносить ідентичність З МОНІТОРА в
+        #  пам'ять пакета, тож із чужим монітором вона не лікує, а приписує
+        #  пакету чужу особу — і робить це «за планом», тобто впевнено.
+        self.lblMirWarn = ttk.Label(b2m, text="", foreground=MIL["maroon"],
+                                    wraplength=560, justify="left")
+        self.lblMirWarn.pack(anchor="w")
         mrow = ttk.Frame(b2m); mrow.pack(anchor="w", pady=2)
         ttk.Label(mrow, text="Паспортна ємність, мА·год:").pack(side="left")
         self.eMirRated = ttk.Entry(mrow, width=8); self.eMirRated.pack(side="left", padx=4)
@@ -2205,13 +2225,7 @@ class App:
             self.bWarn.grid_remove(); return
         etm_d = etm_sec // 86400
         if etm_d > age + self.ETM_AGE_SLACK_D:
-            self.bWarn.config(text=("⚠️ Напрацювання ETM (%d діб) більше за вік пакета "
-                                    "(%d діб від %s). Або монітор не від цього АКБ "
-                                    "(перечитайте DS2438 — доти струм, залишок і знос "
-                                    "неправильні), або пакет пройшов цикл на станції: ЗП "
-                                    "переписує ETM своїм числом. Тому наробіток правлять "
-                                    "ПІСЛЯ калібрування, а не до нього."
-                                    % (etm_d, age, mfg)))
+            self.bWarn.config(text=etm_foreign_text(etm_d, age, mfg))
             self.bWarn.grid()
         else:
             self.bWarn.grid_remove()
@@ -3255,7 +3269,10 @@ class App:
     def mirror_load(self):
         if not self.need_conn():
             return
-        self.cmd("MIRROR", 10.0, cb=self._mirror_show)
+        # TODAY= — так само, як його несуть усі інші запити плану: годинника
+        # реального часу в пристрої немає, а без «сьогодні» не порахувати вік
+        # пакета, тобто й не сказати, чи монітор узагалі від нього.
+        self.cmd("MIRROR TODAY=%d" % self._rp_today(), 10.0, cb=self._mirror_show)
 
     def _mirror_show(self, r):
         if not (isinstance(r, dict) and r.get("ok")):
@@ -3276,7 +3293,34 @@ class App:
             (str(p.get("ratedSrc")) + " мА·год") if p.get("ratedSrc") else "—")
         if p.get("ratedUser"):
             st += ", вручну %d мА·год" % p["ratedUser"]
+        # Наробіток проти віку — числами, завжди, коли є з чим порівнювати:
+        # операторові потрібне співвідношення, а не тільки вирок.
+        if p.get("haveAge"):
+            st += "   ·  наробіток %d діб при віці %d діб" % (p.get("etmDays", 0),
+                                                              p.get("ageDays", 0))
         self.lblMir.config(text=st)
+
+        # Свідчення рахує ПРИСТРІЙ (mirror_plan.h) — тут лише показ. Другої
+        # реалізації правила «наробіток більший за вік» тут немає навмисно.
+        if p.get("etmForeign"):
+            warn = (etm_foreign_text(p.get("etmDays", 0), p.get("ageDays", 0))
+                    + "\nДля синхронізації це головне питання: вона переносить ідентичність "
+                      "ІЗ МОНІТОРА в пам'ять пакета. Якщо монітор чужий, ви не полагодите "
+                      "пакет, а припишете йому чужу особу. Спершу перечитайте DS2438; якщо "
+                      "число не змінилось — вирішіть, чи це той самий пакет, і аж потім "
+                      "тисніть «синхронізувати».")
+        elif p.get("have38") and p.get("srcUsable") and not p.get("haveAge"):
+            # Мовчання тут читалося б як «усе гаразд», хоча перевірки просто не було.
+            warn = ("ℹ️ Вік пакета порахувати не вдалось: немає читаної дати виготовлення "
+                    "(немає ключа або дата не схожа на дату). Перевірити наробітком, чи "
+                    "монітор від цього пакета, тут нема з чим — звіряйте за серійним номером."
+                    if p.get("today") else
+                    "⚠️ Годинник пристрою не заведено (дату шле клієнт — свого годинника в "
+                    "пристрої немає), тому наробіток нема з чим порівняти. Перечитайте план: "
+                    "запит уже несе сьогоднішню дату.")
+        else:
+            warn = ""
+        self.lblMirWarn.config(text=warn)
 
         self.mirBox.delete(0, "end")
         for i, b in enumerate(p.get("b", [])):
@@ -3290,7 +3334,8 @@ class App:
     def _mirror_send(self, arg):
         if not self.need_conn():
             return
-        self.maybe_auth(lambda: self.cmd("MIRROR " + arg, 10.0, cb=self._mirror_show))
+        self.maybe_auth(lambda: self.cmd("MIRROR %s TODAY=%d" % (arg, self._rp_today()),
+                                         10.0, cb=self._mirror_show))
 
     def mirror_take(self, what):
         self._mirror_send("TAKE=" + what)
@@ -3336,7 +3381,8 @@ class App:
             self.refresh()
 
         self.maybe_auth(lambda: (self.status("Синхронізація..."),
-                                 self.cmd("MIRROR APPLY", 20.0, cb=done)))
+                                 self.cmd("MIRROR APPLY TODAY=%d" % self._rp_today(),
+                                          20.0, cb=done)))
 
     def hdr_fix(self):
         """Добудова заголовка DS2433, яку почала (але не завершила) станція

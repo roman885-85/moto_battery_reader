@@ -1148,6 +1148,39 @@ int main() {
     check(filesIdentical("index.html", "data/index.html"),
                                              "index.html і data/index.html побайтово однакові");
 
+    printf("\n28) шкала заряду — крива 2S, і вона ОДНА на всі поверхні\n");
+    // Побажання власника: «перерахуй правильність показань заряду у відсотках
+    // для 2s батареї, ігноруючи мої початкові граничні значення», і окремо —
+    // межі за заводськими значеннями для 2s li-ion.
+    check(fileCalls("soc.h", "socPctFromMv") && fileCalls("soc.h", "socMvFromPct"),
+                                             "крива живе в soc.h — там, де її дістає тест");
+    check(fileCalls("impres_format.h", "socPctFromMv"),
+                                             "impresPercentFromMv рахує по кривій, а не прямою");
+    // ⚑ ДРУГОЇ КОПІЇ ШКАЛИ БУТИ НЕ МУСИТЬ. Екран мав власну лінійну формулу;
+    //  поки обидві були прямими, вони випадково збігались, а після переходу на
+    //  криву показували б різне.
+    check(fileHasNo("impres_format.h", "IMPRES_EMPTY_MV) * 100 /"),
+                                             "власної лінійної формули в impres_format.h більше немає");
+    check(fileHasNo("display_color.h", "(vmv - BATTERY_EMPTY_MV) * 100"),
+                                             "і на екрані теж — він кличе спільну функцію");
+    check(fileCalls("display_color.h", "impresPercentFromMv((int)vmv)"),
+                                             "екран рахує відсоток тією самою функцією, що й усі");
+    // Межі — з хімії, літералами (їх читає препроцесор), і під static_assert.
+    check(fileCalls("soc.h", "SOC_CELL_FULL_MV  4200") &&
+          fileCalls("soc.h", "SOC_CELL_EMPTY_MV 3000"),
+                                             "заводські межі 2S li-ion: 4.20 і 3.00 В на банку");
+    check(fileCalls("soc.h", "static_assert"),
+                                             "краї таблиці звірені з межами через static_assert");
+    check(fileCalls("settings.h", "#define BATTERY_FULL_MV   (SOC_FULL_MV)"),
+                                             "шкала прошивки бере межі з кривої, а не своє число");
+    // ⚑ soc.h мусить підключатись ДО перших #if, які його читають: невідомий
+    //  ідентифікатор препроцесор мовчки вважає нулем.
+    check(fileDefinesBefore("settings.h", "#include \"soc.h\"", "DISCHARGE_RAMP_HI_MV"),
+                                             "крива підключена ДО першого вживання її констант");
+    // Ціль у відсотках перераховується після затиску — інакше дозаряд зникає.
+    check(fileCalls("web_server.h", "targetPct = (uint8_t)impresPercentFromMv(targetMv)"),
+                                             "профіль струму масштабується під ДОСЯЖНУ ціль");
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

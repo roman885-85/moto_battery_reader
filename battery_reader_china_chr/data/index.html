@@ -1821,7 +1821,7 @@ setInterval(()=>{
 },1000);
 // Лінійка струму будується ПІД ОБРАНУ ціль: 300 мА припадають рівно на неї.
 // Межі беремо з пристрою (він же їх і застосовує), поки не опитали — типові.
-let disRampCfg={rampHiMv:8250,maHi:1000,maLo:300,tgtMinMv:6800,tgtMaxMv:8000};
+let disRampCfg={rampHiMv:8400,maHi:1000,maLo:300,tgtMinMv:6800,tgtMaxMv:8000};
 function disTargetMv(){
     let t=parseInt($('disTarget').value)||disRampCfg.tgtDefMv||7200;
     t=Math.max(disRampCfg.tgtMinMv,Math.min(disRampCfg.tgtMaxMv,t));

@@ -330,8 +330,12 @@ inline void fixRecordChecksum(uint8_t *buf, int start, int len) {
 inline int batteryPercent(const char **src) {
     if (!hasDump2438) { *src = "--"; return -1; }
     long vmv = (long)(((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3]) * 10;
-    int vpct = (int)((vmv - BATTERY_EMPTY_MV) * 100 / (BATTERY_FULL_MV - BATTERY_EMPTY_MV));
-    if (vpct < 0) vpct = 0; if (vpct > 100) vpct = 100;
+    // ⚑ ДРУГОЇ КОПІЇ ШКАЛИ ТУТ БІЛЬШЕ НЕМАЄ. Раніше відсоток рахувався прямо
+    //  тут власною лінійною формулою — тобто шкала жила у двох місцях одразу.
+    //  Поки обидві були лінійними, вони випадково збігались; щойно головна
+    //  стала табличною кривою (soc.h), екран показував би зовсім інше число,
+    //  ніж веб і USB-клієнт. Рахуємо тією самою функцією, що й усі.
+    int vpct = impresPercentFromMv((int)vmv);
     uint8_t config = batteryDump2438[0];
     if (config & 0x01) {
         // Шкала ICA АПАРАТНА: одиниця = 0.4882 мВ·год / Rsense, а не «255 =

@@ -177,11 +177,64 @@ void handleRoot() {
     wdtFeed();
 }
 
+// GET /lite — АВАРІЙНА СТОРІНКА НА КІЛЬКА КІЛОБАЙТ.
+//
+//  ⚑ Навіщо вона. Основна сторінка — це 90 КБ по радіо, і коли вона не
+//  доходить, у браузері порожньо: сказати, ЩО саме не спрацювало, нема кому.
+//  А маленька сторінка доходить майже завжди — і сама показує відбиток
+//  збірки, стан файлової системи й головні показники. Тобто відповідає на
+//  «чи та прошивка», «чи працює сервер» і «чи бачить пристрій АКБ» одразу, без
+//  послідовного порту. Заразом нею можна користуватись, поки велика не їде.
+//
+//  Тримається в коді рядком, а не файлом: у неї одне завдання — бути там, де
+//  все інше вже не працює.
+static const char PAGE_LITE[] PROGMEM =
+"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+"<title>Moto battery — lite</title>"
+"<style>body{font:14px system-ui;margin:12px;background:#12160f;color:#cfd6c4}"
+"b{color:#e8eddc}button{font:14px system-ui;padding:8px 14px;margin:4px 4px 4px 0;"
+"border:0;border-radius:8px;background:#3c5a2a;color:#fff}pre{white-space:pre-wrap;"
+"background:#1b2116;padding:8px;border-radius:8px;overflow-x:auto}a{color:#9fd07a}</style>"
+"<h2>Легка сторінка</h2>"
+"<p>Основна: <a href=/>/</a> &middot; дані: <a href=/api/info>/api/info</a> &middot; "
+"файли: <a href=/api/fs>/api/fs</a></p>"
+"<button onclick=\"go('/api/read')\">Зчитати АКБ</button>"
+"<button onclick=\"load()\">Оновити</button>"
+"<pre id=o>завантаження…</pre>"
+"<script>"
+"async function j(u){const r=await fetch(u);return await r.json();}"
+"async function load(){const o=document.getElementById('o');try{"
+"const f=await j('/api/fs');let t='збірка: '+(f.build||'—')"
+"+'\\nсторінка в прошивці: '+(f.page?f.page.embedded:'—')+' Б'"
+"+(f.page&&f.page.override?' (перекрита файлом зі SPIFFS)':'')"
+"+'\\nSPIFFS: '+f.used+' з '+f.total+' Б, файлів '+f.files.length;"
+"try{const d=await j('/api/info');t+='\\n\\nмодель: '+(d.model||'—')+'\\nзаряд: '+(d.capacity!=null?d.capacity+' %':'—')"
+"+'\\nоригінал: '+(d.genuine?'так':'ні')+(d.authReason?(' ('+d.authReason+')'):'');}"
+"catch(e){t+='\\n\\n/api/info: '+e.message;}"
+"o.textContent=t;}catch(e){o.textContent='помилка: '+e.message;}}"
+"async function go(u){const o=document.getElementById('o');o.textContent='…';"
+"try{await j(u);}catch(e){}load();}"
+"load();"
+"</script>";
+
+void handleLite() {
+    server.send_P(200, "text/html", PAGE_LITE, strlen_P(PAGE_LITE));
+}
+
 // GET /api/fs — що насправді лежить у SPIFFS.
 //  Дрібниця, але саме її бракувало, коли сторінка не відкривалась: без
 //  послідовного порту не було як побачити, чи доїхала тека data/ у пристрій.
 void handleFsList() {
-    String j = "{\"total\":"; j += (uint32_t)SPIFFS.totalBytes();
+    // ⚑ ВІДБИТОК ЗБІРКИ — ПЕРШИМ. Без нього неможливо відповісти на найперше
+    //  питання будь-якого розбору: а чи та прошивка взагалі в пристрої? Дата
+    //  й час компіляції підставляє компілятор, тож збігтися випадково вони не
+    //  можуть. Поруч — звідки береться сторінка й скільки її.
+    String j = "{\"build\":\"" __DATE__ " " __TIME__ "\"";
+    j += ",\"page\":{\"embedded\":"; j += (uint32_t)PAGE_INDEX_GZ_LEN;
+    j += ",\"override\":";
+    j += (SPIFFS.exists("/index.html.gz") || SPIFFS.exists("/index.html")) ? "true" : "false";
+    j += "}";
+    j += ",\"total\":";      j += (uint32_t)SPIFFS.totalBytes();
     j += ",\"used\":";        j += (uint32_t)SPIFFS.usedBytes();
     j += ",\"files\":[";
     File dir = SPIFFS.open("/");
@@ -4531,6 +4584,7 @@ void setupWebServer() {
     server.on("/", handleRoot);
     server.on("/logo.png", HTTP_GET, handleLogo);
     server.on("/api/fs", HTTP_GET, handleFsList);          // що лежить у SPIFFS
+    server.on("/lite", HTTP_GET, handleLite);              // аварійна сторінка на кілька КБ
     server.on("/api/read", HTTP_GET, handleReadDump);
     server.on("/api/download", HTTP_GET, handleDownloadDump);
     server.on("/api/info", HTTP_GET, handleDumpInfo);

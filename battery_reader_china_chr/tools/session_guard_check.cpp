@@ -60,6 +60,10 @@ static void ledSet(LedMode m) { g_led = m; }
 #include "battbar.h"       // коли шкалу батареї треба перемальовувати
 #include "bt_link.h"       // правило доступу по радіо — чисте, збирається на хості
 #include "splash.h"          // формат завантаженої заставки — чистий, збирається на хості
+#ifndef PROGMEM
+  #define PROGMEM              // на хості це порожньо (у ESP32 флеш і так у пам'яті)
+#endif
+#include "page_index.h"      // вшита сторінка: звіряємо її з index.html
 #include <string>            // для обходу папки скетча (перевірка імен і UTF-8)
 #include <filesystem>
 #include <cctype>
@@ -1269,32 +1273,42 @@ int main() {
     check(fileCalls("usb_client/moto_gui.py", "clone_write38_only"),
                                              "є запис ЛИШЕ DS2438, без стирання DS2433");
 
-    printf("\n27) сторінка в SPIFFS не відстає від вихідної\n");
-    // ⚑ index.html лежить у проєкті ДВІЧІ. Пристрій віддає сторінку зі SPIFFS,
-    //  тобто копію з data/. Правка в кореневому файлі, не перенесена в data/,
+    printf("\n27) вшита сторінка не відстає від вихідної\n");
+    // ⚑ Сторінка лежить у проєкті ДВІЧІ: як index.html і як стиснута копія,
+    //  вшита в прошивку (page_index.h, генерує tools/mk_page_header.py).
+    //  Пристрій віддає ВШИТУ, тож правка в оригіналі, не перегенерована,
     //  збирається, проходить усі тести — і просто не доїжджає до користувача.
-    //  Саме це мало не сталося з полем ручного струму заряду.
     //
-    //  Тепер у SPIFFS лежить СТИСНУТА копія, і звірити її з оригіналом можна
-    //  не розпаковуючи: у хвості gzip є довжина вихідних даних (ISIZE) і їхня
-    //  CRC32. Обидва числа мусять збігтися з index.html — це точна перевірка,
-    //  а не «схоже за розміром».
+    //  Звіряємо за довжиною й CRC32: генератор кладе обидва числа в заголовок
+    //  сусідніми #define, а тут вони перераховуються з самого index.html.
     {
         long rawLen = 0;
         uint32_t rawCrc = fileCrc32("index.html", &rawLen);
-        long isize = 0; uint32_t gzCrc = 0;
-        bool haveGz = gzipTrailer("data/index.html.gz", &gzCrc, &isize);
-        printf("   index.html %ld Б, у gz-хвості %ld Б; CRC %08X проти %08X\n",
-               rawLen, isize, (unsigned)rawCrc, (unsigned)gzCrc);
-        check(haveGz, "у data/ лежить стиснута сторінка");
-        if (!haveGz || isize != rawLen || gzCrc != rawCrc)
-            printf("   ПЕРЕЗІБРАТИ: gzip -9 -n -c index.html > data/index.html.gz\n");
-        check(haveGz && isize == rawLen && gzCrc == rawCrc,
-                                             "…і вона розпакується рівно в поточний index.html");
-        // Нестиснутої копії там бути не повинно: це та сама чверть мегабайта,
-        // яку ми щойно прибрали з ефіру, і місце на розділі 1 МБ.
-        check(!fileExists("data/index.html"),
-                                             "нестиснутого дубля в data/ немає");
+        // ⚑ Перевіряємо САМ МАСИВ, а не рядки в заголовку: у хвості gzip лежать
+        //  довжина вихідних даних і їхня CRC32, тож звірити можна точно й не
+        //  розпаковуючи. Текстова звірка #define ловила б лише неуважність
+        //  генератора, а не зіпсований масив.
+        size_t n = PAGE_INDEX_GZ_LEN;
+        uint32_t gzCrc = 0, gzIsize = 0;
+        if (n >= 8) {
+            gzCrc   = (uint32_t)PAGE_INDEX_GZ[n-8] | ((uint32_t)PAGE_INDEX_GZ[n-7] << 8) |
+                      ((uint32_t)PAGE_INDEX_GZ[n-6] << 16) | ((uint32_t)PAGE_INDEX_GZ[n-5] << 24);
+            gzIsize = (uint32_t)PAGE_INDEX_GZ[n-4] | ((uint32_t)PAGE_INDEX_GZ[n-3] << 8) |
+                      ((uint32_t)PAGE_INDEX_GZ[n-2] << 16) | ((uint32_t)PAGE_INDEX_GZ[n-1] << 24);
+        }
+        printf("   index.html %ld Б (CRC %08X); у прошивці %u Б, хвіст каже %u Б (CRC %08X)\n",
+               rawLen, (unsigned)rawCrc, (unsigned)n, (unsigned)gzIsize, (unsigned)gzCrc);
+        bool same = ((long)gzIsize == rawLen) && (gzCrc == rawCrc);
+        if (!same) printf("   ПЕРЕГЕНЕРУВАТИ: python3 tools/mk_page_header.py\n");
+        check(n > 1000 && PAGE_INDEX_GZ[0] == 0x1F && PAGE_INDEX_GZ[1] == 0x8B,
+                                             "у прошивці лежить саме gzip, а не заглушка");
+        check(same,                          "…і він розпакується рівно в поточний index.html");
+        check(PAGE_INDEX_RAW_LEN == (unsigned)rawLen && PAGE_INDEX_RAW_CRC == rawCrc,
+                                             "числа в заголовку не розійшлись із масивом");
+        // У data/ сторінки бути не повинно: вона вшита, а зайва копія у файловій
+        // системі мовчки ПЕРЕКРИЄ прошивку — і правка знову «не доїде».
+        check(!fileExists("data/index.html") && !fileExists("data/index.html.gz"),
+                                             "у data/ дубля сторінки немає");
     }
 
     printf("\n28) шкала заряду — крива 2S, і вона ОДНА на всі поверхні\n");
@@ -1538,8 +1552,10 @@ int main() {
     //  життя раз на CHARGE_WDT_SEC (10 с) і має право скинути пристрій.
     //  Відкривається вона не лише руками: captive-portal сам показує її
     //  телефону одразу після під'єднання.
+    check(fileCalls("web_server.h", "server.send_P(200, \"text/html\", (PGM_P)PAGE_INDEX_GZ"),
+                                             "сторінка є завжди: вона вшита в прошивку");
     check(fileCalls("web_server.h", "SPIFFS.open(\"/index.html.gz\", \"r\")"),
-                                             "спершу віддається стиснута копія");
+                                             "…а файл у SPIFFS може її перекрити");
     // ⚑ ВІДДАЄ САМЕ streamFile(), А НЕ СВІЙ ЦИКЛ. Спроба слати шматками
     //  коштувала білого екрана: _streamFileCore() наприкінці розбирає за собою
     //  стан (setContentLength(CONTENT_LENGTH_NOT_SET)), а свій цикл — ні, тож
@@ -1551,12 +1567,16 @@ int main() {
                                              "…і ніхто не виставляє Content-Length руками");
     // Заголовок стиснення ставить сам streamFile за розширенням «.gz». Другий
     // такий самий заголовок браузер прочитає як подвійне стиснення.
-    check(fileHasNo("web_server.h", "sendHeader(\"Content-Encoding\""),
-                                             "Content-Encoding вручну не дописується");
+    // Заголовок стиснення потрібен РІВНО в одному місці — там, де сторінка
+    // йде з прошивки через send_P (сам він його не додає). На шляху streamFile
+    // ядро додає його само за розширенням «.gz», і другий такий самий
+    // заголовок браузер прочитав би як подвійне стиснення.
+    check(fileCountText("web_server.h", "sendHeader(\"Content-Encoding\"") == 1,
+                                             "Content-Encoding ставиться рівно раз — для вшитої копії");
     check(fileCalls("web_server.h", "server.on(\"/api/fs\", HTTP_GET, handleFsList)"),
                                              "видно, що насправді лежить у SPIFFS");
-    check(fileHasText("web_server.h", "залийте теку data/"),
-                                             "…і пристрій каже це вголос при старті");
+    check(fileHasText("web_server.h", "файл зі SPIFFS ПЕРЕКРИВАЄ вшиту"),
+                                             "…і пристрій каже при старті, звідки бере сторінку");
 
     printf("\n36) наробіток не повертається зі старих міток; цикли пакета правляться\n");
     // Скарга власника: «виставляю дату, ставлю в зарядку — і вона прописує

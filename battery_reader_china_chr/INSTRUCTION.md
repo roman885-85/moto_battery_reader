@@ -258,11 +258,11 @@ DISPLAY: ST7789 240x240 (panel 240x240) color, rot=1, SPI mode=3 24.0 МГц, DC
 
 1. Оберіть плату ESP32 і порт (*Tools → Board / Port*).
 2. Скомпілюйте та завантажте скетч `motorola-battery-reader-web.ino`.
-3. **Завантажте файли у SPIFFS** — вміст теки `data/` (`index.html`,
-   `logo.png`) через *Tools → ESP32 Sketch Data Upload* (плагін ESP32FS для
-   Arduino IDE 1.8.x). **Без цього кроку веб-сторінка не відкриється.**
-   - Помилка `No port specified` = не вибрано порт у *Tools → Port* або
-     відкритий Serial Monitor (закрийте його).
+3. **Більше нічого заливати не треба.** Сторінка вшита в прошивку
+   (`page_index.h`) і працює одразу. Кроку «залити SPIFFS» тут раніше не
+   вистачало найчастіше: у Arduino IDE 2.x пункту *ESP32 Sketch Data Upload*
+   немає зовсім, а зміна схеми розділів робить старий образ немонтовним — і
+   він мовчки форматується, після чого браузер показує порожній екран.
 
 ---
 
@@ -699,7 +699,8 @@ Bluetooth SPP. Для комп'ютера це звичайний COM-порт, 
 | `serial_api.h` | командний протокол по USB-Serial (для Windows-клієнта) |
 | `client_usb.html` | Windows/Web-клієнт по USB (Web Serial, Chrome/Edge) |
 | `index.html` | веб-інтерфейс (у `data/` для SPIFFS) |
-| `data/` | файли для SPIFFS: `index.html.gz` — сторінка, стиснута gzip (перезібрати після правки: `gzip -9 -n -c index.html > data/index.html.gz`) |
+| `page_index.h` | веб-сторінка, вшита в прошивку (gzip). Перегенерувати після правки `index.html`: `python3 tools/mk_page_header.py` |
+| `data/` | необов'язкова тека для SPIFFS; сторінку туди класти не треба |
 
 ---
 

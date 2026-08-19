@@ -156,6 +156,43 @@ void handleLogo() {
 //
 //  Годування сторожа лишилось до й після передачі: 89 КБ по радіо — це частка
 //  секунди, а поріг Task WDT під час заряду — 10 с (wdt.h).
+// ⚑ ЧОМУ ВШИТУ СТОРІНКУ НЕ МОЖНА ВІДДАВАТИ ОДНИМ send_P.
+//  У ядрі ESP32 великий буфер і файл ідуть РІЗНИМИ шляхами:
+//
+//    NetworkClient::write(buf, size)  — один цикл select/send на всю передачу;
+//        запас повторів (WIFI_CLIENT_MAX_WRITE_RETRY = 10) ділиться на неї
+//        цілком, і на слабкому каналі 90 КБ його вичерпують. Функція повертає,
+//        СКІЛЬКИ встигла, а send_P цього не перевіряє — браузер отримує
+//        обрізане тіло при чесному Content-Length і показує порожню сторінку;
+//    NetworkClient::write(Stream&)    — ріже на шматки по 1360 Б, і КОЖЕН
+//        шматок дістає повний запас повторів. Саме цим шляхом завжди йшли
+//        файли зі SPIFFS — тому вони й доїжджали.
+//
+//  Спостереження власника це й показало: /lite (1.7 КБ) відкривається, а
+//  сторінка на 90 КБ — ні. Тому загортаємо масив у Stream і віддаємо його тим
+//  самим streamFile(), що й файл: ім'я з «.gz» ядро само перетворює на
+//  заголовок Content-Encoding.
+class PgmPageStream : public Stream {
+  public:
+    PgmPageStream(const uint8_t *p, size_t n) : _p(p), _n(n), _i(0) {}
+    size_t size() const { return _n; }
+    String name() const { return String("/index.html.gz"); }   // ← звідси й gzip
+    int available() override { return (int)(_n - _i); }
+    int read() override     { return (_i < _n) ? _p[_i++] : -1; }
+    int peek() override     { return (_i < _n) ? _p[_i] : -1; }
+    size_t write(uint8_t) override { return 0; }               // тільки читання
+    size_t readBytes(char *buf, size_t len) override {
+        size_t left = _n - _i;
+        if (len > left) len = left;
+        memcpy(buf, _p + _i, len);
+        _i += len;
+        return len;
+    }
+  private:
+    const uint8_t *_p;
+    size_t _n, _i;
+};
+
 void handleRoot() {
     // 1) Файл у SPIFFS — якщо його туди свідомо поклали. Це шлях для розробки:
     //    правити сторінку, не перепрошиваючи 1.3 МБ. Що саме лежить у файловій
@@ -171,9 +208,10 @@ void handleRoot() {
     }
     // 2) Інакше — ВШИТА копія. Вона є завжди, і саме вона працює одразу після
     //    прошивки: заливати щось окремо не треба.
+    //    Ідемо тим самим streamFile(), що й файл, — див. пояснення вище.
     wdtFeed();
-    server.sendHeader("Content-Encoding", "gzip");   // send_P сам цього не робить
-    server.send_P(200, "text/html", (PGM_P)PAGE_INDEX_GZ, PAGE_INDEX_GZ_LEN);
+    PgmPageStream page(PAGE_INDEX_GZ, PAGE_INDEX_GZ_LEN);
+    server.streamFile(page, "text/html");
     wdtFeed();
 }
 
@@ -206,6 +244,7 @@ static const char PAGE_LITE[] PROGMEM =
 "async function load(){const o=document.getElementById('o');try{"
 "const f=await j('/api/fs');let t='збірка: '+(f.build||'—')"
 "+'\\nсторінка в прошивці: '+(f.page?f.page.embedded:'—')+' Б'"
+"+(f.gzCrcOk===false?' ⚠ БЛОК ПОБИТИЙ':'')"
 "+(f.page&&f.page.override?' (перекрита файлом зі SPIFFS)':'')"
 "+'\\nSPIFFS: '+f.used+' з '+f.total+' Б, файлів '+f.files.length;"
 "try{const d=await j('/api/info');t+='\\n\\nмодель: '+(d.model||'—')+'\\nзаряд: '+(d.capacity!=null?d.capacity+' %':'—')"
@@ -230,6 +269,17 @@ void handleFsList() {
     //  й час компіляції підставляє компілятор, тож збігтися випадково вони не
     //  можуть. Поруч — звідки береться сторінка й скільки її.
     String j = "{\"build\":\"" __DATE__ " " __TIME__ "\"";
+    // ⚑ САМОПЕРЕВІРКА ВШИТОЇ СТОРІНКИ. Рахуємо CRC32 масиву прямо у флеші й
+    //  порівнюємо з числом, яке поклав генератор. Якщо сторінка не
+    //  відкривається, це одразу розділяє два зовсім різні випадки: «блок у
+    //  флеші побитий» і «блок цілий, але не доїжджає по мережі».
+    uint32_t c = 0xFFFFFFFFu;
+    for (size_t i = 0; i < PAGE_INDEX_GZ_LEN; i++) {
+        c ^= pgm_read_byte(PAGE_INDEX_GZ + i);
+        for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320u & (-(int32_t)(c & 1)));
+    }
+    c ^= 0xFFFFFFFFu;
+    j += ",\"gzCrcOk\":"; j += (c == PAGE_INDEX_GZ_CRC) ? "true" : "false";
     j += ",\"page\":{\"embedded\":"; j += (uint32_t)PAGE_INDEX_GZ_LEN;
     j += ",\"override\":";
     j += (SPIFFS.exists("/index.html.gz") || SPIFFS.exists("/index.html")) ? "true" : "false";

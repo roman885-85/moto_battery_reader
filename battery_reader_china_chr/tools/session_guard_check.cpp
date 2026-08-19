@@ -60,6 +60,9 @@ static void ledSet(LedMode m) { g_led = m; }
 #include "battbar.h"       // коли шкалу батареї треба перемальовувати
 #include "bt_link.h"       // правило доступу по радіо — чисте, збирається на хості
 #include "splash.h"          // формат завантаженої заставки — чистий, збирається на хості
+#include <string>            // для обходу папки скетча (перевірка імен і UTF-8)
+#include <filesystem>
+#include <cctype>
 
 // Дзеркало fileCalls(): подекуди треба довести саме ВІДСУТНІСТЬ конструкції.
 // Тут межа токена не потрібна — шукаємо точний фрагмент виклику.
@@ -197,6 +200,33 @@ static int fileCountText(const char *path, const char *needle) {
     for (const char *p = buf; len && (p = strstr(p, needle)) != nullptr; p += len) cnt++;
     free(buf);
     return cnt;
+}
+
+// Чи весь файл — коректний UTF-8. Потрібно не заради краси: arduino-cli
+// віддає рядки в IDE по gRPC, а той відмовляється маршалити некоректний UTF-8
+// («string field contains invalid UTF-8») — і збірка, яка вже пройшла,
+// показується користувачу як помилка компіляції.
+static bool fileIsUtf8(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return true;                        // немає файла — не наша справа
+    bool ok = true;
+    int c;
+    while ((c = fgetc(f)) != EOF) {
+        unsigned char b = (unsigned char)c;
+        int need = 0;
+        if (b < 0x80)            need = 0;
+        else if ((b & 0xE0) == 0xC0) need = 1;
+        else if ((b & 0xF0) == 0xE0) need = 2;
+        else if ((b & 0xF8) == 0xF0) need = 3;
+        else { ok = false; break; }             // 0x80..0xBF або 0xF8+ на початку
+        for (int i = 0; i < need; i++) {
+            int n = fgetc(f);
+            if (n == EOF || ((unsigned char)n & 0xC0) != 0x80) { ok = false; break; }
+        }
+        if (!ok) break;
+    }
+    fclose(f);
+    return ok;
 }
 
 // Чи йде визначення РАНІШЕ за виклик — у C++ це умова збірки, а не стиль.
@@ -1418,6 +1448,42 @@ int main() {
                                              "…і незакрита конфігурація теж помітна");
     check(fileCalls("tools/ds2438_write_check.cpp", "writeDS2438"),
                                              "усе це перевіряє хостовий тест на моделі чипа");
+
+    printf("\n35) папка скетча придатна для Arduino IDE на Windows\n");
+    // Скарга власника: збірка пройшла («40 % флеша»), а IDE впала на
+    //   grpc: error while marshaling: string field contains invalid UTF-8
+    // Це не помилка компіляції: arduino-cli віддає результат в IDE по gRPC, і
+    // будь-який РЯДОК у відповіді — шлях, ім'я файла, текст діагностики —
+    // мусить бути коректним UTF-8. На Windows імена з кирилиці доходять до
+    // інструментів у системному кодуванні (CP1251), а не в UTF-8, тож папка
+    // скетча з такими іменами — готова пастка. Нам це коштує лише ASCII-імен.
+    {
+        int badName = 0, badUtf = 0;
+        std::string firstName, firstUtf;
+        for (auto &e : std::filesystem::recursive_directory_iterator(".")) {
+            std::string p = e.path().generic_string();
+            if (p.find("/.git") != std::string::npos) continue;
+            bool nonAscii = false;
+            for (unsigned char c : p) if (c > 0x7F) { nonAscii = true; break; }
+            if (nonAscii) { if (!badName++) firstName = p; }
+            if (!e.is_regular_file()) continue;
+            std::string ext = e.path().extension().string();
+            for (auto &c : ext) c = (char)tolower((unsigned char)c);
+            if (ext != ".h" && ext != ".cpp" && ext != ".ino" && ext != ".c" &&
+                ext != ".md" && ext != ".html" && ext != ".py" && ext != ".txt" &&
+                ext != ".json" && ext != ".svg" && ext != ".properties") continue;
+            if (!fileIsUtf8(p.c_str())) { if (!badUtf++) firstUtf = p; }
+        }
+        if (badName) printf("   перше не-ASCII ім'я: %s\n", firstName.c_str());
+        if (badUtf)  printf("   перший не-UTF8 файл: %s\n", firstUtf.c_str());
+        check(badName == 0, "жодне ім'я файла в папці скетча не має не-ASCII символів");
+        check(badUtf == 0,  "усі текстові файли — коректний UTF-8");
+        // Ті самі документи лишились на місці, лише під ASCII-іменами.
+        check(fileHasText("README.md", "SCHEMATIC.html"),
+                                             "посилання на схему веде на нове ім'я");
+        check(fileHasNo("INSTRUCTION.md", "СХЕМА.html"),
+                                             "…і старого імені в інструкції вже немає");
+    }
 
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

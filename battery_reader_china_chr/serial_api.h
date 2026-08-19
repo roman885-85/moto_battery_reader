@@ -40,6 +40,11 @@
 //   CHARGE [%]           -> почати керований заряд (ШІМ на ключ) до обраного відсотка
 //                           (типово 100, мінімум CHARGE_TARGET_PCT_MIN)
 //   CHARGE STOP          -> зупинити заряд;  CHARGE ? -> стан заряду
+//   CHARGE WAKE          -> примусове ПРОБУДЖЕННЯ пакета, що не читається
+//                           (після заміни елементів): коротко тримає на клемах
+//                           напругу зарядника, доки контролер не відпустить
+//                           пакет. Межі — у settings.h, блок «ПРИМУСОВЕ
+//                           ПРОБУДЖЕННЯ»; зупиняється тим самим CHARGE STOP
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
 //   HDRFIX               -> добудувати заголовок DS2433 із дзеркала DS2438
 //                          (коли зарядна станція сама почала, але не завершила)
@@ -730,6 +735,13 @@ static void serialExec(const String &line) {
                                       r += ",\"asked\":"; r += want;
                                       r += ",\"charge\":"; r += chargeJson(); r += "}";
                                       sResp(r); }
+                                  // CHARGE WAKE — примусове пробудження пакета, що не читається.
+                                  // Слово, а не число: режим працює без контролю температури,
+                                  // і випадково набрати його не можна.
+                                  else if (a3 == "WAKE") {
+                                      const char *e = chargeWakeStart();
+                                      if (e) { String r = "{\"ok\":false,\"err\":\""; r += e; r += "\"}"; sResp(r); }
+                                      else sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}"); }
                                   else { const char *e = chargeStart((uint8_t)a3.toInt());
                                          if (e) { String r = "{\"ok\":false,\"err\":\""; r += e; r += "\"}"; sResp(r); }
                                          else sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}"); } }

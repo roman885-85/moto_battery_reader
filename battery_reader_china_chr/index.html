@@ -92,6 +92,9 @@
         .note{font-size:.82em;padding:10px;border-radius:8px;margin-top:10px;border-left:3px solid}
         .note.i{background:#23281a;color:#cdd0a8;border-color:var(--info)}
         .note.w{background:#3a2a10;color:#f0c274;border-color:var(--warn)}
+        /* Зелена примітка — для тверджень «це безпечно, і ось чому». Без неї
+           обґрунтування безпеки виглядало б так само, як попередження. */
+        .note.ok{background:#14301c;color:#a8e0bb;border-color:var(--ok)}
         /* Під-вкладки всередині «Ремонту»: сторінка була на 18 карток в один
            скрол, і знайти потрібну можна було лише прокруткою. */
         /* Сітка полів усередині рядка правок — щоб чотири поля не тікали в рядок. */
@@ -646,15 +649,22 @@
                 <div class="dmtrack"><div class="dmcur" id="chgDutyBar" style="background:var(--info)"></div></div>
                 <div class="dmg">
                     <div class="dmc hero"><div class="dmck">отримано, мА·год</div><div class="dmcv" id="chgMah">—</div></div>
-                    <div class="dmc"><div class="dmck">CCA, мА·год</div><div class="dmcv" id="chgCca">—</div></div>
+                    <div class="dmc chgonly"><div class="dmck">CCA, мА·год</div><div class="dmcv" id="chgCca">—</div></div>
                     <div class="dmc"><div class="dmck">струм, мА</div><div class="dmcv" id="chgMa">—</div></div>
                     <div class="dmc"><div class="dmck">потужність, Вт</div><div class="dmcv" id="chgW">—</div></div>
-                    <div class="dmc"><div class="dmck">температура, °C</div><div class="dmcv" id="chgT">—</div></div>
-                    <div class="dmc"><div class="dmck" id="chgIcaK">паливомір ICA</div><div class="dmcv" id="chgIca">—</div></div>
+                    <div class="dmc chgonly"><div class="dmck">температура, °C</div><div class="dmcv" id="chgT">—</div></div>
+                    <div class="dmc chgonly"><div class="dmck" id="chgIcaK">паливомір ICA</div><div class="dmcv" id="chgIca">—</div></div>
+                    <!-- Три картки нижче живуть ЛИШЕ у пробудженні: у звичайному
+                         заряді вони порожні, а їхні сусіди з класом chgonly —
+                         навпаки. Джерело в них різне: chgonly читають DS2438,
+                         який під час пробудження мовчить. -->
+                    <div class="dmc wakeonly" style="display:none"><div class="dmck">проб монітора</div><div class="dmcv" id="chgWkProbes">—</div></div>
+                    <div class="dmc wakeonly" style="display:none"><div class="dmck">межа ШІМ</div><div class="dmcv" id="chgWkCap">—</div></div>
+                    <div class="dmc wakeonly" style="display:none"><div class="dmck">лишилось, с</div><div class="dmcv" id="chgWkLeft">—</div></div>
                 </div>
                 <div class="dmwarn" id="chgWarn"></div>
             </div>
-            <div class="row" id="chgTgtRow" style="margin-top:10px"><span class="k">Заряджати до</span>
+            <div class="row chgonly" id="chgTgtRow" style="margin-top:10px"><span class="k">Заряджати до</span>
                 <span>
                   <button type="button" class="tgtb" onclick="chgSetTarget(100)">100%</button>
                   <button type="button" class="tgtb" onclick="chgSetTarget(95)">95%</button>
@@ -665,8 +675,8 @@
                          oninput="this.dataset.touched=1;chgTargetPaint()" style="border-radius:8px;border:none;padding:6px;width:90px">
                   <span style="opacity:.7">%</span>
                 </span></div>
-            <div class="note i" id="chgTargetNote"></div>
-            <div class="row" id="chgMaRow" style="margin-top:10px"><span class="k">Струм заряду</span>
+            <div class="note i chgonly" id="chgTargetNote"></div>
+            <div class="row chgonly" id="chgMaRow" style="margin-top:10px"><span class="k">Струм заряду</span>
                 <span>
                   <button type="button" class="tgtb" onclick="chgSetMa(0)">Авто</button>
                   <button type="button" class="tgtb" onclick="chgSetMa(200)">200</button>
@@ -679,13 +689,34 @@
                   <button type="button" class="btn btn-info" style="padding:6px 10px"
                           onclick="chgSetMa(+(document.getElementById('chgMaInp').value||0))">Задати</button>
                 </span></div>
-            <div class="note i" id="chgMaNote">Порожньо або «Авто» — струм веде профіль за відсотком заряду.
+            <div class="note i chgonly" id="chgMaNote">Порожньо або «Авто» — струм веде профіль за відсотком заряду.
                 Ручне значення діє й <b>під час</b> заряду. Дозаряд наприкінці воно не скасовує: у зоні
                 дозаряду береться <b>менше</b> з двох, бо добивати майже повний пакет великим струмом не можна.</div>
             <input type="password" class="pw" id="pwChg" placeholder="🔑 Пароль адміністратора">
             <div class="btns">
-                <button class="btn btn-ok" onclick="chgStart()">🔋 ПОЧАТИ ЗАРЯД</button>
+                <button class="btn btn-ok chgonly" onclick="chgStart()">🔋 ПОЧАТИ ЗАРЯД</button>
                 <button class="btn btn-danger" onclick="chgStop()">⏹ ЗУПИНИТИ</button>
+            </div>
+            <!-- ── ПРИМУСОВЕ ПРОБУДЖЕННЯ ─────────────────────────────────────
+                 Окремий блок, а не ще одна кнопка в ряду вище: у нього інші
+                 умови й інший сенс, і випадкове натискання поруч із «ПОЧАТИ
+                 ЗАРЯД» було б найгіршим із можливих сусідств. -->
+            <div style="margin-top:14px;border-top:1px solid rgba(255,255,255,.12);padding-top:12px">
+                <h3 style="margin:0 0 6px">🩺 Пакет не читається після заміни елементів</h3>
+                <div class="note i">Контролер захисту всередині пакета після заміни банок часто лишається
+                    заблокованим і не відпускає клеми, доки не побачить <b>зовнішню зарядну напругу</b>. Поки він
+                    мовчить, мовчать і DS2438 з DS2433 — а звичайний заряд саме тому й відмовляє: без DS2438 немає
+                    температури. Пробудження розриває це коло: коротко тримає на клемах <b id="wkMv">8.00</b> В
+                    (обмеження струму <b id="wkMa">150</b> мА) і щосекунди пробує гукнути монітор. Щойно той
+                    відповів — режим сам зупиняється.</div>
+                <div class="note ok">Чому це безпечно без датчика температури: режим фізично не здатен віддати
+                    більше за <b id="wkMah">8</b> мА·год і живе не довше за <b id="wkSec">120</b> с. Це менше, ніж
+                    пакет втрачає на власний саморозряд, — нагріти його такою енергією неможливо. Обидві межі
+                    перевіряються на компіляції, а напругу обмежує стеля ШІМ, яка діє навіть якщо вимір струму
+                    відмовить.</div>
+                <div class="note w">Якщо пакет <b>читається</b> — пробудження буде відхилено. Це навмисно: там є
+                    температура, отже є звичайний заряд, і обходити його немає підстав.</div>
+                <button class="btn btn-warn" style="width:100%" onclick="chgWake()">🩺 ПРИМУСОВО РОЗБУДИТИ ПАКЕТ</button>
             </div>
         </div>
         <div class="card" style="border-color:var(--ok)">
@@ -2151,8 +2182,16 @@ async function chgPoll(){
                       chgSchedule(20000); return; }
     const run=d.state==='run';
     mon.className='dm '+d.state;
+    // ⚑ ПРОБУДЖЕННЯ — ЦЕ ІНШИЙ РЕЖИМ ТІЄЇ САМОЇ ПАНЕЛІ, і поля в нього інші.
+    //  d.wake приходить за РЕЖИМОМ, а не за станом: підсумок лишається на
+    //  екрані після зупинки, і показати його як «ЗАРЯД ЗАВЕРШЕНО» означало б
+    //  збрехати рівно там, де читають результат.
+    const wake=!!d.wake;
     let st={idle:'очікування',run:'ІДЕ ЗАРЯД',
               done:'✅ ЗАРЯД ЗАВЕРШЕНО',abort:'⛔ '+(d.reason||'аварія')}[d.state]||d.state;
+    if(wake) st={idle:'очікування',run:'🩺 ІДЕ ПРОБУДЖЕННЯ',
+              done:'✅ '+(d.reason||'пакет ожив'),
+              abort:'⛔ '+(d.reason||'аварія')}[d.state]||d.state;
     // ЖИВЛЕННЯ +14 В — попереду стану заряду. Несправний блок означає, що заряд
     // не піде взагалі, і показувати «очікування» поверх цього означало б
     // приховати єдину причину, яку користувач може усунути сам.
@@ -2202,9 +2241,29 @@ async function chgPoll(){
             ' КБ, запас стека ' + d.stack + ' Б';
     }
 
+    // ── ПЕРЕМИКАННЯ ПАНЕЛІ МІЖ ДВОМА РЕЖИМАМИ ─────────────────────────────
+    //  chgonly — те, джерелом чого є DS2438 або профіль струму: під час
+    //  пробудження монітор мовчить, профілю немає, і показувати «CCA 0» чи
+    //  «темп. 0.0» означало б видавати відсутність даних за дані.
+    document.querySelectorAll('.chgonly').forEach(e=>{ e.style.display = wake?'none':''; });
+    document.querySelectorAll('.wakeonly').forEach(e=>{ e.style.display = wake?'':'none'; });
+
     $('chgMvBig').innerHTML=(d.mv/1000).toFixed(2)+'<small>В</small>';
-    $('chgPctSub').textContent=d.pct+' % · старт '+(d.startMv/1000).toFixed(2)+' В → ціль '+(d.targetMv/1000).toFixed(2)+' В';
-    $('chgFill').style.width=d.pct+'%'; $('chgPctTxt').textContent=d.pct+' %';
+    if(wake){
+        // Смуга показує ЧАС, а не відсоток заряду: відсоток рахується з напруги
+        // на клемі, а вона під час пробудження показує не пакет, а те, що ми
+        // самі туди подали.
+        const lim=d.wakeMaxS||120, el=Math.min(d.elapsedS,lim), p=Math.round(el*100/lim);
+        $('chgPctSub').textContent='тримаємо '+((d.wakeMv||0)/1000).toFixed(2)+' В · старт '
+            +(d.startMv/1000).toFixed(2)+' В · стеля струму '+(d.wakeMa||0)+' мА';
+        $('chgFill').style.width=p+'%'; $('chgPctTxt').textContent=el+' / '+lim+' с';
+        $('chgWkProbes').textContent=String(d.wakeProbes||0);
+        $('chgWkCap').textContent=(d.dutyCap||0)+' / '+(d.dutyFull||0);
+        $('chgWkLeft').textContent=String(Math.max(0,lim-d.elapsedS));
+    }else{
+        $('chgPctSub').textContent=d.pct+' % · старт '+(d.startMv/1000).toFixed(2)+' В → ціль '+(d.targetMv/1000).toFixed(2)+' В';
+        $('chgFill').style.width=d.pct+'%'; $('chgPctTxt').textContent=d.pct+' %';
+    }
 
     const ma=Math.abs(d.ma), scale=Math.max(d.setMa*1.25,ma*1.05,1);
     $('chgCurBar').style.width=Math.min(100,ma*100/scale)+'%';
@@ -2222,19 +2281,25 @@ async function chgPoll(){
             + 'Ручне значення діє й <b>під час</b> заряду. Дозаряд наприкінці воно не скасовує: '
             + 'у зоні дозаряду береться <b>менше</b> з двох.';
     }
-    $('chgLim').textContent=d.pwm?('уставка '+d.setMa+' мА · зараз '+d.ma+' мА')
+    $('chgLim').textContent=d.pwm?(wake?('стеля '+(d.wakeMa||0)+' мА · зараз '+d.ma+' мА')
+                                       :('уставка '+d.setMa+' мА · зараз '+d.ma+' мА'))
                                  :'⚠ ШІМ недоступний';
     $('chgLim').style.color=d.pwm?'var(--ok)':'var(--accent)';
     // Керування тепер — ШПАРУВАТІСТЬ силового ключа (через керуючий NPN), а не «цільова
     // напруга DC/DC»: смужку заповнюємо відносно РОБОЧОЇ стелі dutyMax, бо саме
     // вона, а не повна шкала, є максимумом, до якого регулятор може дійти.
-    $('chgDutyBar').style.width=(d.pwm?(d.duty*100/(d.dutyMax||1)):100)+'%';
+    // У пробудженні стеля інша — не заводська dutyMax, а стеля СЕАНСУ (dutyCap),
+    // і саме вона тримає напругу на клемах. Малювати смугу відносно заводської
+    // означало б показувати регулятор, який «ще має куди рости», хоча він уже
+    // стоїть на своїй межі.
+    const dcap = wake ? (d.dutyCap||d.dutyMax||1) : (d.dutyMax||1);
+    $('chgDutyBar').style.width=(d.pwm?(d.duty*100/dcap):100)+'%';
     $('chgDutyTxt').textContent=d.pwm
-      ?(d.dutyPct+'% ШІМ ('+d.duty+'/'+d.dutyFull+', стеля '+d.dutyMax+')'
+      ?(d.dutyPct+'% ШІМ ('+d.duty+'/'+d.dutyFull+', стеля '+dcap+(wake?' — межа напруги':'')+')'
         +' · пік '+d.peakMa+' мА з '+d.peakMaxMa+' (шунт '+(d.shuntMohm/1000).toFixed(2)+' Ом)')
       :'керування недоступне';
 
-    disSet('chgMah',String(d.mah));
+    disSet('chgMah', wake ? (d.mah+' / '+(d.wakeMahMax||0)) : String(d.mah));
     disSet('chgCca',String(d.ccaMah));
     disSet('chgMa',String(d.ma));
     disSet('chgW',String(d.watts));
@@ -2250,6 +2315,14 @@ async function chgPoll(){
     } else warn.style.display='none';
 
     psuAlertUpdate(d);
+    // Числа в описі режиму — з ВІДПОВІДІ пристрою, а не зашиті в сторінку:
+    // друга копія меж розійшлася б із settings.h на першій же правці, і опис
+    // почав би обіцяти не те, що робить прошивка.
+    if(d.wakeMv!==undefined){
+        const s=(id,v)=>{const e=$(id); if(e)e.textContent=v;};
+        s('wkMv',(d.wakeMv/1000).toFixed(2)); s('wkMa',String(d.wakeMa));
+        s('wkMah',String(d.wakeMahMax));      s('wkSec',String(d.wakeMaxS));
+    }
 
     chgLast=d; chgLastAt=Date.now();
     $('chgEl').textContent=disFmtT(d.elapsedS);
@@ -2333,7 +2406,27 @@ async function chgStop(){
     prog(true,'Зупинка...');
     try{
         const r=await postForm('/api/charge/stop',{password:$('pwChg').value});
-        toast(r.status==='success'?'⏹ Заряд зупинено':'Помилка','info');
+        toast(r.status==='success'?(r.message||'⏹ Зупинено'):'Помилка','info');
+        await chgPoll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+// Примусове пробудження. Параметрів немає навмисно: усі межі задає settings.h,
+// і саме тому режим лишається безпечним — його не можна «трохи підкрутити» з
+// браузера.
+async function chgWake(){
+    if(!confirm('🩺 Примусово розбудити пакет?\n\n'
+        +'Пристрій коротко подасть на клеми зарядну напругу, щоб зняти блокування '
+        +'контролера захисту, і зупиниться сам, щойно монітор відповість.\n\n'
+        +'Режим працює БЕЗ контролю температури (пакет не читається — у цьому вся суть), '
+        +'тому він жорстко обмежений за струмом, часом і відданою ємністю. Якщо пакет '
+        +'читається — запуск буде відхилено.\n\n'
+        +'Не залишайте пристрій без нагляду.'))return;
+    prog(true,'Пробудження...');
+    try{
+        const r=await postForm('/api/charge/wake',{password:$('pwChg').value});
+        toast(r.status==='success'?'🩺 Пробудження почато':('Помилка: '+r.message),
+              r.status==='success'?'ok':'err');
         await chgPoll();
     }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);

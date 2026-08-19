@@ -37,6 +37,11 @@
 #define PM_MODE_DISCHARGE 2
 #define PM_MODE_READ      3
 #define PM_MODE_WRITE     4
+// Пробудження — окремо від заряду, і це не педантизм. Саме цей режим працює на
+// пакеті, про який нічого не відомо (він не читається), тобто саме тут скидання
+// найімовірніше й найцікавіше. Записане в заряд, воно розчинилось би серед
+// сотень штатних рядків шестигодинного сеансу.
+#define PM_MODE_WAKE      5
 
 inline const char *pmModeName(uint8_t m) {
     switch (m) {
@@ -44,6 +49,7 @@ inline const char *pmModeName(uint8_t m) {
         case PM_MODE_DISCHARGE: return "РОЗРЯД";
         case PM_MODE_READ:      return "ЧИТАННЯ";
         case PM_MODE_WRITE:     return "ЗАПИС";
+        case PM_MODE_WAKE:      return "ПРОБУДЖЕННЯ";
         default:                return "спокій";
     }
 }

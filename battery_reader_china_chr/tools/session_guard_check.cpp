@@ -1698,6 +1698,184 @@ int main() {
                                              "…і старого імені в інструкції вже немає");
     }
 
+    printf("\n38) примусове пробудження: логіка з charge.h справді ввімкнена в роботу\n");
+    // Побажання власника: «додай функцію примусової безпечної зарядки для
+    // випадків, коли акумулятор не читається після заміни елементів».
+    //
+    // ⚑ ЧОМУ ЦЕ ПЕРЕВІРЯЄТЬСЯ ТЕКСТОМ. Самі рішення (стеля напруги, регулятор,
+    //  вироки, відмови) живуть у charge.h і покриті charge_logic_check — там
+    //  вони викликаються напряму. Але web_server.h на хості не збирається
+    //  взагалі, тож «функція правильна» і «функцію хтось кличе» лишаються
+    //  різними твердженнями. У цьому проєкті вже був випадок, коли
+    //  chargeMarkDirty() працював бездоганно, а chargeConsumeDirty() не кликав
+    //  ніхто — і заряд ніколи не оновлював екран.
+    {
+        // Машина пробудження існує й підключена до головного циклу заряду.
+        check(fileCalls("web_server.h", "inline void chargeWakeTask()"),
+                                             "машина пробудження є");
+        check(fileCalls("web_server.h", "if (g_chg.mode == CHG_MODE_WAKE) { chargeWakeTask(); return; }"),
+                                             "…і chargeTask() справді віддає їй керування");
+        check(fileCalls("web_server.h", "const char *chargeWakeStart()"),
+                                             "старт пробудження є");
+
+        // ⚑ ГОЛОВНЕ: СТЕЛЯ НАПРУГИ. Без неї струмовий контур, не бачачи струму
+        //  в розімкненому колі, вигнав би шпаруватість у заводську межу — а це
+        //  ~11.9 В на клемах пакета 2S. Ставиться на старті й перераховується
+        //  щопроходу (живлення просідає й плаває).
+        check(fileCalls("web_server.h", "chargeSetDutyCap(chargeWakeDutyCap())"),
+                                             "стеля НАПРУГИ ставиться через стелю шпаруватості");
+        check(fileCountText("web_server.h", "chargeSetDutyCap(chargeWakeDutyCap())") == 2,
+                                             "…і на старті, і щопроходу — живлення не стоїть на місці");
+        // ⚑ ДВА ЗАТИСКИ ПОСПІЛЬ, І ШУКАЄМО ЇХ САМЕ ПАРОЮ. Порівняння з
+        //  CHARGE_DUTY_MAX є в цьому файлі тричі (chargeDutyForMv,
+        //  chargeStartDuty і тут), тож окремий пошук лишався б зеленим після
+        //  прибирання саме того, що стереже ключ. Пара рядків унікальна.
+        check(fileCalls("charge.h",
+                        "if (duty > g_chgDutyCap)   duty = g_chgDutyCap;\n"
+                        "    if (duty > CHARGE_DUTY_MAX) duty = CHARGE_DUTY_MAX;"),
+                                             "обидва затиски стоять у НАЙНИЖЧІЙ точці, один за одним");
+        // Стеля мусить повертатись сама — інакше один сеанс пробудження тихо
+        // покалічив би всі наступні заряди (вони впирались би в чужу стелю й
+        // спинялись за «ключ не тягне»).
+        check(fileCalls("charge.h", "chargeResetDutyCap();"),
+                                             "зупинка повертає заводську стелю");
+        // ⚑ РАХУЄМО, А НЕ ШУКАЄМО. Виклик є в ОБОХ стартах — і штатному, і
+        //  пробудження, — тож проста наявність лишалась би зеленою після
+        //  прибирання будь-якого одного з них. Саме прибирання зі ШТАТНОГО
+        //  старту й було б катастрофою: сеанс пробудження опустив стелю, і
+        //  наступний заряд упреться в чужу межу.
+        check(fileCountText("web_server.h", "chargeResetDutyCap();") == 2,
+                                             "…і обидва старти — штатний і пробудження — теж");
+
+        // Усі чотири рішення беруться з charge.h, а не переписані на місці.
+        check(fileCalls("web_server.h", "chargeWakeRefuse(chargeAvailable(), chargePwmOk(),"),
+                                             "умови старту питають chargeWakeRefuse()");
+        check(fileCalls("web_server.h", "chargeWakeRefuseText(no)"),
+                                             "…і текст відмови теж звідти, а не свій");
+        check(fileCalls("web_server.h", "chargeWakeVerdict(in)"),
+                                             "долю сеансу вирішує chargeWakeVerdict()");
+        check(fileCalls("web_server.h", "chargeWakeReason(v)"),
+                                             "…і причина зупинки перекладається однією функцією");
+        check(fileCalls("web_server.h", "chargeWakeNextDuty(g_chg.duty, (int32_t)avgMa, chargeDutyCap())"),
+                                             "шпаруватість веде chargeWakeNextDuty() зі стелею сеансу");
+
+        // ⚑ ГОЛОВНА ВІДМОВА РЕЖИМУ: пакет, що читається, до пробудження не
+        //  пускають. Щоб її поставити, треба СПРОБУВАТИ прочитати — інакше
+        //  умова завжди хибна й режим тихо перетворюється на «заряд без
+        //  контролю температури».
+        check(fileCalls("web_server.h", "bool chipReads = dischargeSample(&chipMv, &chipMa, &chipT)"),
+                                             "перед стартом пакет справді пробують прочитати");
+        // Запобіжники, спільні зі штатним зарядом, у пробудженні лишаються.
+        // Те саме рахунком, і з тієї ж причини: відсічка за живленням є у
+        // штатному chargeTask(), тож наявність однієї копії нічого не доводить
+        // про ДРУГУ машину.
+        check(fileCountText("web_server.h", "chargePsuTrip(psu, &g_chg.badPsuPolls)") == 2,
+                                             "відсічка за живленням діє в ОБОХ машинах");
+        check(fileCountText("web_server.h", "if (peakMa > CHARGE_PEAK_MA_MAX) {") == 2,
+                                             "пікова відсічка стоїть в ОБОХ машинах, а не лише у штатній");
+        // Сторож піднімають три старти (розряд, заряд, пробудження), тож голе
+        // ім'я нічого не доводить про потрібний. Беремо пару рядків, унікальну
+        // саме для пробудження: воно єдине стартує з нульової шпаруватості.
+        check(fileCalls("web_server.h", "chargeSetDuty(0);\n    chargeWatchdog(true);"),
+                                             "апаратний сторож піднімається й для пробудження");
+        // ⚑ ПРОГРАМНИЙ сторож мусить мати ВЛАСНИЙ поріг. Штатні 5 с — це п'ять
+        //  кроків секундного заряду, але двісті кроків пробудження; запозичений
+        //  поріг скасував би дрібність кроку, заради якої вона й обрана.
+        check(fileCalls("web_server.h", "if (dtMs > CHARGE_WAKE_STALL_MS) {"),
+                                             "у пробудження власний поріг зависання");
+        check(fileCountText("web_server.h", "if (dtMs > CHARGE_STALL_MS) {") == 1,
+                                             "…а штатний лишився рівно в штатної машини");
+        // Інтеграл ємності — через спільну функцію із залишком: на кроці 25 мс
+        // просте ділення на 3600 з'їдало б доданок цілком, і ДРУГА з двох меж
+        // режиму ніколи б не спрацювала.
+        check(fileCalls("web_server.h",
+                        "chargeAccumMah(&g_chg.mahX1000, &g_chg.mahRem, g_chg.lastMa, dtMs)"),
+                                             "ємність рахується із залишком, а не простим діленням");
+        // enable — найпершим, як і у штатного старту: без нього пакет не
+        // під'єднає клеми, і ми самі створимо картину «пакет мовчить».
+        check(fileCountText("web_server.h", "battery.holdEnable(true);\n    delay(CHARGE_ENABLE_LEAD_MS);") == 2,
+                                             "enable піднімається до вимірів в ОБОХ стартах");
+        // Невдалий старт мусить прибирати за собою.
+        check(fileCountText("web_server.h", "battery.holdEnable(false);") >= 2,
+                                             "після невдалого старту enable знімається");
+
+        // Режим видно ззовні: усі три поверхні беруть його з ОДНІЄЇ функції.
+        check(fileCalls("web_server.h", "chargeWakeShown() ? \"true\" : \"false\""),
+                                             "стан режиму йде в JSON");
+        check(fileCalls("display.h", "chargeWakeShown()") &&
+              fileCalls("display_color.h", "chargeWakeShown()"),
+                                             "…і обидва екрани питають ту саму функцію");
+        // Умову показу ніхто не сміє переписати на місці — ні в JSON, ні на
+        // жодному з екранів: три копії однієї умови розійшлися б, і панелі
+        // почали б суперечити одна одній.
+        check(fileHasNo("web_server.h",   "g_chg.mode == CHG_MODE_WAKE && g_chg.state") &&
+              fileHasNo("display.h",      "g_chg.mode == CHG_MODE_WAKE") &&
+              fileHasNo("display_color.h","g_chg.mode == CHG_MODE_WAKE"),
+                                             "умову показу ніхто не переписав на місці");
+        // Скидання під час пробудження мусить бути видно окремо від заряду:
+        // саме цей режим працює на пакеті, про який нічого не відомо.
+        check(fileCalls("web_server.h", "pmNote(PM_MODE_WAKE,"),
+                                             "чорний ящик розрізняє пробудження й заряд");
+        check(fileCalls("postmortem.h", "case PM_MODE_WAKE:"),
+                                             "…і вміє це назвати");
+
+        // Запуск є на всіх трьох поверхнях — і скрізь окремою дією, а не
+        // прапорцем у старті заряду: інакше випадковий параметр запускав би
+        // режим без контролю температури.
+        check(fileCalls("web_server.h", "server.on(\"/api/charge/wake\", HTTP_POST, handleChargeWake)"),
+                                             "веб: окремий маршрут /api/charge/wake");
+        check(fileCalls("serial_api.h", "chargeWakeStart()"),
+                                             "USB: команда CHARGE WAKE");
+        check(fileCalls("motorola-battery-reader-web.ino", "act == OP_CHARGE_WAKE"),
+                                             "пристрій: окремий пункт меню");
+        check(fileCalls("operations.h", "OP_CHARGE_WAKE   = 10"),
+                                             "…з власним стабільним кодом операції");
+        // ⚑ ОКРЕМО КНОПКА, ОКРЕМО ОБРОБНИК. Голе «chgWake()» є на сторінці
+        //  двічі — в onclick і в оголошенні функції, — тож прибрана кнопка при
+        //  живому обробнику лишала б цю перевірку зеленою. А це рівно та
+        //  поломка, якої тут бояться: код на місці, натиснути нічим.
+        check(fileHasText("index.html", "onclick=\"chgWake()\"") &&
+              fileHasText("index.html", "async function chgWake()"),
+                                             "веб: і кнопка, і обробник на місці");
+        check(fileHasText("client_usb.html", "onclick=\"chgWake()\"") &&
+              fileHasText("client_usb.html", "async function chgWake()"),
+                                             "USB-сторінка: і кнопка, і обробник");
+        check(fileHasText("usb_client/moto_gui.py", "def charge_wake(self)") &&
+              fileHasText("usb_client/moto_gui.py", "command=self.charge_wake"),
+                                             "exe-клієнт: і кнопка, і обробник");
+
+        // Клієнти не тримають ВЛАСНОЇ копії меж режиму: така копія розійшлася б
+        // із settings.h на першій же правці, і опис почав би обіцяти не те, що
+        // робить прошивка.
+        check(fileCalls("web_server.h", "String((unsigned)CHARGE_WAKE_MV)") &&
+              fileCalls("web_server.h", "String((unsigned)CHARGE_WAKE_MA)") &&
+              fileCalls("web_server.h", "String((unsigned)CHARGE_WAKE_MAX_S)") &&
+              fileCalls("web_server.h", "String((unsigned)CHARGE_WAKE_MAH_MAX)"),
+                                             "усі межі режиму їдуть у клієнта з прошивки");
+        check(fileHasText("index.html", "d.wakeMv") && fileHasText("index.html", "d.wakeMahMax"),
+                                             "…і сторінка бере їх звідти, а не зі своїх констант");
+
+        // Панель мусить ХОВАТИ те, джерелом чого є мовчазний DS2438: «CCA 0» і
+        // «темп. 0.0» — це не дані, а їхня відсутність.
+        check(fileCountText("index.html", "chgonly") >= 6 &&
+              fileHasText("index.html", "document.querySelectorAll('.chgonly')"),
+                                             "веб ховає поля, джерело яких мовчить");
+        check(fileCountText("client_usb.html", "chgonly") >= 6 &&
+              fileHasText("client_usb.html", "document.querySelectorAll('.chgonly')"),
+                                             "…те саме в USB-сторінці");
+        check(fileHasText("usb_client/moto_gui.py", "self.tileVars[\"t\"].config(text=\"—\")"),
+                                             "…і в exe-клієнті замість нулів стоїть прочерк");
+
+        // Опис у документації мусить існувати: режим працює без контролю
+        // температури, і обґрунтування цього не сміє жити лише в коді.
+        check(fileHasText("README.md", "примусове пробудження") &&
+              fileHasText("README.md", "CHARGE_WAKE_MAH_MAX"),
+                                             "README називає режим і його межі");
+        check(fileHasText("INSTRUCTION.md", "примусове пробудження") &&
+              fileHasText("INSTRUCTION.md", "CHARGE WAKE"),
+                                             "інструкція пояснює, коли ним користуватись і чим запускати");
+    }
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

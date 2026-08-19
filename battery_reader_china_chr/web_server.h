@@ -20,6 +20,7 @@
 #include "leds.h"
 #include "display.h"
 #include "templates.h"
+#include "page_index.h"    // веб-сторінка, вшита в прошивку (tools/mk_page_header.py)
 
 // ⚑ Визначене у скетчі НИЖЧЕ за цей include, тож потрібне оголошення.
 //  Без нього збірка падає на «resetReasonText was not declared» — і причина
@@ -156,19 +157,23 @@ void handleLogo() {
 //  Годування сторожа лишилось до й після передачі: 89 КБ по радіо — це частка
 //  секунди, а поріг Task WDT під час заряду — 10 с (wdt.h).
 void handleRoot() {
+    // 1) Файл у SPIFFS — якщо його туди свідомо поклали. Це шлях для розробки:
+    //    правити сторінку, не перепрошиваючи 1.3 МБ. Що саме лежить у файловій
+    //    системі, видно через /api/fs.
     File file = SPIFFS.open("/index.html.gz", "r");
-    if (!file) file = SPIFFS.open("/index.html", "r");   // запасний шлях
-    if (!file) {
-        // Порожній екран нічого не пояснює, а причина майже завжди одна.
-        server.send(404, "text/plain",
-                    "index.html.gz not found in SPIFFS.\n"
-                    "Upload the data/ folder: Tools -> ESP32 Sketch Data Upload.\n"
-                    "See /api/fs for what is actually stored.\n");
+    if (!file) file = SPIFFS.open("/index.html", "r");
+    if (file) {
+        wdtFeed();
+        server.streamFile(file, "text/html");   // .gz -> Content-Encoding додасть сам
+        file.close();
+        wdtFeed();
         return;
     }
+    // 2) Інакше — ВШИТА копія. Вона є завжди, і саме вона працює одразу після
+    //    прошивки: заливати щось окремо не треба.
     wdtFeed();
-    server.streamFile(file, "text/html");   // .gz -> Content-Encoding додасть сам
-    file.close();
+    server.sendHeader("Content-Encoding", "gzip");   // send_P сам цього не робить
+    server.send_P(200, "text/html", (PGM_P)PAGE_INDEX_GZ, PAGE_INDEX_GZ_LEN);
     wdtFeed();
 }
 
@@ -4514,9 +4519,13 @@ void setupWebServer() {
             String n = String(f.name());
             if (n.endsWith("index.html.gz") || n.endsWith("index.html")) anyPage = true;
         }
-        if (!anyPage)
-            Serial.println("  ⚠ index.html.gz НЕМАЄ — залийте теку data/ "
-                           "(Tools -> ESP32 Sketch Data Upload), інакше веб-сторінка не відкриється");
+        // Сторінка є завжди — вона вшита в прошивку. Файл у SPIFFS лише
+        // ПЕРЕКРИВАЄ її, тож про його відсутність казати нема чого; а от про
+        // наявність сказати варто: інакше «правлю сторінку, а нічого не
+        // змінюється» стане наступною загадкою.
+        Serial.printf("  сторінка: %s (%u Б у прошивці)\n",
+                      anyPage ? "файл зі SPIFFS ПЕРЕКРИВАЄ вшиту" : "вшита в прошивку",
+                      (unsigned)PAGE_INDEX_GZ_LEN);
     }
     
     server.on("/", handleRoot);

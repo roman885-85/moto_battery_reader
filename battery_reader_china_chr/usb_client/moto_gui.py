@@ -207,7 +207,9 @@ def _dnum(v):
 # Порядок рядків задає пристрій (MVAL_* у mirror_plan.h) і він однаковий скрізь.
 MIR_VAL_ROWS = [("Наробіток (ETM)", "діб"),
                 ("Заряджено (CCA)", "циклів"),
-                ("Розряджено (DCA)", "циклів")]
+                ("Розряджено (DCA)", "циклів"),
+                ("Циклів IMPRES", "циклів"),
+                ("Циклів не-IMPRES", "циклів")]
 
 def etm_foreign_text(etm_d, age_d, mfg=None):
     """Єдине формулювання «наробіток більший за вік пакета».
@@ -1459,7 +1461,7 @@ class App:
                   foreground="#b9bd86", justify="left").pack(anchor="w", pady=(6, 2))
         vhdr = ttk.Frame(b2m); vhdr.pack(fill="x")
         for txt, w in (("", 3), ("Показник", 20), ("У пакеті", 12),
-                       ("У моніторі", 12), ("Буде", 12), ("Вручну", 8)):
+                       ("У моніторі", 12), ("Буде", 12), ("Куди", 8), ("Вручну", 8)):
             ttk.Label(vhdr, text=txt, width=w, foreground="#9a9c82").pack(side="left")
         self.mirValVar, self.mirValCells, self.mirValEnt, self.mirValChk = [], [], [], []
         self._mirValShown = [""] * len(MIR_VAL_ROWS)
@@ -1471,8 +1473,8 @@ class App:
             chk.pack(side="left")
             ttk.Label(row, text=name, width=20).pack(side="left")
             cells = []
-            for _ in range(3):
-                lb = ttk.Label(row, text="—", width=12); lb.pack(side="left"); cells.append(lb)
+            for w in (12, 12, 12, 8):          # пакет / монітор / буде / куди
+                lb = ttk.Label(row, text="—", width=w); lb.pack(side="left"); cells.append(lb)
             ent = ttk.Entry(row, width=8); ent.pack(side="left", padx=2)
             ent.bind("<Return>",   lambda _e, k=i: self._mirror_val_set(k))
             ent.bind("<FocusOut>", lambda _e, k=i: self._mirror_val_set(k))
@@ -3385,8 +3387,10 @@ class App:
             self.mirValChk[i].config(state=("normal" if avail else "disabled"))
             pack = ("%d %s" % (r.get("p", 0), unit)) if r.get("pk") else "—"
             self.mirValCells[i][0].config(text=pack)
-            self.mirValCells[i][1].config(text="%d %s" % (r.get("m", 0), unit))
+            mon = r.get("m", 0)
+            self.mirValCells[i][1].config(text=("%d %s" % (mon, unit)) if (r.get("w", 38) != 33 or mon) else "—")
             self.mirValCells[i][2].config(text="%d %s" % (r.get("o", 0), unit))
+            self.mirValCells[i][3].config(text="DS%d" % r.get("w", 38))
             # Поле правки чіпаємо, лише коли число справді інше: інакше воно
             # стрибало б під пальцями під час набору.
             want = str(r.get("u")) if r.get("u", -1) >= 0 else ""

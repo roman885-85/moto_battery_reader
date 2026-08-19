@@ -119,7 +119,7 @@ inline void impresCloneBuild38(uint8_t *dst, const uint8_t *src38,
     memcpy(dst, src38, IMPRES_38_SIZE);
 
     if (zeroCounters) {
-        dst[8] = dst[9] = dst[10] = dst[11] = 0;  // наробіток ETM
+        impresSetEtm(dst, 0);                     // наробіток ETM і мітки подій
         dst[60] = dst[61] = 0;                    // CCA
         dst[62] = dst[63] = 0;                    // DCA
     }

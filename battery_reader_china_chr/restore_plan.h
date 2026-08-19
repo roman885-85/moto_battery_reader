@@ -653,10 +653,9 @@ inline void restorePlanApply(const RestorePlan &p, uint8_t *d33, uint8_t *d38,
         // Наробіток пишемо ПІСЛЯ impresResetMonitor() — той його обнуляє.
         if (p.fx[RPF_ETM].on || !onlyEnabled) {
             uint32_t etm = (uint32_t)(p.fx[RPF_ETM].on ? p.fx[RPF_ETM].useVal : 0);
-            d38[8]  = (uint8_t)(etm & 0xFF);
-            d38[9]  = (uint8_t)((etm >> 8) & 0xFF);
-            d38[10] = (uint8_t)((etm >> 16) & 0xFF);
-            d38[11] = (uint8_t)((etm >> 24) & 0xFF);
+            // Разом із наробітком підтягуються мітки подій: інакше станція
+            // відновить із них старе число (див. impresSetEtm).
+            impresSetEtm(d38, etm);
         }
         if (p.fx[RPF_CHARGE].on || !onlyEnabled) d38[0x0C] = p.icaUse;
     }

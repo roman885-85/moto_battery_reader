@@ -762,6 +762,8 @@ static void serialExec(const String &line) {
                                       if (a4 == "APPLY") {
                                           ledSet(LED_WRITE); displayShow("USB СИНХР 2433");
                                           int n = mirrorPlanApply(g_mirPlan, batteryDump);
+                                          // лічильники циклів — теж у DS2433
+                                          int nCyc = mirrorPlanApply33Vals(g_mirPlan, batteryDump);
                                           bool w = battery.writeBattery(batteryDump, DUMP_SIZE);
                                           if (w) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
                                           // Значеннєві рядки живуть у ДРУГОМУ чипі — пишемо і його.
@@ -779,6 +781,7 @@ static void serialExec(const String &line) {
                                           mirrorPlanRefresh();
                                           String r = "{\"ok\":"; r += w ? "true" : "false";
                                           r += ",\"changed\":"; r += n;
+                                          r += ",\"changedCyc\":"; r += nCyc;
                                           r += ",\"changed38\":"; r += n38;
                                           r += ",\"plan\":"; r += mirrorPlanJson(); r += "}";
                                           sResp(r);

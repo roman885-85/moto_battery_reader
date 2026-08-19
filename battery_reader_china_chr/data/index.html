@@ -1510,22 +1510,31 @@ const MIR_VALS=[
  {n:'Заряджено (CCA)', u:'циклів',h:'Скільки заряду в пакет залито. Монітор накопичує мА·год, пакет '
    +'веде лічильник циклів (IMPRES + не-IMPRES). Один цикл = паспортна ємність.'},
  {n:'Розряджено (DCA)',u:'циклів',h:'Скільки з пакета взято. Окремого лічильника розряду пакет не '
-   +'веде — повний цикл це заряд І розряд, тож пакетна сторона тут та сама.'}];
+   +'веде — повний цикл це заряд І розряд, тож пакетна сторона тут та сама.'},
+ {n:'Циклів IMPRES',   u:'циклів',h:'Лічильник самого пакета (гістограма в DS2433). Його ж станція '
+   +'переписує з накопиченого заряду монітора — тому «звідки брати» тут саме монітор.'},
+ {n:'Циклів не-IMPRES',u:'циклів',h:'Окремий лічильник пакета для заряджань від звичайної ЗП. '
+   +'Відповідника в моніторі немає — правиться лише вручну.'}];
 function mirRenderVals(p){
     const t=$('mirVals'), note=$('mirValNote');
     if(!p||!p.v){ t.innerHTML=''; note.style.display='none'; return; }
     let h='<tr><th></th><th>Показник</th><th>У пакеті<br><span style="opacity:.7">DS2433</span></th>'
-         +'<th>У моніторі<br><span style="opacity:.7">DS2438</span></th><th>Буде</th><th>Вручну</th></tr>';
+         +'<th>У моніторі<br><span style="opacity:.7">DS2438</span></th><th>Буде</th>'
+         +'<th>Куди</th><th>Вручну</th></tr>';
     for(let i=0;i<p.v.length && i<MIR_VALS.length;i++){
         const r=p.v[i], d=MIR_VALS[i];
-        const differs = r.a && r.p!==r.m;
+        // «Зараз» — у тому чипі, куди рядок пише: для лічильників пакета це
+        // колонка DS2433, для решти — DS2438. Підсвічуємо те, що справді зміниться.
+        const nowVal = (r.w===33) ? r.p : r.m;
+        const differs = r.a && r.o !== nowVal;
         h+='<tr'+(differs?' style="color:var(--warn)"':'')+' title="'+d.h.replace(/"/g,'&quot;')+'">'
           +'<td><input type="checkbox" '+(r.t?'checked':'')+(r.a?'':' disabled')
           +' onchange="mirVal('+i+',this.checked)"></td>'
           +'<td>'+d.n+'</td>'
           +'<td>'+(r.pk?(r.p+' '+d.u):'—')+'</td>'
-          +'<td>'+r.m+' '+d.u+'</td>'
+          +'<td>'+((r.w===33&&!r.m)?'—':(r.m+' '+d.u))+'</td>'
           +'<td><b>'+r.o+' '+d.u+'</b></td>'
+          +'<td style="opacity:.75">DS'+(r.w||38)+'</td>'
           +'<td><input type="number" id="mirV'+i+'" min="0" step="1" style="width:80px;border:none;'
           +'border-radius:8px;padding:4px" value="'+(r.u>=0?r.u:'')+'" placeholder="—" '
           +'onchange="mirValSet('+i+')"></td></tr>';

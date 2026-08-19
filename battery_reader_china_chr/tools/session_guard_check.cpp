@@ -146,9 +146,10 @@ static bool fileCalls(const char *path, const char *name) {
 
 // Два файли мусять збігатися ПОБАЙТОВО. Потрібно рівно для одного випадку, і
 // він вартий окремої функції: index.html лежить у проєкті ДВІЧІ — як вихідний
-// файл і як data/index.html, який заливають у SPIFFS. Пристрій віддає саме
-// копію з SPIFFS, тож правка в оригіналі, не перенесена в data/, просто не
-// доїжджає до користувача — при цьому все збирається й усі тести зелені.
+// файл і як стиснута копія data/index.html.gz, яку заливають у SPIFFS.
+// Пристрій віддає саме її, тож правка в оригіналі, не перенесена в data/,
+// просто не доїжджає до користувача — при цьому все збирається й усі тести
+// зелені. Звіряє їх секція 27, за CRC32 із хвоста gzip.
 static bool filesIdentical(const char *a, const char *b) {
     FILE *fa = fopen(a, "rb"); if (!fa) return false;
     FILE *fb = fopen(b, "rb"); if (!fb) { fclose(fa); return false; }
@@ -200,6 +201,60 @@ static int fileCountText(const char *path, const char *needle) {
     for (const char *p = buf; len && (p = strstr(p, needle)) != nullptr; p += len) cnt++;
     free(buf);
     return cnt;
+}
+
+static bool fileExists(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    fclose(f);
+    return true;
+}
+
+// CRC32 (той самий поліном, що в gzip і zlib) і довжина файла. Потрібні, щоб
+// звірити стиснуту копію сторінки з оригіналом, не розпаковуючи її.
+static uint32_t fileCrc32(const char *path, long *lenOut) {
+    static uint32_t tbl[256];
+    static bool built = false;
+    if (!built) {
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+            tbl[i] = c;
+        }
+        built = true;
+    }
+    if (lenOut) *lenOut = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    uint32_t crc = 0xFFFFFFFFu;
+    long n = 0;
+    int c;
+    while ((c = fgetc(f)) != EOF) { crc = tbl[(crc ^ (unsigned char)c) & 0xFF] ^ (crc >> 8); n++; }
+    fclose(f);
+    if (lenOut) *lenOut = n;
+    return crc ^ 0xFFFFFFFFu;
+}
+
+// Хвіст gzip: останні 8 байтів — CRC32 вихідних даних і їхня довжина (обидва
+// little-endian). Це і є спосіб звірити архів з оригіналом без розпаковування.
+static bool gzipTrailer(const char *path, uint32_t *crc, long *isize) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
+    long sz = ftell(f);
+    if (sz < 18) { fclose(f); return false; }          // менше за заголовок+хвіст
+    unsigned char head[2], tail[8];
+    fseek(f, 0, SEEK_SET);
+    if (fread(head, 1, 2, f) != 2 || head[0] != 0x1F || head[1] != 0x8B) { fclose(f); return false; }
+    fseek(f, sz - 8, SEEK_SET);
+    bool ok = fread(tail, 1, 8, f) == 8;
+    fclose(f);
+    if (!ok) return false;
+    if (crc)   *crc = (uint32_t)tail[0] | ((uint32_t)tail[1] << 8) |
+                      ((uint32_t)tail[2] << 16) | ((uint32_t)tail[3] << 24);
+    if (isize) *isize = (long)((uint32_t)tail[4] | ((uint32_t)tail[5] << 8) |
+                               ((uint32_t)tail[6] << 16) | ((uint32_t)tail[7] << 24));
+    return true;
 }
 
 // Чи весь файл — коректний UTF-8. Потрібно не заради краси: arduino-cli
@@ -406,7 +461,11 @@ int main() {
                                              "плашка помилки визначена до свого виклику");
     // Клієнти. Поля JSON у них мусять збігатися з тими, що віддає прошивка, —
     // інакше смуга або не з'явиться ніколи, або висітиме завжди.
-    const char *clients[] = { "index.html", "data/index.html", "client_usb.html" };
+    // ⚑ Копію в data/ тут більше не перевіряємо ПОФУНКЦІЙНО: у SPIFFS лежить
+    //  стиснута сторінка, а секція 27 доводить, що вона розпакується РІВНО в
+    //  цей index.html (звірка за CRC32 і довжиною). Це сильніше за перелік
+    //  окремих ознак — і не розсинхронізується з ним.
+    const char *clients[] = { "index.html", "client_usb.html" };
     for (const char *c : clients) {
         char msg[96];
         snprintf(msg, sizeof(msg), "%s: смуга аварії живлення є", c);
@@ -753,7 +812,7 @@ int main() {
                                              "JPEG зберігається окремим шляхом");
     check(fileCalls("splash.h", "SPLASH_KIND_JPEG"),
                                              "перелік типів живе у спільному splash.h");
-    for (const char *c : { "index.html", "data/index.html" }) {
+    for (const char *c : { "index.html" }) {   // копію в data/ звіряє секція 27
         char msg[96];
         snprintf(msg, sizeof(msg), "%s: уміє конвертувати картинку й надіслати", c);
         check(fileCalls(c, "uploadsplash"), msg);
@@ -1211,12 +1270,32 @@ int main() {
                                              "є запис ЛИШЕ DS2438, без стирання DS2433");
 
     printf("\n27) сторінка в SPIFFS не відстає від вихідної\n");
-    // ⚑ index.html лежить у проєкті ДВІЧІ. Пристрій віддає /index.html із
-    //  SPIFFS, тобто копію з data/. Правка в кореневому файлі, не перенесена
-    //  в data/, збирається, проходить усі тести — і просто не доїжджає до
-    //  користувача. Саме це мало не сталося з полем ручного струму заряду.
-    check(filesIdentical("index.html", "data/index.html"),
-                                             "index.html і data/index.html побайтово однакові");
+    // ⚑ index.html лежить у проєкті ДВІЧІ. Пристрій віддає сторінку зі SPIFFS,
+    //  тобто копію з data/. Правка в кореневому файлі, не перенесена в data/,
+    //  збирається, проходить усі тести — і просто не доїжджає до користувача.
+    //  Саме це мало не сталося з полем ручного струму заряду.
+    //
+    //  Тепер у SPIFFS лежить СТИСНУТА копія, і звірити її з оригіналом можна
+    //  не розпаковуючи: у хвості gzip є довжина вихідних даних (ISIZE) і їхня
+    //  CRC32. Обидва числа мусять збігтися з index.html — це точна перевірка,
+    //  а не «схоже за розміром».
+    {
+        long rawLen = 0;
+        uint32_t rawCrc = fileCrc32("index.html", &rawLen);
+        long isize = 0; uint32_t gzCrc = 0;
+        bool haveGz = gzipTrailer("data/index.html.gz", &gzCrc, &isize);
+        printf("   index.html %ld Б, у gz-хвості %ld Б; CRC %08X проти %08X\n",
+               rawLen, isize, (unsigned)rawCrc, (unsigned)gzCrc);
+        check(haveGz, "у data/ лежить стиснута сторінка");
+        if (!haveGz || isize != rawLen || gzCrc != rawCrc)
+            printf("   ПЕРЕЗІБРАТИ: gzip -9 -n -c index.html > data/index.html.gz\n");
+        check(haveGz && isize == rawLen && gzCrc == rawCrc,
+                                             "…і вона розпакується рівно в поточний index.html");
+        // Нестиснутої копії там бути не повинно: це та сама чверть мегабайта,
+        // яку ми щойно прибрали з ефіру, і місце на розділі 1 МБ.
+        check(!fileExists("data/index.html"),
+                                             "нестиснутого дубля в data/ немає");
+    }
 
     printf("\n28) шкала заряду — крива 2S, і вона ОДНА на всі поверхні\n");
     // Побажання власника: «перерахуй правильність показань заряду у відсотках
@@ -1448,6 +1527,26 @@ int main() {
                                              "…і незакрита конфігурація теж помітна");
     check(fileCalls("tools/ds2438_write_check.cpp", "writeDS2438"),
                                              "усе це перевіряє хостовий тест на моделі чипа");
+
+    printf("\n37) відкриття веб-інтерфейсу не морить голодом головний цикл\n");
+    // Скарга власника: «зависання при підключенні до точки доступу зі спробою
+    // відкрити внутрішній веб-інтерфейс».
+    //
+    // ⚑ Сторінка виросла до чверті мегабайта, а streamFile() віддає її ОДНИМ
+    //  блокуючим викликом. Весь цей час головний цикл стоїть: екран не
+    //  оновлюється, кнопки мертві — а під час заряду ще й Task WDT чекає ознак
+    //  життя раз на CHARGE_WDT_SEC (10 с) і має право скинути пристрій.
+    //  Відкривається вона не лише руками: captive-portal сам показує її
+    //  телефону одразу після під'єднання.
+    check(fileCalls("web_server.h", "static void streamFileFed("),
+                                             "сторінка йде шматками, а не одним блоком");
+    check(fileCalls("web_server.h", "wdtFeed();       // діє лише коли сторож увімкнений"),
+                                             "…і між шматками сторож отримує ознаку життя");
+    check(fileCalls("web_server.h", "SPIFFS.open(\"/index.html.gz\", \"r\")") &&
+          fileCalls("web_server.h", "Content-Encoding"),
+                                             "спершу віддається стиснута копія");
+    check(fileHasNo("web_server.h", "server.streamFile(file, \"text/html\")"),
+                                             "нестиснутий одноблоковий шлях прибрано");
 
     printf("\n36) наробіток не повертається зі старих міток; цикли пакета правляться\n");
     // Скарга власника: «виставляю дату, ставлю в зарядку — і вона прописує

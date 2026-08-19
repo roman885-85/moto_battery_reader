@@ -132,14 +132,47 @@ void handleLogo() {
     }
 }
 
+// ⚑ ВІДДАЄМО ФАЙЛ ШМАТКАМИ Й ГОДУЄМО СТОРОЖА.
+//  server.streamFile() віддає весь файл одним блокуючим викликом. Для сторінки
+//  на чверть мегабайта по SoftAP це секунди, а інколи й десятки секунд — і весь
+//  цей час головний цикл стоїть: екран не оновлюється, кнопки мертві, а
+//  найгірше — під час заряду/розряду увімкнений Task WDT (CHARGE_WDT_SEC = 10 с,
+//  див. wdt.h), і він не отримує ознак життя. Тобто «зависання при відкритті
+//  веб-інтерфейсу» цілком могло закінчуватись скиданням посеред заряду.
+//
+//  Тому шлемо по кілобайту, між шматками годуємо сторожа й віддаємо квант
+//  іншим задачам. Сторінка від цього не сповільнюється: вузьке місце — радіо.
+static void streamFileFed(File &f, const char *type, bool gzipped) {
+    if (gzipped) server.sendHeader("Content-Encoding", "gzip");
+    server.setContentLength(f.size());
+    server.send(200, type, "");
+    uint8_t buf[1024];
+    while (f.available()) {
+        size_t n = f.read(buf, sizeof(buf));
+        if (!n) break;
+        server.sendContent((const char *)buf, n);
+        wdtFeed();       // діє лише коли сторож увімкнений (заряд/розряд)
+        delay(0);        // дати процесор IDLE-задачі: вона звільняє пам'ять
+    }
+}
+
 // обробник головної сторінки
+//
+//  ⚑ СПЕРШУ СТИСНУТА КОПІЯ. Сторінка виросла до чверті мегабайта, і кожне її
+//  відкриття — це стільки ж по радіо. Причому відкривається вона не лише
+//  руками: наш captive-portal (DNS «усі домени -> 192.168.4.1» + редирект)
+//  змушує телефон САМ показати її одразу після під'єднання до точки доступу.
+//  gzip зменшує передачу приблизно вшестеро й нічого не змінює для браузера —
+//  розпаковування вбудоване в HTTP.
 void handleRoot() {
-    File file = SPIFFS.open("/index.html", "r");
+    File file = SPIFFS.open("/index.html.gz", "r");
+    if (file) { streamFileFed(file, "text/html", true); file.close(); return; }
+    file = SPIFFS.open("/index.html", "r");     // запасний шлях: нестиснута копія
     if (!file) {
         server.send(404, "text/plain", "File not found");
         return;
     }
-    server.streamFile(file, "text/html");
+    streamFileFed(file, "text/html", false);
     file.close();
 }
 

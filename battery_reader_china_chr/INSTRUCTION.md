@@ -699,7 +699,7 @@ Bluetooth SPP. Для комп'ютера це звичайний COM-порт, 
 | `serial_api.h` | командний протокол по USB-Serial (для Windows-клієнта) |
 | `client_usb.html` | Windows/Web-клієнт по USB (Web Serial, Chrome/Edge) |
 | `index.html` | веб-інтерфейс (у `data/` для SPIFFS) |
-| `data/` | файли для SPIFFS (`index.html`, `logo.png`) |
+| `data/` | файли для SPIFFS: `index.html.gz` — сторінка, стиснута gzip (перезібрати після правки: `gzip -9 -n -c index.html > data/index.html.gz`) |
 
 ---
 

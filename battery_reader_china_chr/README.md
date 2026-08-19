@@ -316,7 +316,7 @@ python tools/make_color_splash.py logo.png -W 240 -H 280   # під свою р�
    `Sketch too big; text section exceeds available space in board`.
    З «Huge APP» вона займає ~42 % від 3 МБ, а SPIFFS у 1 МБ вистачає з запасом.
 3. Скомпілюйте та завантажте `motorola-battery-reader-web.ino`.
-4. **Залийте вміст теки `data/`** (`index.html`, `logo.png`) у SPIFFS —
+4. **Залийте вміст теки `data/`** (`index.html.gz` — стиснута сторінка) у SPIFFS —
    *Tools → ESP32 Sketch Data Upload* (плагін ESP32FS для Arduino IDE 1.8.x).
    **Без цього веб-сторінка не відкриється.**
    - Помилка `No port specified` = не вибрано порт або відкритий Serial Monitor.
@@ -2071,7 +2071,7 @@ API: `POST /api/restore/fixes?model=…&fixes=…[&rated=…][&rsense=…|&rsmod
 | `dumps/` | **архів реальних дампів** (робочі/несправні/експерименти) з описами власника |
 | `tools/decode_dump.py` | анотований декодер дампа (+`--template`, `--diff` genuine/клон) |
 | `tools/make_color_splash.py`, `make_splash.py` | генератор кастомної заставки |
-| `data/` | файли для SPIFFS (`index.html`, `logo.png`) |
+| `data/` | файли для SPIFFS: `index.html.gz` — сторінка, стиснута gzip. Пристрій віддає її з заголовком `Content-Encoding: gzip`, тобто по радіо йде 89 КБ замість 266 КБ. Перезібрати після правки `index.html`: `gzip -9 -n -c index.html > data/index.html.gz` |
 | `INSTRUCTION.md` | докладна інструкція (те саме, розгорнуто) |
 
 ---

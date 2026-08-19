@@ -39,6 +39,9 @@ def main() -> int:
     # зміну там, де вміст той самий.
     gz = gzip.compress(raw, compresslevel=9, mtime=0)
     crc = zlib.crc32(raw) & 0xFFFFFFFF
+    # CRC32 самого СТИСНУТОГО масиву: пристрій рахує його в себе й порівнює,
+    # тож «чи цілий блок у флеші» перевіряється без комп'ютера.
+    gzcrc = zlib.crc32(gz) & 0xFFFFFFFF
 
     lines = [
         "#pragma once",
@@ -54,6 +57,7 @@ def main() -> int:
         "",
         "#define PAGE_INDEX_RAW_LEN  %uu   // розмір ВИХІДНОГО index.html" % len(raw),
         "#define PAGE_INDEX_RAW_CRC  0x%08Xu // і його CRC32 — звіряє охоронець" % crc,
+        "#define PAGE_INDEX_GZ_CRC   0x%08Xu // CRC32 масиву нижче — звіряє сам пристрій" % gzcrc,
         "",
         "static const uint8_t PAGE_INDEX_GZ[] PROGMEM = {",
     ]

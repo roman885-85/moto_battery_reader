@@ -1305,6 +1305,14 @@ int main() {
         check(same,                          "…і він розпакується рівно в поточний index.html");
         check(PAGE_INDEX_RAW_LEN == (unsigned)rawLen && PAGE_INDEX_RAW_CRC == rawCrc,
                                              "числа в заголовку не розійшлись із масивом");
+        // CRC самого масиву — те, що пристрій рахує в себе й показує в /api/fs.
+        uint32_t own = 0xFFFFFFFFu;
+        for (size_t i = 0; i < n; i++) {
+            own ^= PAGE_INDEX_GZ[i];
+            for (int k = 0; k < 8; k++) own = (own >> 1) ^ (0xEDB88320u & (~(own & 1) + 1));
+        }
+        own ^= 0xFFFFFFFFu;
+        check(own == PAGE_INDEX_GZ_CRC,      "…і CRC масиву теж, тож самоперевірка пристрою чесна");
         // У data/ сторінки бути не повинно: вона вшита, а зайва копія у файловій
         // системі мовчки ПЕРЕКРИЄ прошивку — і правка знову «не доїде».
         check(!fileExists("data/index.html") && !fileExists("data/index.html.gz"),
@@ -1552,7 +1560,7 @@ int main() {
     //  життя раз на CHARGE_WDT_SEC (10 с) і має право скинути пристрій.
     //  Відкривається вона не лише руками: captive-portal сам показує її
     //  телефону одразу після під'єднання.
-    check(fileCalls("web_server.h", "server.send_P(200, \"text/html\", (PGM_P)PAGE_INDEX_GZ"),
+    check(fileCalls("web_server.h", "PgmPageStream page(PAGE_INDEX_GZ, PAGE_INDEX_GZ_LEN)"),
                                              "сторінка є завжди: вона вшита в прошивку");
     check(fileCalls("web_server.h", "SPIFFS.open(\"/index.html.gz\", \"r\")"),
                                              "…а файл у SPIFFS може її перекрити");
@@ -1567,12 +1575,12 @@ int main() {
                                              "…і ніхто не виставляє Content-Length руками");
     // Заголовок стиснення ставить сам streamFile за розширенням «.gz». Другий
     // такий самий заголовок браузер прочитає як подвійне стиснення.
-    // Заголовок стиснення потрібен РІВНО в одному місці — там, де сторінка
-    // йде з прошивки через send_P (сам він його не додає). На шляху streamFile
-    // ядро додає його само за розширенням «.gz», і другий такий самий
-    // заголовок браузер прочитав би як подвійне стиснення.
-    check(fileCountText("web_server.h", "sendHeader(\"Content-Encoding\"") == 1,
-                                             "Content-Encoding ставиться рівно раз — для вшитої копії");
+    // ⚑ Заголовок стиснення НЕ ставиться вручну ніде. Обидва шляхи — і файл, і
+    //  вшита копія — ідуть через streamFile(), а він додає його сам за
+    //  розширенням «.gz» в імені. Другий такий самий заголовок браузер
+    //  прочитав би як подвійне стиснення.
+    check(fileCountText("web_server.h", "sendHeader(\"Content-Encoding\"") == 0,
+                                             "Content-Encoding не дописується вручну — його ставить ядро");
     check(fileCalls("web_server.h", "server.on(\"/api/fs\", HTTP_GET, handleFsList)"),
                                              "видно, що насправді лежить у SPIFFS");
     // ⚑ ВІДБИТОК ЗБІРКИ. Без нього неможливо відповісти на найперше питання
@@ -1585,6 +1593,16 @@ int main() {
     check(fileCalls("web_server.h", "server.on(\"/lite\", HTTP_GET, handleLite)") &&
           fileCalls("web_server.h", "PAGE_LITE"),
                                              "є легка сторінка на випадок, коли велика не доходить");
+    // ⚑ ВШИТА СТОРІНКА ЙДЕ ТИМ САМИМ ШЛЯХОМ, ЩО Й ФАЙЛ. Один send_P на 90 КБ
+    //  ділить запас повторів TCP на всю передачу й тихо віддає скільки встиг;
+    //  write(Stream&) ріже на шматки по 1360 Б, і кожен має повний запас.
+    check(fileCalls("web_server.h", "class PgmPageStream : public Stream") &&
+          fileCalls("web_server.h", "server.streamFile(page, \"text/html\")"),
+                                             "вшита сторінка йде шматками, як і файл");
+    check(fileHasNo("web_server.h", "send_P(200, \"text/html\", (PGM_P)PAGE_INDEX_GZ"),
+                                             "…а не одним send_P на всі 90 КБ");
+    check(fileCalls("web_server.h", "PAGE_INDEX_GZ_CRC"),
+                                             "пристрій сам перевіряє, чи цілий блок у флеші");
     check(fileHasText("web_server.h", "файл зі SPIFFS ПЕРЕКРИВАЄ вшиту"),
                                              "…і пристрій каже при старті, звідки бере сторінку");
 

@@ -11,6 +11,7 @@
 
 #define PAGE_INDEX_RAW_LEN  266105u   // розмір ВИХІДНОГО index.html
 #define PAGE_INDEX_RAW_CRC  0xF9B564EBu // і його CRC32 — звіряє охоронець
+#define PAGE_INDEX_GZ_CRC   0xE09195CFu // CRC32 масиву нижче — звіряє сам пристрій
 
 static const uint8_t PAGE_INDEX_GZ[] PROGMEM = {
   0x1F,0x8B,0x08,0x00,0x00,0x00,0x00,0x00,0x02,0x03,0xD4,0xBC,0x79,0x8F,0x23,0xD9,

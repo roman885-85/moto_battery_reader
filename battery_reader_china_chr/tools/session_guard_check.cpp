@@ -1449,6 +1449,51 @@ int main() {
     check(fileCalls("tools/ds2438_write_check.cpp", "writeDS2438"),
                                              "усе це перевіряє хостовий тест на моделі чипа");
 
+    printf("\n36) наробіток не повертається зі старих міток; цикли пакета правляться\n");
+    // Скарга власника: «виставляю дату, ставлю в зарядку — і вона прописує
+    // наробіток 17 років» та «немає синхронізації з кількістю по циклах
+    // зарядки IMPRES і не-IMPRES».
+    //
+    // ⚑ Мітки подій у DS2438 (0x10, 0x14) відлічені тим самим наробітком. Ми
+    //  зануляли ETM, не чіпаючи їх, і лишали монітор у стані «подія в
+    //  майбутньому» — а станція такий стан лікує поверненням наробітку з
+    //  мітки. Доказ у корпусі: dumps/13 до станції ETM 234 c при мітці
+    //  79 773 064, після станції ETM 79 773 372.
+    check(fileCalls("impres_format.h", "#define IMPRES_38_STAMP1_AT") &&
+          fileCalls("impres_format.h", "#define IMPRES_38_STAMP2_AT"),
+                                             "мітки подій названі, а не сховані в числах");
+    // ⚑ Саме ПІДТЯГУВАННЯ, а не наявність імені: перевірка «на ім'я» лишалась
+    //  зеленою, поки ім'я є хоч десь у файлі (виявлено звіркою від протилежного).
+    check(fileCalls("impres_format.h", "if (impres38U32(d38, IMPRES_38_STAMP1_AT) > sec)") &&
+          fileCalls("impres_format.h", "if (impres38U32(d38, IMPRES_38_STAMP2_AT) > sec)"),
+                                             "…і запис наробітку підтягує обидві");
+    check(fileCalls("impres_format.h", "inline void impresSetEtm("),
+                                             "наробіток пишеться одним способом на весь проєкт");
+    check(fileHasNo("web_server.h", "for (int i = 8; i <= 11; i++) batteryDump2438[i] = 0") &&
+          fileHasNo("impres_clone.h", "dst[8] = dst[9] = dst[10] = dst[11] = 0") &&
+          fileHasNo("restore_plan.h", "d38[8]  = (uint8_t)(etm & 0xFF)"),
+                                             "…і жоден шлях більше не пише його байтами повз мітки");
+    check(fileCalls("impres_format.h", "impresSetEtm(d38, 0)") &&
+          fileCalls("mirror_plan.h", "impresSetEtm(d38, s)"),
+                                             "скидання монітора й план синхронізації беруть саме його");
+    // Лічильники циклів пакета — окремі рядки плану, і пишуть вони в DS2433.
+    check(fileCalls("mirror_plan.h", "MVAL_CYC") &&
+          fileCalls("mirror_plan.h", "MVAL_NONIMP") &&
+          fileCalls("mirror_plan.h", "inline bool mirrorValToMon("),
+                                             "цикли IMPRES і не-IMPRES — рядки плану, що пишуть у пакет");
+    check(fileCalls("mirror_plan.h", "mirrorPlanApply33Vals"),
+                                             "…і для них є свій запис у DS2433");
+    check(fileCalls("web_server.h", "mirrorPlanApply33Vals(g_mirPlan, batteryDump)") &&
+          fileCalls("serial_api.h", "mirrorPlanApply33Vals(g_mirPlan, batteryDump)"),
+                                             "обидва обробники його викликають");
+    check(fileCalls("index.html", "{n:'Циклів не-IMPRES'") &&
+          fileCalls("client_usb.html", "{n:'Циклів не-IMPRES'") &&
+          fileCalls("usb_client/moto_gui.py", "(\"Циклів не-IMPRES\", \"циклів\")"),
+                                             "рядок не-IMPRES є в кожному клієнті");
+    check(fileCalls("index.html", "DS'+(r.w||38)") &&
+          fileCalls("client_usb.html", "DS'+(r.w||38)"),
+                                             "клієнт показує, у який саме чип піде рядок");
+
     printf("\n35) папка скетча придатна для Arduino IDE на Windows\n");
     // Скарга власника: збірка пройшла («40 % флеша»), а IDE впала на
     //   grpc: error while marshaling: string field contains invalid UTF-8

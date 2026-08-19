@@ -1172,18 +1172,24 @@ function mirRender(){
 // прошивці кожен рядок тексту це флеш. Порядок рядків задає пристрій (MVAL_*).
 const MIR_VALS=[{n:'Наробіток (ETM)',u:'діб'},
                 {n:'Заряджено (CCA)',u:'циклів'},
-                {n:'Розряджено (DCA)',u:'циклів'}];
+                {n:'Розряджено (DCA)',u:'циклів'},
+                {n:'Циклів IMPRES',   u:'циклів'},
+                {n:'Циклів не-IMPRES',u:'циклів'}];
 function mirRenderVals(p){
   const t=$('mirVals'), note=$('mirValNote');
   if(!p||!p.v){t.innerHTML='';note.style.display='none';return;}
-  let h='<tr><th></th><th>Показник</th><th>У пакеті</th><th>У моніторі</th><th>Буде</th><th>Вручну</th></tr>';
+  let h='<tr><th></th><th>Показник</th><th>У пакеті</th><th>У моніторі</th><th>Буде</th>'
+       +'<th>Куди</th><th>Вручну</th></tr>';
   for(let i=0;i<p.v.length && i<MIR_VALS.length;i++){
     const r=p.v[i], d=MIR_VALS[i];
-    h+='<tr'+((r.a&&r.p!==r.m)?' style="color:var(--org)"':'')+'>'
+    const nowVal=(r.w===33)?r.p:r.m;
+    h+='<tr'+((r.a&&r.o!==nowVal)?' style="color:var(--org)"':'')+'>'
       +'<td><input type="checkbox" '+(r.t?'checked':'')+(r.a?'':' disabled')
       +' onchange="mirVal('+i+',this.checked)"></td>'
-      +'<td>'+d.n+'</td><td>'+(r.pk?(r.p+' '+d.u):'—')+'</td><td>'+r.m+' '+d.u+'</td>'
+      +'<td>'+d.n+'</td><td>'+(r.pk?(r.p+' '+d.u):'—')+'</td>'
+      +'<td>'+((r.w===33&&!r.m)?'—':(r.m+' '+d.u))+'</td>'
       +'<td><b>'+r.o+' '+d.u+'</b></td>'
+      +'<td style="opacity:.75">DS'+(r.w||38)+'</td>'
       +'<td><input type="number" id="mirV'+i+'" min="0" step="1" style="width:78px" '
       +'value="'+(r.u>=0?r.u:'')+'" placeholder="—" onchange="mirValSet('+i+')"></td></tr>';
   }

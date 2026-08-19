@@ -1090,7 +1090,9 @@ bool resetBatteryData() {
         return false;
     }
     if (hasDump2438) {
-        for (int i = 8; i <= 11; i++) batteryDump2438[i] = 0; // ETM (таймер)
+        // ETM разом із мітками подій: без них станція повертає старий
+        // наробіток із мітки (доказ — dumps/13, див. impresSetEtm).
+        impresSetEtm(batteryDump2438, 0);
         batteryDump2438[60] = batteryDump2438[61] = 0;         // CCA
         batteryDump2438[62] = batteryDump2438[63] = 0;         // DCA
     }
@@ -2494,6 +2496,7 @@ static void mirrorPlanFactsRefresh() {
                            hasSN2433 ? chipSN2433 : nullptr, 0.0f, &b)) {
             if (b.haveKey) impresBmsDecrypt(batteryDump, &b);
 
+            in.have33    = true;
             in.have38    = true;
             in.ratedMah  = b.ratedMah;
             in.rsense    = b.rsense;              // 0, якщо в чипі поля немає
@@ -2506,8 +2509,10 @@ static void mirrorPlanFactsRefresh() {
             // Порівнюємо з накопиченим зарядом монітора СУМУ обох: CCA не
             // розрізняє, від IMPRES-станції прийшов заряд чи від простої ЗП.
             if (b.cycles >= 0) {
-                in.packCycKnown = true;
-                in.packCycles   = (long)b.cycles + (long)b.nonImpresCycles;
+                in.packCycKnown  = true;
+                in.packCycles    = (long)b.cycles + (long)b.nonImpresCycles;
+                in.packCycImpres = (long)b.cycles;
+                in.packNonImpres = (long)b.nonImpresCycles;
             }
 
             if (haveToday && b.ok && b.haveKey &&
@@ -2581,6 +2586,8 @@ static String mirrorPlanJson() {
     //  задано перерахуванням MVAL_* і однаковий скрізь.
     j += ",\"haveVals\":"; j += p.haveVals ? "true" : "false";
     j += ",\"vChanges\":"; j += mirrorValChanges(p);
+    j += ",\"vChangesMon\":";  j += mirrorValChanges(p, true, false);
+    j += ",\"vChangesPack\":"; j += mirrorValChanges(p, false, true);
     j += ",\"rated\":";    j += p.ratedMah;
     j += ",\"rsRaw\":";    j += (long)(p.rsense * 100000.0f + 0.5f);
     j += ",\"rsChip\":";   j += p.rsFromChip ? "true" : "false";
@@ -2588,7 +2595,8 @@ static String mirrorPlanJson() {
     for (int i = 0; i < MVAL_COUNT; i++) {
         const MirrorVal &v = p.val[i];
         if (i) j += ",";
-        j += "{\"a\":";   j += v.avail ? "1" : "0";
+        j += "{\"w\":";   j += mirrorValToMon(i) ? "38" : "33";   // куди пише рядок
+        j += ",\"a\":";  j += v.avail ? "1" : "0";
         j += ",\"pk\":";  j += v.packKnown ? "1" : "0";
         j += ",\"t\":";   j += v.take ? "1" : "0";
         j += ",\"p\":";   j += (long)v.pack;
@@ -2672,6 +2680,8 @@ void handleMirrorApply() {
     }
     ledSet(LED_WRITE); displayShow("СИНХР. 2433...");
     int n = mirrorPlanApply(g_mirPlan, batteryDump);
+    // Лічильники циклів — теж у DS2433, тож правимо ДО єдиного запису чипа.
+    int nCyc = mirrorPlanApply33Vals(g_mirPlan, batteryDump);
     bool ok = battery.writeBattery(batteryDump, DUMP_SIZE);
     if (ok) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
     // ── і другий чип, якщо в плані є значеннєві рядки ────────────────────
@@ -2688,11 +2698,12 @@ void handleMirrorApply() {
     }
     displayShow(ok ? "СИНХР. OK" : "СИНХР. ЗБІЙ");
     ledSet(ok ? LED_OK : LED_ERROR);
-    Serial.printf("MIRROR: змінено %d байт DS2433, %d значень DS2438, запис %s\n",
-                  n, n38, ok ? "OK" : "FAIL");
+    Serial.printf("MIRROR: %d байт + %d лічильників у DS2433, %d значень у DS2438, запис %s\n",
+                  n, nCyc, n38, ok ? "OK" : "FAIL");
     mirrorPlanRefresh();
     String j = "{\"ok\":"; j += ok ? "true" : "false";
     j += ",\"changed\":"; j += n;
+    j += ",\"changedCyc\":"; j += nCyc;
     j += ",\"changed38\":"; j += n38;
     j += ",\"plan\":"; j += mirrorPlanJson(); j += "}";
     server.send(ok ? 200 : 500, "application/json", j);

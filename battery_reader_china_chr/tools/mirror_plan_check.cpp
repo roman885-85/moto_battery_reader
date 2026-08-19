@@ -479,6 +479,106 @@ int main() {
         check(bad == 0, "зворотний перерахунок завжди дає те саме число циклів");
     }
 
+    printf("\n12) мітки подій ідуть за наробітком, інакше станція його поверне\n");
+    // Скарга власника: «виставляю дату, ставлю в зарядку — і вона прописує
+    // наробіток 17 років». Доказ механізму лежить у самому корпусі:
+    //   dumps/13-dozaryadka-na-stantsii/01_2438: ETM 234 c, мітка2 79 773 064
+    //   те саме після станції        /02_2438: ETM 79 773 372 — тобто мітка + 5 хв
+    // Ми роками зануляли ETM, не чіпаючи міток, і лишали монітор у стані
+    // «подія сталася в майбутньому». Станція такий стан лікує поверненням
+    // наробітку до мітки.
+    {
+        uint8_t d[DS2438_MEM_SIZE];
+        memset(d, 0, sizeof(d));
+        impres38PutU32(d, IMPRES_38_ETM_AT,    234);
+        impres38PutU32(d, IMPRES_38_STAMP1_AT, 76);
+        impres38PutU32(d, IMPRES_38_STAMP2_AT, 79773064);   // числа з dumps/13
+        check(impres38U32(d, IMPRES_38_STAMP2_AT) > impresEtm(d),
+              "початковий стан і є тим «неможливим»: мітка більша за наробіток");
+
+        impresSetEtm(d, 0);
+        check(impresEtm(d) == 0, "наробіток обнулено");
+        check(impres38U32(d, IMPRES_38_STAMP1_AT) == 0 &&
+              impres38U32(d, IMPRES_38_STAMP2_AT) == 0,
+              "…і обидві мітки разом із ним — станції нема звідки відновлювати");
+
+        // Ненульовий наробіток: мітки підтягуються лише ті, що вилізли вперед.
+        impres38PutU32(d, IMPRES_38_STAMP1_AT, 500);
+        impres38PutU32(d, IMPRES_38_STAMP2_AT, 5000);
+        impresSetEtm(d, 1000);
+        check(impres38U32(d, IMPRES_38_STAMP1_AT) == 500, "мітка в минулому лишається як є");
+        check(impres38U32(d, IMPRES_38_STAMP2_AT) == 1000, "а та, що в майбутньому, — підтягується");
+
+        // Скидання монітора цілком.
+        uint8_t r[DS2438_MEM_SIZE];
+        memset(r, 0xAB, sizeof(r));
+        impres38PutU32(r, IMPRES_38_STAMP2_AT, 552728649);
+        impresResetMonitor(r, nullptr, 0);
+        check(impresEtm(r) == 0 &&
+              impres38U32(r, IMPRES_38_STAMP1_AT) == 0 &&
+              impres38U32(r, IMPRES_38_STAMP2_AT) == 0,
+              "impresResetMonitor() чистить і наробіток, і мітки");
+
+        // Корпус: у здорових моніторів мітки НЕ вище за наробіток. Саме тому
+        // зворотне і є ознакою зіпсованого стану.
+        std::vector<std::string> files; collect(files);
+        int seen = 0, future = 0;
+        for (auto &f : files) {
+            if (!load(p38(f).c_str(), d38, DS2438_MEM_SIZE)) continue;
+            uint32_t etm = impresEtm(d38);
+            if (!etm) continue;
+            seen++;
+            if (impres38U32(d38, IMPRES_38_STAMP1_AT) > etm ||
+                impres38U32(d38, IMPRES_38_STAMP2_AT) > etm) future++;
+        }
+        printf("   моніторів із ненульовим наробітком: %d, із них мітки в майбутньому в %d\n",
+               seen, future);
+        check(seen > 30, "корпус достатній");
+        check(future * 5 < seen, "у переважної більшості мітки не вище за наробіток");
+    }
+
+    printf("\n13) лічильники циклів пакета — теж рядки плану\n");
+    // Скарга власника: «немає синхронізації з кількістю по циклах зарядки
+    // IMPRES і не-IMPRES». Ці лічильники живуть у DS2433, тож рядки пишуть у
+    // ПАКЕТ, а джерелом для IMPRES-циклів служить монітор: станція однаково
+    // перерахує їх із накопиченого заряду.
+    {
+        const int RATED = 2150; const float RS = 0.04565f;
+        uint8_t a33[DUMP_SIZE], a38[DS2438_MEM_SIZE];
+        memset(a33, 0, sizeof(a33)); memset(a38, 0, sizeof(a38));
+        MirrorPlan p;
+        mirrorPlanBuild(p, a33, a38);
+
+        MirrorValIn in; memset(&in, 0, sizeof(in));
+        in.have33 = in.have38 = true;
+        in.ratedMah = RATED; in.rsense = RS; in.rsFromChip = true;
+        in.monCca = 195; in.monDca = 238;              // 31 і 37 циклів
+        in.packCycKnown = true;
+        in.packCycles = 1 + 5; in.packCycImpres = 1; in.packNonImpres = 5;
+        mirrorPlanSetVals(p, in);
+
+        check(mirrorValToMon(MVAL_ETM) && !mirrorValToMon(MVAL_CYC),
+              "рядки знають, у який чип пишуть");
+        check(p.val[MVAL_CYC].avail, "рядок циклів IMPRES доступний");
+        check(p.val[MVAL_CYC].pack == 1 && p.val[MVAL_CYC].mon == 31,
+              "у пакеті 1 цикл, монітор каже 31");
+        check(p.val[MVAL_CYC].take && p.val[MVAL_CYC].out == 31,
+              "типово беремо число монітора — те саме зробить і станція");
+        check(!p.val[MVAL_NONIMP].avail,
+              "не-IMPRES без відповідника в моніторі сам не вмикається");
+        check(mirrorValChanges(p, false, true) == 1, "у пакет піде одна правка");
+
+        long got = mirrorValSetUser(p, MVAL_NONIMP, 0);
+        check(got == 0 && p.val[MVAL_NONIMP].take && p.val[MVAL_NONIMP].out == 0,
+              "вписане руками вмикає рядок не-IMPRES (0 — теж число)");
+        check(mirrorValChanges(p, false, true) == 2, "тепер у пакет піде дві правки");
+        // Рядки монітора живуть окремо: у цій же вибірці CCA й DCA теж
+        // розходяться (6 проти 31 і 37), і вони йдуть у СВІЙ чип.
+        check(mirrorValChanges(p, true, false) == 2, "у монітор — свої дві");
+        check(mirrorValChanges(p, true, false) + mirrorValChanges(p, false, true)
+              == mirrorValChanges(p), "рядки не плутаються між чипами й не губляться");
+    }
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

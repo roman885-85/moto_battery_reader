@@ -1603,6 +1603,17 @@ int main() {
                                              "…а не одним send_P на всі 90 КБ");
     check(fileCalls("web_server.h", "PAGE_INDEX_GZ_CRC"),
                                              "пристрій сам перевіряє, чи цілий блок у флеші");
+    // ⚑ Порожній файл у SPIFFS не сміє перекривати вшиту сторінку — це той
+    //  самий білий екран, лише з іншого боку.
+    check(fileCalls("web_server.h", "if (file && file.size()) {"),
+                                             "порожній файл у SPIFFS не перекриває вшиту сторінку");
+    // ⚑ ДОСЛІД, ЩО РОЗДІЛЯЄ РОЗМІР І СТИСНЕННЯ. Коли мала сторінка відкривається,
+    //  а велика ні, змінних рівно дві; /bigtest прибирає стиснення й лишає розмір.
+    check(fileCalls("web_server.h", "server.on(\"/bigtest\", HTTP_GET, handleBigTest)") &&
+          fileCalls("web_server.h", "class FillStream : public Stream"),
+                                             "є дослід «великий обсяг без стиснення»");
+    check(fileCalls("web_server.h", "async function probe(u)"),
+                                             "…і легка сторінка вміє його провести сама");
     check(fileHasText("web_server.h", "файл зі SPIFFS ПЕРЕКРИВАЄ вшиту"),
                                              "…і пристрій каже при старті, звідки бере сторінку");
 

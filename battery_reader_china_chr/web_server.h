@@ -198,8 +198,11 @@ void handleRoot() {
     //    правити сторінку, не перепрошиваючи 1.3 МБ. Що саме лежить у файловій
     //    системі, видно через /api/fs.
     File file = SPIFFS.open("/index.html.gz", "r");
-    if (!file) file = SPIFFS.open("/index.html", "r");
-    if (file) {
+    if (!file || !file.size()) file = SPIFFS.open("/index.html", "r");
+    // ⚑ І РОЗМІР ТЕЖ. Порожній (або нульовий) файл у файловій системі не сміє
+    //  перекривати вшиту сторінку: це рівно той білий екран, від якого ми
+    //  тікали, лише з іншого боку.
+    if (file && file.size()) {
         wdtFeed();
         server.streamFile(file, "text/html");   // .gz -> Content-Encoding додасть сам
         file.close();
@@ -212,6 +215,44 @@ void handleRoot() {
     wdtFeed();
     PgmPageStream page(PAGE_INDEX_GZ, PAGE_INDEX_GZ_LEN);
     server.streamFile(page, "text/html");
+    wdtFeed();
+}
+
+// ⚑ ПЕРЕВІРКА «ВЕЛИКИЙ ОБСЯГ БЕЗ СТИСНЕННЯ».
+//  Коли мала сторінка відкривається, а велика ні, змінних рівно дві: РОЗМІР і
+//  СТИСНЕННЯ. Розділити їх можна лише дослідом, і ось він: цей потік віддає
+//  скільки завгодно звичайного тексту, без gzip і без жодного байта у флеші.
+//  Якщо він проходить, а сторінка ні — винне стиснення; якщо не проходить і
+//  він — винен розмір.
+class FillStream : public Stream {
+  public:
+    explicit FillStream(size_t n) : _n(n), _i(0) {}
+    size_t size() const { return _n; }
+    String name() const { return String("/bigtest.txt"); }
+    int available() override { return (int)(_n - _i); }
+    int read() override { return (_i < _n) ? (int)_byteAt(_i++) : -1; }
+    int peek() override { return (_i < _n) ? (int)_byteAt(_i) : -1; }
+    size_t write(uint8_t) override { return 0; }
+    size_t readBytes(char *buf, size_t len) override {
+        size_t left = _n - _i;
+        if (len > left) len = left;
+        for (size_t k = 0; k < len; k++) buf[k] = (char)_byteAt(_i + k);
+        _i += len;
+        return len;
+    }
+  private:
+    // Рядки по 64 символи: у потоці видно, де саме він обірвався.
+    static uint8_t _byteAt(size_t i) { return (i % 64 == 63) ? '\n' : (uint8_t)('0' + (i / 64) % 10); }
+    size_t _n, _i;
+};
+
+void handleBigTest() {
+    long n = server.hasArg("n") ? server.arg("n").toInt() : 120000;
+    if (n < 1000)   n = 1000;
+    if (n > 400000) n = 400000;
+    wdtFeed();
+    FillStream f((size_t)n);
+    server.streamFile(f, "text/plain");
     wdtFeed();
 }
 
@@ -238,6 +279,8 @@ static const char PAGE_LITE[] PROGMEM =
 "файли: <a href=/api/fs>/api/fs</a></p>"
 "<button onclick=\"go('/api/read')\">Зчитати АКБ</button>"
 "<button onclick=\"load()\">Оновити</button>"
+"<button onclick=\"probe('/')\">Перевірити основну</button>"
+"<button onclick=\"probe('/bigtest')\">Перевірити великий обсяг</button>"
 "<pre id=o>завантаження…</pre>"
 "<script>"
 "async function j(u){const r=await fetch(u);return await r.json();}"
@@ -253,6 +296,17 @@ static const char PAGE_LITE[] PROGMEM =
 "o.textContent=t;}catch(e){o.textContent='помилка: '+e.message;}}"
 "async function go(u){const o=document.getElementById('o');o.textContent='…';"
 "try{await j(u);}catch(e){}load();}"
+// ⚑ Дослід, який відповідає замість здогадів: скільки байтів РЕАЛЬНО дійшло
+//  проти того, що обіцяв заголовок. Для стиснутої відповіді content-length —
+//  це стиснутий розмір, а blob.size — розпакований; обидва числа корисні.
+"async function probe(u){const o=document.getElementById('o');o.textContent='перевіряю '+u+' …';"
+"const t=Date.now();try{const r=await fetch(u,{cache:'no-store'});"
+"const cl=r.headers.get('content-length'),ce=r.headers.get('content-encoding');"
+"const b=await r.blob();"
+"o.textContent=u+': HTTP '+r.status+'\\nобіцяно (content-length): '+(cl||'—')"
+"+'\\nотримано насправді: '+b.size+' Б'+'\\nкодування: '+(ce||'без стиснення')"
+"+'\\nчас: '+(Date.now()-t)+' мс';"
+"}catch(e){o.textContent=u+': ПОМИЛКА — '+e.message+'\\nчас: '+(Date.now()-t)+' мс';}}"
 "load();"
 "</script>";
 
@@ -4635,6 +4689,7 @@ void setupWebServer() {
     server.on("/logo.png", HTTP_GET, handleLogo);
     server.on("/api/fs", HTTP_GET, handleFsList);          // що лежить у SPIFFS
     server.on("/lite", HTTP_GET, handleLite);              // аварійна сторінка на кілька КБ
+    server.on("/bigtest", HTTP_GET, handleBigTest);        // дослід «великий обсяг без стиснення»
     server.on("/api/read", HTTP_GET, handleReadDump);
     server.on("/api/download", HTTP_GET, handleDownloadDump);
     server.on("/api/info", HTTP_GET, handleDumpInfo);

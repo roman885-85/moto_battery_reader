@@ -132,48 +132,63 @@ void handleLogo() {
     }
 }
 
-// ⚑ ВІДДАЄМО ФАЙЛ ШМАТКАМИ Й ГОДУЄМО СТОРОЖА.
-//  server.streamFile() віддає весь файл одним блокуючим викликом. Для сторінки
-//  на чверть мегабайта по SoftAP це секунди, а інколи й десятки секунд — і весь
-//  цей час головний цикл стоїть: екран не оновлюється, кнопки мертві, а
-//  найгірше — під час заряду/розряду увімкнений Task WDT (CHARGE_WDT_SEC = 10 с,
-//  див. wdt.h), і він не отримує ознак життя. Тобто «зависання при відкритті
-//  веб-інтерфейсу» цілком могло закінчуватись скиданням посеред заряду.
-//
-//  Тому шлемо по кілобайту, між шматками годуємо сторожа й віддаємо квант
-//  іншим задачам. Сторінка від цього не сповільнюється: вузьке місце — радіо.
-static void streamFileFed(File &f, const char *type, bool gzipped) {
-    if (gzipped) server.sendHeader("Content-Encoding", "gzip");
-    server.setContentLength(f.size());
-    server.send(200, type, "");
-    uint8_t buf[1024];
-    while (f.available()) {
-        size_t n = f.read(buf, sizeof(buf));
-        if (!n) break;
-        server.sendContent((const char *)buf, n);
-        wdtFeed();       // діє лише коли сторож увімкнений (заряд/розряд)
-        delay(0);        // дати процесор IDLE-задачі: вона звільняє пам'ять
-    }
-}
-
 // обробник головної сторінки
 //
 //  ⚑ СПЕРШУ СТИСНУТА КОПІЯ. Сторінка виросла до чверті мегабайта, і кожне її
 //  відкриття — це стільки ж по радіо. Причому відкривається вона не лише
 //  руками: наш captive-portal (DNS «усі домени -> 192.168.4.1» + редирект)
 //  змушує телефон САМ показати її одразу після під'єднання до точки доступу.
-//  gzip зменшує передачу приблизно вшестеро й нічого не змінює для браузера —
+//  gzip зменшує передачу утричі й нічого не змінює для браузера —
 //  розпаковування вбудоване в HTTP.
+//
+//  ⚑ ВІДДАЄМО САМЕ server.streamFile(), А НЕ СВОЇМ ЦИКЛОМ. Тут була спроба
+//  слати сторінку шматками (щоб годувати сторожа) — і вона коштувала білого
+//  екрана. Причина в тому, чого не видно з боку виклику: _streamFileCore()
+//  наприкінці РОЗБИРАЄ за собою стан — setContentLength(CONTENT_LENGTH_NOT_SET).
+//  Свій цикл цього не робив, тож після першої ж сторінки _contentLength
+//  лишався рівним її розміру, і КОЖНА наступна відповідь (усі /api/*) ішла з
+//  чужим Content-Length у заголовку. Браузер чекав на дані, яких не буде, —
+//  сторінка лишалась порожньою. Той самий streamFile ще й сам додає
+//  Content-Encoding: gzip, коли ім'я файла закінчується на «.gz», — тому
+//  вручну цей заголовок ставити НЕ МОЖНА: два однакові заголовки браузер
+//  читає як подвійне стиснення.
+//
+//  Годування сторожа лишилось до й після передачі: 89 КБ по радіо — це частка
+//  секунди, а поріг Task WDT під час заряду — 10 с (wdt.h).
 void handleRoot() {
     File file = SPIFFS.open("/index.html.gz", "r");
-    if (file) { streamFileFed(file, "text/html", true); file.close(); return; }
-    file = SPIFFS.open("/index.html", "r");     // запасний шлях: нестиснута копія
+    if (!file) file = SPIFFS.open("/index.html", "r");   // запасний шлях
     if (!file) {
-        server.send(404, "text/plain", "File not found");
+        // Порожній екран нічого не пояснює, а причина майже завжди одна.
+        server.send(404, "text/plain",
+                    "index.html.gz not found in SPIFFS.\n"
+                    "Upload the data/ folder: Tools -> ESP32 Sketch Data Upload.\n"
+                    "See /api/fs for what is actually stored.\n");
         return;
     }
-    streamFileFed(file, "text/html", false);
+    wdtFeed();
+    server.streamFile(file, "text/html");   // .gz -> Content-Encoding додасть сам
     file.close();
+    wdtFeed();
+}
+
+// GET /api/fs — що насправді лежить у SPIFFS.
+//  Дрібниця, але саме її бракувало, коли сторінка не відкривалась: без
+//  послідовного порту не було як побачити, чи доїхала тека data/ у пристрій.
+void handleFsList() {
+    String j = "{\"total\":"; j += (uint32_t)SPIFFS.totalBytes();
+    j += ",\"used\":";        j += (uint32_t)SPIFFS.usedBytes();
+    j += ",\"files\":[";
+    File dir = SPIFFS.open("/");
+    bool first = true;
+    for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+        if (!first) j += ",";
+        first = false;
+        j += "{\"name\":\""; j += f.name();
+        j += "\",\"size\":";  j += (uint32_t)f.size(); j += "}";
+    }
+    j += "]}";
+    server.send(200, "application/json", j);
 }
 
 // Читання обох мікросхем (DS2433 + DS2438) з збереженням в SPIFFS і на дисплей.
@@ -4488,9 +4503,25 @@ void setupWebServer() {
     size_t usedBytes = SPIFFS.usedBytes();
     Serial.printf("SPIFFS Status: Total=%d bytes, Used=%d bytes, Free=%d bytes\n", 
                  totalBytes, usedBytes, totalBytes - usedBytes);
+    // ⚑ І СПИСОК ФАЙЛІВ. Найчастіша причина «сторінка не відкривається» — теку
+    //  data/ просто не залили в пристрій, а дізнатись про це не було як:
+    //  порожній екран у браузері не пояснює нічого. Тепер видно одразу.
+    {
+        File dir = SPIFFS.open("/");
+        bool anyPage = false;
+        for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+            Serial.printf("  SPIFFS: %-24s %8u B\n", f.name(), (unsigned)f.size());
+            String n = String(f.name());
+            if (n.endsWith("index.html.gz") || n.endsWith("index.html")) anyPage = true;
+        }
+        if (!anyPage)
+            Serial.println("  ⚠ index.html.gz НЕМАЄ — залийте теку data/ "
+                           "(Tools -> ESP32 Sketch Data Upload), інакше веб-сторінка не відкриється");
+    }
     
     server.on("/", handleRoot);
     server.on("/logo.png", HTTP_GET, handleLogo);
+    server.on("/api/fs", HTTP_GET, handleFsList);          // що лежить у SPIFFS
     server.on("/api/read", HTTP_GET, handleReadDump);
     server.on("/api/download", HTTP_GET, handleDownloadDump);
     server.on("/api/info", HTTP_GET, handleDumpInfo);

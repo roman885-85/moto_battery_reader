@@ -1538,15 +1538,25 @@ int main() {
     //  життя раз на CHARGE_WDT_SEC (10 с) і має право скинути пристрій.
     //  Відкривається вона не лише руками: captive-portal сам показує її
     //  телефону одразу після під'єднання.
-    check(fileCalls("web_server.h", "static void streamFileFed("),
-                                             "сторінка йде шматками, а не одним блоком");
-    check(fileCalls("web_server.h", "wdtFeed();       // діє лише коли сторож увімкнений"),
-                                             "…і між шматками сторож отримує ознаку життя");
-    check(fileCalls("web_server.h", "SPIFFS.open(\"/index.html.gz\", \"r\")") &&
-          fileCalls("web_server.h", "Content-Encoding"),
+    check(fileCalls("web_server.h", "SPIFFS.open(\"/index.html.gz\", \"r\")"),
                                              "спершу віддається стиснута копія");
-    check(fileHasNo("web_server.h", "server.streamFile(file, \"text/html\")"),
-                                             "нестиснутий одноблоковий шлях прибрано");
+    // ⚑ ВІДДАЄ САМЕ streamFile(), А НЕ СВІЙ ЦИКЛ. Спроба слати шматками
+    //  коштувала білого екрана: _streamFileCore() наприкінці розбирає за собою
+    //  стан (setContentLength(CONTENT_LENGTH_NOT_SET)), а свій цикл — ні, тож
+    //  КОЖНА наступна відповідь ішла з чужим Content-Length і браузер чекав на
+    //  дані, яких не буде.
+    check(fileCalls("web_server.h", "server.streamFile(file, \"text/html\")"),
+                                             "сторінку віддає штатний streamFile, а не власний цикл");
+    check(fileHasNo("web_server.h", "server.setContentLength("),
+                                             "…і ніхто не виставляє Content-Length руками");
+    // Заголовок стиснення ставить сам streamFile за розширенням «.gz». Другий
+    // такий самий заголовок браузер прочитає як подвійне стиснення.
+    check(fileHasNo("web_server.h", "sendHeader(\"Content-Encoding\""),
+                                             "Content-Encoding вручну не дописується");
+    check(fileCalls("web_server.h", "server.on(\"/api/fs\", HTTP_GET, handleFsList)"),
+                                             "видно, що насправді лежить у SPIFFS");
+    check(fileHasText("web_server.h", "залийте теку data/"),
+                                             "…і пристрій каже це вголос при старті");
 
     printf("\n36) наробіток не повертається зі старих міток; цикли пакета правляться\n");
     // Скарга власника: «виставляю дату, ставлю в зарядку — і вона прописує

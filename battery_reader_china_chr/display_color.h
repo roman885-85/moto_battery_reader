@@ -1460,7 +1460,10 @@ inline void drawPageDischarge() {
 // керування нелінійна, див. charge.h/settings.h — сира напруга сама по собі
 // нічого не каже про очікуваний струм).
 inline void drawPageCharge() {
-    drawHeaderBar("ЗАРЯД");
+    // Заголовок за РЕЖИМОМ, а не за станом: підсумок лишається на екрані й
+    // після зупинки, і назвати пробудження «зарядом» означало б збрехати саме
+    // там, де користувач читає результат.
+    drawHeaderBar(chargeWakeShown() ? "ПРОБУДЖЕННЯ" : "ЗАРЯД");
     const ChargeState &c = g_chg;
 
     char b[56];
@@ -1503,6 +1506,32 @@ inline void drawPageCharge() {
         row(b, C_RED);
     }
 
+    // ⚑ У ПРОБУДЖЕННІ ПОЛОВИНА ЦИХ РЯДКІВ БУЛА Б ВИГАДКОЮ. Ціль у відсотках,
+    //  CCA, ICA й температура беруться з DS2438 — а він мовчить, у цьому вся
+    //  суть режиму. Показувати «темп. 0.0 °C» і «CCA 0» означало б видавати
+    //  відсутність даних за дані.
+    if (chargeWakeShown()) {
+        snprintf(b, sizeof(b), "тримаємо %u.%02u В", c.targetMv / 1000, (c.targetMv % 1000) / 10);
+        row(b, C_TEXT);
+        snprintf(b, sizeof(b), "струм %d мА зі стелі %u", c.lastMa, (unsigned)CHARGE_WAKE_MA);
+        row(b, C_TEXT);
+        if (chargePwmOk()) {
+            snprintf(b, sizeof(b), "ШІМ %u%% (межа %u з %u)", chargeDutyPct(),
+                     chargeDutyCap(), (unsigned)CHARGE_DUTY_FULL);
+            row(b, C_MUTED);
+        } else {
+            row("БЕЗ КЕРУВАННЯ: перевірте!", C_RED);
+        }
+        snprintf(b, sizeof(b), "віддано %lu з %u мА·год",
+                 (unsigned long)chargeMah(), (unsigned)CHARGE_WAKE_MAH_MAX);
+        row(b, C_GREEN);
+        snprintf(b, sizeof(b), "проб %u · %s", c.wakeProbes,
+                 c.reason == CHGR_WOKE ? "ВІДПОВІВ" : "монітор мовчить");
+        row(b, c.reason == CHGR_WOKE ? C_GREEN : C_MUTED);
+        snprintf(b, sizeof(b), "час  %lu з %u с",
+                 (unsigned long)c.elapsedS, (unsigned)CHARGE_WAKE_MAX_S);
+        row(b, C_TEXT);
+    } else {
     snprintf(b, sizeof(b), "ціль %u.%02u В (%u%%)",
              c.targetMv / 1000, (c.targetMv % 1000) / 10, c.targetPct);
     row(b, C_TEXT);
@@ -1536,6 +1565,7 @@ inline void drawPageCharge() {
     unsigned long el = c.elapsedS;
     snprintf(b, sizeof(b), "час  %lu:%02lu:%02lu", el / 3600, (el / 60) % 60, el % 60);
     row(b, C_TEXT);
+    }
 
     tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
     tft.drawFastHLine(0, FOOT_Y, TFT_W, C_BLUE);

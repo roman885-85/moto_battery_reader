@@ -1069,6 +1069,435 @@ int main() {
         check(hi == CHARGE_MA_TAPER, "у дозаряді струм сам падає до дозарядного");
     }
 
+    // ═══════════════ ПРИМУСОВЕ ПРОБУДЖЕННЯ ПАКЕТА ═══════════════════════════
+    //  Скарга-побажання власника: «додай функцію примусової безпечної зарядки
+    //  для випадків, коли акумулятор не читається після заміни елементів і
+    //  потрібен примусовий старт заряду для запуску контролера».
+    //
+    //  Режим працює БЕЗ контролю температури — монітор мовчить, у цьому вся
+    //  суть, — тож усе, що стоїть між ним і зіпсованим пакетом, це числа й
+    //  чотири чисті функції нижче. Кожну перевіряємо і «за», і «від
+    //  протилежного»: зламана межа мусить ЛАМАТИ тест, інакше вона не межа.
+    printf("\n20) пробудження: СТЕЛЯ ШПАРУВАТОСТІ — вона ж стеля НАПРУГИ\n");
+    {
+        // Головна властивість режиму: напругу на клемах задає не вимір (його
+        // під час розгону просто немає — коло розімкнене), а розрахована
+        // стеля шпаруватості. Перевіряємо, що вона справді дає CHARGE_WAKE_MV.
+        for (int supply = 12500; supply <= 16000; supply += 500) {
+            uint16_t cap = chargeWakeDutyCapFor((uint16_t)supply);
+            long mv = (long)cap * supply / CHARGE_DUTY_FULL;
+            printf("   живлення %d мВ -> стеля %u/%u -> на клемі ~%ld мВ\n",
+                   supply, cap, (unsigned)CHARGE_DUTY_FULL, mv);
+            // Похибка округлення шпаруватості — один відлік, тобто supply/2047.
+            check(mv <= (long)CHARGE_WAKE_MV,
+                  "розрахункова напруга не перевищує CHARGE_WAKE_MV");
+            check(mv >= (long)CHARGE_WAKE_MV - supply / CHARGE_DUTY_FULL - 1,
+                  "і не занижена більше, ніж на один відлік ШІМ");
+            check(cap <= CHARGE_DUTY_MAX, "стеля сеансу не перескакує заводську");
+        }
+        // ⚑ ВІД ПРОТИЛЕЖНОГО: якби стелі не було, струмовий контур загнав би
+        //  шпаруватість у заводську межу — а це напруга, від якої 2S-пакет
+        //  гине. Показуємо число, щоб різниця не лишалась абстракцією.
+        long bad = (long)CHARGE_DUTY_MAX * CHARGE_SUPPLY_MV / CHARGE_DUTY_FULL;
+        printf("   без стелі сеансу регулятор дійшов би до %u/%u = %ld мВ на клемі\n",
+               (unsigned)CHARGE_DUTY_MAX, (unsigned)CHARGE_DUTY_FULL, bad);
+        check(bad > (long)CHARGE_WAKE_MV + 2000,
+              "заводська стеля справді небезпечна для 2S — стеля сеансу не декоративна");
+    }
+
+    printf("\n20а) стеля діє в chargeSetDuty(), а не лише в регуляторі\n");
+    {
+        // Те саме, що перевірка 11 для заводської стелі: затиск мусить діяти
+        // на БУДЬ-ЯКОМУ шляху, включно з прямим викликом повз регулятор.
+        chargeResetDutyCap();
+        chargeSetDutyCap(100);
+        check(chargeDutyCap() == 100, "стеля сеансу встановилась");
+        g_lastDuty = 0xFFFF;
+        chargeSetDuty(2000);                       // прямий виклик, повз регулятор
+        printf("   просили 2000, у ключ пішло %lu (стеля %u)\n",
+               (unsigned long)g_lastDuty, chargeDutyCap());
+        check(g_lastDuty == 100, "прямий виклик теж затиснуто стелею сеансу");
+
+        // І навпаки: зіпсована (завищена) стеля сеансу не сміє перескочити
+        // заводську — другий рядок оборони лишається на місці.
+        chargeSetDutyCap(60000);
+        check(chargeDutyCap() == CHARGE_DUTY_MAX,
+              "завищена стеля сеансу зрізається до заводської");
+        g_lastDuty = 0xFFFF;
+        chargeSetDuty(60000);
+        check(g_lastDuty == CHARGE_DUTY_MAX, "…і в ключ іде саме заводська межа");
+
+        // Стеля мусить повертатись сама: інакше один сеанс пробудження тихо
+        // покалічив би всі наступні заряди.
+        chargeSetDutyCap(100);
+        g_chg = ChargeState{};
+        g_chg.state = CHG_RUN;
+        chargeStop(CHGR_USER);
+        check(chargeDutyCap() == CHARGE_DUTY_MAX,
+              "зупинка повертає заводську стелю — наступний заряд не покалічено");
+        chargeResetDutyCap();
+    }
+
+    printf("\n21) регулятор пробудження: НАПРУГА вгору, СТРУМ як обмеження\n");
+    {
+        uint16_t cap = chargeWakeDutyCapFor(CHARGE_SUPPLY_MV);
+
+        // Розгін від нуля: без струму (коло розімкнене) шпаруватість росте до
+        // стелі й НЕ вище. Заразом рахуємо, скільки на це піде проходів.
+        uint16_t d = 0; int steps = 0;
+        while (d < cap && steps < 10000) { d = chargeWakeNextDuty(d, 0, cap); steps++; }
+        printf("   розгін від 0 до стелі %u: %d проходів по %lu мс = %.1f с\n",
+               cap, steps, (unsigned long)CHARGE_WAKE_POLL_MS,
+               steps * (double)CHARGE_WAKE_POLL_MS / 1000.0);
+        check(d == cap, "без струму шпаруватість доходить рівно до стелі");
+        check(chargeWakeNextDuty(d, 0, cap) == cap, "…і далі не рушає ні на відлік");
+        check(steps * (double)CHARGE_WAKE_POLL_MS / 1000.0 < CHARGE_WAKE_MAX_S / 4.0,
+              "розгін укладається в чверть відведеного часу — режим устигає попрацювати");
+
+        // Струм понад стелю — шпаруватість униз, і байдуже, що до стелі
+        // напруги ще далеко.
+        uint16_t down = chargeWakeNextDuty(cap, CHARGE_WAKE_MA * 4, cap);
+        printf("   при %d мА (стеля %d) шпаруватість %u -> %u\n",
+               CHARGE_WAKE_MA * 4, (int)CHARGE_WAKE_MA, cap, down);
+        check(down < cap, "надлишок струму опускає шпаруватість");
+
+        // Збіжність: модель «пакет прокинувся» — коло замкнулось, струм
+        // лінійний за шпаруватістю. Контур мусить прийти до стелі струму.
+        // I = (D×Uживл − Uпак) / R_кола, Uпак = 7.4 В (щойно замінені банки).
+        uint16_t dd = cap; int it = 0, last = 0;
+        for (; it < 400; it++) {
+            long vout = (long)dd * CHARGE_SUPPLY_MV / CHARGE_DUTY_FULL;
+            long ma   = (vout - 7400) * 1000 / CHARGE_LOOP_MOHM;
+            if (ma < 0) ma = 0;
+            last = (int)ma;
+            uint16_t nd = chargeWakeNextDuty(dd, ma, cap);
+            if (nd == dd) break;
+            dd = nd;
+        }
+        printf("   пакет ожив на 7.40 В: за %d проходів струм %d мА (стеля %d), duty %u\n",
+               it, last, (int)CHARGE_WAKE_MA, dd);
+        check(it < 400, "контур зійшовся, а не забуксував");
+        check(last <= CHARGE_WAKE_MA + CHARGE_DEADBAND_MA,
+              "усталений струм не вище стелі плюс мертва зона");
+        check(last <= CHARGE_WAKE_MA_ABORT,
+              "і не дотягується до аварійної відсічки — вона стереже відмову, а не режим");
+
+        // ⚑ ВІД ПРОТИЛЕЖНОГО: якби стеля шпаруватості не передавалась, той
+        //  самий розгін пішов би до заводської межі.
+        uint16_t d2 = 0; int s2 = 0;
+        while (d2 < CHARGE_DUTY_MAX && s2 < 10000) { d2 = chargeWakeNextDuty(d2, 0, CHARGE_DUTY_MAX); s2++; }
+        check(d2 == CHARGE_DUTY_MAX && d2 > cap,
+              "з чужою стелею той самий контур іде вище — тобто стелю справді слухають");
+
+        // Від'ємний струм не випрямляється: мінус — це шум або розряд, і в
+        // обох випадках струму заряду немає (та сама властивість, що й у
+        // штатного регулятора, перевірка 6).
+        check(chargeWakeNextDuty(100, -500, cap) > 100,
+              "від'ємний струм не читається як «стелю досягнуто»");
+    }
+
+    printf("\n22) вироки пробудження й порядок між ними\n");
+    {
+        ChargeWakeIn in;
+        auto fresh = [&]() {
+            in.chipOk = false; in.avgMa = 0; in.mvFresh = false; in.mv = 0;
+            in.elapsedS = 0; in.mah = 0;
+        };
+        fresh();
+        check(chargeWakeVerdict(in) == WAKEV_GO, "нічого не сталося — працюємо далі");
+
+        fresh(); in.chipOk = true;
+        check(chargeWakeVerdict(in) == WAKEV_WOKE, "монітор відповів — мета досягнута");
+
+        // ⚑ І ВІДПОВІДЬ МОНІТОРА СИЛЬНІША ЗА СТРИБОК СТРУМУ. Саме цей стрибок
+        //  і означає пробудження: контролер замкнув ключ, і на місці
+        //  розімкненого кола з'явилось навантаження. Назвати це аварією
+        //  означало б ганяти користувача по колу, щоразу відмовляючи в тому,
+        //  що вже сталося.
+        fresh(); in.chipOk = true; in.avgMa = CHARGE_WAKE_MA_ABORT * 2;
+        check(chargeWakeVerdict(in) == WAKEV_WOKE,
+              "успіх не маскується стрибком струму в мить пробудження");
+
+        fresh(); in.avgMa = CHARGE_WAKE_MA_ABORT + 1;
+        check(chargeWakeVerdict(in) == WAKEV_OVERI, "струм понад аварійну межу — стоп");
+        fresh(); in.avgMa = CHARGE_WAKE_MA_ABORT;
+        check(chargeWakeVerdict(in) == WAKEV_GO, "рівно на межі ще працюємо");
+
+        // Напруга: тільки СВІЖИЙ вимір на закритому ключі.
+        fresh(); in.mv = CHARGE_WAKE_MV + CHARGE_HARD_MAX_HEADROOM_MV; in.mvFresh = false;
+        check(chargeWakeVerdict(in) == WAKEV_GO, "несвіжий вимір напруги до порівняння не пускаємо");
+        fresh(); in.mv = CHARGE_WAKE_MV + CHARGE_HARD_MAX_HEADROOM_MV; in.mvFresh = true;
+        check(chargeWakeVerdict(in) == WAKEV_OVERV, "свіжий вимір вище межі — стоп");
+
+        // ⚑ НАСИЧЕНИЙ ВІДЛІК — НЕ ПЕРЕНАПРУГА, А ВИХІДНИЙ СТАН РЕЖИМУ.
+        //  Це найважливіша різниця зі штатним зарядом, і без неї режим був би
+        //  непрацездатний: коло розімкнене з самого початку, і перша ж проба
+        //  обірвала б пробудження.
+        fresh(); in.mv = CHARGE_VSENSE_SAT_MV; in.mvFresh = true;
+        check(chargeWakeVerdict(in) == WAKEV_GO,
+              "клема в стелі — це «пакет ще не в колі», а не перенапруга");
+        fresh(); in.mv = (uint16_t)(CHARGE_VSENSE_SAT_MV + 500); in.mvFresh = true;
+        check(chargeWakeVerdict(in) == WAKEV_GO, "і глибше в стелі теж");
+
+        fresh(); in.mah = CHARGE_WAKE_MAH_MAX;
+        check(chargeWakeVerdict(in) == WAKEV_MAH, "стеля відданої ємності спрацьовує");
+        fresh(); in.mah = CHARGE_WAKE_MAH_MAX - 1;
+        check(chargeWakeVerdict(in) == WAKEV_GO, "нижче стелі — працюємо");
+
+        fresh(); in.elapsedS = CHARGE_WAKE_MAX_S;
+        check(chargeWakeVerdict(in) == WAKEV_TIMEOUT, "стеля часу спрацьовує");
+
+        // Переклад вироків у причини зупинки — і те, що успіх справді
+        // вважається завершенням, а не аварією.
+        check(chargeWakeReason(WAKEV_WOKE)    == CHGR_WOKE,      "WOKE -> CHGR_WOKE");
+        check(chargeWakeReason(WAKEV_OVERI)   == CHGR_WAKE_OVERI,"OVERI -> CHGR_WAKE_OVERI");
+        check(chargeWakeReason(WAKEV_OVERV)   == CHGR_HARD_MAX,  "OVERV -> CHGR_HARD_MAX");
+        check(chargeWakeReason(WAKEV_MAH)     == CHGR_WAKE_MAH,  "MAH -> CHGR_WAKE_MAH");
+        check(chargeWakeReason(WAKEV_TIMEOUT) == CHGR_WAKE_FAIL, "TIMEOUT -> CHGR_WAKE_FAIL");
+        check(chargeReasonIsDone(CHGR_WOKE),  "пробудження — це ЗАВЕРШЕННЯ, а не аварія");
+        check(!chargeReasonIsDone(CHGR_WAKE_FAIL) && !chargeReasonIsDone(CHGR_WAKE_MAH) &&
+              !chargeReasonIsDone(CHGR_WAKE_OVERI),
+              "решта вироків пробудження — не завершення");
+        // Кожна нова причина мусить мати текст: порожній рядок у клієнті
+        // виглядав би як «зупинилось саме по собі».
+        check(chargeReasonText(CHGR_WOKE)[0] && chargeReasonText(CHGR_WAKE_FAIL)[0] &&
+              chargeReasonText(CHGR_WAKE_MAH)[0] && chargeReasonText(CHGR_WAKE_OVERI)[0],
+              "усі нові причини мають текст для інтерфейсу");
+    }
+
+    printf("\n23) коли пробудження НЕ дають — і чому саме так\n");
+    {
+        const uint16_t okMv = CHARGE_WAKE_MV - 1000;   // пакет під напругою, але нижче
+        // Порядок причин: спершу «нічим керувати», потім «зайнято», потім суть.
+        check(chargeWakeRefuse(false, true, false, PSU_OK, false, okMv, 0) == WAKENO_NA,
+              "заряд не налаштовано");
+        check(chargeWakeRefuse(true, false, false, PSU_OK, false, okMv, 0) == WAKENO_PWM,
+              "ШІМ не прикріпився");
+        check(chargeWakeRefuse(true, true, true, PSU_OK, false, okMv, 0) == WAKENO_BUSY,
+              "заряд/розряд уже йде");
+        check(chargeWakeRefuse(true, true, false, PSU_ABSENT, false, okMv, 0) == WAKENO_PSU,
+              "живлення поза допуском");
+        check(chargeWakeRefuse(true, true, false, PSU_LOW, false, okMv, 0) == WAKENO_PSU,
+              "занижене живлення — теж відмова");
+
+        // ⚑ ГОЛОВНА ВІДМОВА РЕЖИМУ. Пробудження працює без контролю
+        //  температури; єдине, що не дає перетворити його на «заряд без
+        //  датчика», — оця відмова запускатись, коли датчик доступний.
+        check(chargeWakeRefuse(true, true, false, PSU_OK, true, okMv, 0) == WAKENO_READS,
+              "ПАКЕТ ЧИТАЄТЬСЯ -> відмова: є температура, отже є штатний заряд");
+        check(chargeWakeRefuse(true, true, false, PSU_UNKNOWN, true, okMv, 0) == WAKENO_READS,
+              "…і без контролю живлення теж: причина не в блоці");
+
+        // Дві ознаки пробитого ключа, обидві зняті на ЗАКРИТОМУ ключі.
+        check(chargeWakeRefuse(true, true, false, PSU_OK, false,
+                               (uint16_t)CHARGE_VSENSE_SAT_MV, 0) == WAKENO_RAIL,
+              "живлення на клемі при закритому ключі — ключ пробитий");
+        check(chargeWakeRefuse(true, true, false, PSU_OK, false, okMv,
+                               CHARGE_DEADBAND_MA + 1) == WAKENO_LEAK,
+              "струм при закритому ключі — ключ пробитий");
+        check(chargeWakeRefuse(true, true, false, PSU_OK, false, okMv,
+                               CHARGE_DEADBAND_MA) == WAKENO_OK,
+              "струм у мертвій зоні — це шум АЦП, а не витік");
+
+        // Будити нема чого, якщо напруга вже є.
+        check(chargeWakeRefuse(true, true, false, PSU_OK, false,
+                               (uint16_t)CHARGE_WAKE_MV, 0) == WAKENO_FULL,
+              "на клемі вже напруга пробудження — показувати «сигнал зарядника» нема кому");
+        check(chargeWakeRefuse(true, true, false, PSU_OK, false,
+                               (uint16_t)(CHARGE_WAKE_MV - 1), 0) == WAKENO_OK,
+              "на відлік нижче — уже можна");
+
+        // Робочий випадок власника: банки замінені (пакет тримає ~7.4 В через
+        // тіло ключа), монітор мовчить, живлення справне -> дозволено.
+        check(chargeWakeRefuse(true, true, false, PSU_OK, false, 7400, 0) == WAKENO_OK,
+              "щойно замінені банки й мовчазний монітор — режим дозволено");
+        // І та сама клема при мовчазному моніторі й РОЗІМКНЕНОМУ колі: після
+        // паяння пакет може взагалі нічого не показувати.
+        check(chargeWakeRefuse(true, true, false, PSU_OK, false, 0, 0) == WAKENO_OK,
+              "мертва клема при мовчазному моніторі — теж дозволено");
+
+        // Кожна відмова мусить пояснювати себе, інакше користувач бачить
+        // порожнє вікно замість причини.
+        for (int r = WAKENO_OK + 1; r <= WAKENO_FULL; r++)
+            check(chargeWakeRefuseText((uint8_t)r)[0] != 0,
+                  "кожна відмова має текст");
+        check(chargeWakeRefuseText(WAKENO_OK)[0] == 0, "у «можна» тексту немає");
+    }
+
+    printf("\n24) МЕЖІ РЕЖИМУ — те, на чому тримається дозвіл працювати без датчика\n");
+    {
+        // Уся безпека режиму зводиться до відданої енергії. Рахуємо її явно,
+        // а не покладаємось на те, що «числа виглядають малими».
+        long nominalMah = (long)CHARGE_WAKE_MA * CHARGE_WAKE_MAX_S / 3600;
+        double pctOfPack = 100.0 * CHARGE_WAKE_MAH_MAX / BATTERY_RATED_MAH;
+        printf("   штатна віддача %ld мА·год, стеля %d мА·год = %.2f %% пакета %d мА·год\n",
+               nominalMah, (int)CHARGE_WAKE_MAH_MAX, pctOfPack, (int)BATTERY_RATED_MAH);
+        check(pctOfPack <= 1.0, "стеля енергії не більша за 1 % ємності пакета");
+        check(CHARGE_WAKE_MAH_MAX > nominalMah,
+              "ємнісна стеля вища за штатну віддачу — режим не обривається сам на собі");
+        check(CHARGE_WAKE_MA <= CHARGE_MA_START,
+              "струм пробудження не вищий за найобережнішу уставку штатного профілю");
+        check(CHARGE_WAKE_MV <= CHARGE_TARGET_MV,
+              "напруга пробудження не вища за ціль штатного заряду");
+        check(CHARGE_WAKE_MA_ABORT > CHARGE_WAKE_MA &&
+              CHARGE_WAKE_MA_ABORT < CHARGE_PEAK_MA_MAX,
+              "аварійна відсічка струму лежить МІЖ стелею режиму й запобіжником заліза");
+        check(CHARGE_WAKE_POLL_MS < CHARGE_POLL_MS,
+              "крок режиму частіший за штатне опитування — мить замикання ключа коротка");
+        // ── НАЙГІРША МИТЬ РЕЖИМУ, ПОРАХОВАНА, А НЕ ОПИСАНА СЛОВАМИ ────────
+        //  Контролер замикає ключ, коли на клемах уже стоїть напруга
+        //  пробудження, а банки розряджені вщент. Дросель виводить струм на
+        //  усталений рівень за L/R ≈ 0.13 мс, тобто в межах одного кроку.
+        //
+        //  ⚑ І ЦЕ ЧИСЛО ЗАЛЕЖИТЬ ВІД ТИПУ КЛЮЧА — саме так тут і знайшлась
+        //  різниця, коли тест прогнали в обох конфігураціях. У польового
+        //  RDS(on) додає до опору контуру 180 мОм і СТРИМУЄ струм; у
+        //  біполярного цього доданка немає, опір менший, а стрибок — більший.
+        long worstMa = ((long)CHARGE_WAKE_MV - BATTERY_EMPTY_MV) * 1000 / CHARGE_LOOP_MOHM;
+        double worstMah = worstMa * (double)CHARGE_WAKE_POLL_MS / 3600000.0;
+        // Той самий стрибок з боку ШУНТА: він найслабша ланка в колі, і саме
+        // його теплова стійкість задає тривалість кроку.
+        double worstW = (worstMa / 1000.0) * (worstMa / 1000.0) * (CHARGE_SHUNT_MOHM / 1000.0);
+        double worstJ = worstW * CHARGE_WAKE_POLL_MS / 1000.0;
+        printf("   ключ %s: найгірший стрибок %ld мА протягом %lu мс = %.4f мА·год;\n"
+               "   на шунті %.1f Вт (паспорт %.1f Вт) -> %.3f Дж за крок\n",
+               CHARGE_SW_NAME, worstMa, (unsigned long)CHARGE_WAKE_POLL_MS, worstMah,
+               worstW, CHARGE_SHUNT_MW / 1000.0, worstJ);
+        check(worstMah < 1.0, "навіть найгірший стрибок віддає менше за один мА·год");
+
+        // ⚑ ЧЕСНО ПРО ПІКОВУ ВІДСІЧКУ. З біполярним ключем стрибок ВИЩИЙ за
+        //  CHARGE_PEAK_MA_MAX — і це не поломка, а спрацювання запобіжника:
+        //  наступний крок закриє ключ. Тобто найгірший сценарій режиму — не
+        //  «щось згорить», а «пробудження зупиниться з піковою аварією рівно
+        //  тієї миті, коли пакет ожив». Стверджувати «відсічка не спрацює»
+        //  було б неправдою для половини конфігурацій, тому перевіряємо те, що
+        //  справді має триматись: відсічка існує й стрибок не йде в рази вище
+        //  за неї (інакше вона нічого не встигала б).
+        if (worstMa >= CHARGE_PEAK_MA_MAX)
+            printf("   ⚑ стрибок вище відсічки %d мА — пробудження зупиниться за піком\n",
+                   (int)CHARGE_PEAK_MA_MAX);
+        check(worstMa < (long)CHARGE_PEAK_MA_MAX * 3 / 2,
+              "стрибок лишається в межах, які пікова відсічка справді ловить");
+
+        // Тепловий імпульс у шунт. Для плівкових і металооксидних резисторів
+        // одиничний імпульс до ~5× паспортної потужності тривалістю до 100 мс
+        // лежить у межах специфікації; тримаємось усередині обох умов.
+        check(worstW <= 5.0 * CHARGE_SHUNT_MW / 1000.0,
+              "потужність імпульсу не вище п'ятикратної паспортної для шунта");
+        check(CHARGE_WAKE_POLL_MS <= 100,
+              "…і триває він не довше за 100 мс, для яких це правило й писане");
+
+        // ⚑ ВІД ПРОТИЛЕЖНОГО: на штатному кроці заряду (1 с) той самий стрибок
+        //  тривав би в 40 разів довше — тобто окремий, коротший крок для
+        //  пробудження не косметика.
+        double slowJ = worstW * CHARGE_POLL_MS / 1000.0;
+        printf("   на штатному кроці %lu мс було б %.3f Дж — у %.0f разів більше\n",
+               (unsigned long)CHARGE_POLL_MS, slowJ, slowJ / (worstJ > 0 ? worstJ : 1));
+        check(slowJ / (worstJ > 0 ? worstJ : 1) >= 10,
+              "крок пробудження скорочує експозицію щонайменше вдесятеро");
+    }
+
+    printf("\n24а) інтеграл ємності НЕ ГУБИТЬСЯ на короткому кроці\n");
+    {
+        // ⚑ Пастка, знайдена при розборі готового коду: доданок дорівнює
+        //  мА×мс/3600, і при кроці 25 мс він менший за одиницю на будь-якому
+        //  струмі до 144 мА. Просте цілочисельне ділення з'їдало б його
+        //  повністю — і стеля відданої ємності, тобто ДРУГА з двох меж, на яких
+        //  тримається дозвіл працювати без датчика, ніколи б не спрацювала.
+        printf("   доданок за один крок при %d мА: %d мА·мс / 3600 = %d (ціла частина)\n",
+               (int)CHARGE_WAKE_MA, (int)(CHARGE_WAKE_MA * CHARGE_WAKE_POLL_MS),
+               (int)(CHARGE_WAKE_MA * CHARGE_WAKE_POLL_MS / 3600));
+
+        // Ганяємо повний сеанс на стелі струму й звіряємо з точним значенням.
+        uint32_t mah = 0, rem = 0;
+        long steps = (long)CHARGE_WAKE_MAX_S * 1000 / CHARGE_WAKE_POLL_MS;
+        for (long i = 0; i < steps; i++)
+            chargeAccumMah(&mah, &rem, CHARGE_WAKE_MA, (uint32_t)CHARGE_WAKE_POLL_MS);
+        double exact = (double)CHARGE_WAKE_MA * CHARGE_WAKE_MAX_S / 3600.0;
+        printf("   %ld кроків по %lu мс на %d мА -> %.3f мА·год (точно %.3f)\n",
+               steps, (unsigned long)CHARGE_WAKE_POLL_MS, (int)CHARGE_WAKE_MA,
+               mah / 1000.0, exact);
+        check(mah / 1000.0 > exact - 0.01, "накопичене не нижче точного значення");
+        check(mah / 1000.0 <= exact, "…і не вище — залишок не додає зайвого");
+
+        // ⚑ ВІД ПРОТИЛЕЖНОГО: та сама сума БЕЗ залишку. Саме так і було
+        //  написано спочатку, і саме тому лічильник стояв би на нулі.
+        uint32_t naive = 0;
+        for (long i = 0; i < steps; i++)
+            naive += (uint32_t)CHARGE_WAKE_MA * CHARGE_WAKE_POLL_MS / 3600UL;
+        printf("   без залишку вийшло б %.3f мА·год замість %.3f\n",
+               naive / 1000.0, exact);
+        check(naive < mah, "просте ділення справді втрачає ємність");
+
+        // І найважливіше: на малому струмі просте ділення дає РІВНО НУЛЬ, а з
+        // залишком — правильну суму.
+        uint32_t m2 = 0, r2 = 0, n2 = 0;
+        const int lowMa = CHARGE_DEADBAND_MA;      // 30 мА — нижче за поріг втрати
+        for (long i = 0; i < steps; i++) {
+            chargeAccumMah(&m2, &r2, lowMa, (uint32_t)CHARGE_WAKE_POLL_MS);
+            n2 += (uint32_t)lowMa * CHARGE_WAKE_POLL_MS / 3600UL;
+        }
+        printf("   на %d мА: із залишком %.3f мА·год, без нього %.3f\n",
+               lowMa, m2 / 1000.0, n2 / 1000.0);
+        check(n2 == 0, "без залишку малий струм не накопичується ВЗАГАЛІ");
+        check(m2 > 0,  "…а із залишком — накопичується");
+
+        // Від'ємний струм рахується за модулем: розряд — теж віддана енергія.
+        uint32_t m3 = 0, r3 = 0;
+        chargeAccumMah(&m3, &r3, -3600, 1000);
+        check(m3 == 1000, "від'ємний струм рахується за модулем");
+    }
+
+    printf("\n24б) поріг зависання пробудження — свій, а не запозичений\n");
+    {
+        // Штатні 5 с — це п'ять кроків секундного заряду, але двісті кроків
+        // пробудження. Дозволити ключу стояти без нагляду двісті кроків
+        // означало б скасувати дрібність кроку, заради якої вона й обрана.
+        printf("   штатний поріг %lu мс = %lu кроків пробудження; власний %lu мс = %lu кроків\n",
+               (unsigned long)CHARGE_STALL_MS,
+               (unsigned long)(CHARGE_STALL_MS / CHARGE_WAKE_POLL_MS),
+               (unsigned long)CHARGE_WAKE_STALL_MS,
+               (unsigned long)(CHARGE_WAKE_STALL_MS / CHARGE_WAKE_POLL_MS));
+        check(CHARGE_WAKE_STALL_MS < CHARGE_STALL_MS,
+              "пробудження помічає зависання РАНІШЕ за штатний заряд");
+        check(CHARGE_WAKE_STALL_MS > CHARGE_WAKE_POLL_MS * 4,
+              "…але не настільки рано, щоб його зривала власна проба монітора");
+        // Скільки енергії встигне піти в найгіршому випадку за час до
+        // спрацювання сторожа — це і є ціна порога.
+        long worstMa = ((long)CHARGE_WAKE_MV - BATTERY_EMPTY_MV) * 1000 / CHARGE_LOOP_MOHM;
+        double stallMah  = worstMa * (double)CHARGE_WAKE_STALL_MS / 3600000.0;
+        double borrowMah = worstMa * (double)CHARGE_STALL_MS      / 3600000.0;
+        printf("   при зависанні віддасться %.3f мА·год замість %.3f із запозиченим порогом\n",
+               stallMah, borrowMah);
+        check(stallMah < CHARGE_WAKE_MAH_MAX,
+              "навіть зависання не виводить сеанс за власну стелю ємності");
+    }
+
+    printf("\n25) режим видно ззовні, і жоден із трьох питальників не зайвий\n");
+    {
+        g_chg = ChargeState{};
+        check(!chargeWaking() && !chargeWakeShown(), "у спокої пробудження немає");
+
+        g_chg.mode = CHG_MODE_WAKE; g_chg.state = CHG_RUN;
+        check(chargeRunning(), "для всіх, хто стежить за ключем, це «заряд іде»");
+        check(chargeWaking() && chargeWakeShown(), "а для показу — саме пробудження");
+
+        // Сеанс скінчився, але підсумок ще на екрані.
+        g_chg.state = CHG_DONE; g_chg.reason = CHGR_WOKE;
+        check(!chargeWaking(), "після зупинки нічого вже не йде");
+        check(chargeWakeShown(), "…але панель мусить лишатись панеллю ПРОБУДЖЕННЯ");
+
+        // Підсумок прибрали — панель повертається до заряду, інакше запустити
+        // звичайний заряд не було б звідки.
+        chargeDismiss();
+        check(!chargeWakeShown(), "у спокої панель повертається до заряду");
+
+        // І штатний заряд ніколи не показується як пробудження.
+        g_chg = ChargeState{}; g_chg.mode = CHG_MODE_CHARGE; g_chg.state = CHG_RUN;
+        check(!chargeWaking() && !chargeWakeShown(), "штатний заряд — не пробудження");
+        g_chg = ChargeState{};
+    }
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

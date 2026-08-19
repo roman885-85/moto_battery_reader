@@ -1954,6 +1954,10 @@ const char *chargeStart(uint8_t targetPct) {
     //    нагріву заряд заборонено. Ключ зараз закритий, тож 1-Wire читається
     //    без зсуву землі (див. коментар про шунт у мінусовому проводі).
     chargeOff();                        // гарантовано закритий ключ на час вимірів
+    // Стеля шпаруватості — заводська. Її міг опустити попередній сеанс
+    // пробудження; лишити її опущеною означало б заряджати крізь чужу межу й
+    // спинитись за «ключ не тягне» на штатному струмі.
+    chargeResetDutyCap();
 
     // ⚑ ЖИВЛЕННЯ — ПЕРШИМ, ще до всіх інших перевірок. Без нього решта вимірів
     //  не має сенсу: заряд «іде» зі шпаруватістю в стелю й нульовим струмом, і
@@ -2008,6 +2012,7 @@ const char *chargeStart(uint8_t targetPct) {
 
     memset(&g_chg, 0, sizeof(g_chg));
     g_chg.state    = CHG_RUN;
+    g_chg.mode     = CHG_MODE_CHARGE;    // явно, хоч memset і дав би те саме
     g_chg.reason   = CHGR_NONE;
     g_chg.startMv  = g_chg.lastMv = mv;
     g_chg.targetMv  = targetMv;
@@ -2065,9 +2070,227 @@ const char *chargeStart(uint8_t targetPct) {
     return startErr;
 }
 
+// ===========================================================================
+//  ПРИМУСОВЕ ПРОБУДЖЕННЯ — старт і опитування.
+//  Уся арифметика й усі рішення — у charge.h (їх ганяє хостовий тест); тут
+//  лишається те, чого на хості немає: сам пакет, 1-Wire і АЦП.
+// ===========================================================================
+
+// Старт пробудження. Повертає nullptr при успіху, інакше — текст відмови.
+const char *chargeWakeStart() {
+    // ⚑ ENABLE — НАЙПЕРШИМ, як і в chargeStart(), і тут це навіть важливіше:
+    //  без нього пакет не під'єднає клеми до кола, і ми не побачимо ні його
+    //  напруги, ні його монітора — тобто самі ж собі створимо ту картину
+    //  «пакет мовчить», заради якої режим і запускається.
+    battery.holdEnable(true);
+    delay(CHARGE_ENABLE_LEAD_MS);
+
+    const char *startErr = [&]() -> const char * {
+    chargeOff();                       // усі виміри — на закритому ключі
+    chargeResetDutyCap();              // рахуємо від заводської стелі
+
+    uint8_t psu = chargePsuPoll();
+    // Чи читається пакет. Це не «додаткова перевірка», а ГОЛОВНА умова режиму:
+    // відповідає монітор — значить є температура, значить є штатний заряд.
+    uint16_t chipMv = 0; int16_t chipMa = 0, chipT = 0;
+    bool chipReads = dischargeSample(&chipMv, &chipMa, &chipT);
+
+    uint16_t mv = chargePackMv();
+    uint16_t peak = 0, idleMa = chargeMeasureMa(&peak);
+
+    uint8_t no = chargeWakeRefuse(chargeAvailable(), chargePwmOk(),
+                                  chargeRunning() || dischargeRunning(),
+                                  psu, chipReads, mv, idleMa);
+    if (no != WAKENO_OK) {
+        if (no == WAKENO_PSU || no == WAKENO_RAIL || no == WAKENO_LEAK) ledSet(LED_FAULT);
+        Serial.printf("=== Wake NOSTART (%u): клема %u мВ, струм %u мА, живлення %u мВ, "
+                      "монітор %s ===\n",
+                      no, mv, idleMa, chargePsuMv(), chipReads ? "відповідає" : "мовчить");
+        return chargeWakeRefuseText(no);
+    }
+
+    memset(&g_chg, 0, sizeof(g_chg));
+    g_chg.state     = CHG_RUN;
+    g_chg.mode      = CHG_MODE_WAKE;
+    g_chg.reason    = CHGR_NONE;
+    g_chg.startMv   = g_chg.lastMv = mv;
+    // Ціль сеансу — напруга пробудження. Те саме поле, що й у штатного заряду:
+    // на нього спираються і показ, і межа hardMaxMv у клієнтах.
+    g_chg.targetMv  = CHARGE_WAKE_MV;
+    g_chg.targetPct = (uint8_t)impresPercentFromMv(CHARGE_WAKE_MV);
+    g_chg.setMa     = CHARGE_WAKE_MA;
+    g_chg.startMs   = g_chg.lastPollMs = g_chg.wakeProbeMs = millis();
+    g_chg.lastPct   = (uint8_t)impresPercentFromMv(mv);
+
+    // ⚑ І ОСЬ ВОНА, ЄДИНА РІЧ, ЩО ТРИМАЄ ВЕСЬ РЕЖИМ: стеля шпаруватості.
+    //  Вона ж стеля напруги на клемах. Ставиться ДО першого ж підняття
+    //  шпаруватості й діє в chargeSetDuty(), тобто на будь-якому шляху.
+    chargeSetDutyCap(chargeWakeDutyCap());
+    g_chg.duty = 0;                    // з нуля: розганяємось кроками, не стрибком
+    chargeSetDuty(0);
+    chargeWatchdog(true);
+
+    ledSet(LED_CHARGE_TAPER);          // «малий струм» — той самий сигнал, що й дозаряд
+    dischargeDismiss();
+    chargeMarkDirty(2);
+    Serial.printf("\n=== Wake started: клема %u мВ -> тримаємо %u мВ (стеля duty %u з %u, "
+                  "живлення %u мВ), струм до %u мА, межі: %u с / %u мА·год ===\n",
+                  mv, (unsigned)CHARGE_WAKE_MV, chargeDutyCap(), (unsigned)CHARGE_DUTY_FULL,
+                  chargeSupplyMv(), (unsigned)CHARGE_WAKE_MA,
+                  (unsigned)CHARGE_WAKE_MAX_S, (unsigned)CHARGE_WAKE_MAH_MAX);
+    return nullptr;
+    }();
+
+    if (startErr) {
+        chargeOff();
+        battery.holdEnable(false);
+    }
+    return startErr;
+}
+
+// Опитування пробудження. Кличеться з chargeTask(), коли режим саме цей.
+inline void chargeWakeTask() {
+    unsigned long now = millis();
+    chargeWatchdogFeed();
+    if (now - g_chg.lastPollMs < CHARGE_WAKE_POLL_MS) return;
+
+    unsigned long dtMs = now - g_chg.lastPollMs;
+    g_chg.lastPollMs = now;
+    // ⚑ ПОРІГ ЗАВИСАННЯ ТУТ СВІЙ, І ЦЕ ІСТОТНО. Штатні 5 с — це п'ять кроків
+    //  секундного заряду, але ДВІСТІ кроків пробудження. Дозволити ключу стояти
+    //  без нагляду двісті кроків означало б скасувати ту саму дрібність кроку,
+    //  заради якої вона й обрана.
+    if (dtMs > CHARGE_WAKE_STALL_MS) {
+        chargeStop(CHGR_STALL);
+        Serial.printf("=== Wake ABORT: main loop stalled for %lu ms (межа %lu) ===\n",
+                      dtMs, (unsigned long)CHARGE_WAKE_STALL_MS);
+        return;
+    }
+    g_chg.elapsedS = (now - g_chg.startMs) / 1000UL;
+    // Інтеграл ємності — на струмі, що діяв ЩОЙНО минулий інтервал. Він же
+    // друга, незалежна від часу межа сеансу, тож рахується із залишком: на
+    // кроці 25 мс просте ділення на 3600 з'їдало б доданок цілком (див.
+    // chargeAccumMah у charge.h).
+    chargeAccumMah(&g_chg.mahX1000, &g_chg.mahRem, g_chg.lastMa, dtMs);
+
+    // ── струм під чинною шпаруватістю; піковий запобіжник — той самий ──────
+    uint16_t peakMa = 0;
+    uint16_t avgMa  = chargeMeasureMa(&peakMa);
+    if (peakMa > CHARGE_PEAK_MA_MAX) {
+        g_chg.peakMa = peakMa;
+        chargeStop(CHGR_PEAK);
+        // ⚑ У ПРОБУДЖЕННІ ЦЕЙ ПІК МАЄ ДРУГЕ, ЙМОВІРНІШЕ ПОЯСНЕННЯ. У штатному
+        //  заряді стрибок струму означає поломку (обрив дроселя, пробитий
+        //  ключ). Тут — найімовірніше УСПІХ: контролер щойно замкнув ключ, і на
+        //  місці розімкненого кола раптом з'явились розряджені банки. Струм при
+        //  цьому виходить (Uпробудження − Uбанок)/R_кола, і з біполярним ключем
+        //  (у нього немає RDS(on), тобто опір контуру менший) він законно
+        //  перевищує відсічку. Відсічка зробила своє — закрила ключ; лишилось
+        //  не збрехати користувачеві про причину.
+        Serial.printf("=== Wake ABORT: peak %u mA > %u mA. Найімовірніше пакет САМЕ ОЖИВ "
+                      "і замкнув свій ключ — перевірте, чи він тепер читається; "
+                      "якщо ні, дивіться дросель, ключ і контакти ===\n",
+                      peakMa, (unsigned)CHARGE_PEAK_MA_MAX);
+        return;
+    }
+
+    // ── проба: закритий ключ, напруга, і спроба докликатись монітора ───────
+    //  Рідко (CHARGE_WAKE_PROBE_S) і саме тому, що вона ЗНІМАЄ напругу з клем:
+    //  1-Wire читається лише на закритому ключі (шунт у мінусовому проводі), а
+    //  контролеру, якого ми будимо, потрібна саме безперервна напруга.
+    bool     probe   = (now - g_chg.wakeProbeMs) >= (unsigned long)CHARGE_WAKE_PROBE_S * 1000UL;
+    bool     mvFresh = false, chipOk = false;
+    uint16_t mv      = g_chg.lastMv;
+    if (probe) {
+        uint16_t save = g_chg.duty;
+        chargeSetDuty(0);
+        dischargeSettle(CHARGE_VSENSE_SETTLE_MS);
+        mv = chargePackMv();
+        mvFresh = true;
+        uint16_t cmv = 0; int16_t cma = 0, ct = 0;
+        chipOk = dischargeSample(&cmv, &cma, &ct);
+        if (chipOk) { g_chg.chipMv = cmv; g_chg.lastTempC10 = ct; }
+        g_chg.wakeProbeMs = now;
+        if (g_chg.wakeProbes < 255) g_chg.wakeProbes++;
+        chargeSetDuty(save);           // назад під напругу, поки вирішуємо
+    }
+
+    // ── живлення — тією ж відсічкою, що й у штатного заряду ────────────────
+    uint8_t psu = chargePsuPoll();
+    if (chargePsuTrip(psu, &g_chg.badPsuPolls)) {
+        chargeStop(CHGR_PSU);
+        ledSet(LED_FAULT);
+        Serial.printf("=== Wake ABORT: %s (%u мВ) ===\n", chargePsuText(psu), chargePsuMv());
+        return;
+    }
+
+    // ── вирок ─────────────────────────────────────────────────────────────
+    ChargeWakeIn in;
+    in.chipOk   = chipOk;
+    in.avgMa    = avgMa;
+    in.mvFresh  = mvFresh;
+    in.mv       = mv;
+    in.elapsedS = g_chg.elapsedS;
+    in.mah      = chargeMah();
+    uint8_t v = chargeWakeVerdict(in);
+
+    g_chg.lastMa  = (int16_t)avgMa;
+    g_chg.peakMa  = peakMa;
+    if (mvFresh) g_chg.lastMv = mv;
+    g_chg.polls++;
+
+    if (v != WAKEV_GO) {
+        uint8_t reason = chargeWakeReason(v);
+        chargeStop(reason);
+        // LED_FAULT — сигнал «залізо несправне», і вішати його на кожну невдачу
+        // не можна: «монітор так і не відповів» або «вичерпано ємність» — це не
+        // поломка пристрою, а результат досліду. chargeStop() уже поставив
+        // LED_OK/LED_ERROR за суттю; підвищуємо лише там, де справді підозра на
+        // залізо.
+        if (v == WAKEV_OVERI || v == WAKEV_OVERV) ledSet(LED_FAULT);
+        if (v == WAKEV_WOKE)
+            Serial.printf("=== Wake DONE: монітор відповів (%u мВ, %.1f C) за %lus і %lu "
+                          "мА·год, проб %u. Пакет живий — читайте його й запускайте "
+                          "звичайний заряд ===\n",
+                          g_chg.chipMv, g_chg.lastTempC10 / 10.0f,
+                          (unsigned long)g_chg.elapsedS, (unsigned long)chargeMah(),
+                          g_chg.wakeProbes);
+        else
+            Serial.printf("=== Wake STOP (%u): %s. Клема %u мВ, струм %u мА, %lus, "
+                          "%lu мА·год, проб %u ===\n",
+                          v, chargeReasonText(reason), mv, avgMa,
+                          (unsigned long)g_chg.elapsedS, (unsigned long)chargeMah(),
+                          g_chg.wakeProbes);
+        return;
+    }
+
+    // ── крок регулятора НАПРУГИ ───────────────────────────────────────────
+    //  Стелю перераховуємо щопроходу: вона залежить від ВИМІРЯНОГО живлення, а
+    //  воно просідає під струмом і плаває від блока до блока. Порахувати її раз
+    //  на старті означало б тримати не ту напругу, щойно живлення зрушить.
+    chargeSetDutyCap(chargeWakeDutyCap());
+    g_chg.duty = chargeWakeNextDuty(g_chg.duty, (int32_t)avgMa, chargeDutyCap());
+    chargeSetDuty(g_chg.duty);
+
+    pmNote(PM_MODE_WAKE, g_chg.polls, g_chg.duty, g_chg.lastMa, mv);
+    // Журнал рідкий: на 100-мілісекундному кроці рядок щопроходу забив би
+    // консоль. Пишемо там, де щось справді сталося, — на пробі.
+    if (probe)
+        Serial.printf("wake: клема %u mV, %u mA (пік %u, стеля %u), duty %u/%u (межа %u), "
+                      "%lus, %lu mAh, проба %u — монітор мовчить\n",
+                      mv, avgMa, peakMa, (unsigned)CHARGE_WAKE_MA,
+                      g_chg.duty, (unsigned)CHARGE_DUTY_FULL, chargeDutyCap(),
+                      (unsigned long)g_chg.elapsedS, (unsigned long)chargeMah(),
+                      g_chg.wakeProbes);
+    chargeMarkDirty(1);
+}
+
 // Викликати часто з loop(). Реальна робота — раз на CHARGE_POLL_MS.
 inline void chargeTask() {
     if (g_chg.state != CHG_RUN) return;
+    // Пробудження — окрема машина з іншим кроком, іншим регульованим значенням
+    // і іншими межами. Штатний шлях нижче лишається незмінним до байта.
+    if (g_chg.mode == CHG_MODE_WAKE) { chargeWakeTask(); return; }
     unsigned long now = millis();
 
     if ((now - g_chg.startMs) / 60000UL >= (unsigned long)CHARGE_MAX_MIN) {
@@ -2511,6 +2734,19 @@ static String chargeJson() {
     // Вершина пульсацій і межа — запобіжник від «дросель випав із кола».
     j += ",\"peakMa\":"   + String(g_chg.peakMa);
     j += ",\"peakMaxMa\":"+ String((unsigned)CHARGE_PEAK_MA_MAX);
+    // ── ПРИМУСОВЕ ПРОБУДЖЕННЯ ──────────────────────────────────────────────
+    //  Іде в тому ж об'єкті, що й заряд, бо це той самий ключ і та сама машина.
+    //  Клієнт розрізняє режими за "wake": показувати відсотки, дозаряд і
+    //  профіль струму під час пробудження безглуздо — там нічого з цього немає.
+    //  Межі йдуть поруч зі станом, щоб клієнт не тримав власної копії чисел із
+    //  settings.h (така копія розійшлась би на першій же правці).
+    j += ",\"wake\":"     + String(chargeWakeShown() ? "true" : "false");
+    j += ",\"wakeMv\":"   + String((unsigned)CHARGE_WAKE_MV);
+    j += ",\"wakeMa\":"   + String((unsigned)CHARGE_WAKE_MA);
+    j += ",\"wakeMaxS\":" + String((unsigned)CHARGE_WAKE_MAX_S);
+    j += ",\"wakeMahMax\":" + String((unsigned)CHARGE_WAKE_MAH_MAX);
+    j += ",\"wakeProbes\":" + String(g_chg.wakeProbes);
+    j += ",\"dutyCap\":"  + String(chargeDutyCap());
     j += ",\"shuntMohm\":"+ String((unsigned)CHARGE_SHUNT_MOHM);
     j += ",\"pwm\":"      + String(chargePwmOk() ? "true" : "false");
     j += ",\"hardMaxMv\":"+ String((unsigned)g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV);
@@ -4068,11 +4304,32 @@ void handleChargeStart() {
     server.send(200, "application/json",
         String("{\"status\":\"success\",\"message\":\"Заряд почато\",\"charge\":") + chargeJson() + "}");
 }
+// Примусове пробудження. Окремий обробник, а не прапорець у /api/charge/start:
+// у нього інші умови старту, інші межі й інший сенс, і плутати їх одним полем
+// означало б, що випадковий зайвий параметр запускає режим без контролю
+// температури. Параметрів у нього немає взагалі — усе задає settings.h.
+void handleChargeWake() {
+    if (!requireAdmin()) return;
+    const char *err = chargeWakeStart();
+    if (err) {
+        String j = "{\"status\":\"error\",\"message\":\""; j += err; j += "\"}";
+        server.send(400, "application/json", j);
+        return;
+    }
+    server.send(200, "application/json",
+        String("{\"status\":\"success\",\"message\":\"Пробудження почато\",\"charge\":")
+        + chargeJson() + "}");
+}
 void handleChargeStop() {
     if (!requireAdmin()) return;
+    // Одна кнопка на обидва режими: зупиняє те, що саме йде. Друга кнопка
+    // «зупинити пробудження» лише плодила б стан, у якому натиснуто не ту.
+    bool wasWake = chargeWaking();
     chargeStop(CHGR_USER);
     server.send(200, "application/json",
-        String("{\"status\":\"success\",\"message\":\"Заряд зупинено\",\"charge\":") + chargeJson() + "}");
+        String("{\"status\":\"success\",\"message\":\"")
+        + (wasWake ? "Пробудження зупинено" : "Заряд зупинено")
+        + "\",\"charge\":" + chargeJson() + "}");
 }
 void handleChargeStatus() {
     server.send(200, "application/json", chargeJson());
@@ -4739,6 +4996,7 @@ void setupWebServer() {
     server.on("/api/charge", HTTP_GET, handleChargeStatus);              // стан заряду
     server.on("/api/charge/start", HTTP_POST, handleChargeStart);        // почати заряд
     server.on("/api/charge/ma", HTTP_POST, handleChargeMa);     // ручний струм заряду
+    server.on("/api/charge/wake", HTTP_POST, handleChargeWake); // примусове пробудження
     server.on("/api/charge/stop", HTTP_POST, handleChargeStop);          // зупинити заряд
     server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
     server.on("/api/clone", HTTP_POST, handleCloneRestore);      // крайній засіб: режим копії

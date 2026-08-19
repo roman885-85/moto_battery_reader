@@ -436,6 +436,11 @@ void loop() {
         else if (act == OP_CHARGE_TGT)    { char m[24];
                                             snprintf(m, sizeof(m), "ЦІЛЬ %u%%", chargeCycleTarget());
                                             displayShow(m); ledSet(LED_IDLE); }
+        // Примусове пробудження — параметрів не має взагалі: усі межі задає
+        // settings.h, і саме тому режим і безпечний (див. charge.h).
+        else if (act == OP_CHARGE_WAKE)   { const char *e = chargeWakeStart();
+                                            if (e) { Serial.println(e); displayShow("ПРОБУДЖ.: ЗБІЙ");
+                                                     ledSet(LED_ERROR); } }
         // «Модель <X>» — модельна частина еталона, БЕЗ навченого хвоста донора.
         else if (tm >= 0)                 performRestoreTemplate(BATTERY_TEMPLATES[tm].name);
         // «Новий <X>» — порожній чіп -> робочий АКБ; заряд 50 % ємності моделі.

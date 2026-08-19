@@ -915,7 +915,11 @@ inline void drawPageDischarge() {
 inline void drawPageCharge() {
     const ChargeState &c = g_chg;
     char b[48];
-    snprintf(b, sizeof(b), "ЗАРЯД %d%%", c.lastPct);
+    // Пробудження — не заряд і не має відсотка: відсоток рахується з напруги на
+    // клемі, а вона під час пробудження показує не пакет, а те, що ми самі туди
+    // подали. Тому в заголовку час, а не «%».
+    if (chargeWakeShown()) snprintf(b, sizeof(b), "ПРОБУДЖ. %lus", (unsigned long)c.elapsedS);
+    else                  snprintf(b, sizeof(b), "ЗАРЯД %d%%", c.lastPct);
     drawHeader(b);
 
     u8g2.setFont(u8g2_font_6x12_t_cyrillic);
@@ -931,10 +935,15 @@ inline void drawPageCharge() {
     // Уставка струму й ЦІЛЬОВА вихідна напруга ДС/ДС (не шпаруватість — крива
     // керування нелінійна, див. charge.h/settings.h): чинний струм тримається
     // на уставці, а сама напруга видно для діагностики «регулятор рухається».
-    if (chargePwmOk()) {
-        snprintf(b, sizeof(b), "уст%uмА ШІМ%u%%", c.setMa, chargeDutyPct());
-    } else {
+    if (!chargePwmOk()) {
         snprintf(b, sizeof(b), "БЕЗ КЕРУВАННЯ!");
+    } else if (chargeWakeShown()) {
+        // У пробудженні уставки струму немає — є стеля, і головне число тут
+        // саме та НАПРУГА, яку ми тримаємо на клемах.
+        snprintf(b, sizeof(b), "трим%u.%02uВ ШІМ%u%%", c.targetMv / 1000,
+                 (c.targetMv % 1000) / 10, chargeDutyPct());
+    } else {
+        snprintf(b, sizeof(b), "уст%uмА ШІМ%u%%", c.setMa, chargeDutyPct());
     }
     u8g2.drawUTF8(0, HEAD_LINE + 24, b);
 
@@ -947,16 +956,28 @@ inline void drawPageCharge() {
                  (chargePsuMv() % 1000) / 10,
                  chargePsuState() == PSU_ABSENT ? "НЕМАЄ" :
                  chargePsuState() == PSU_LOW    ? "ЗАНИЖЕНО" : "ЗАВИЩЕНО");
+    } else if (chargeWakeShown()) {
+        // CCA рахується з лічильника DS2438, а він мовчить — тому лише наш
+        // інтеграл, і одразу поруч із межею, до якої він має право дорости.
+        snprintf(b, sizeof(b), "%lu з %u мА·год  %uмА",
+                 (unsigned long)chargeMah(), (unsigned)CHARGE_WAKE_MAH_MAX, c.lastMa);
     } else {
         snprintf(b, sizeof(b), "%lu мА·год (CCA %lu)",
                  (unsigned long)chargeMah(), (unsigned long)chargeCcaMah());
     }
     u8g2.drawUTF8(0, HEAD_LINE + 33, b);
 
-    snprintf(b, sizeof(b), "ICA %u  %d.%dC  %lu:%02lu:%02lu",
-             c.lastIca, c.lastTempC10 / 10, abs(c.lastTempC10 % 10),
-             (unsigned long)(c.elapsedS / 3600), (unsigned long)((c.elapsedS / 60) % 60),
-             (unsigned long)(c.elapsedS % 60));
+    if (chargeWakeShown()) {
+        // ICA й температура — теж із монітора, тобто невідомі. Замість них те,
+        // що в цьому режимі справді є: скільки разів ми його гукали.
+        snprintf(b, sizeof(b), "проб %u  %s", c.wakeProbes,
+                 c.reason == CHGR_WOKE ? "ВІДПОВІВ!" : "мовчить");
+    } else {
+        snprintf(b, sizeof(b), "ICA %u  %d.%dC  %lu:%02lu:%02lu",
+                 c.lastIca, c.lastTempC10 / 10, abs(c.lastTempC10 % 10),
+                 (unsigned long)(c.elapsedS / 3600), (unsigned long)((c.elapsedS / 60) % 60),
+                 (unsigned long)(c.elapsedS % 60));
+    }
     u8g2.drawUTF8(0, HEAD_LINE + 42, b);
 
     u8g2.drawHLine(0, FOOT_HL, DISP_W);

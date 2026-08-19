@@ -570,8 +570,17 @@ class ChargeMonitor(ttk.Frame):
             return
         state = d.get("state", "idle")
         run = state == "run"
+        # ⚑ ПРОБУДЖЕННЯ — інший режим тієї самої панелі. Прапорець приходить за
+        #  РЕЖИМОМ, а не за станом: підсумок лишається видимим після зупинки, і
+        #  показати його як «ЗАРЯД ЗАВЕРШЕНО» означало б збрехати саме там, де
+        #  читають результат.
+        wake = bool(d.get("wake"))
         txt = {"idle": "очікування", "run": "ІДЕ ЗАРЯД",
                "done": "✅ ЗАРЯД ЗАВЕРШЕНО", "abort": "⛔ " + str(d.get("reason") or "аварія")}.get(state, state)
+        if wake:
+            txt = {"idle": "очікування", "run": "🩺 ІДЕ ПРОБУДЖЕННЯ",
+                   "done": "✅ " + str(d.get("reason") or "пакет ожив"),
+                   "abort": "⛔ " + str(d.get("reason") or "аварія")}.get(state, state)
         # ЖИВЛЕННЯ +14 В — попереду стану заряду: несправний блок означає, що
         # заряд не піде взагалі, і «очікування» поверх цього приховало б єдину
         # причину, яку користувач може усунути сам.
@@ -585,12 +594,27 @@ class ChargeMonitor(ttk.Frame):
                                          MIL["olive"] if run else MIL["fg"]))
         mv, pct = d.get("mv", 0), d.get("pct", 0)
         self.lblMv.config(text="%.2f В" % (mv / 1000.0))
-        self.lblSub.config(text="%d %% · старт %.2f В → ціль %.2f В"
-                                 % (pct, d.get("startMv", 0) / 1000.0, d.get("targetMv", 0) / 1000.0))
-        self.bar["value"] = max(0, min(100, pct))
         ma, setMa, pwm = d.get("ma", 0), d.get("setMa", 0), d.get("pwm", False)
-        self.lblLim.config(text=("уставка %d мА · зараз %d мА" % (setMa, ma)) if pwm else "⚠ керування недоступне",
-                            foreground=MIL["olive"] if pwm else MIL["maroon"])
+        if wake:
+            # Смуга показує ЧАС, а не відсоток заряду: відсоток рахується з
+            # напруги на клемі, а вона зараз показує не пакет, а те, що ми самі
+            # туди подали.
+            lim = d.get("wakeMaxS", 120) or 120
+            el = min(int(d.get("elapsedS", 0)), lim)
+            self.lblSub.config(text="тримаємо %.2f В · старт %.2f В · стеля струму %d мА"
+                                    % (d.get("wakeMv", 0) / 1000.0,
+                                       d.get("startMv", 0) / 1000.0, d.get("wakeMa", 0)))
+            self.bar["value"] = max(0, min(100, el * 100 // lim))
+            self.lblLim.config(text=("стеля %d мА · зараз %d мА · лишилось %d с"
+                                     % (d.get("wakeMa", 0), ma, max(0, lim - int(d.get("elapsedS", 0)))))
+                                    if pwm else "⚠ керування недоступне",
+                               foreground=MIL["olive"] if pwm else MIL["maroon"])
+        else:
+            self.lblSub.config(text="%d %% · старт %.2f В → ціль %.2f В"
+                                     % (pct, d.get("startMv", 0) / 1000.0, d.get("targetMv", 0) / 1000.0))
+            self.bar["value"] = max(0, min(100, pct))
+            self.lblLim.config(text=("уставка %d мА · зараз %d мА" % (setMa, ma)) if pwm else "⚠ керування недоступне",
+                                foreground=MIL["olive"] if pwm else MIL["maroon"])
         # Керування тепер — ШПАРУВАТІСТЬ силового ключа (через керуючий NPN), а не «цільова
         # напруга DC/DC». Поруч — вершина пульсацій струму дроселя: вона злітає,
         # коли дросель фактично випав із кола (обрив, насичення, пробитий ключ).
@@ -598,15 +622,30 @@ class ChargeMonitor(ttk.Frame):
         dutyMax, dutyPct = d.get("dutyMax", dutyFull), d.get("dutyPct", 0)
         peak, peakMax = d.get("peakMa", 0), d.get("peakMaxMa", 0)
         shunt = (d.get("shuntMohm", 0) or 0) / 1000.0
-        self.lblOut.config(text=("ШІМ %d%% (%d/%d, стеля %d) · пік %d мА з %d (шунт %.2f Ом)"
-                                 % (dutyPct, duty, dutyFull, dutyMax, peak, peakMax, shunt))
+        # У пробудженні стеля інша — стеля СЕАНСУ (dutyCap): саме вона тримає
+        # напругу на клемах, і показувати замість неї заводську означало б
+        # малювати регулятор, якому «ще є куди рости».
+        cap = (d.get("dutyCap", dutyMax) or dutyMax) if wake else dutyMax
+        self.lblOut.config(text=("ШІМ %d%% (%d/%d, стеля %d%s) · пік %d мА з %d (шунт %.2f Ом)"
+                                 % (dutyPct, duty, dutyFull, cap,
+                                    " — межа напруги" if wake else "", peak, peakMax, shunt))
                                  if pwm else "керування недоступне")
-        self.tileVars["mah"].config(text=str(d.get("mah", 0)))
-        self.tileVars["cca"].config(text=str(d.get("ccaMah", 0)))
+        # ⚑ У ПРОБУДЖЕННІ ТРИ ПЛИТКИ БУЛИ Б ВИГАДКОЮ: CCA, температура й ICA
+        #  читаються з DS2438, а він мовчить — у цьому вся суть режиму.
+        #  Показати «0» означало б видати відсутність даних за дані, тому на їх
+        #  місце стають ті числа, які в цьому режимі справді є.
+        if wake:
+            self.tileVars["mah"].config(text="%d / %d" % (d.get("mah", 0), d.get("wakeMahMax", 0)))
+            self.tileVars["cca"].config(text="проб %d" % d.get("wakeProbes", 0))
+            self.tileVars["t"].config(text="—")
+            self.tileVars["ica"].config(text="—")
+        else:
+            self.tileVars["mah"].config(text=str(d.get("mah", 0)))
+            self.tileVars["cca"].config(text=str(d.get("ccaMah", 0)))
+            self.tileVars["t"].config(text=str(d.get("tempC", 0)))
+            self.tileVars["ica"].config(text=str(d.get("ica", 0)))
         self.tileVars["ma"].config(text=str(ma))
         self.tileVars["w"].config(text=str(d.get("watts", 0)))
-        self.tileVars["t"].config(text=str(d.get("tempC", 0)))
-        self.tileVars["ica"].config(text=str(d.get("ica", 0)))
         if not pwm and (run or state == "done"):
             self.lblWarn.config(text="Керування недоступне: каналу LEDC не знайшлося — "
                                       "вимкніть заряд і перевірте CHARGE_LEDC_CH у settings.h.")
@@ -1591,6 +1630,25 @@ class App:
         ttk.Button(cf, text="⏹ Зупинити", command=self.charge_stop).pack(side="left", padx=2)
         ttk.Button(cf, text="🔄 Оновити зараз", command=self.charge_status).pack(side="left", padx=2)
         self.monChg = ChargeMonitor(b2e); self.monChg.pack(anchor="w", pady=(6, 0))
+
+        # ── ПРИМУСОВЕ ПРОБУДЖЕННЯ ──────────────────────────────────────────
+        #  Окремою рамкою, а не ще однією кнопкою в ряду вище: у режиму інші
+        #  умови й інший сенс, і сусідство з «Почати заряд» було б найгіршим із
+        #  можливих.
+        b2w = ttk.LabelFrame(p_cal, text="Пакет не читається після заміни елементів  ·  нічого не пише",
+                             padding=8); b2w.pack(fill="x", pady=4)
+        ttk.Label(b2w, text="Контролер захисту після заміни банок часто лишається заблокованим і не відпускає\n"
+                            "клеми, доки не побачить ЗОВНІШНЮ зарядну напругу. Поки він мовчить, мовчать і\n"
+                            "DS2438 з DS2433 — а звичайний заряд саме тому й відмовляє: без DS2438 немає\n"
+                            "температури. Пробудження розриває це коло: коротко тримає на клемах зарядну\n"
+                            "напругу з обмеженням струму й раз на кілька секунд пробує гукнути монітор.\n"
+                            "Щойно той відповів — режим сам зупиняється.\n"
+                            "Чому це безпечно без датчика температури: віддана енергія обмежена одиницями\n"
+                            "мА·год за хвилини — менше, ніж пакет втрачає на власний саморозряд. Межі задає\n"
+                            "settings.h і перевіряє компілятор. Якщо пакет ЧИТАЄТЬСЯ — запуск буде відхилено.",
+                  foreground="#b9bd86", justify="left").pack(anchor="w")
+        ttk.Button(b2w, text="🩺 Примусово розбудити пакет",
+                   command=self.charge_wake).pack(anchor="w", pady=(4, 0))
 
         b2c = ttk.LabelFrame(p_cal, text="Крок 3 — калібрування на IMPRES-ЗП (обов'язково)", padding=8); b2c.pack(fill="x", pady=4)
         ttk.Label(b2c, text="Після ремонту навчена калібровка порожня — рація приймає пакет як фірмовий і просить\n"
@@ -2703,7 +2761,34 @@ class App:
     def charge_stop(self):
         if not self.need_conn():
             return
-        self.cmd("CHARGE STOP", 10.0, cb=lambda r: (self.status("Заряд зупинено"), self._chg_show(r)))
+        self.cmd("CHARGE STOP", 10.0, cb=lambda r: (self.status("Зупинено"), self._chg_show(r)))
+
+    def charge_wake(self):
+        """Примусове пробудження пакета, який не читається після заміни елементів.
+
+        Параметрів немає навмисно: усі межі (напруга, струм, час, віддана
+        ємність) задає settings.h і перевіряє компілятор — саме тому режим і
+        лишається безпечним без контролю температури. Дати їх сюди означало б
+        віддати клієнту право їх послабити."""
+        if not self.need_conn():
+            return
+        if not messagebox.askyesno("Пробудження",
+                "Примусово розбудити пакет?\n\n"
+                "Пристрій коротко подасть на клеми зарядну напругу, щоб зняти блокування "
+                "контролера захисту, і зупиниться сам, щойно монітор відповість.\n\n"
+                "Режим працює БЕЗ контролю температури (пакет не читається — у цьому вся "
+                "суть), тому жорстко обмежений за струмом, часом і відданою ємністю. "
+                "Якщо пакет читається — запуск буде відхилено.\n\n"
+                "Не лишайте пристрій без нагляду."):
+            return
+
+        def done(r):
+            if isinstance(r, dict) and r.get("ok"):
+                self.status("Пробудження почато"); self._chg_show(r)
+            else:
+                self._chgBusy = False
+                self.status("Помилка: " + str((r or {}).get("err", "")))
+        self.maybe_auth(lambda: self.cmd("CHARGE WAKE", 15.0, cb=done))
 
     def restore_battery(self, verbatim=False):
         # verbatim=False — переносимо лише модельну частину еталона; навчений

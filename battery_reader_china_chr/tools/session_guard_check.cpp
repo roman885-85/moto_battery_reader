@@ -1936,6 +1936,57 @@ int main() {
                                              "карта пінів у схемі більше не показує GPIO25 вільним");
     }
 
+    printf("\n40) меню-список справді ввімкнене в обидва драйвери екрана\n");
+    // ⚑ ЩО ЛОВИМО. Модель меню (порядок, групи, стрибки) живе в operations.h і
+    //  покрита menu_check — там її кличуть напряму. Але display.h і
+    //  display_color.h на хості не збираються взагалі, тож «модель правильна»
+    //  і «екран її малює» лишаються різними твердженнями. Найдешевший спосіб
+    //  зробити з правильної моделі непрацюючий пристрій — лишити в драйвері
+    //  старе кільце дій, і жоден тест цього б не помітив.
+    {
+        // ⚠️ Перевіряємо саме МІСЦЯ ВИКЛИКУ, а не наявність імені у файлі:
+        //  drawPageMenu() є у файлі вже тому, що вона там ОГОЛОШЕНА, і
+        //  перевірка «ім'я зустрічається» лишалась би зеленою на драйвері, де
+        //  сторінку викинули з диспетчера. Цей проєкт на такому вже горів.
+        for (const char *f : { "display.h", "display_color.h" }) {
+            check(fileHasText(f, "case PAGE_MENU:"),
+                                             "сторінка-список стоїть у диспетчері сторінок");
+            check(fileHasText(f, "g_displayPage = PAGE_MENU;"),
+                                             "…і в неї є вхід із кільця показань");
+            check(fileHasText(f, "menuActivate(e3 == 2)") &&
+                  fileHasText(f, "menuActivate(e2 == 2)"),
+                                             "«OK» веде в menuActivate() в ОБОХ схемах кнопок (3 і 2)");
+            check(fileHasText(f, "menuNextGroup(g_menuSel)") &&
+                  fileHasText(f, "menuPrevGroup(g_menuSel)"),
+                                             "довге натискання справді стрибає по групах");
+            check(fileCalls(f, "menuCount") && fileCalls(f, "menuInfo") &&
+                  fileCalls(f, "menuRow"),
+                                             "склад списку береться з operations.h, а не свій");
+            check(fileCalls(f, "txtFit"),    "назва пункту обрізається по гліфах, а не по байтах");
+            check(fileCalls(f, "menuPageToDisplayPage"),
+                                             "«сторінковий» пункт іде через переклад MPG_* -> PAGE_*");
+            // Старого плоского кільця не лишилось: саме воно й було скаргою.
+            check(fileHasNo(f, "g_actionSel"),   "курсора старого кільця дій більше немає");
+            check(fileHasNo(f, "% NUM_DISPLAY_PAGES"),
+                                             "кільце гортання — лише по сторінках ПОКАЗАНЬ");
+        }
+        // Порядок пунктів мусить лишатись в ОДНОМУ місці. Якщо драйвер почне
+        // перелічувати операції сам, розійдеться те саме, заради чого колись
+        // і зробили operations.h.
+        check(fileHasNo("display.h", "MENU_SEGS") &&
+              fileHasNo("display_color.h", "MENU_SEGS"),
+                                             "таблиця порядку живе лише в operations.h");
+        check(fileCalls("operations.h", "menuGroupStarts") &&
+              fileCalls("operations.h", "menuIndexOfOp"),
+                                             "модель меню повністю в каталозі операцій");
+        // Вихід із меню — пунктом списку, а не окремою кнопкою: третьої кнопки
+        // на це немає (усі три вже зайняті рухом і вибором).
+        check(fileCalls("operations.h", "MPG_HOME"),
+                                             "у списку є пункт виходу до показань");
+        check(fileExists("tools/menu_check.cpp"),
+                                             "модель меню має власний хостовий тест");
+    }
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

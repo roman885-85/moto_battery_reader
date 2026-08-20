@@ -93,3 +93,33 @@ inline int txtWrap(const char *s, int maxGlyphs, TxtLine *out, int maxLines) {
 inline bool txtFits(const char *s, int maxGlyphs) {
     return txtGlyphs(s) <= maxGlyphs;
 }
+
+// Скопіювати рядок, обрізавши до maxGlyphs ГЛІФІВ (а не байтів). Потрібно
+// саме там, де перенос не годиться: у рядку списку місця рівно на один рядок,
+// і вибір стоїть між «обрізати» й «залізти на сусідній пункт».
+//
+// ⚑ Обрізане позначаємо крапкою, і це не косметика: «Модель PMNN4409B» і
+// «Модель PMNN4409A» на вузькій панелі обріжуться в один і той самий текст,
+// і без позначки користувач вважав би, що бачить повну назву. Крапка каже:
+// назва довша, звірся у вебі.
+//
+// Обрізаємо на (maxGlyphs-1) гліфів, щоб крапка ВЛІЗЛА у відведену ширину,
+// а не стала (maxGlyphs+1)-м символом — інакше позначка про переповнення сама
+// б його й спричиняла.
+inline void txtFit(char *dst, size_t dstN, const char *s, int maxGlyphs) {
+    if (!dst || dstN == 0) return;
+    if (!s) { dst[0] = '\0'; return; }
+    if (maxGlyphs < 1) { dst[0] = '\0'; return; }
+    if (txtGlyphs(s) <= maxGlyphs) {
+        size_t i = 0;
+        while (s[i] && i + 1 < dstN) { dst[i] = s[i]; i++; }
+        dst[i] = '\0';
+        return;
+    }
+    int b = txtByteAt(s, maxGlyphs - 1);
+    if (b > (int)dstN - 2) b = (int)dstN - 2;
+    if (b < 0) b = 0;
+    for (int i = 0; i < b; i++) dst[i] = s[i];
+    dst[b] = '.';
+    dst[b + 1] = '\0';
+}

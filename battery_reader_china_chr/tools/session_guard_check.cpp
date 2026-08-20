@@ -1876,6 +1876,66 @@ int main() {
                                              "інструкція пояснює, коли ним користуватись і чим запускати");
     }
 
+    printf("\n39) звук: вартовий піна стоїть там, де ті піни вже визначені\n");
+    // ⚑ ЩО САМЕ ЛОВИМО. Блок буззера в settings.h стоїть РАНО (~600-й рядок),
+    //  а силові й вимірювальні піни — пізно (~750 і ~1200). Через це три
+    //  рядки перевірки конфлікту всередині раннього блока порівнювали пін
+    //  звуку з CHARGE_PWM_PIN, LOAD_PIN і BTN_LED_PIN, яких на той момент ще
+    //  НЕ ІСНУЄ: defined() чесно давав 0, уся умова згорталась у «конфлікту
+    //  немає», і вартовий не міг спрацювати НІКОЛИ. Той самий клас дефекту,
+    //  що вже ловили на DISCHARGE_RAMP_LO_MV: перевірка є, захисту немає.
+    //
+    //  Поки звук був вимкнений, це нічого не важило. З увімкненим — важить
+    //  максимально: ЦАП на ESP32 є рівно на двох пінах (25 і 26), 26-й уже
+    //  зайнятий ШІМ заряду, тож ЄДИНА можлива тут помилка веде рівно в
+    //  силовий ключ.
+    //
+    //  ⚠️ Сам факт «звук увімкнено чи вимкнено» тут НЕ перевіряється: це
+    //  вибір власника, а не інваріант коду. Перевіряється те, що вибір із
+    //  двох пінів зроблено під наглядом працюючого вартового.
+    {
+        check(fileHasText("settings.h", "#error \"Пін звуку"),
+                                             "перевірка «пін звуку проти силових» у settings.h є");
+        check(fileDefinesBefore("settings.h", "#define CHARGE_PWM_PIN",       "#error \"Пін звуку") &&
+              fileDefinesBefore("settings.h", "#define CHARGE_ISENSE_PIN",    "#error \"Пін звуку") &&
+              fileDefinesBefore("settings.h", "#define CHARGE_VSENSE_PIN",    "#error \"Пін звуку") &&
+              fileDefinesBefore("settings.h", "#define CHARGE_LEGACY_EN_PIN", "#error \"Пін звуку") &&
+              fileDefinesBefore("settings.h", "#define LOAD_PIN",             "#error \"Пін звуку") &&
+              fileDefinesBefore("settings.h", "#define BTN_LED_PIN",          "#error \"Пін звуку"),
+                                             "…і стоїть ПІСЛЯ всіх шести пінів, з якими порівнюється");
+        check(fileHasNo("settings.h", "BUZZER_DAC_PIN == CHARGE_PWM_PIN") &&
+              fileHasNo("settings.h", "BUZZER_DAC_PIN == LOAD_PIN") &&
+              fileHasNo("settings.h", "BUZZER_DAC_PIN == BTN_LED_PIN"),
+                                             "мертві порівняння в ранньому блоці не повернулись");
+        // Передумова попередньої перевірки: блок звуку справді стоїть РАНІШЕ
+        // за силові піни. Переставите блоки місцями — вона перестане бути
+        // правдою (порівняння в ранньому блоці ожили б), і дізнатись про це
+        // треба від тесту, а не від пристрою.
+        check(fileDefinesBefore("settings.h", "#define BUZZ_SAMPLE_HZ", "#define CHARGE_PWM_PIN"),
+                                             "передумова: блок звуку у файлі стоїть раніше за силові піни");
+
+        // ЦАП-варіант мусить рахуватись «наявним буззером». Перевірялось лише
+        // BUZZER_PIN (ШІМ), бо ЦАП-виходу тоді ще не існувало: з увімкненим
+        // звуком на ЦАП усі три клієнти діставали hasBuzzer:false і малювали
+        // «буззера немає» просто над повзунками, які працюють.
+        check(fileHasText("web_server.h", "String((int)BUZZER_DAC_PIN)"),
+                                             "/api/sound доповідає про ЦАП-вихід, а не лише про ШІМ");
+        check(fileHasText("index.html",              "ні BUZZER_DAC_PIN, ні BUZZER_PIN") &&
+              fileHasText("client_usb.html",         "ні BUZZER_DAC_PIN, ні BUZZER_PIN") &&
+              fileHasText("usb_client/moto_gui.py",  "ні BUZZER_DAC_PIN, ні BUZZER_PIN"),
+                                             "усі три клієнти пояснюють тишу обома константами");
+
+        // Звук, який нікому не заводять, — це той самий «функція правильна,
+        // але її ніхто не кличе».
+        check(fileCalls("leds.h", "buzzInit") && fileCalls("leds.h", "buzzTask"),
+                                             "звук заводиться й ведеться з ledTask(), а не лише існує в buzzer.h");
+        check(fileCalls("motorola-battery-reader-web.ino", "buzzSelfTest"),
+                                             "стартова самоперевірка звуку викликається зі скетча");
+
+        check(fileHasNo("SCHEMATIC.html", "Звільнений від звуку"),
+                                             "карта пінів у схемі більше не показує GPIO25 вільним");
+    }
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

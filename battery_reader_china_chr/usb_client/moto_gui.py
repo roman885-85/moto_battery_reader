@@ -3770,8 +3770,8 @@ class App:
             self.frSndTest.columnconfigure(c, weight=1)
         if r.get("hasBuzzer") is False:
             self.lblSndHint.config(
-                text="⚠️ У цій збірці буззер не підключено (BUZZER_PIN у settings.h не задано) —\n"
-                     "налаштування зберігаються, але звучати нема чому.")
+                text="⚠️ У цій збірці вихід звуку не заданий (ні BUZZER_DAC_PIN, ні BUZZER_PIN\n"
+                     "у settings.h) — налаштування зберігаються, але звучати нема чому.")
 
     def _snd_show(self, key):
         for k, _ck, _t, _st, fmt in self.SND_FIELDS:

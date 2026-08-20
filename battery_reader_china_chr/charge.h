@@ -348,7 +348,20 @@ inline uint16_t chargePsuReadMv() {
     uint32_t sum = 0;
     for (int i = 0; i < CHARGE_PSU_SAMPLES; i++) sum += chargeAdcMv(CHARGE_PSU_PIN);
     uint32_t node = sum / CHARGE_PSU_SAMPLES;
-    return (uint16_t)(node * (CHARGE_PSU_R_TOP + CHARGE_PSU_R_BOT) / CHARGE_PSU_R_BOT);
+    uint32_t mv   = node * (CHARGE_PSU_R_TOP + CHARGE_PSU_R_BOT) / CHARGE_PSU_R_BOT;
+    // ⚑ ПОПРАВКА НА ПОХИБКУ ТРАКТУ (CHARGE_PSU_CAL_X1000, див. settings.h).
+    //  Стоїть саме тут, В КІНЦІ, а не в номіналах подільника вище: номінали —
+    //  це фізичні резистори, на них тримаються перевірки діапазону й струму в
+    //  захисний діод, і підганяти їх під показання означало б зіпсувати ті
+    //  розрахунки заради косметики. Похибка ж живе не в резисторах, а в
+    //  перерахунку відліку АЦП у мілівольти (chargeAdcMv() вище моделює АЦП
+    //  ідеальною прямою 0..CHARGE_ADC_FULL_MV, а він таким не є).
+    //  Правиться ЛИШЕ цей канал: множник виміряний на 1.8 В, а канал пакета
+    //  працює на 2.75 В, де крива АЦП уже інша.
+    //  Ділення з ОКРУГЛЕННЯМ, а не відкиданням: поправка додає в ланцюг ще
+    //  одну точку втрати, а один загублений мілівольт у вузлі подільника
+    //  коштує вже дев'ять на боці живлення (множник 7.8 × сама поправка).
+    return (uint16_t)((mv * CHARGE_PSU_CAL_X1000 + 500) / 1000);
 #else
     return 0;
 #endif
@@ -883,10 +896,14 @@ inline void chargeInit() {
     // Живлення силової частини — читаємо одразу, ще до першого заряду.
 #ifdef CHARGE_PSU_PIN
     chargePsuPoll();
-    Serial.printf("CHARGE: живлення %u мВ (подільник %d/%d на GPIO%d), допуск "
-                  "%d..%d мВ -> %s\n",
+    // Поправку каналу друкуємо ЗАВЖДИ, навіть коли вона одиниця: показання
+    // живлення, отримане з множником, і показання без нього — різні числа, і
+    // з журналу має бути видно, яке саме перед вами.
+    Serial.printf("CHARGE: живлення %u мВ (подільник %d/%d на GPIO%d, поправка "
+                  "×%d/1000), допуск %d..%d мВ -> %s\n",
                   chargePsuMv(), (int)CHARGE_PSU_R_TOP, (int)CHARGE_PSU_R_BOT,
-                  (int)CHARGE_PSU_PIN, (int)CHARGE_PSU_MIN_MV, (int)CHARGE_PSU_MAX_MV,
+                  (int)CHARGE_PSU_PIN, (int)CHARGE_PSU_CAL_X1000,
+                  (int)CHARGE_PSU_MIN_MV, (int)CHARGE_PSU_MAX_MV,
                   chargePsuText(chargePsuState()));
 #else
     Serial.printf("CHARGE: контролю живлення НЕМАЄ (CHARGE_PSU_PIN не заданий) — "

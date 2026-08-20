@@ -2968,8 +2968,8 @@ function sndFill(r){
     if(box && r.signals) box.innerHTML=r.signals.map(s=>
         '<button onclick="sndTest(\''+s.key+'\')">▶ '+esc(s.title)+' <span style="opacity:.6">'+s.ms+' мс</span></button>').join('');
     if(r.hasBuzzer===false)
-        $('sndHint').innerHTML='⚠️ У цій збірці буззер не підключено (BUZZER_PIN у settings.h не задано) — '+
-            'налаштування зберігаються, але звучати нема чому.';
+        $('sndHint').innerHTML='⚠️ У цій збірці вихід звуку не заданий (ні BUZZER_DAC_PIN, ні BUZZER_PIN '+
+            'у settings.h) — налаштування зберігаються, але звучати нема чому.';
 }
 async function sndLoad(){
     try{ const r=await(await fetch('/api/sound')).json(); if(r.status==='success') sndFill(r); }

@@ -4414,10 +4414,19 @@ static String soundFullJson() {
     j += ",\"defaults\":{\"enabled\":true,\"click\":true,\"volume\":" + String((int)BUZZER_VOLUME) +
          ",\"tempo\":100,\"glide\":100,\"attack\":" + String((int)BUZZ_ATTACK_MS) +
          ",\"release\":" + String((int)BUZZ_RELEASE_MS) + ",\"semitones\":0}";
-#ifdef BUZZER_PIN
-    j += ",\"hasBuzzer\":true,\"pin\":" + String((int)BUZZER_PIN);
+    // ⚑ ТУТ БУВ ПЕРЕКІС: перевірявся ЛИШЕ BUZZER_PIN (ШІМ), бо ЦАП-варіанта
+    //  тоді ще не існувало. Поки звук стояв вимкнений, це нічого не значило;
+    //  щойно його ввімкнули на BUZZER_DAC_PIN — усі три клієнти діставали
+    //  hasBuzzer:false і малювали «буззер не підключено» просто над
+    //  повзунками, які насправді працюють. Питання не «чи є BUZZER_PIN», а
+    //  «чи є вихід звуку взагалі», тож перевіряються обидва; який саме — у
+    //  полі out, щоб клієнт міг сказати це словами, а не вгадувати за піном.
+#if defined(BUZZER_DAC_PIN)
+    j += ",\"hasBuzzer\":true,\"out\":\"dac\",\"pin\":" + String((int)BUZZER_DAC_PIN);
+#elif defined(BUZZER_PIN)
+    j += ",\"hasBuzzer\":true,\"out\":\"pwm\",\"pin\":" + String((int)BUZZER_PIN);
 #else
-    j += ",\"hasBuzzer\":false,\"pin\":-1";
+    j += ",\"hasBuzzer\":false,\"out\":\"none\",\"pin\":-1";
 #endif
     j += ",\"signals\":[";
     for (int i = 0; i < BZ_SIGNAL_COUNT; i++) {

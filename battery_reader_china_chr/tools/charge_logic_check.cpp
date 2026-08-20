@@ -98,6 +98,12 @@ static int packMvToRaw(int mv) {
 // робить перевірку діапазону подільника осмисленою.
 static int psuMvToRaw(int mv) {
     long node = (long)mv * CHARGE_PSU_R_BOT / (CHARGE_PSU_R_TOP + CHARGE_PSU_R_BOT);
+    // ⚑ Модель РЕАЛЬНОГО тракту, а не ідеального. Тракт занижує рівно настільки,
+    //  наскільки його виправляє CHARGE_PSU_CAL_X1000 — інакше тест ганяв би
+    //  прошивку по бездоганному АЦП, де поправці нічого виправляти, і мовчав би
+    //  саме тоді, коли її переплутали або загубили. Тепер «мВ -> відлік» і
+    //  «відлік -> мВ» замикаються тільки якщо поправка на місці й правильна.
+    node = (node * 1000 + CHARGE_PSU_CAL_X1000 / 2) / CHARGE_PSU_CAL_X1000;
     long raw  = node * CHARGE_ADC_MAX_RAW / CHARGE_ADC_FULL_MV;
     return (int)(raw > CHARGE_ADC_MAX_RAW ? CHARGE_ADC_MAX_RAW : raw);
 }
@@ -573,13 +579,46 @@ int main() {
             long d = back > mv ? back - mv : mv - back;
             if (d > worst) worst = d;
         }
-        // Крок АЦП на боці живлення: один відлік = (R_в+R_н)/R_н × крок АЦП.
-        long stepMv = (long)CHARGE_ADC_FULL_MV * (CHARGE_PSU_R_TOP + CHARGE_PSU_R_BOT) /
-                      (CHARGE_PSU_R_BOT * CHARGE_ADC_MAX_RAW);
+        // Крок АЦП на боці живлення: один відлік = (R_в+R_н)/R_н × крок АЦП,
+        // ще й розтягнутий поправкою тракту.
+        long stepMv = (long)CHARGE_ADC_FULL_MV * (CHARGE_PSU_R_TOP + CHARGE_PSU_R_BOT) *
+                      CHARGE_PSU_CAL_X1000 /
+                      ((long)CHARGE_PSU_R_BOT * CHARGE_ADC_MAX_RAW * 1000);
         printf("   найбільша похибка перерахунку 6.0..%.1f В: %ld мВ "
                "(крок АЦП тут ≈%ld мВ)\n",
                CHARGE_PSU_MAX_READ_MV / 1000.0, worst, stepMv);
-        check(worst <= stepMv * 3, "перерахунок живлення в межах квантування");
+        //  Допуск: три кроки АЦП плюс ОДИН «крок вузла». Другий доданок — не
+        //  запас про всяк випадок, а ціна поправки: вона додає в ланцюг ще
+        //  одну точку цілочисельного ділення, а кожен загублений там мілівольт
+        //  коштує (R_в+R_н)/R_н × поправка мілівольтів на боці живлення.
+        long nodeStepMv = (long)(CHARGE_PSU_R_TOP + CHARGE_PSU_R_BOT) *
+                          CHARGE_PSU_CAL_X1000 / ((long)CHARGE_PSU_R_BOT * 1000);
+        check(worst <= stepMv * 3 + nodeStepMv,
+              "перерахунок живлення в межах квантування");
+
+        // ── ПОПРАВКА ТРАКТУ НА ЖИВИХ ЧИСЛАХ ВЛАСНИКА ─────────────────────
+        //  Це не абстрактний множник: 1973 — саме той відлік, який видавав
+        //  АЦП на платі, коли блок живлення стояв на 14.3 В, а прошивка
+        //  показувала 12.4 В (мультиметр на самому GPIO39 показував 1.81 В
+        //  при 14.4 В, тобто подільник справний — губилось усередині АЦП).
+        //  Перевірка тримає весь ланцюг разом: поміняєте поправку, номінали
+        //  подільника чи шкалу АЦП — і 14.3 В перестануть сходитись.
+        {
+            const long FIELD_RAW = 1973, FIELD_TRUE_MV = 14300;
+            g_adcPsuRaw = (int)FIELD_RAW;
+            long got = chargePsuReadMv();
+            long raw = (long)chargeAdcMv(CHARGE_PSU_PIN) *
+                       (CHARGE_PSU_R_TOP + CHARGE_PSU_R_BOT) / CHARGE_PSU_R_BOT;
+            printf("   відлік %ld із плати: без поправки %ld мВ, з поправкою %ld мВ "
+                   "(насправді %ld мВ)\n", FIELD_RAW, raw, got, FIELD_TRUE_MV);
+            check(labs(got - FIELD_TRUE_MV) <= 200,
+                  "поправка зводить показання з дійсністю на живих числах плати");
+            check(raw < CHARGE_PSU_MIN_MV,
+                  "…і без неї той самий відлік справді падав нижче порога (те, на що скаржився власник)");
+            check(chargePsuClassify((uint16_t)got, PSU_LOW) == PSU_OK,
+                  "…тож 14.3 В на цій платі більше не «занижене живлення»");
+        }
+        setPsu(14000);
 
         printf("   пороги: немає <%d, занижено <%d, норма, завищено >%d мВ\n",
                (int)CHARGE_PSU_ABSENT_MV, (int)CHARGE_PSU_MIN_MV, (int)CHARGE_PSU_MAX_MV);

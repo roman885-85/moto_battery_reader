@@ -7,6 +7,7 @@
 #include "battery_reader.h"
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — для дій «Новий АКБ» у меню
 #include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
+#include "textwrap.h"     // txtFit(): назва пункту меню не лізе на сусідній рядок
 #include "discharge.h"    // стан керованого розряду для сторінки моніторингу
 #include "charge.h"       // стан керованого заряду для сторінки моніторингу
 
@@ -20,18 +21,47 @@ extern bool hasSN2438;
 extern uint8_t chipSN2433[8];
 extern bool hasSN2433;
 
-// Сторінки меню (перегортаються кнопкою):
-//   0 - головна (заряд + статус)
-//   1 - модель і серійний номер
-//   2 - технічні дані DS2438
-//   3 - здоров'я: ємність / знос / цикли
-//   4 - сирий дамп DS2438 (hex)
-//   5 - сирий дамп DS2433 (перші 64/128 байт — за висотою екрана, hex)
-//   6 - дії з АКБ (скидання / ремонт / очистка)
-//   7 - Майстер відновлення (аналіз/проблеми/крок)
-#define NUM_DISPLAY_PAGES 8
-#define RESET_PAGE        6   // сторінка «Дії» (історична назва константи)
-#define WIZARD_PAGE       7   // сторінка Майстра відновлення
+// ── СТОРІНКИ ЕКРАНА ────────────────────────────────────────────────────────
+//  ⚑ ДВА РІЗНІ РОДИ СТОРІНОК, І ЦЕ ГОЛОВНЕ В РОЗКЛАДЦІ.
+//
+//  Раніше всі вісім сторінок лежали в ОДНОМУ кільці, яке гортається по колу:
+//  показання, потім два hex-дампи, потім «Дії», потім «Майстер». Через це
+//  щоденні показання доводилось шукати між сторінками, куди заглядають раз на
+//  місяць, а сама сторінка «Дії» була ще одним кільцем усередині першого — з
+//  трьома десятками пунктів, які гортались ЛИШЕ ВПЕРЕД.
+//
+//  Тепер:
+//    • КІЛЬЦЕ ПОКАЗАНЬ (0..NUM_STATUS_PAGES-1) — те, на що дивляться постійно.
+//      Гортається «‹»/«›» по колу, як і раніше;
+//    • МЕНЮ (PAGE_MENU) — один список УСЬОГО, що пристрій уміє: і операції, і
+//      переходи на службові сторінки. Відкривається кнопкою OK з будь-якої
+//      сторінки показань. Склад і порядок — у operations.h;
+//    • СЛУЖБОВІ СТОРІНКИ (дампи, Майстер) — у кільце НЕ входять, їх відкриває
+//      меню, а «‹» з них повертає назад у меню.
+#define PAGE_MAIN         0   // головна (заряд + статус)
+#define PAGE_MODEL        1   // модель і серійний номер
+#define PAGE_TECH         2   // технічні дані DS2438
+#define PAGE_HEALTH       3   // здоров'я: ємність / знос / цикли
+#define NUM_STATUS_PAGES  4   // розмір кільця показань
+#define PAGE_MENU         4   // список усіх функцій
+#define PAGE_RAW38        5   // сирий дамп DS2438 (hex)
+#define PAGE_RAW33        6   // сирий дамп DS2433 (hex)
+#define PAGE_WIZARD       7   // Майстер відновлення (аналіз/проблеми/крок)
+#define NUM_DISPLAY_PAGES 8   // усього сторінок (кільце + меню + службові)
+
+// «Сторінковий» пункт меню -> номер сторінки екрана. Переклад потрібен саме
+// тому, що operations.h НЕ ЗНАЄ про екран: там свої MPG_*, тут свої PAGE_*, і
+// зв'язок між ними — рівно ця функція, а не збіг чисел (який одного дня
+// перестав би бути збігом).
+inline int menuPageToDisplayPage(int mpg) {
+    switch (mpg) {
+        case MPG_HOME:   return PAGE_MAIN;
+        case MPG_RAW38:  return PAGE_RAW38;
+        case MPG_RAW33:  return PAGE_RAW33;
+        case MPG_WIZARD: return PAGE_WIZARD;
+        default:         return PAGE_MAIN;
+    }
+}
 
 // ========================================================================
 // Кольоровий TFT (ST7789VW 240x240 / ST7789V3 240x280) — окрема реалізація
@@ -214,8 +244,8 @@ static char g_displayStatus[36] = "ЗАПУСК";  // нижня рядок ст
 static int  g_displayPage = 0;             // поточна сторінка меню
 static bool g_readRequested = false;       // запит повторного читання після циклу
 // Сторінка «Дії»: вибір операції (BTN2 коротко) + виконання (BTN2 довго).
-static int  g_actionSel = 0;               // 0=Скидання 1=Ремонт 2=Очистка
-static int  g_actionRequested = -1;        // -1 нема; інакше — обрана дія для .ino
+static int  g_menuSel = 1;                 // курсор у списку (0 — «‹ Показання»)
+static int  g_actionRequested = -1;        // -1 нема; інакше — КОД операції для .ino
 
 // Екранний Майстер відновлення. Рендер (тут) читає ці глобали; заповнює їх
 // wizDeviceRefresh() з recovery.h, а .ino оркеструє (читання/крок).
@@ -409,7 +439,9 @@ inline void displaySetErrorTint(bool) {}
 
 // ---------- допоміжні елементи відмальовування ----------
 
-inline void drawHeader(const char *title) {
+// counter — що показати праворуч замість номера сторінки (напр. «12/36» у
+// меню). nullptr/порожній = номер сторінки в кільці показань.
+inline void drawHeader(const char *title, const char *counter = nullptr) {
     char h[16];
     u8g2.setFont(HEAD_FONT);
     u8g2.drawUTF8(0, HEAD_Y, title);
@@ -417,8 +449,15 @@ inline void drawHeader(const char *title) {
     // спільній шапці, а не на окремій сторінці, саме тому, що видима мусить
     // бути з БУДЬ-ЯКОЇ сторінки: без блока живлення заряд не піде, хай що
     // користувач зараз гортає. Розшифровка — на сторінці заряду й у вебі.
-    snprintf(h, sizeof(h), "%s%d/%d", chargePsuFault() ? "!" : "",
-             g_displayPage + 1, NUM_DISPLAY_PAGES);
+    // Лічильник — тільки по кільцю показань: службові сторінки в нього не
+    // входять, і «6/8» на них обіцяло б гортання, якого немає.
+    if (counter && *counter)
+        snprintf(h, sizeof(h), "%s%s", chargePsuFault() ? "!" : "", counter);
+    else if (g_displayPage < NUM_STATUS_PAGES)
+        snprintf(h, sizeof(h), "%s%d/%d", chargePsuFault() ? "!" : "",
+                 g_displayPage + 1, NUM_STATUS_PAGES);
+    else
+        snprintf(h, sizeof(h), "%s", chargePsuFault() ? "!" : "");
     u8g2.drawStr(DISP_W - u8g2.getStrWidth(h) - 1, HEAD_Y, h);
     u8g2.drawHLine(0, HEAD_LINE, DISP_W);
 }
@@ -850,10 +889,9 @@ inline void drawPageRaw2438() { drawRawPage("DS2438 дамп 0-63", batteryDump2
 inline void drawPageRaw2433() { drawRawPage((DISP_H >= 128) ? "DS2433 дамп 0-127" : "DS2433 дамп 0-63",
                                             batteryDump, hasDump, RAW2433_COUNT); }
 
-// Базові дії (індекси 0..4) + по одній дії «Новий АКБ» на кожен вшитий шаблон
-// (індекси 5..). Загальну к-сть дій рахує numActions() — вона динамічна.
-// Склад і порядок операцій задає operations.h (спільний для всіх поверхонь).
-inline int numActions() { return opCount(); }
+// ⚑ Тут була numActions() = opCount(). Вона рахувала довжину КІЛЬЦЯ дій, якого
+// більше немає: екран показує СПИСОК, а його довжину рахує menuCount() — і
+// вона більша за opCount(), бо в списку є ще й переходи на сторінки.
 
 // Сторінка «Дії»: показуємо ОДНУ обрану операцію крупно + опис + попередження.
 // [<] коротко — наступна операція; [<] утримати (0.8с) — ВИКОНАТИ; [>] — вихід.
@@ -1040,40 +1078,85 @@ inline void drawPagePsuFault() {
     u8g2.drawUTF8(0, FOOT_Y, "кнопка — сховати");
 }
 
-inline void drawPageActions() {
-    // Назви/описи/небезпека — з operations.h (той самий каталог, що в кольоровому
-    // екрані, вебі й USB-клієнті). Локального списку дій більше немає.
-    int sel = g_actionSel, total = numActions();
-    const char *name, *l1, *l2; uint8_t danger, chips; char nbuf[26];
-    opInfo(sel, &name, &l1, &l2, &danger, nbuf, sizeof(nbuf), &chips);
+// ── МЕНЮ: ТОЙ САМИЙ СПИСОК, ЩО Й НА КОЛЬОРОВІЙ ПАНЕЛІ ─────────────────────
+//  Склад, порядок і групи — з operations.h, спільні з кольоровим екраном,
+//  вебом і USB-клієнтом. Різниця лише в тому, скільки рядків влазить: на
+//  84x48 їх три й опису немає взагалі, на 128x128 — п'ять і два рядки опису.
+//  Саме тому геометрія рахується, а не зашита числами.
+#define MENU_GLYPH_W (DISP_H >= 128 ? 6 : 5)
 
-    // У шапці — не лише номер дії, а й КУДИ вона пише. Плутанина між DS2433
-    // (ідентичність) і DS2438 (монітор) коштує дорого, тож це видно завжди.
-    char t[26];
-    if (chips == OPC_NONE) snprintf(t, sizeof(t), "Дія  %d/%d", sel + 1, total);
-    else                   snprintf(t, sizeof(t), "Дія %d/%d -> %s", sel + 1, total,
-                                    opChipsShort(chips));
-    drawHeader(t);
+inline void drawPageMenu() {
+    int total = menuCount();
+    if (total <= 0) return;
+    if (g_menuSel < 0) g_menuSel = 0;
+    if (g_menuSel >= total) g_menuSel = total - 1;
 
-    // Назва обраної операції — крупним шрифтом.
-    u8g2.setFont(u8g2_font_6x12_t_cyrillic);
-    char nml[34]; snprintf(nml, sizeof(nml), "%s%s", (danger == OPD_WIPE) ? "! " : "> ", name);
-    u8g2.drawUTF8(0, HEAD_LINE + 13, nml);
+    char nbuf[OP_NAME_BUF]; const char *name, *l1, *l2; uint8_t danger, chips;
+    menuInfo(g_menuSel, &name, &l1, &l2, &danger, &chips, nbuf, sizeof(nbuf));
+    uint8_t kind = MI_OP, group = MG_NAV; int code = 0;
+    menuRow(g_menuSel, &kind, &code, &group);
 
-    // Опис.
+    char cnt[12]; snprintf(cnt, sizeof(cnt), "%d/%d", g_menuSel + 1, total);
+    const char *gname = menuGroupName(group);
+    char gfit[24];
+    // Назва групи теж може не влізти поруч із лічильником — обрізаємо чесно.
+    txtFit(gfit, sizeof(gfit), (gname && *gname) ? gname : "МЕНЮ",
+           (DISP_W - (int)strlen(cnt) * MENU_GLYPH_W - 4) / MENU_GLYPH_W);
+    drawHeader(gfit, cnt);
+
+    const int descLines = (DISP_H >= 128) ? 2 : (DISP_H >= 64 ? 1 : 0);
+    int listBot = FOOT_HL - descLines * ROW_H;
+    int rows = (listBot - HEAD_LINE - 2) / ROW_H;
+    if (rows < 2) rows = 2;
+    if (rows > total) rows = total;
+
+    int first = g_menuSel - rows / 2;
+    if (first > total - rows) first = total - rows;
+    if (first < 0) first = 0;
+
+    int maxG = DISP_W / MENU_GLYPH_W - 2;      // 2 гліфи під позначку небезпеки
     u8g2.setFont(BODY_FONT);
-    u8g2.drawUTF8(0, HEAD_LINE + 25, l1);
-    u8g2.drawUTF8(0, HEAD_LINE + 34, l2);
-    if (danger == OPD_WIPE)          u8g2.drawUTF8(0, HEAD_LINE + 42, "!! НЕЗВОРОТНЬО !!");
-    else if (sel == OP_CELLSWAP)     u8g2.drawUTF8(0, HEAD_LINE + 42, "далі -> на IMPRES-ЗП");
+    for (int r = 0; r < rows; r++) {
+        int i = first + r;
+        int y = HEAD_LINE + 2 + (r + 1) * ROW_H - 2;      // базова лінія рядка
+        const char *n2, *a, *b; uint8_t d2, c2; char b2[OP_NAME_BUF];
+        menuInfo(i, &n2, &a, &b, &d2, &c2, b2, sizeof(b2));
+        char fit[OP_NAME_BUF + 4], line[OP_NAME_BUF + 8];
+        txtFit(fit, sizeof(fit), n2, maxG);
+        // Небезпечне видно ще В СПИСКУ, а не лише коли на нього наведешся:
+        // «!» перед назвою — єдина позначка, яка є на монохромній панелі.
+        snprintf(line, sizeof(line), "%s%s", (d2 == OPD_WIPE) ? "! " : "  ", fit);
+        if (i == g_menuSel) {
+            // Курсор — інверсією рядка: на монохромі це єдиний спосіб
+            // показати вибір, який видно з відстані.
+            u8g2.drawBox(0, y - ROW_H + 2, DISP_W, ROW_H);
+            u8g2.setDrawColor(0);
+            u8g2.drawUTF8(0, y, line);
+            u8g2.setDrawColor(1);
+        } else {
+            u8g2.drawUTF8(0, y, line);
+        }
+    }
 
-    // Підказка керування знизу.
-    u8g2.drawHLine(0, FOOT_HL, DISP_W);
-#ifdef MENU_BTN3_PIN
-    u8g2.drawUTF8(0, FOOT_Y, "[OK]вибір трим=пуск");
-#else
-    u8g2.drawUTF8(0, FOOT_Y, "[<]вибір трим=пуск");
-#endif
+    if (descLines > 0) {
+        int dy = listBot + ROW_H - 2;
+        char fit[40];
+        // Перший рядок опису — про НАСЛІДОК: що зробить натискання й куди
+        // пише. На вузькій панелі це важливіше за розгорнуте пояснення.
+        char tail[40];
+        if (danger == OPD_WIPE)      snprintf(tail, sizeof(tail), "НЕЗВОРОТНЬО! трим.OK");
+        else if (kind == MI_PAGE)    snprintf(tail, sizeof(tail), "OK - відкрити");
+        else if (danger == OPD_SAFE) snprintf(tail, sizeof(tail), "OK - перемкнути");
+        else                         snprintf(tail, sizeof(tail), "трим.OK=ПУСК %s",
+                                              opChipsShort(chips));
+        txtFit(fit, sizeof(fit), tail, DISP_W / MENU_GLYPH_W);
+        u8g2.drawUTF8(0, dy, fit);
+        if (descLines > 1) {
+            txtFit(fit, sizeof(fit), l1, DISP_W / MENU_GLYPH_W);
+            u8g2.drawUTF8(0, dy + ROW_H, fit);
+        }
+    }
+    drawFooter();
 }
 
 // Сторінка Майстра відновлення: аналіз стану -> проблеми -> наступний крок.
@@ -1169,15 +1252,15 @@ inline void displayRender() {
         return;
     }
     switch (g_displayPage) {
-        case 0:  drawPageMain();     break;
-        case 1:  drawPageModel();    break;
-        case 2:  drawPageTech();     break;
-        case 3:  drawPageHealth();   break;
-        case 4:  drawPageRaw2438();  break;
-        case 5:  drawPageRaw2433();  break;
-        case 6:  drawPageActions();  break;
-        case 7:  drawPageWizard();   break;
-        default: drawPageMain();     break;
+        case PAGE_MAIN:   drawPageMain();     break;
+        case PAGE_MODEL:  drawPageModel();    break;
+        case PAGE_TECH:   drawPageTech();     break;
+        case PAGE_HEALTH: drawPageHealth();   break;
+        case PAGE_MENU:   drawPageMenu();     break;
+        case PAGE_RAW38:  drawPageRaw2438();  break;
+        case PAGE_RAW33:  drawPageRaw2433();  break;
+        case PAGE_WIZARD: drawPageWizard();   break;
+        default:          drawPageMain();     break;
     }
     u8g2.sendBuffer();
 }
@@ -1230,6 +1313,30 @@ inline void displayFlip() {
     // тік не приходить жодного разу — бліп, запущений ДО переходу, протікав
     // повз, і перший тік після повернення просто гасив вихід.
     buzzClick();
+}
+
+// Натискання «OK» на пункті меню — та сама логіка, що й на кольоровій панелі:
+// що зробить кнопка, залежить від ПУНКТА (сторінка / безпечне / запис), а не
+// від сторінки. Довге натискання лишається бар'єром рівно там, де є наслідок.
+inline void menuActivate(bool longPress) {
+    uint8_t kind = MI_OP, group = MG_NAV; int code = 0;
+    if (!menuRow(g_menuSel, &kind, &code, &group)) return;
+    if (kind == MI_PAGE) {
+        if (longPress) return;
+        g_displayPage = menuPageToDisplayPage(code);
+        displayFlip();
+        return;
+    }
+    char nb[OP_NAME_BUF]; const char *n, *a, *b2; uint8_t d, c;
+    opInfo(code, &n, &a, &b2, &d, nb, sizeof(nb), &c);
+    if (d == OPD_SAFE) {
+        if (longPress) return;
+        g_actionRequested = code;
+        return;
+    }
+    if (!longPress) { displayShow("тримайте OK = ПУСК"); return; }
+    g_actionRequested = code;
+    displayShow("ВИКОНУЮ...");
 }
 
 inline void displayButtonSetup() {
@@ -1419,69 +1526,69 @@ inline void displayHandleButton() {
         return;
     }
 
+    // ── ОДНЕ ПРАВИЛО НА ВСІ ЕКРАНИ (те саме, що на кольоровій панелі) ──────
+    //  «‹»/«›» — рух: сторінка в кільці показань або пункт у меню; довге —
+    //  стрибок (додому / на сусідню групу). «OK» — увійти чи виконати.
+    //  Раніше «OK» означав п'ять різних речей залежно від сторінки, а на
+    //  сторінці «Дії» взагалі не був вибором — він гортав список уперед.
 #ifdef MENU_BTN3_PIN
-    // 3 кнопки: BTN1 — ЧИСТА навігація ВПЕРЕД (жодного «довгого» читання; читання
-    // акумулятора на BTN3, головна сторінка). longMs=0 -> «довгих» подій немає.
-    int e1 = pollButtonRaw(btn1Raw(), b1, 0);
-    if (e1 == 1) {                                   // коротке -> наступна сторінка
-        g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
-        displayFlip();
+    int e1 = pollButtonRaw(btn1Raw(), b1, 800);      // «›» далі
+    int e2 = pollButtonRaw(btn2Raw(), b2, 800);      // «‹» назад
+    int e3 = pollButtonRaw(btn3Raw(), b3, 800);      // «OK»
+
+    if (g_displayPage == PAGE_MENU) {
+        int total = menuCount();
+        if      (e1 == 1) { g_menuSel = (g_menuSel + 1) % total;         displayRender(); }
+        else if (e1 == 2) { g_menuSel = menuNextGroup(g_menuSel);        displayRender(); }
+        else if (e2 == 1) { g_menuSel = (g_menuSel - 1 + total) % total; displayRender(); }
+        else if (e2 == 2) { g_menuSel = menuPrevGroup(g_menuSel);        displayRender(); }
+        else if (e3)      { menuActivate(e3 == 2); }
+        return;
     }
+    if (g_displayPage >= NUM_STATUS_PAGES) {
+        if      (e2 == 1) { g_displayPage = PAGE_MENU; displayFlip(); }
+        else if (e2 == 2) { g_displayPage = PAGE_MAIN; displayFlip(); }
+        else if (e1 == 1 && (g_displayPage == PAGE_RAW38 || g_displayPage == PAGE_RAW33)) {
+            g_displayPage = (g_displayPage == PAGE_RAW38) ? PAGE_RAW33 : PAGE_RAW38;
+            displayFlip();
+        } else if (g_displayPage == PAGE_WIZARD) {
+            if      (e3 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
+            else if (e3 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
+        }
+        return;
+    }
+    if      (e1 == 1) { g_displayPage = (g_displayPage + 1) % NUM_STATUS_PAGES; displayFlip(); }
+    else if (e2 == 1) { g_displayPage = (g_displayPage - 1 + NUM_STATUS_PAGES) % NUM_STATUS_PAGES; displayFlip(); }
+    else if (e2 == 2) { g_displayPage = PAGE_MAIN; displayFlip(); }
+    else if (e3 == 1) { g_displayPage = PAGE_MENU; displayFlip(); }
+    else if (e3 == 2) { g_readRequested = true; displaySetStatus("ЗЧИТУВАННЯ..."); displayRender(); }
 #else
+    // ДВІ кнопки: «›» — рух, «‹» — вибір/виконання.
     int e1 = pollButtonRaw(btn1Raw(), b1, 800);
-    if (e1 == 2) {                                   // довге -> перечитати
-        g_readRequested = true;
-        displaySetStatus("ЗЧИТУВАННЯ...");
-        displayRender();
-    } else if (e1 == 1) {                            // коротке -> наступна сторінка
-        g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
-        displayFlip();
-    }
-#endif
-
     int e2 = pollButtonRaw(btn2Raw(), b2, 800);
-#ifdef MENU_BTN3_PIN
-    // 3 кнопки: BTN2 — ЧИСТА «назад» на ВСІХ сторінках. Вибір/аналіз/виконання
-    // повністю на BTN3, тож «назад» більше не робить того, що третя кнопка.
-    if (e2 == 1) {
-        g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
-        displayFlip();
-    }
-#else
-    // 2 кнопки: BTN2 суміщає навігацію + вибір/аналіз (коротко) + виконання (довго).
-    if (g_displayPage == RESET_PAGE) {               // сторінка «Дії»
-        if (e2 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRender(); }
-        else if (e2 == 2) { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
-    } else if (g_displayPage == WIZARD_PAGE) {       // сторінка Майстра
-        if (e2 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
-        else if (e2 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
-    } else if (e2 == 1) {
-        g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
-        displayFlip();
-    }
-#endif
 
-#ifdef MENU_BTN3_PIN
-    // Третя кнопка «OK / Дія» — усе, що пов'язане з дією на сторінці:
-    //  «Дії»    : коротко = наступна операція, довго = ВИКОНАТИ;
-    //  «Майстер»: коротко = аналіз,           довго = наступний крок;
-    //  інші     : коротко = у «Майстер»,      довго = на головну («додому»).
-    int e3 = pollButtonRaw(btn3Raw(), b3, 800);
-    if (g_displayPage == RESET_PAGE) {
-        if (e3 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRender(); }
-        else if (e3 == 2) { g_actionRequested = g_actionSel; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
-    } else if (g_displayPage == WIZARD_PAGE) {
-        if (e3 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
-        else if (e3 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
-    } else if (g_displayPage == 0) {
-        // Головна: BTN3 коротко = ПЕРЕЧИТАТИ акумулятор (саме третя кнопка);
-        // довго = перейти в «Майстер».
-        if (e3 == 1) { g_readRequested = true; displaySetStatus("ЗЧИТУВАННЯ..."); displayRender(); }
-        else if (e3 == 2) { g_displayPage = WIZARD_PAGE; displayFlip(); }
-    } else {
-        if (e3 == 1) { g_displayPage = WIZARD_PAGE; displayFlip(); }
-        else if (e3 == 2) { g_displayPage = 0; displayFlip(); }
+    if (g_displayPage == PAGE_MENU) {
+        int total = menuCount();
+        if      (e1 == 1) { g_menuSel = (g_menuSel + 1) % total;  displayRender(); }
+        else if (e1 == 2) { g_menuSel = menuNextGroup(g_menuSel); displayRender(); }
+        else if (e2)      { menuActivate(e2 == 2); }
+        return;
     }
+    if (g_displayPage >= NUM_STATUS_PAGES) {
+        if      (e1 == 1 && (g_displayPage == PAGE_RAW38 || g_displayPage == PAGE_RAW33)) {
+            g_displayPage = (g_displayPage == PAGE_RAW38) ? PAGE_RAW33 : PAGE_RAW38;
+            displayFlip();
+        }
+        else if (e1 == 2) { g_displayPage = PAGE_MENU; displayFlip(); }
+        else if (g_displayPage == PAGE_WIZARD) {
+            if      (e2 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
+            else if (e2 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
+        } else if (e2 == 1) { g_displayPage = PAGE_MENU; displayFlip(); }
+        return;
+    }
+    if      (e1 == 1) { g_displayPage = (g_displayPage + 1) % NUM_STATUS_PAGES; displayFlip(); }
+    else if (e1 == 2) { g_readRequested = true; displaySetStatus("ЗЧИТУВАННЯ..."); displayRender(); }
+    else if (e2 == 1) { g_displayPage = PAGE_MENU; displayFlip(); }
 #endif
 }
 

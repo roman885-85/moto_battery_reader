@@ -205,6 +205,242 @@ inline void opInfo(int sel, const char **name, const char **l1, const char **l2,
     if (chips) *chips = OPC_NONE;
 }
 
+// ===========================================================================
+//  ПОРЯДОК ПУНКТІВ У МЕНЮ ПРИСТРОЮ — окремо від кодів операцій
+// ===========================================================================
+//  ЧОМУ ОКРЕМО. Коди OP_* перенумеровувати НЕ МОЖНА: вони їдуть у /api/ops, у
+//  команди USB-клієнта й у збережені сценарії. Але порядок, у якому їх зручно
+//  гортати на пристрої, — зовсім інше питання, ніж порядок, у якому їх колись
+//  додавали. Тому показ описано ТУТ, окремою таблицею, і міняти його можна
+//  вільно, нічого не ламаючи назовні.
+//
+//  ЩО БУЛО НЕ ТАК. На екрані всі дії лежали ОДНИМ ПЛОСКИМ КІЛЬЦЕМ, яке
+//  гортається лише вперед: щоб дійти до «Перезавантаження» (останній пункт),
+//  треба було натиснути OK стільки разів, скільки в пристрої операцій — а їх
+//  17 + два на кожен шаблон. Повернутись на пункт назад було неможливо
+//  взагалі: тільки по колу. І поруч, в одному кільці, лежали щоденний «Заряд»
+//  і незворотнє «СТЕРТИ 2433».
+//
+//  ЯК ЗАРАЗ. Пункти зібрані в ГРУПИ за призначенням, групи йдуть за ходом
+//  ремонту, а найнебезпечніше — в самому кінці, окремою групою:
+//
+//    (без групи)    ‹ Показання — вихід із меню
+//    РЕМОНТ         заміна елементів -> глибока чистка -> ремонт цілісності
+//    ЖИВЛЕННЯ       заряд і його ціль, розряд і його ціль, пробудження
+//    ЛІЧИЛЬНИКИ     паливомір за напругою, скидання, очистка історії
+//    МОДЕЛЬ         «Модель <X>» — по одному на шаблон
+//    НОВИЙ ЧІП      «Новий <X>»  — по одному на шаблон
+//    ДАНІ           сирі дампи DS2438 / DS2433
+//    СИСТЕМА        Майстер відновлення, перезавантаження
+//    НЕБЕЗПЕЧНО     СТЕРТИ 2433 / СТЕРТИ 2438
+//
+//  Перемикач цілі стоїть ОДРАЗУ ПІСЛЯ своєї дії, а не десь в іншому кінці
+//  списку: це одна пара «що зробити» + «до чого», і шукати другу половину
+//  через півсписку — саме те, на що скаржаться.
+//
+//  «Модель» і «Новий» розведені в РІЗНІ групи навмисно, хоч і йдуть по одному
+//  на той самий шаблон: перша дописує модельну частину поверх живого пакета,
+//  друга робить із чистого чипа новий АКБ і стирає ідентичність (OPD_WIPE).
+//  В одній групі вони відрізнялись би лише першим словом назви.
+//
+//  У меню є й пункти, які нічого не виконують, а ВІДКРИВАЮТЬ СТОРІНКУ (дампи,
+//  Майстер, вихід до показань). Так у пристрою лишається одне місце, де
+//  зібрано все, що він уміє, замість «частина в кільці сторінок, частина в
+//  кільці дій».
+//
+//  ⚑ ГРУПИ — ЦЕ Й Є ШВИДКА НАВІГАЦІЯ. Пунктів разом із шаблонами — під
+//  чотири десятки, і гортати їх по одному було б не краще за старе кільце.
+//  Тому довге натискання «‹»/«›» перестрибує на СУСІДНЮ ГРУПУ: до будь-якого
+//  місця списку — не більше за кількість груп плюс довжина найдовшої з них.
+//  Саме тому «ЕТАЛОНИ» й розбито надвоє: разом вони давали б групу на 18
+//  пунктів, і стрибок по групах у ній нічого б не пришвидшив.
+// ---------------------------------------------------------------------------
+
+// Групи (порядок = порядок показу). MG_NAV — службова, без заголовка.
+enum { MG_NAV = 0, MG_REPAIR, MG_POWER, MG_COUNTERS, MG_MODEL, MG_NEW,
+       MG_DATA, MG_SYSTEM, MG_DANGER, MG_COUNT };
+
+// Порожня назва означає «заголовок не малювати».
+inline const char *menuGroupName(int g) {
+    switch (g) {
+        case MG_NAV:      return "";
+        case MG_REPAIR:   return "РЕМОНТ";
+        case MG_POWER:    return "ЖИВЛЕННЯ";
+        case MG_COUNTERS: return "ЛІЧИЛЬНИКИ";
+        case MG_MODEL:    return "МОДЕЛЬ";
+        case MG_NEW:      return "НОВИЙ ЧІП";
+        case MG_DATA:     return "ДАНІ";
+        case MG_SYSTEM:   return "СИСТЕМА";
+        case MG_DANGER:   return "НЕБЕЗПЕЧНО";
+        default:          return "";
+    }
+}
+
+// Рід пункту: виконати операцію чи відкрити сторінку.
+enum { MI_OP = 0, MI_PAGE = 1 };
+// Сторінки, на які веде меню. Числа СВОЇ, не збігаються з PAGE_* у display.h
+// навмисно: operations.h нічого не знає про екран і не мусить.
+enum { MPG_HOME = 0, MPG_RAW38 = 1, MPG_RAW33 = 2, MPG_WIZARD = 3, MPG_COUNT = 4 };
+
+// Скільки байт треба буферу під назву пункту. ⚠️ НЕ «на око»: назви з ціллю
+// збираються на льоту, а кирилиця в UTF-8 — два байти на літеру, тож
+// «Ціль заряду 100%» — це 16 літер, але 26 байт плюс нуль. Саме на такому
+// буфері (26) назва й обрізалась до «Ціль заряду 100», без відсотка. Довжину
+// перевіряє menu_check.
+#define OP_NAME_BUF 48
+
+// Як заповнюється відрізок меню.
+enum { MS_OPS = 0,      // явний список кодів OP_*
+       MS_MODELS,       // «Модель <X>» на кожен шаблон
+       MS_NEW,          // «Новий <X>»  на кожен шаблон
+       MS_EXPERT,       // явний список OP_*_REL (крайні операції)
+       MS_PAGES };      // явний список MPG_*
+
+struct MenuSeg { uint8_t group, kind; const int16_t *v; uint8_t n; };
+
+static const int16_t MSEG_NAV[]      = { MPG_HOME };
+static const int16_t MSEG_REPAIR[]   = { OP_CELLSWAP, OP_CELLSWAP_DEEP, OP_REPAIR };
+static const int16_t MSEG_POWER[]    = { OP_CHARGE_DCDC, OP_CHARGE_TGT,
+                                         OP_DISCHARGE,   OP_DISCHARGE_TGT,
+                                         OP_CHARGE_WAKE };
+static const int16_t MSEG_COUNTERS[] = { OP_SETCHARGE, OP_RESET, OP_CLEAN };
+static const int16_t MSEG_DATA[]     = { MPG_RAW38, MPG_RAW33 };
+static const int16_t MSEG_SYSPAGE[]  = { MPG_WIZARD };
+static const int16_t MSEG_SYSOP[]    = { OP_REBOOT_REL };
+static const int16_t MSEG_DANGER[]   = { OP_WIPE33_REL, OP_WIPE38_REL };
+
+static const MenuSeg MENU_SEGS[] = {
+    { MG_NAV,      MS_PAGES,   MSEG_NAV,      1 },
+    { MG_REPAIR,   MS_OPS,     MSEG_REPAIR,   3 },
+    { MG_POWER,    MS_OPS,     MSEG_POWER,    5 },
+    { MG_COUNTERS, MS_OPS,     MSEG_COUNTERS, 3 },
+    { MG_MODEL,    MS_MODELS,  nullptr,       0 },
+    { MG_NEW,      MS_NEW,     nullptr,       0 },
+    { MG_DATA,     MS_PAGES,   MSEG_DATA,     2 },
+    { MG_SYSTEM,   MS_PAGES,   MSEG_SYSPAGE,  1 },
+    { MG_SYSTEM,   MS_EXPERT,  MSEG_SYSOP,    1 },
+    { MG_DANGER,   MS_EXPERT,  MSEG_DANGER,   2 },
+};
+#define MENU_SEG_COUNT ((int)(sizeof(MENU_SEGS) / sizeof(MENU_SEGS[0])))
+
+inline int menuSegLen(int s) {
+    const MenuSeg &g = MENU_SEGS[s];
+    if (g.kind == MS_MODELS || g.kind == MS_NEW) return BATTERY_TEMPLATE_COUNT;
+    return g.n;
+}
+
+inline int menuCount() {
+    int n = 0;
+    for (int s = 0; s < MENU_SEG_COUNT; s++) n += menuSegLen(s);
+    return n;
+}
+
+// Розкласти позицію меню на рід/код/групу. Повертає false для виходу за межі.
+inline bool menuRow(int i, uint8_t *kind, int *code, uint8_t *group) {
+    if (i < 0) return false;
+    for (int s = 0; s < MENU_SEG_COUNT; s++) {
+        int len = menuSegLen(s);
+        if (i < len) {
+            const MenuSeg &g = MENU_SEGS[s];
+            *group = g.group;
+            switch (g.kind) {
+                case MS_OPS:    *kind = MI_OP;   *code = g.v[i];                 break;
+                case MS_MODELS: *kind = MI_OP;   *code = opModelBase() + i;      break;
+                case MS_NEW:    *kind = MI_OP;   *code = opNewBase() + i;        break;
+                case MS_EXPERT: *kind = MI_OP;   *code = opExpertBase() + g.v[i];break;
+                default:        *kind = MI_PAGE; *code = g.v[i];                 break;
+            }
+            return true;
+        }
+        i -= len;
+    }
+    return false;
+}
+
+// Чи починається на позиції i нова ГРУПА (треба малювати заголовок).
+inline bool menuGroupStarts(int i) {
+    uint8_t k, g, gp; int c;
+    if (!menuRow(i, &k, &c, &g)) return false;
+    if (i == 0) return true;
+    uint8_t kp; int cp;
+    if (!menuRow(i - 1, &kp, &cp, &gp)) return true;
+    return gp != g;
+}
+
+// Назви «сторінкових» пунктів — коротко, під вузький екран пристрою.
+inline const char *menuPageName(int page) {
+    switch (page) {
+        case MPG_HOME:   return "< Показання";
+        case MPG_RAW38:  return "Дамп DS2438";
+        case MPG_RAW33:  return "Дамп DS2433";
+        case MPG_WIZARD: return "Майстер віднов.";
+        default:         return "—";
+    }
+}
+inline void menuPageDesc(int page, const char **l1, const char **l2) {
+    switch (page) {
+        case MPG_HOME:   *l1 = "вийти з меню до"; *l2 = "напруги й заряду";   break;
+        case MPG_RAW38:  *l1 = "сирий вміст";     *l2 = "монітора, hex";      break;
+        case MPG_RAW33:  *l1 = "сирий вміст";     *l2 = "пам'яті, hex";       break;
+        case MPG_WIZARD: *l1 = "аналіз стану ->"; *l2 = "наступний крок";     break;
+        default:         *l1 = "";                *l2 = "";                   break;
+    }
+}
+
+// Межі ГРУПИ, у якій лежить пункт i, і стрибок на сусідню — це і є швидка
+// навігація по довгому списку (довге натискання «‹»/«›»).
+inline int menuGroupFirst(int i) {
+    while (i > 0 && !menuGroupStarts(i)) i--;
+    return i;
+}
+// Перший пункт НАСТУПНОЇ групи; по колу через кінець списку.
+inline int menuNextGroup(int i) {
+    int n = menuCount();
+    for (int k = i + 1; k < n; k++) if (menuGroupStarts(k)) return k;
+    return 0;
+}
+// Перший пункт ПОПЕРЕДНЬОЇ групи. Якщо курсор стоїть НЕ на першому пункті
+// своєї групи — спершу вертаємось на її початок: так поводяться всі списки з
+// такою навігацією, і це рятує від «промахнувся й полетів через усю групу».
+inline int menuPrevGroup(int i) {
+    int first = menuGroupFirst(i);
+    if (i != first) return first;
+    if (first == 0) {                       // з початку — по колу в останню
+        int n = menuCount(), last = 0;
+        for (int k = 0; k < n; k++) if (menuGroupStarts(k)) last = k;
+        return last;
+    }
+    return menuGroupFirst(first - 1);
+}
+
+// Повний опис пункту меню — те саме, що opInfo(), але для позиції в СПИСКУ.
+// buf потрібен ≥26 байт (назви з моделлю чи ціллю збираються в нього).
+inline void menuInfo(int i, const char **name, const char **l1, const char **l2,
+                     uint8_t *danger, uint8_t *chips, char *buf, size_t bufN) {
+    uint8_t kind = MI_OP, group = 0; int code = -1;
+    if (!menuRow(i, &kind, &code, &group)) {
+        *name = "—"; *l1 = ""; *l2 = ""; *danger = OPD_SAFE; *chips = OPC_NONE;
+        return;
+    }
+    if (kind == MI_PAGE) {
+        *name = menuPageName(code);
+        menuPageDesc(code, l1, l2);
+        *danger = OPD_SAFE; *chips = OPC_NONE;
+        return;
+    }
+    opInfo(code, name, l1, l2, danger, buf, bufN, chips);
+}
+
+// Позиція операції в меню (для тестів і для наведення курсора). -1 — немає.
+inline int menuIndexOfOp(int op) {
+    int n = menuCount();
+    for (int i = 0; i < n; i++) {
+        uint8_t k, g; int c;
+        if (menuRow(i, &k, &c, &g) && k == MI_OP && c == op) return i;
+    }
+    return -1;
+}
+
 // ---- описи для ВЕБ/десктоп (повні формулювання) ----------------------------
 // Ті самі операції, але з розгорнутим поясненням. Віддаються в /api/ops і
 // команді OPS, щоб веб і десктопний клієнт не тримали власних текстів.

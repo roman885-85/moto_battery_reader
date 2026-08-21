@@ -1390,6 +1390,7 @@ function renderBms(b){
     set('wear', b.health+' %');
     set('cap', b.potentialMah+' мА·год');
     set('cyc', b.cycles+' зар. IMPRES'
+        +(b.histCca!==undefined?(' · у пакеті: заряд '+b.histCca+' / розряд '+b.histDca):'')
         +(b.nonImpresCycles>0?(' / +'+b.nonImpresCycles+' звич. ЗП')
          :b.nonImpresCycles<0?' / звич. ЗП — не читається':''));
   } else {

@@ -436,6 +436,11 @@
             <div class="note w" id="warn2438" style="display:none"></div>
             <div class="row"><span class="k">Циклів заряду (IMPRES)</span><span class="v" id="bCyc">—</span></div>
             <div class="row"><span class="k">Циклів не-IMPRES</span><span class="v" id="bCycN">—</span></div>
+            <!-- ⚑ Наробіток, записаний у САМОМУ пакеті. Саме звідси зарядна
+                 станція відновлює лічильники монітора після кожного сеансу,
+                 тож після скидання тут мусять бути нулі. Якщо після зарядки
+                 знову з'явились числа — станція взяла їх тут. -->
+            <div class="row"><span class="k">Наробіток у пакеті (DS2433)</span><span class="v" id="bHist">—</span></div>
             <div class="row"><span class="k">Реальна ємність</span><span class="v" id="bPot">—</span></div>
             <div class="row"><span class="k">Знос / здоров'я</span><span class="v" id="bHealth">—</span></div>
             <div class="row"><span class="k">Калібрувань пройдено</span><span class="v" id="bCal">—</span></div>
@@ -1306,6 +1311,9 @@ function renderBms(b){
     // «не читається» за «жодного разу», і саме так ми й робили.
     set('bCycN', (b.nonImpresCycles===undefined||b.nonImpresCycles<0)
                  ? 'не читається' : String(b.nonImpresCycles));
+    set('bHist', b.histCca===undefined ? 'блока немає'
+                 : ('заряд '+b.histCca+' / розряд '+b.histDca
+                    + ((b.histCca||b.histDca) ? '' : '  (обнулено)')));
     if(b.haveKey){
         set('bPot', b.potentialMah+' мА·год'+(b.firstUseMah?(' (на початку '+b.firstUseMah+')'):''));
         // Знос рахується через шунт. Якщо шунт узято не з чипа, число —

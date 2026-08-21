@@ -954,6 +954,20 @@ void handleDumpInfo2438() {
         json += ",\"bms\":{\"kit\":\"" + String(bms.kit) + "\"";
         json += ",\"cycles\":" + String(bms.cycles);
         json += ",\"nonImpresCycles\":" + String(bms.nonImpresCycles);
+        // ⚑ НАРОБІТОК, ЗАПИСАНИЙ У САМОМУ ПАКЕТІ. Ці два числа лежать у DS2433
+        //  (блок NONSMART, зсуви +3 і +5) у тих самих сирих одиницях, що й
+        //  монітор, — і саме звідти зарядна станція відновлює лічильники
+        //  DS2438 після кожного сеансу. Доти їх не було видно НІДЕ, і питання
+        //  «чому після скидання цикли повернулись» доводилось з'ясовувати за
+        //  hex-дампом. Тепер видно очима: після скидання тут мусять бути нулі,
+        //  а якщо після зарядки знову з'явились числа — станція взяла їх тут.
+        {
+            uint16_t hC = 0, hD = 0;
+            if (impresBmsHistCounters(batteryDump, &hC, &hD)) {
+                json += ",\"histCca\":" + String(hC);
+                json += ",\"histDca\":" + String(hD);
+            }
+        }
         json += ",\"haveKey\":" + String(bms.haveKey ? 1 : 0);
         json += ",\"keyGuessed\":" + String(bms.keyGuessed ? 1 : 0);
         if (bms.haveKey) {

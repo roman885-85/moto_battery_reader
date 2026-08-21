@@ -2140,6 +2140,52 @@ int main() {
                                              "звірка складу панелей між клієнтами має свій інструмент");
     }
 
+    // ── 43. НЕВІДОМЕ НЕ СМІЄ ПРИКИДАТИСЯ ЧИСЛОМ ────────────────────────────
+    //  Три показання, у яких «не знаю» роками виглядало як конкретний факт:
+    //  нуль циклів не-IMPRES, неможлива дата виготовлення й «пакет ще не
+    //  вмикався». Логіку ганяє audit_check на справжньому корпусі; тут — те,
+    //  чого на хості немає: JSON пристрою й три клієнти.
+    printf("\n43) невідоме показується як невідоме, а не як число\n");
+    {
+        // Дата виготовлення йде в клієнти ЛИШЕ правдоподібною.
+        check(fileCalls("web_server.h", "impresBmsDateSane(bms.mfgY, bms.mfgM, bms.mfgD)"),
+                                             "дата виготовлення проходить перевірку правдоподібності");
+        check(fileHasText("web_server.h", "\\\"mfgDateOk\\\"") &&
+              fileHasText("web_server.h", "\\\"firstUseKnown\\\""),
+                                             "…і клієнт дізнається про це прапорцем, а не здогадкою");
+        // ⚑ ШУКАЄМО ВИРАЗ, А НЕ ФРАЗУ. Перевірка «чи є у файлі слова
+        //  „не обчислити“» лишалась зеленою після того, як ці слова прибрали
+        //  з коду: вони й далі стояли в коментарі поруч. Те саме з «не
+        //  читається» — воно є у файлі двічі. Спіймано звіркою від
+        //  протилежного; тому нижче — саме ті вирази, які малюють значення.
+        check(fileCalls("index.html", "b.mfgDateOk===0 ? '— не обчислити") &&
+              fileCalls("client_usb.html", "b.mfgDateOk===0 ? '— не обчислити"),
+                                             "веб-клієнти не видають «не обчислити» за «не вмикався»");
+        check(fileCalls("usb_client/moto_gui.py", "\"— не обчислити (немає дати виготовлення)\" if _mfgBad"),
+                                             "…і exe-клієнт теж");
+        check(fileCalls("index.html", "b.mfgDateOk===0 ? '⚠ неправдоподібна") &&
+              fileCalls("client_usb.html", "b.mfgDateOk===0 ? '⚠ неправдоподібна") &&
+              fileCalls("usb_client/moto_gui.py", "\"⚠ неправдоподібна (блок DATE побитий)\" if _mfgBad"),
+                                             "…а неправдоподібна дата підписана як неправдоподібна");
+        check(fileCalls("index.html", "? 'не читається' : String(b.nonImpresCycles)") &&
+              fileCalls("client_usb.html", "? 'не читається' : String(b.nonImpresCycles)"),
+                                             "нечитаний лічильник не-IMPRES не малюється нулем");
+        check(fileCalls("usb_client/moto_gui.py", "\"не читається\" if (_non is None or _non < 0)"),
+                                             "…і в exe-клієнті теж");
+        // Сума «циклів пакета» не сміє мовчки додавати невідоме.
+        check(fileCalls("web_server.h", "(b.nonImpresCycles >= 0) ? (long)b.nonImpresCycles : 0"),
+                                             "невідомий лічильник не додається в суму циклів");
+        // Правило «станція почала добудову» — ОДНЕ на прошивку й тест.
+        check(fileCalls("recovery.h", "impresChargerPartial(batteryDump, batteryDump2438, hasDump2438)"),
+                                             "діагноз добудови береться зі спільного правила");
+        check(fileCalls("tools/hdrfix_check.cpp", "impresChargerPartial(d33, d38, has38)"),
+                                             "…і тест кличе те саме, а не власну копію");
+        check(!fileHasText("tools/hdrfix_check.cpp", "дослівно з recovery.h"),
+                                             "…копії правила в тесті більше немає");
+        check(fileExists("dumps/20-vymahaie-vidnovlennya/notes.md"),
+                                             "партія дампів, на якій це знайдено, лежить у корпусі");
+    }
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

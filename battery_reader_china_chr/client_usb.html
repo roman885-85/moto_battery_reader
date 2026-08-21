@@ -1354,19 +1354,27 @@ function renderBms(b){
   const set=(id,v,col)=>{const e=$(id); if(!e)return; e.textContent=v; if(col!==undefined)e.style.color=col;};
   if(!b){['bCyc','bCycN','bPot','bHealth','bCal','bMfg','bUse','bKey'].forEach(i=>set(i,'—')); return;}
   set('bCyc', b.cycles>=0?String(b.cycles):'— (блок гістограми побитий)');
-  set('bCycN', b.nonImpresCycles!==undefined?String(b.nonImpresCycles):'—');
+  // −1 = блок лічильника побитий, а не «жодного разу».
+  set('bCycN', (b.nonImpresCycles===undefined||b.nonImpresCycles<0)
+               ? 'не читається' : String(b.nonImpresCycles));
   if(b.haveKey){
     set('bPot', b.potentialMah+' мА·год'+(b.firstUseMah?(' (на початку '+b.firstUseMah+')'):''));
     // Без шунта з чипа знос — лише оцінка: у різних моделей шунт удвічі різний.
     set('bHealth', b.health+' %'+(window.__rsChip?'':' (оцінка: шунт не з чипа)'),
         b.health>=80?'#22c55e':(b.health>=60?'':'#ef4444'));
     set('bCal', String(b.calCycles));
-    set('bMfg', b.mfgDate||'—');
-    set('bUse', b.firstUseDate||'— (пакет ще не вмикався)');
+    // Неправдоподібну дату пристрій не віддає — лише прапорець.
+    set('bMfg', b.mfgDate || (b.mfgDateOk===0 ? '⚠ неправдоподібна (блок DATE побитий)' : '—'));
+    // «Не вмикався» і «не обчислити» — різні твердження.
+    set('bUse', b.firstUseDate
+                || (b.mfgDateOk===0 ? '— не обчислити (немає дати виготовлення)'
+                                    : '— (пакет ще не вмикався)'));
     set('bKey', b.keyGuessed?'підібрано перебором (ROM чипа недоступний)':'з ROM-ID чипа DS2433');
     set('wear', b.health+' %');
     set('cap', b.potentialMah+' мА·год');
-    set('cyc', b.cycles+' зар. IMPRES'+(b.nonImpresCycles?(' / +'+b.nonImpresCycles+' звич. ЗП'):''));
+    set('cyc', b.cycles+' зар. IMPRES'
+        +(b.nonImpresCycles>0?(' / +'+b.nonImpresCycles+' звич. ЗП')
+         :b.nonImpresCycles<0?' / звич. ЗП — не читається':''));
   } else {
     ['bPot','bHealth','bCal','bMfg','bUse'].forEach(i=>set(i,'—'));
     set('bKey','не визначено — зчитайте АКБ пристроєм (потрібен ROM-ID DS2433)');

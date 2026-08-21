@@ -367,23 +367,4 @@ inline bool impresCryptKeyDiffers(uint8_t srcK1, uint8_t srcK2,
     return ((srcK1 & 0x0F) != (ownK1 & 0x0F)) || ((srcK2 >> 4) != (ownK2 >> 4));
 }
 
-// Головна операція: перешифрувати вміст d33 із ключа джерела в ключ чипа.
-// Числа лишаються ті самі — міняється лише те, хто зможе їх прочитати.
-// mfg* — якщо задано (рік > 0), дату виготовлення беремо звідти, а не з даних:
-// на «свіжому» хвості її просто немає, і вписати її може лише людина.
-inline bool impresCryptRekey(uint8_t *d33, const uint8_t *d38,
-                             uint8_t ownK1, uint8_t ownK2,
-                             int mfgY, int mfgM, int mfgD) {
-    uint8_t sk1, sk2;
-    if (!impresCryptSourceKey(d33, d38, &sk1, &sk2)) return false;
-    ImpresCryptFields f;
-    impresCryptRead(d33, sk1, sk2, &f);
-    if (mfgY > 0) {
-        f.haveDat = f.haveDat || impresCryptBlockUsable(d33, impresCryptAddr(d33, BMS_V_DATE), 6);
-        f.mfgY = mfgY; f.mfgM = mfgM; f.mfgD = mfgD;
-    }
-    impresCryptWrite(d33, ownK1, ownK2, &f);
-    return true;
-}
-
 #endif // IMPRES_CRYPT_H

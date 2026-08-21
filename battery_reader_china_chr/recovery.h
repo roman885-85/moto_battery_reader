@@ -29,102 +29,6 @@
 //  хелперів), тож усі символи вже визначені.
 // ===========================================================================
 
-// ---- Проблеми, які виявляє аналіз (бітова маска) --------------------------
-enum {
-    ISS_NO_CHIP      = 1u << 0,  // жоден чіп не відповідає на шині
-    ISS_BLANK33      = 1u << 1,  // DS2433 порожній/стертий (усе 0xFF)
-    ISS_HDR_BAD      = 1u << 2,  // заголовок DS2433 Σ≠0x41
-    ISS_NO_MODEL     = 1u << 3,  // немає запису моделі 0x0B
-    ISS_MIRROR_BAD   = 1u << 4,  // дзеркало DS2438<->DS2433 розійшлось
-    ISS_CCA_OVERFLOW = 1u << 5,  // CCA=0xFFFF (лічильник «залочено»)
-    ISS_NO_2438      = 1u << 6,  // DS2438 відсутній/не читається
-    ISS_NEEDS_CALIB  = 1u << 7,  // структурно валідна, але потрібне калібрування
-    ISS_HEALTH_LOW   = 1u << 8,  // здоров'я/ємність нижче порогу
-    ISS_TAIL_FOREIGN = 1u << 9,  // ⚑ навчена калібровка ЧУЖОГО пакета (див. нижче)
-    ISS_TAIL_ERASED  = 1u << 10, // ⛔ хвіст стерто у 0xFF — ЗП не зможе відкалібрувати
-    ISS_NEVER_CALIB  = 1u << 11, // пакет жодного разу не калібрувався (CTS = 0)
-    // ── шифрування й узгодженість даних ────────────────────────────────────
-    //  Досі Майстер дивився лише на СТРУКТУРУ: суми, модель, дзеркало, хвіст.
-    //  Але найчастіша скарга («невідомий акумулятор») народжується не з
-    //  поламаної структури, а зі ЗМІСТУ: поля зашифровані ключем чужого чипа,
-    //  дати суперечать одна одній, монітор від іншого пакета. Структурно такий
-    //  дамп бездоганний — і Майстер мовчав.
-    ISS_CRYPT_WRONG  = 1u << 12, // вміст зашифровано ЧУЖИМ ключем (рація бачить сміття)
-    ISS_CRYPT_UNKNOWN= 1u << 13, // ключ вмісту не визначається взагалі
-    ISS_BLOCK_SUM    = 1u << 14, // побита сума одного з блоків BMS
-    ISS_DATE_INSANE  = 1u << 15, // дата виготовлення неправдоподібна
-    ISS_ETM_FOREIGN  = 1u << 16, // наробіток більший за вік пакета -> чужий DS2438
-    ISS_USE_BEFORE_CHG = 1u << 17,// пакет «вмикали», але жодного разу не заряджали
-    // ⚑ Одномісний зарядний WPLN4226A сам дописує в стертий DS2433 дзеркало
-    // заголовка з DS2438 (26 байт, 0x01..0x1A), але НЕ виправляє контрольну
-    // суму — і на цьому зупиняється: профіль, модель і блоки лишаються 0xFF.
-    // Структурно це «побитий заголовок», але дані в ньому вже правильні,
-    // тому лікується не переписуванням, а добудовою (див. ACT_HDRFIX).
-    ISS_CHARGER_PARTIAL = 1u << 18,
-    ISS_DCA_INSANE   = 1u << 19, // регістр розряду монітора побитий (DCA >> CCA)
-};
-
-// ---- Дії Майстра ----------------------------------------------------------
-enum {
-    ACT_NONE = 0,
-    ACT_READ,            // перечитати чіпи
-    ACT_RESTORE,         // відновити модельну частину еталона (потребує моделі)
-    ACT_REPAIR,          // ремонт цілісності (суми + дзеркало)
-    ACT_RECAL,           // підготовка до калібрування (після заміни банок)
-    ACT_RECAL_DEEP,      // те саме + стерти навчені записи ємності й журнал
-    ACT_RESET,           // скидання лічильників
-    ACT_CLEAN,           // очистка історії
-    ACT_SETCHARGE_AUTO,  // виставити заряд із напруги
-    ACT_CHARGE_STATION,  // ЗОВНІШНІЙ крок: калібрування на IMPRES-ЗП
-    ACT_HDRFIX,          // добудувати заголовок DS2433 із дзеркала DS2438
-    ACT_CRYPT,           // перешифрувати дати й лічильники під ROM цього чипа
-    ACT_VERIFY,          // фінальна перевірка
-};
-
-// ---- База правил: проблема -> діагноз/пропозиція/дія -----------------------
-struct RecoveryRule {
-    uint32_t    issue;      // біт проблеми
-    uint8_t     severity;   // 0=інфо, 1=увага, 2=критично
-    const char *problem;    // що не так (людською)
-    const char *fix;        // що пропонуємо
-};
-
-static const RecoveryRule RECOVERY_RULES[] = {
-    { ISS_NO_CHIP,      2, "Жоден чіп не відповідає на 1-Wire шині",          "Перевірте контакти АКБ і повторіть зчитування" },
-    { ISS_BLANK33,      2, "DS2433 порожній (стертий у 0xFF)",                "Відновити еталон обраної моделі байт-у-байт" },
-    { ISS_NO_MODEL,     2, "Відсутній запис моделі (0x0B)",                   "Відновити еталон обраної моделі (модель+калібрування)" },
-    { ISS_HDR_BAD,      2, "Пошкоджений заголовок DS2433 (Σ≠0x41)",           "Ремонт цілісності (перерахунок суми заголовка)" },
-    { ISS_MIRROR_BAD,   1, "Дзеркало калібрування DS2438<->DS2433 розійшлось","Ремонт цілісності (синхронізувати дзеркало)" },
-    { ISS_TAIL_FOREIGN, 2, "Навчена калібровка НЕ від цього пакета (0x18A..0x1FF)",
-                           "Ремонт після заміни елементів + калібрування на ЗП" },
-    { ISS_TAIL_ERASED,  2, "Хвіст 0x18A..0x1FF стерто — ЗП не зможе завершити калібрування",
-                           "Ремонт після заміни елементів: відновити скелет записів (чистий хвіст)" },
-    { ISS_CCA_OVERFLOW, 1, "Лічильник заряду CCA переповнений (залочено)",    "Підготовка + калібрування на IMPRES-ЗП" },
-    { ISS_NEEDS_CALIB,  1, "Потрібне калібрування ємності",                   "Підготовка + калібрування на IMPRES-ЗП" },
-    { ISS_HEALTH_LOW,   1, "Низьке показане здоров'я/ємність",                "Скидання зносу або калібрування на ЗП" },
-    { ISS_NO_2438,      1, "DS2438 (монітор) відсутній/не читається",         "Перевірте чіп; відновлення DS2433 можливе окремо" },
-    { ISS_NEVER_CALIB,  1, "Пакет жодного разу не калібрувався (потенційна ємність = 0)",
-                           "Повний цикл на IMPRES-ЗП — саме він виміряє банки" },
-    { ISS_CRYPT_WRONG,  2, "Дати й лічильники зашифровані ЧУЖИМ ключем — рація читає сміття",
-                           "Перешифрувати під ROM цього чипа (числа ті самі, читати їх зможе рація)" },
-    { ISS_CRYPT_UNKNOWN,2, "Ключ зашифрованих полів не визначається — вміст ні з чим не узгоджений",
-                           "Вписати дату виготовлення й знос вручну; далі перешифрувати під ROM чипа" },
-    { ISS_BLOCK_SUM,    2, "Побита контрольна сума блока даних BMS",
-                           "Ремонт цілісності (перерахунок сум блоків)" },
-    { ISS_DATE_INSANE,  1, "Неправдоподібна дата виготовлення",
-                           "Вписати дату вручну в «Ремонті» — вона піде під ключем цього чипа" },
-    { ISS_DCA_INSANE,   2, "Лічильник РОЗРЯДУ монітора побитий: «взято» в рази більше, ніж залито",
-                           "Синхронізація дзеркала: узяти DCA з історії DS2433 і записати в монітор" },
-    { ISS_ETM_FOREIGN,  2, "Наробіток більший за вік пакета — DS2438 не від цього АКБ",
-                           "Перечитайте монітор; якщо пакет щойно був на ЗП — правте наробіток ПІСЛЯ калібрування" },
-    { ISS_USE_BEFORE_CHG, 1, "Пакет позначено як увімкнений, але жодного разу не заряджений",
-                           "Перешифрувати під ROM цього чипа — запис приведе поля до несуперечливого стану" },
-    { ISS_CHARGER_PARTIAL, 2, "Станція частково записала заголовок (дзеркало є, сума й решта чипа — ні)",
-                           "Добудувати заголовок із дзеркала; якщо модель невідома — режим копії" },
-};
-static const int RECOVERY_RULE_COUNT = sizeof(RECOVERY_RULES) / sizeof(RECOVERY_RULES[0]);
-
-// ---- Стан аналізу ---------------------------------------------------------
 struct BatteryDiag {
     uint32_t issues;
     int      capPct;        // здоров'я/ємність, % (-1 якщо невідомо)
@@ -135,69 +39,16 @@ struct BatteryDiag {
     int      tail;          // IMPRES_TAIL_BLANK / _VALID / _BROKEN
 };
 
-// ---- Метадані дії (заголовок/опис/зовнішній/куди пише) --------------------
-//  chips — у яку мікросхему піде запис (OPC_* із operations.h). Кроки Майстра —
-//  це теж пункти запису, і плутанина між DS2433 (ідентичність) і DS2438
-//  (монітор із заводським калібруванням вимірювача струму) коштує дорого, тож
-//  кожен крок каже це прямо, як і решта операцій.
-static void wizActionMeta(uint8_t a, const char **title, const char **detail,
-                          bool *external, uint8_t *chips = nullptr) {
-    *external = false;
-    if (chips) {
-        switch (a) {
-            case ACT_RESTORE:        *chips = OPC_33;   break;  // + DS2438, якщо є еталон
-            case ACT_REPAIR:
-            case ACT_RECAL:
-            case ACT_RECAL_DEEP:
-            case ACT_CLEAN:          *chips = OPC_BOTH; break;
-            case ACT_HDRFIX:
-            case ACT_CRYPT:          *chips = OPC_33;   break;
-            case ACT_RESET:
-            case ACT_SETCHARGE_AUTO: *chips = OPC_38;   break;
-            default:                 *chips = OPC_NONE; break;  // читання/зовнішні
-        }
-    }
-    switch (a) {
-        case ACT_READ:    *title = "Зчитати чіпи";
-                          *detail = "Перевірте контакти АКБ і повторіть зчитування 1-Wire."; break;
-        case ACT_RESTORE: *title = "Відновити еталон";
-                          *detail = "Записати модельну частину еталона (ідентичність, крива, copyright, заводська таблиця, модель). Навчений калібрувальний хвіст НЕ переноситься — інакше пакет отримав би чужу калібровку. Працює й на порожньому чипі."; break;
-        case ACT_REPAIR:  *title = "Ремонт цілісності";
-                          *detail = "Перерахувати контрольні суми (заголовок Σ≡0x41) і синхронізувати дзеркало калібрування."; break;
-        case ACT_RECAL:   *title = "Ремонт після заміни елементів";
-                          *detail = "Записати ЧИСТИЙ калібрувальний хвіст DS2433 (0x18A..0x1FF): скелет записів і сталі моделі лишаються, навчені значення обнулені, суми правильні. Обнулити лічильники DS2438, паливомір — за напругою. НЕ стирає хвіст у 0xFF: на стертому хвості ЗП не може записати навчену калібровку і цикл падає в помилку."; break;
-        case ACT_RECAL_DEEP: *title = "Глибока підготовка";
-                          *detail = "Те саме + стерти навчені записи ємності (0x153..0x189) і журнал використання. Застосовувати, коли після звичайної підготовки ЗП тримається за стару ємність."; break;
-        case ACT_RESET:   *title = "Скидання лічильників";
-                          *detail = "Обнулити лічильники DS2438 (ETM/CCA/DCA). Навчену калібровку й ідентичність не чіпає."; break;
-        case ACT_CLEAN:   *title = "Очистка історії";
-                          *detail = "Стерти історію/статистику, лишити ідентичність і калібрування."; break;
-        case ACT_SETCHARGE_AUTO: *title = "Заряд із напруги";
-                          *detail = "Виставити паливомір за поточною напругою (" BATTERY_SCALE_TXT ")."; break;
-        case ACT_HDRFIX:  *title = "Добудувати заголовок";
-                          *detail = "Зарядна станція сама дописала в стертий чип дзеркало заголовка з "
-                                    "DS2438, але не виправила суму — і на цьому зупинилась. Крок копіює "
-                                    "ті самі 26 байт (якщо ще не скопійовані) і виправляє контрольну "
-                                    "суму. Профіль, модель і блоки цим НЕ відновлюються — далі потрібен "
-                                    "«Відновити еталон» (якщо модель відома) або режим копії."; break;
-        case ACT_CRYPT:   *title = "Перешифрувати під ROM чипа";
-                          *detail = "Дати й лічильники зашифровані ключем із ROM-ID самого чипа. "
-                                    "Якщо вміст прийшов від іншого пакета, рація розшифрує його "
-                                    "своїм ключем і побачить сміття. Крок переписує ТІ САМІ числа "
-                                    "під ключем цього чипа — значення не міняються, міняється лише "
-                                    "те, хто здатен їх прочитати."; break;
-        case ACT_CHARGE_STATION: *title = "Калібрування на ЗП"; *external = true;
-                          *detail = "Поставте АКБ на IMPRES-зарядну станцію на повний цикл (заряд/розряд/заряд). Майстер продовжить після повернення."; break;
-        case ACT_VERIFY:  *title = "Перевірка результату";
-                          *detail = "Перечитати чіпи й підтвердити цілісність (заголовок, модель, дзеркало, лічильники)."; break;
-        default:          *title = "—"; *detail = ""; break;
-    }
-}
+#include "wizard_rules.h"    // проблеми, дії, таблиця діагнозів і сам план
 
 // ---- Поточний план: масив кодів дій ---------------------------------------
-#define WIZ_MAX_STEPS 8
 static uint8_t g_wizActs[WIZ_MAX_STEPS];
 static int     g_wizActN = 0;
+
+// Тонкий викликач: сам план рахує чиста wizPlanIssues() з wizard_rules.h.
+static void wizComputeActions(const BatteryDiag &d) {
+    g_wizActN = wizPlanIssues(d.issues, g_wizActs, WIZ_MAX_STEPS);
+}
 
 // Журнал продовження (у пам'яті ESP32, прив'язаний до серійника DS2438).
 struct WizJournal {
@@ -225,21 +76,6 @@ static void wizSerialHex(char *out, size_t n) {
     // байт за межею. Зараз усі виклики дають 17 і не страждають, але умова
     // мусить бути правильною сама по собі, а не завдяки виклику.
     for (int i = 0; i < 8 && (size_t)(i * 2 + 2) < n; i++) sprintf(out + i * 2, "%02X", r[i]);
-}
-
-static int wizDetectFormat() {
-    if (!hasDump) return 0;
-    auto has = [](const char *s, int l) {
-        for (int i = 0; i + l <= (int)DUMP_SIZE; i++) {
-            int k = 0; while (k < l && batteryDump[i + k] == (uint8_t)s[k]) k++;
-            if (k == l) return true;
-        }
-        return false;
-    };
-    if (has("COPYRIGHT2021", 13)) return 2021;
-    if (has("COPYRIGHT2014", 13)) return 2014;
-    if (has("MOTOROLA", 8))       return 2017;
-    return 0;
 }
 
 // ------------------------------------------------------------------ АНАЛІЗ
@@ -276,7 +112,11 @@ static void wizAnalyze(BatteryDiag &d) {
 
         if (!decodeModel(d.model, sizeof(d.model))) { d.issues |= ISS_NO_MODEL; d.model[0] = '\0'; }
 
-        d.fmt = wizDetectFormat();
+        // ⚑ БУЛО ДРУГОЮ КОПІЄЮ. Тут стояв wizDetectFormat() — дослівно те
+        //  саме правило (три маркери COPYRIGHT/MOTOROLA), що й
+        //  impresFormatYear() в impres_format.h. Копія жила в файлі, який на
+        //  хості не збирається, тобто перевіряли ми одну, а працювала інша.
+        d.fmt = impresFormatYear(batteryDump);
 
         // ⚑ ЗДОРОВ'Я. Раніше тут стояв decodeCapacity(), який ПРИНЦИПОВО
         // повертає false (байт заводської таблиці — стала моделі, а не знос).
@@ -356,6 +196,7 @@ static void wizAnalyze(BatteryDiag &d) {
         if (a & AUD_BLOCK_SUM)      d.issues |= ISS_BLOCK_SUM;
         if (a & AUD_DATE_INSANE)    d.issues |= ISS_DATE_INSANE;
         if (a & AUD_DCA_INSANE)     d.issues |= ISS_DCA_INSANE;
+        if (a & AUD_MONITOR_ZEROED) d.issues |= ISS_MONITOR_ZEROED;
         if (a & AUD_ETM_FOREIGN)    d.issues |= ISS_ETM_FOREIGN;
         if (a & AUD_USE_BEFORE_CHG) d.issues |= ISS_USE_BEFORE_CHG;
     }
@@ -367,40 +208,6 @@ static void wizAnalyze(BatteryDiag &d) {
             (d.issues & (ISS_HEALTH_LOW | ISS_NEVER_CALIB)))
             d.issues |= ISS_NEEDS_CALIB;
     }
-}
-
-// ------------------------------------------------------------------ ПЛАН
-// Детерміновано будує послідовність КОДІВ дій із набору проблем.
-static void wizComputeActions(const BatteryDiag &d) {
-    g_wizActN = 0;
-    auto add = [](uint8_t a) { if (g_wizActN < WIZ_MAX_STEPS) g_wizActs[g_wizActN++] = a; };
-    uint32_t is = d.issues;
-
-    if (is & ISS_NO_CHIP) { add(ACT_READ); return; }
-
-    // Добудова — ПЕРШИМ кроком: без валідного заголовка інші перевірки чипа
-    // (модель, профіль) однаково нічого не скажуть, а дзеркало вже на місці —
-    // шкоди від зайвого кроку немає.
-    if (is & ISS_CHARGER_PARTIAL) add(ACT_HDRFIX);
-
-    if (is & (ISS_BLANK33 | ISS_NO_MODEL))       add(ACT_RESTORE);
-    else if (is & (ISS_HDR_BAD | ISS_MIRROR_BAD | ISS_BLOCK_SUM)) add(ACT_REPAIR);
-
-    // Перешифрування — ПІСЛЯ ремонту структури (він може полагодити суми
-    // блоків) і ДО калібрування: на ЗП має їхати пакет, чиї поля рація вже
-    // читає правильно. Відновлення еталона робить це саме, тож після нього
-    // окремий крок зайвий.
-    if (!(is & (ISS_BLANK33 | ISS_NO_MODEL)) &&
-        (is & (ISS_CRYPT_WRONG | ISS_USE_BEFORE_CHG))) add(ACT_CRYPT);
-
-    // ЧУЖА навчена калібровка — головна причина «невідомого акумулятора» після
-    // заміни елементів. Прибираємо її ПЕРШОЮ, далі обов'язково цикл на ЗП.
-    if (is & (ISS_TAIL_FOREIGN | ISS_TAIL_ERASED | ISS_CCA_OVERFLOW | ISS_NEEDS_CALIB)) {
-        add(ACT_RECAL); add(ACT_CHARGE_STATION);
-    }
-    else if (is & ISS_HEALTH_LOW)                   add(ACT_RESET);
-
-    add(ACT_VERIFY);
 }
 
 // ------------------------------------------------------------------ JSON-хелпер
@@ -508,19 +315,6 @@ static void wizSnapshot(long &cca, long &dca, long &ica, long &health) {
 }
 
 // ------------------------------------------------------------------ JSON
-static const char *wizActionName(uint8_t a) {
-    switch (a) {
-        case ACT_READ: return "read";            case ACT_RESTORE: return "restore";
-        case ACT_REPAIR: return "repair";        case ACT_RECAL: return "recal";
-        case ACT_RECAL_DEEP: return "recaldeep";
-        case ACT_RESET: return "reset";          case ACT_CLEAN: return "clean";
-        case ACT_SETCHARGE_AUTO: return "charge";case ACT_CHARGE_STATION: return "station";
-        case ACT_HDRFIX: return "hdrfix";
-        case ACT_CRYPT: return "crypt";
-        case ACT_VERIFY: return "verify";        default: return "none";
-    }
-}
-
 // Список усіх збережених журналів відновлення (за серійниками) з описом
 // ЗАПЛАНОВАНИХ (ще не виконаних) кроків — для екрана керування пам'яттю в UI.
 static String wizJournalListJson() {
@@ -614,7 +408,7 @@ static String wizStatusJson(const char *resultMsg = nullptr, bool resultOk = tru
         wizActionMeta(acts[i], &ttl, &det, &ext, &ch);
         if (i) o += ",";
         o += "{\"idx\":" + String(i);
-        o += ",\"action\":\""; o += wizActionName(acts[i]); o += "\"";
+        o += ",\"action\":\""; o += wizActionId(acts[i]); o += "\"";
         o += ",\"external\":" + String(ext ? "true" : "false");
         o += ",\"chips\":" + String((int)ch);
         o += ",\"chipsText\":\""; o += opChipsText(ch); o += "\"";
@@ -703,6 +497,7 @@ static String wizExecStep(int idx, const String &model, const String &fixes = St
                                 msg = ok ? "Глибока підготовка виконана — готово до калібрування на ЗП"
                                          : "Помилка підготовки"; break;
         case ACT_RESET:         ok = performReset();         msg = ok ? "Лічильники скинуто" : "Помилка скидання"; break;
+        case ACT_DCAFIX:        { String dm; ok = performDcaFix(&dm); msg = dm; } break;
         case ACT_CLEAN:         ok = performFactoryClean();  msg = ok ? "Історію очищено" : "Помилка очистки"; break;
         case ACT_SETCHARGE_AUTO:{ int p = chargePctFromVoltage(); ok = (p >= 0) && performSetChargePct(p);
                                   msg = ok ? (String("Заряд ~") + p + "% з напруги") : "Помилка (немає напруги?)"; } break;

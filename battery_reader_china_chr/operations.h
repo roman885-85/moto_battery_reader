@@ -98,6 +98,7 @@ enum {
 // Цілі розряду/заряду живуть у discharge.h/charge.h, які підключаються ПІСЛЯ
 // цього файла. Оголошуємо наперед: тіло знайдеться в тій самій одиниці
 // трансляції.
+inline bool     chargeAvailable();
 inline uint16_t dischargeTargetMv();
 inline uint8_t  chargeTargetPct();
 inline uint8_t  chargeProfile();
@@ -376,8 +377,35 @@ static const MenuSeg MENU_SEGS[] = {
 };
 #define MENU_SEG_COUNT ((int)(sizeof(MENU_SEGS) / sizeof(MENU_SEGS[0])))
 
+// ── ЧИ ПОТРІБЕН ЦІЙ ОПЕРАЦІЇ ЗАРЯД ────────────────────────────────────────
+//  Питання ставиться про КОД операції, а не про групу меню: меню — лише один
+//  зі входів, і той самий код приходить із веба, з USB і зі збереженого
+//  сценарію Майстра. Прибрати пункт з екрана й лишити його виконуваним ззовні
+//  означало б вимкнути напис, а не функцію.
+//
+//  «Заряд з напруги» (OP_SETCHARGE) сюди НЕ входить, хоч і зветься схоже: він
+//  нічого не заряджає, а вписує в паливомір відсоток, порахований із напруги
+//  на клемах. Силова частина йому не потрібна, і на версії без заряду він
+//  лишається робочим — це один із небагатьох способів привести паливомір до
+//  тями саме там, де зарядити пакет нічим.
+inline bool opNeedsCharge(int code) {
+    switch (code) {
+        case OP_CHARGE_DCDC:
+        case OP_CHARGE_TGT:
+        case OP_CHARGE_WAKE:
+        case OP_CHARGE_PROFILE:
+        case OP_CHARGE_MANUAL_MA:
+        case OP_CHARGE_MANUAL_MV: return true;
+        default:                  return false;
+    }
+}
+
 inline int menuSegLen(int s) {
     const MenuSeg &g = MENU_SEGS[s];
+    // Версія пристрою без заряду: група зникає ЦІЛКОМ, разом із заголовком.
+    // Не «пункти сірі й не натискаються» — сіре меню на пів-екрана в приладі,
+    // де заряду не передбачено взагалі, це не інформація, а перешкода.
+    if (g.group == MG_CHARGE && !chargeAvailable()) return 0;
     if (g.kind == MS_MODELS || g.kind == MS_NEW) return BATTERY_TEMPLATE_COUNT;
     return g.n;
 }
@@ -464,6 +492,18 @@ inline int menuPrevGroup(int i) {
         return last;
     }
     return menuGroupFirst(first - 1);
+}
+
+// Затиснути курсор у наявні межі. Потрібно щоразу, коли список МІГ стати
+// коротшим під ногами: вимкнули заряд — шість пунктів зникло, і курсор, що
+// стояв у кінці, показував би на порожнечу (menuRow() поверне false, і на
+// екрані був би прочерк, який ні на що не реагує).
+inline int menuClampSel(int sel) {
+    int n = menuCount();
+    if (n <= 0) return 0;
+    if (sel < 0)  return 0;
+    if (sel >= n) return n - 1;
+    return sel;
 }
 
 // Повний опис пункту меню — те саме, що opInfo(), але для позиції в СПИСКУ.

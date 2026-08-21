@@ -58,6 +58,7 @@ static void ledSet(LedMode m) { g_led = m; }
 #include "charge.h"
 #include "postmortem.h"    // чорний ящик — чистий, збирається на хості
 #include "battbar.h"       // коли шкалу батареї треба перемальовувати
+#include "combo.h"         // комбінації кнопок — чиста логіка, спільна для драйверів
 #include "bt_link.h"       // правило доступу по радіо — чисте, збирається на хості
 #include "splash.h"          // формат завантаженої заставки — чистий, збирається на хості
 #ifndef PROGMEM
@@ -2219,6 +2220,248 @@ int main() {
             check(!fileHasText("recovery.h", dead) && !fileHasText("web_server.h", dead) &&
                   !fileHasText("display_color.h", dead) && !fileHasText("impres_crypt.h", dead),
                                              "прибрана мертва функція не повернулась");
+    }
+
+    // ── 45. КОМБІНАЦІЇ КНОПОК ──────────────────────────────────────────────
+    //  Кнопок три, і всі три зайняті навігацією. Вимикач заряду й повноекранне
+    //  повідомлення живуть на КОМБІНАЦІЯХ — і саме тому їх треба перевіряти:
+    //  комбінація, яку можна набрати випадково, гортаючи меню, гірша за
+    //  відсутність комбінації.
+    printf("\n45) комбінації кнопок: набираються навмисно й не набираються випадково\n");
+    {
+        const uint32_t G = COMBO_GAP_MS;
+
+        // а) чотири швидкі натискання «кнопки зчитування» перемикають заряд,
+        //    а середина ланцюжка звичайної дії НЕ виконує.
+        {
+            ComboState s{};
+            uint32_t t0 = 100000;
+            check(comboFeed(s, t0,           CK_OK, CK_OK) == CMB_PASS,  "перше натискання — звичайне");
+            check(comboFeed(s, t0 + 100,     CK_OK, CK_OK) == CMB_EAT,   "друге ковтається");
+            check(comboFeed(s, t0 + 200,     CK_OK, CK_OK) == CMB_EAT,   "третє ковтається");
+            check(comboFeed(s, t0 + 300,     CK_OK, CK_OK) == CMB_TOGGLE,"четверте перемикає заряд");
+            // ⚑ Найважливіше в усій комбінації: ланцюжок мусить рватись паузою.
+            //    Без цього «чотири натискання OK» означало б «чотири колись»,
+            //    і людина вимкнула б собі заряд, гортаючи меню.
+            ComboState s2{};
+            uint32_t t = 200000;
+            for (int i = 0; i < 3; i++) { comboFeed(s2, t, CK_OK, CK_OK); t += G + 1; }
+            check(comboFeed(s2, t, CK_OK, CK_OK) == CMB_PASS,
+                  "повільні натискання комбінації НЕ складають");
+        }
+
+        // б) чужа клавіша всередині ланцюжка теж рве його.
+        {
+            ComboState s{};
+            uint32_t t = 300000;
+            comboFeed(s, t, CK_OK, CK_OK);  t += 100;
+            comboFeed(s, t, CK_OK, CK_OK);  t += 100;
+            comboFeed(s, t, CK_RIGHT, CK_OK); t += 100;     // збились
+            comboFeed(s, t, CK_OK, CK_OK);  t += 100;
+            check(comboFeed(s, t, CK_OK, CK_OK) == CMB_EAT,
+                  "чужа клавіша посеред ланцюжка починає лік заново");
+        }
+
+        // в) утримання кнопки — не натискання ланцюжка.
+        {
+            ComboState s{};
+            uint32_t t = 400000;
+            for (int i = 0; i < 3; i++) { comboFeed(s, t, CK_OK, CK_OK); t += 100; }
+            comboBreak(s);                                  // так робить довге натискання
+            check(comboFeed(s, t, CK_OK, CK_OK) == CMB_PASS,
+                  "після утримання ланцюжок починається заново");
+        }
+
+        // г) прихована послідовність набирається рівно своїм візерунком.
+        {
+            ComboState s{};
+            uint32_t t = 500000;
+            int fired = 0;
+            for (uint8_t i = 0; i < COMBO_FLASH_LEN; i++, t += 120)
+                if (comboFeed(s, t, COMBO_FLASH_PAT[i], CK_OK) == CMB_FLASH) fired++;
+            check(fired == 1, "візерунок набрано — і рівно один раз");
+
+            // Тією ж послідовністю, але з паузою всередині — не набирається.
+            ComboState s3{};
+            t = 600000; fired = 0;
+            for (uint8_t i = 0; i < COMBO_FLASH_LEN; i++) {
+                if (comboFeed(s3, t, COMBO_FLASH_PAT[i], CK_OK) == CMB_FLASH) fired++;
+                t += (i == 3) ? G + 50 : 120;
+            }
+            check(fired == 0, "з паузою посеред візерунка нічого не спрацьовує");
+
+            // Зайве повторення першої клавіші на початку НЕ ламає набір: така
+            // послідовність починається з повторів, і скидання «в нуль»
+            // зробило б її ненабиральною після зайвого «‹».
+            ComboState s4{};
+            t = 700000; fired = 0;
+            comboFeed(s4, t, COMBO_FLASH_PAT[0], CK_OK); t += 120;
+            for (uint8_t i = 0; i < COMBO_FLASH_LEN; i++, t += 120)
+                if (comboFeed(s4, t, COMBO_FLASH_PAT[i], CK_OK) == CMB_FLASH) fired++;
+            check(fired == 1, "зайве натискання першої клавіші набір не ламає");
+        }
+
+        // д) і головне: одна комбінація не набирається іншою.
+        {
+            ComboState s{};
+            uint32_t t = 800000;
+            int toggles = 0;
+            for (uint8_t i = 0; i < COMBO_FLASH_LEN; i++, t += 120)
+                if (comboFeed(s, t, COMBO_FLASH_PAT[i], CK_OK) == CMB_TOGGLE) toggles++;
+            check(toggles == 0, "прихована послідовність не вимикає заряд по дорозі");
+
+            ComboState s2{};
+            t = 900000;
+            int flashes = 0;
+            for (int i = 0; i < COMBO_TAPS_CHARGE; i++, t += 120)
+                if (comboFeed(s2, t, CK_OK, CK_OK) == CMB_FLASH) flashes++;
+            check(flashes == 0, "…а вимикач заряду не показує повідомлення");
+        }
+
+        // е) повноекранне повідомлення гасне САМЕ, і рівно один раз.
+        {
+            ComboFlash f{};
+            uint32_t t = 1000000;
+            comboFlashArm(f, t, COMBO_FLASH_MS);
+            check(comboFlashActive(f, t + 1),                  "щойно показане — на екрані");
+            check(comboFlashActive(f, t + COMBO_FLASH_MS - 1), "…і тримається весь заданий час");
+            check(!comboFlashActive(f, t + COMBO_FLASH_MS),    "…а потім зникає");
+            check(comboFlashExpired(f, t + COMBO_FLASH_MS),    "про закінчення повідомляється");
+            check(!comboFlashExpired(f, t + COMBO_FLASH_MS + 5),
+                  "…рівно один раз, інакше екран перемальовувався б вічно");
+            ComboFlash idle{};
+            check(!comboFlashActive(idle, t) && !comboFlashExpired(idle, t),
+                  "нічого не показували — нічого й не гасне");
+        }
+    }
+
+    // ── 46. ШКАЛА ЗАРЯДУ: ПЛАВНИЙ КОЛІР ────────────────────────────────────
+    printf("\n46) колір шкали тече від червоного до зеленого без сходинок\n");
+    {
+        auto R = [](uint16_t c) { return (int)((c >> 11) & 0x1F); };
+        auto G6 = [](uint16_t c) { return (int)((c >> 5) & 0x3F); };
+        auto B = [](uint16_t c) { return (int)(c & 0x1F); };
+
+        check(R(battFillColor(0)) == 31 && G6(battFillColor(0)) == 0, "0 % — чистий червоний");
+        check(R(battFillColor(100)) == 0 && G6(battFillColor(100)) == 63, "100 % — чистий зелений");
+        check(B(battFillColor(50)) == 0, "синього в шкалі немає на жодному рівні");
+
+        // Монотонність: зеленого більшає, червоного меншає — і ніде навпаки.
+        int upG = 0, downR = 0;
+        for (int p = 0; p < 100; p++) {
+            if (G6(battFillColor(p + 1)) < G6(battFillColor(p))) upG++;
+            if (R(battFillColor(p + 1)) > R(battFillColor(p)))   downR++;
+        }
+        check(upG == 0 && downR == 0, "зеленого лише більшає, червоного лише меншає");
+
+        // ⚑ ГОЛОВНЕ, ЗАРАДИ ЧОГО ПЕРЕХІД І РОБИВСЯ. Ступінчаста шкала стрибала
+        //  на межах 30 і 60 %: два сусідніх показання виглядали як різні стани
+        //  пакета. Тепер жоден крок в 1 % не сміє давати різкого стрибка.
+        int maxJump = 0;
+        for (int p = 0; p < 100; p++) {
+            int d = abs(R(battFillColor(p + 1)) - R(battFillColor(p)))
+                  + abs(G6(battFillColor(p + 1)) / 2 - G6(battFillColor(p)) / 2);
+            if (d > maxJump) maxJump = d;
+        }
+        printf("   найбільший стрибок на 1 %%: %d з 31\n", maxJump);
+        check(maxJump <= 2, "жодного стрибка кольору — перехід плавний");
+
+        // ⚑ ЯСКРАВІСТЬ МІРЯЄМО ПО НАЙБІЛЬШОМУ КАНАЛУ, А НЕ ПО СУМІ. Сума тут
+        //  не ловить нічого: і в переходу через жовтий, і в прямої
+        //  інтерполяції червоне-в-зелене r+g однакове (255). Різниця саме в
+        //  максимумі — у прямої на середині обидва канали по 127, і смуга
+        //  видимо тьмяніє. Це й є причина, з якої йдемо через жовтий; звірка
+        //  від протилежного показала, що на сумі перевірка цього не бачить.
+        int dark = 0, worst = 63;
+        for (int p = 0; p <= 100; p++) {
+            int top = R(battFillColor(p)) * 2;                 // 5 біт -> шкала 6 біт
+            if (G6(battFillColor(p)) > top) top = G6(battFillColor(p));
+            if (top < worst) worst = top;
+            if (top < 60) dark++;
+        }
+        printf("   найтьмяніша точка шкали: %d з 63\n", worst);
+        check(dark == 0, "на жодному рівні шкала не тьмяніє проти країв");
+
+        // Затиск перевіряємо НА КІЛЬКОХ значеннях. На 150 % він «сходився» й
+        // без затиску: від'ємне червоне після маски 0xF8 випадково давало
+        // нуль, тобто рівно те саме, що й на 100 %. Одне значення тут доводить
+        // не затиск, а збіг.
+        bool clamped = true;
+        for (int p : { 101, 110, 130, 200, 32000 })
+            if (battFillColor(p) != battFillColor(100)) clamped = false;
+        for (int p : { -1, -5, -100, -32000 })
+            if (battFillColor(p) != battFillColor(0))   clamped = false;
+        check(clamped, "поза межами — затиск, а не сміття");
+    }
+
+    // ── 47. ВЕРСІЯ БЕЗ ЗАРЯДУ: ВВІМКНЕНО В РОБОТУ НА ВСІХ ПОВЕРХНЯХ ─────────
+    //  Сама логіка перевіряється в charge_logic_check і menu_check. Тут — те,
+    //  чого на хості немає: що її справді КЛИЧУТЬ звідусіль, куди веде дорога
+    //  до заряду. «Функція правильна» і «функцію хтось кличе» — різні
+    //  твердження, і цей проєкт уже горів на другому.
+    printf("\n47) вимикач заряду ввімкнено в роботу: кнопки, меню, API, клієнти\n");
+    {
+        // а) кнопки на ОБОХ драйверах екрана.
+        for (const char *d : { "display.h", "display_color.h" }) {
+            check(fileCalls(d, "#include \"combo.h\""),      "драйвер підключає спільні комбінації");
+            check(fileCalls(d, "comboFeed(g_combo, millis(), ck, COMBO_READ_KEY)"),
+                                                             "…і справді питає їх на кожному натисканні");
+            check(fileCalls(d, "displayToggleChargeMode()"), "…комбінація виходить на перемикач");
+            check(fileCalls(d, "chargeSetOffByUser(!chargeOffByUser())"),
+                                                             "…який перекидає саме прапорець прошивки");
+            check(fileCalls(d, "menuClampSel(g_menuSel)"),
+                                                             "…і затискає курсор: список став коротшим");
+            check(fileCalls(d, "comboFlashArm(g_flash, millis(), COMBO_FLASH_MS)"),
+                                                             "друга комбінація показує повноекранний напис");
+            check(fileCalls(d, "comboFlashActive(g_flash, millis())"),
+                                                             "…і рендер про нього знає");
+            // ⚑ Один опит кнопок на всі гілки. Поки їх було чотири (розряд,
+            //  заряд, помилка живлення, меню), ланцюжок комбінації рвався на
+            //  кожному переході між сторінками — його рахував уже інший детектор.
+            check(fileHasNo(d, "pollButtonRaw(btn1Raw(), b1, 800)"),
+                                                             "гілки не заводять власних опитувань кнопок");
+        }
+        // б) стан гасне сам, і зміна зберігається.
+        check(fileCalls("motorola-battery-reader-web.ino", "displayFlashTask()"),
+                                                         "повноекранний напис гасне за часом із loop()");
+        check(fileCalls("motorola-battery-reader-web.ino", "chargeConsumeModeSave()") &&
+              fileCalls("motorola-battery-reader-web.ino", "chargeModeSave()"),
+                                                         "перемикач переживає перезавантаження");
+        check(fileCalls("motorola-battery-reader-web.ino", "chargeModeLoad()"),
+                                                         "…і читається на старті");
+        // в) меню — не єдиний вхід: код операції приходить іще й ззовні.
+        check(fileCalls("motorola-battery-reader-web.ino", "opNeedsCharge(act) && !chargeAvailable()"),
+                                                         "дію заряду відхиляють і тоді, коли її прислали в обхід меню");
+        check(fileCalls("operations.h", "g.group == MG_CHARGE && !chargeAvailable()"),
+                                                         "меню ховає групу заряду цілком");
+        // г) веб і USB відповідають відмовою, а стан — ні: саме зі стану
+        //    клієнт і дізнається, ЧОМУ кнопки сірі.
+        // ⚑ КОЖНА точка окремо. «Гейт зустрічається у файлі» доводить лише те,
+        //  що його не викинули цілком: приберіть його з ОДНОГО обробника — і
+        //  перевірка лишиться зеленою, бо решта чотири на місці. Саме так вона
+        //  спершу й була написана, і звірка від протилежного це показала.
+        for (const char *h : { "void handleChargeMa() {",     "void handleChargeMv() {",
+                               "void handleChargeProfile() {", "void handleChargeStart() {",
+                               "void handleChargeWake() {" }) {
+            std::string need = std::string(h) +
+                "\n    if (!requireAdmin()) return;\n    if (chargeGateClosed()) return;";
+            check(fileHasText("web_server.h", need.c_str()),
+                                                         "кінцева точка заряду закрита спільним гейтом");
+        }
+        check(fileCalls("web_server.h", "return chargeUnavailText();"),
+                                                         "…і причина відмови одна на всіх, із прошивки");
+        check(fileCalls("serial_api.h", "else if (!chargeAvailable()) {"),
+                                                         "USB-протокол теж закрито");
+        check(fileCalls("web_server.h", "\\\"availWhy\\\":\\\"\"; j += chargeUnavailText();"),
+                                                         "стан заряду несе причину відмови клієнтам");
+        // д) усі три клієнти показують ПРИЧИНУ З ПРИСТРОЮ, а не власний текст.
+        for (const char *c : { "index.html", "client_usb.html" })
+            check(fileCalls(c, "d.availWhy") &&
+                  fileHasNo(c, "не налаштовано (CHARGE_PWM_PIN"),
+                                                         "клієнт бере причину з пристрою, а не пише свою");
+        check(fileCalls("usb_client/moto_gui.py", "d.get(\"availWhy\")") &&
+              fileHasNo("usb_client/moto_gui.py", "заряд не налаштовано (CHARGE_PWM_PIN"),
+                                                         "і .exe теж");
     }
 
     printf("\n%s (помилок: %d)\n",

@@ -32,6 +32,10 @@
 
 // Цілі, профілі й ручні уставки живуть у charge.h/discharge.h, які тут не
 // потрібні: operations.h оголошує їх наперед, а нам досить сталих значень.
+// Заряд буває вимкнений — це властивість екземпляра пристрою (див. charge.h).
+// Меню від нього залежить напряму, тож тут прапорець і живе, і перемикається.
+static bool g_haveCharge = true;
+inline bool     chargeAvailable()    { return g_haveCharge; }
 inline uint16_t dischargeTargetMv()  { return 7200; }
 inline uint8_t  chargeTargetPct()    { return 100; }
 inline uint8_t  chargeProfile()      { return 0; }
@@ -328,6 +332,77 @@ int main() {
         txtFit(y, sizeof(y), "Модель PMNN4409A", 12);
         check(!strcmp(x, y) && x[strlen(x) - 1] == '.',
               "однаково обрізані назви несуть позначку обрізання");
+    }
+
+    // ── 12. Версія пристрою без заряду ─────────────────────────────────────
+    //  Є екземпляри, зібрані без силової частини. Заряд у них вимикають на
+    //  самому приладі, і меню мусить це пережити: не «сірі пункти», а їх
+    //  відсутність — разом із заголовком групи.
+    printf("\n12) версія пристрою без заряду: група ЗАРЯД зникає цілком\n");
+    {
+        const int CHG_OPS[] = { OP_CHARGE_DCDC, OP_CHARGE_TGT, OP_CHARGE_WAKE,
+                                OP_CHARGE_PROFILE, OP_CHARGE_MANUAL_MA, OP_CHARGE_MANUAL_MV };
+        const int NCHG = (int)(sizeof(CHG_OPS) / sizeof(CHG_OPS[0]));
+
+        // а) opNeedsCharge() описує РІВНО ці операції — не менше й не більше.
+        //    Саме за цим переліком дію відхиляють у вебі, по USB і зі сценарію
+        //    Майстра, тож зайвий пункт у ньому вимкнув би працездатну функцію,
+        //    а забутий — лишив би працювати ту, якої в пристрої немає.
+        int mism = 0;
+        for (int c = 0; c < opCount(); c++) {
+            bool inList = false;
+            for (int k = 0; k < NCHG; k++) if (CHG_OPS[k] == c) inList = true;
+            if (opNeedsCharge(c) != inList) { mism++; printf("      код %d\n", c); }
+        }
+        check(mism == 0, "opNeedsCharge() називає рівно операції групи ЗАРЯД");
+        check(!opNeedsCharge(OP_SETCHARGE),
+              "«Заряд з напруги» силової частини НЕ потребує — лишається робочим");
+
+        int full = menuCount();
+        g_haveCharge = false;
+        int cut = menuCount();
+        printf("   пунктів: %d -> %d\n", full, cut);
+        check(cut == full - NCHG, "зникло рівно стільки пунктів, скільки в групі");
+
+        // б) жодного пункту заряду в списку, і жодного «порожнього» рядка.
+        int leftovers = 0, broken = 0;
+        for (int i = 0; i < cut; i++) {
+            uint8_t k, g; int c;
+            if (!menuRow(i, &k, &c, &g)) { broken++; continue; }
+            if (g == MG_CHARGE) leftovers++;
+            if (k == MI_OP && opNeedsCharge(c)) leftovers++;
+        }
+        check(broken == 0,    "усі рядки коротшого списку розбираються");
+        check(leftovers == 0, "у списку не лишилось ні пункту заряду, ні його групи");
+
+        // в) решта каталогу нікуди не поділась — вимкнули заряд, а не пристрій.
+        int lost = 0;
+        for (int c = 0; c < opCount(); c++)
+            if (!opNeedsCharge(c) && menuIndexOfOp(c) < 0) { lost++; printf("      зник код %d\n", c); }
+        check(lost == 0, "жодна операція поза групою ЗАРЯД не зникла");
+
+        // г) навігація по групах не спотикається об порожній відрізок.
+        int at = 0, hops = 0;
+        bool sane = true;
+        for (; hops < MG_COUNT + 4; hops++) {
+            at = menuNextGroup(at);
+            uint8_t k, g; int c;
+            if (!menuRow(at, &k, &c, &g)) { sane = false; break; }
+            if (g == MG_CHARGE)           { sane = false; break; }
+            if (at == 0) break;
+        }
+        check(sane && at == 0, "стрибок по групах обходить список і не потрапляє в порожню групу");
+
+        // д) курсор, що стояв у кінці довгого списку, не лишається за межами.
+        check(menuClampSel(full - 1) == cut - 1, "курсор із кінця довгого списку затискається");
+        check(menuClampSel(0) == 0,              "початок списку затиск не чіпає");
+
+        // е) увімкнули назад — усе повернулось на місце, байт у байт.
+        g_haveCharge = true;
+        check(menuCount() == full, "увімкнули заряд назад — список той самий");
+        int back = 0;
+        for (int k = 0; k < NCHG; k++) if (menuIndexOfOp(CHG_OPS[k]) >= 0) back++;
+        check(back == NCHG, "усі пункти заряду повернулись");
     }
 
     printf("\n%s (помилок: %d)\n",

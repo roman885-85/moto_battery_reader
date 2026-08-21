@@ -2295,7 +2295,11 @@ async function chgPoll(){
     try{ const r=await fetch('/api/charge'); d=await r.json(); }
     catch(e){ return; }
     const mon=$('chgMon');
-    if(!d.available){ mon.className='dm'; $('chgState').textContent='не налаштовано (CHARGE_PWM_PIN/ISENSE/VSENSE у settings.h)';
+    // Причину бере З ПРИСТРОЮ (availWhy), а не пише свою: причин дві —
+    // «не налаштовано в settings.h» і «ця версія пристрою без заряду», — і
+    // власна копія цієї пари в кожному клієнті розійшлася б із прошивкою.
+    if(!d.available){ mon.className='dm';
+                      $('chgState').textContent=d.availWhy||'заряд недоступний';
                       chgSchedule(20000); return; }
     const run=d.state==='run';
     mon.className='dm '+d.state;

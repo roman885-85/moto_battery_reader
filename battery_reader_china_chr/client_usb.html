@@ -1063,7 +1063,8 @@ async function refresh(){
   if(typeof d.headerOk==='boolean')$('integ').innerHTML='заголовок '+(d.headerOk?'✅':'❌')
     +' · дзеркало '+(d.mirrorOk?'✅':'❌')
     +(d.profileOk===undefined?'':' · профіль '+(d.profileOk?'✅':'❌'))
-    +(d.copyright===undefined?'':' · ©'+({ok:'✅',broken:'❌',none:'—'}[d.copyright]||'?'));
+    +(d.copyright===undefined?'':' · © '+({ok:'✅',broken:'❌ сума хибна',
+                                           none:'— немає (норма для цієї моделі)'}[d.copyright]||'?'));
   $('dI').textContent=(d.currentMa!==undefined?d.currentMa:'—')+' мА';
   $('dSer').textContent=d.serial||'—';
   const mah=(v,raw)=>v!==undefined?('≈'+v+' мА·год (raw '+raw+')'):'—';
@@ -1976,7 +1977,10 @@ function psuAlertUpdate(d){
 function chgShow(d){
   const mon=$('chgMon');
   if(!d){mon.className='dm';$('chgSt').textContent='—';return;}
-  if(!d.available){mon.className='dm';$('chgSt').textContent='не налаштовано (CHARGE_PWM_PIN/ISENSE/VSENSE)';return;}
+  // Причина приходить із прошивки (availWhy): «не налаштовано» і «ця версія
+  // пристрою без заряду» — різні відповіді, і власна копія пари тут
+  // розійшлася б із приладом.
+  if(!d.available){mon.className='dm';$('chgSt').textContent=d.availWhy||'заряд недоступний';return;}
   const run=d.state==='run';
   mon.className='dm '+d.state;
   // ⚑ ПРОБУДЖЕННЯ — інший режим тієї самої панелі. d.wake приходить за РЕЖИМОМ,

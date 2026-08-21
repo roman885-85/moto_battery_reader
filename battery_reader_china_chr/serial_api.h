@@ -746,6 +746,13 @@ static void serialExec(const String &line) {
     else if (cmd == "CHARGE")   { String a3 = arg; a3.trim(); a3.toUpperCase();
                                   if (a3 == "STOP") { chargeStop(CHGR_USER); sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}"); }
                                   else if (a3 == "?" || a3 == "STATUS") sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}");
+                                  // Версія пристрою без заряду: усе, крім «покажи стан» і
+                                  // «зупинись», відхиляємо однією й тією ж причиною з прошивки.
+                                  // Стан НЕ відхиляємо навмисно — саме з нього клієнт і
+                                  // дізнається, чому кнопки сірі.
+                                  else if (!chargeAvailable()) {
+                                      String r = "{\"ok\":false,\"err\":\""; r += chargeUnavailText();
+                                      r += "\",\"charge\":"; r += chargeJson(); r += "}"; sResp(r); }
                                   // CHARGE MA=<мА> — ручна уставка струму; MA=0 повертає автомат.
                                   // Діє і під час заряду: струм саме тоді й підбирають.
                                   else if (a3.startsWith("MA=")) {

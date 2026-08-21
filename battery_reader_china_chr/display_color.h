@@ -420,12 +420,6 @@ inline bool decodeCapacity(int *capPct, int *wearPct) {
 
 // Заводська таблиця здоров'я моделі (запис @0x129) — для сторінки аналізу.
 // Це НЕ стан конкретного АКБ, а константа моделі; показуємо як довідку.
-inline bool decodeFactoryHealthTable(const uint8_t **data, int *len) {
-    if (!hasDump || !impresRecordOk(batteryDump, IMPRES_FACTORY_REC)) return false;
-    *data = batteryDump + IMPRES_FACTORY_REC + 1;
-    *len  = batteryDump[IMPRES_FACTORY_REC] - 2;
-    return true;
-}
 
 // Евристика справжності/цілісності ПРОШИВКИ (модельно-залежна).
 inline bool batteryGenuine(const char **reason) {
@@ -642,8 +636,6 @@ static int      g_splashLast = SPLASH_ERR_SHORT;
 static uint16_t g_splashW = 0, g_splashH = 0;
 
 inline int      splashLastResult() { return g_splashLast; }
-inline uint16_t splashLastW()      { return g_splashW; }
-inline uint16_t splashLastH()      { return g_splashH; }
 
 // Намалювати заставку з файла. true — намалювали, false — лишається типова.
 //
@@ -1786,11 +1778,6 @@ inline void displayChargeRefresh(bool full) {
 }
 
 // Освітлити колір RGB565 у бік білого на частку amt (0..255).
-inline uint16_t lighten565(uint16_t c, uint8_t amt) {
-    int r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
-    r += ((31 - r) * amt) >> 8; g += ((63 - g) * amt) >> 8; b += ((31 - b) * amt) >> 8;
-    return (uint16_t)((r << 11) | (g << 5) | b);
-}
 
 // Масштаб яскравості кольору RGB565: lvl 0..255 (255 = без змін, менше = темніше).
 inline uint16_t scale565(uint16_t c, uint8_t lvl) {
@@ -1801,18 +1788,6 @@ inline uint16_t scale565(uint16_t c, uint8_t lvl) {
 
 // Заповнити прямокутник R кольором col, ОМИНАЮЧИ рамку тексту T (перетин R∩T не
 // малюємо) — до 4 смуг. Так пульсуємо все заповнення, не торкаючись цифр %.
-inline void fillRectExcept(int rx, int ry, int rw, int rh,
-                           int tx, int ty, int tw, int th, uint16_t col) {
-    int rx1 = rx + rw, ry1 = ry + rh;
-    int cx0 = tx > rx ? tx : rx,   cy0 = ty > ry ? ty : ry;      // перетин R∩T
-    int cx1 = (tx + tw) < rx1 ? (tx + tw) : rx1;
-    int cy1 = (ty + th) < ry1 ? (ty + th) : ry1;
-    if (cx0 >= cx1 || cy0 >= cy1) { tft.fillRect(rx, ry, rw, rh, col); return; }
-    if (cy0 > ry)  tft.fillRect(rx, ry, rw, cy0 - ry, col);              // над T
-    if (ry1 > cy1) tft.fillRect(rx, cy1, rw, ry1 - cy1, col);            // під T
-    if (cx0 > rx)  tft.fillRect(rx, cy0, cx0 - rx, cy1 - cy0, col);      // ліворуч T
-    if (rx1 > cx1) tft.fillRect(cx1, cy0, rx1 - cx1, cy1 - cy0, col);    // праворуч T
-}
 
 // Тік анімації батареї (з loop() ~9 разів/с). ПУЛЬСАЦІЯ ЗАПОВНЕННЯ: усе залите
 // поле шкали плавно «дихає» яскравістю (колір заряду <-> світліший відтінок),

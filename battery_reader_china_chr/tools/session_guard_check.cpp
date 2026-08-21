@@ -2186,6 +2186,41 @@ int main() {
                                              "партія дампів, на якій це знайдено, лежить у корпусі");
     }
 
+    // ── 44. МАЙСТЕР: ПРАВИЛА ОКРЕМО, ПЛУМБІНГ ОКРЕМО ───────────────────────
+    //  Самі правила ганяє wizard_check на хості. Тут — те, чого він не бачить:
+    //  чи справді двигун кличе винесене правило, чи виконується новий крок і
+    //  чи не повернулись копії та мертві функції.
+    printf("\n44) Майстер: правила винесені, крок правки лічильника ввімкнено\n");
+    {
+        check(fileExists("wizard_rules.h") && fileExists("tools/wizard_check.cpp"),
+                                             "правила Майстра живуть окремо й мають власний тест");
+        check(fileCalls("recovery.h", "#include \"wizard_rules.h\""),
+                                             "двигун підключає правила, а не тримає їх у собі");
+        check(fileCalls("recovery.h", "wizPlanIssues(d.issues, g_wizActs, WIZ_MAX_STEPS)"),
+                                             "…і план рахує саме винесена чиста функція");
+        // Новий крок мусить не лише існувати в переліку, а й виконуватись.
+        check(fileCalls("recovery.h", "performDcaFix(&dm)"),
+                                             "крок правки лічильника справді щось виконує");
+        check(fileCalls("web_server.h", "impresBmsFixDcaFromHist(batteryDump, batteryDump2438, &wrote)"),
+                                             "…і бере значення зі спільної функції, а не рахує на місці");
+        check(fileCalls("web_server.h", "battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE)"),
+                                             "…і пише саме в монітор");
+        // ⚑ Відкат при невдалому записі. Без нього дамп у пам'яті показував би
+        //  полагоджене там, де в чіп нічого не пішло.
+        check(fileCalls("web_server.h", "batteryDump2438[62] = (uint8_t)(before & 0xFF)"),
+                                             "…а якщо запис не пройшов — значення в пам'яті повертається");
+        // Копії й мертве, прибрані під час цієї ревізії, не мають повернутись.
+        check(!fileCalls("recovery.h", "static int wizDetectFormat()"),
+                                             "другої копії детектора формату немає");
+        check(fileCalls("recovery.h", "impresFormatYear(batteryDump)"),
+                                             "…бо тепер кличеться спільна, та сама, яку перевіряють тести");
+        for (const char *dead : { "adminOk", "impresCryptRekey", "wizActionName",
+                                  "decodeFactoryHealthTable", "lighten565", "fillRectExcept" })
+            check(!fileHasText("recovery.h", dead) && !fileHasText("web_server.h", dead) &&
+                  !fileHasText("display_color.h", dead) && !fileHasText("impres_crypt.h", dead),
+                                             "прибрана мертва функція не повернулась");
+    }
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

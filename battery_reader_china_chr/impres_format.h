@@ -226,14 +226,16 @@ inline bool impresHasCopyright(const uint8_t *d33) {
     }
     return printable >= IMPRES_COPYRIGHT_MIN_ASCII;
 }
-// Сума запису COPYRIGHT правильна? Для моделей без нього — вважаємо, що так:
-// відсутність запису не є пошкодженням (4409A, APLI4810C його штатно не мають).
+// Чи в порядку запис COPYRIGHT. Його відсутність — теж порядок: моделі 4409A
+// й APLI4810C штатно його не мають, і рація такі пакети приймає.
 inline bool impresCopyrightOk(const uint8_t *d33) {
     return !impresHasCopyright(d33) || impresRecordOk(d33, IMPRES_COPYRIGHT);
 }
 // Перерахувати суму запису COPYRIGHT. Повертає true, якщо щось виправлено.
+// Питання «чи все гаразд» ставить предикат вище — двома копіями однієї умови
+// цей проєкт уже горів.
 inline bool impresFixCopyright(uint8_t *d33) {
-    if (!impresHasCopyright(d33) || impresRecordOk(d33, IMPRES_COPYRIGHT)) return false;
+    if (impresCopyrightOk(d33)) return false;
     impresFixRecord(d33, IMPRES_COPYRIGHT, IMPRES_COPYRIGHT_LEN);
     return true;
 }
@@ -656,13 +658,7 @@ inline uint8_t impresIcaFromMahRs(long mah, int ratedMah, float rsOhm) {
     if (ica < 0)   ica = 0;
     return (uint8_t)ica;
 }
-// Сумісні обгортки без шунта — лише для місць, де DS2438 недоступний.
-inline int impresIcaToMah(uint8_t ica, int ratedMah) {
-    return impresIcaToMahRs(ica, ratedMah, 0.0f);
-}
-inline uint8_t impresIcaFromMah(long mah, int ratedMah) {
-    return impresIcaFromMahRs(mah, ratedMah, 0.0f);
-}
+// Відсоток → апаратні одиниці. Без шунта падає на паспортну шкалу.
 inline uint8_t impresIcaFromPercentRs(int pct, int ratedMah, float rsOhm) {
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;

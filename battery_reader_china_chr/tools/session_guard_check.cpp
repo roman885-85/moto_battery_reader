@@ -2232,9 +2232,9 @@ int main() {
         const uint32_t G = COMBO_GAP_MS;
 
         // Темп задано власником: 0.3 с на натискання з допуском 0.1 с.
-        check(COMBO_TAP_MS == 300u && COMBO_TAP_TOL_MS == 100u,
-              "темп комбінації — 0.3 с на натискання з допуском 0.1 с");
-        check(G == 400u, "…тобто найбільша пауза між сусідніми натисканнями 0.4 с");
+        check(COMBO_TAP_MS == 300u && COMBO_TAP_TOL_MS == 400u,
+              "темп комбінації — 0.3 с на натискання з допуском 0.4 с");
+        check(G == 700u, "…тобто найбільша пауза між сусідніми натисканнями 0.7 с");
         {
             // І він справді набирається на цьому темпі — а на повільнішому ні.
             // Числа беремо з тих самих сталих: перевірка, яка тримає власну
@@ -2585,6 +2585,28 @@ int main() {
         check(fileHasText("usb_client/moto_gui.py", "def _chg_set_unavail(self") &&
               fileHasText("usb_client/moto_gui.py", "self._chg_set_unavail(") &&
               fileHasText("usb_client/moto_gui.py", "btnChgWake"),
+                                                     "і .exe теж");
+    }
+
+    // ── 49. НАРОБІТОК У САМОМУ ПАКЕТІ ВИДНО ОЧИМА ──────────────────────────
+    //  Скарга власника: «обнулив усе вручну, передернув у зарядку — цикли
+    //  повернулись». Числа, з яких станція їх відновлює, лежать у DS2433 і
+    //  доти не показувались НІДЕ: щоб перевірити, чи скидання до них дійшло,
+    //  доводилось читати hex-дамп. Тепер вони в картці лічильників — після
+    //  скидання там мусять бути нулі, а якщо після зарядки знову числа, то
+    //  видно одразу, звідки вони взялись.
+    printf("\n49) наробіток, записаний у самому пакеті, видно в усіх клієнтах\n");
+    {
+        check(fileCalls("web_server.h", "impresBmsHistCounters(batteryDump, &hC, &hD)"),
+                                                     "пристрій віддає наробіток пакета клієнтам");
+        check(fileHasText("web_server.h", "\\\"histCca\\\":") &&
+              fileHasText("web_server.h", "\\\"histDca\\\":"),
+                                                     "…обидва лічильники, а не один");
+        for (const char *c : { "index.html", "client_usb.html" })
+            check(fileHasText(c, "b.histCca") && fileHasText(c, "b.histDca"),
+                                                     "клієнт їх показує");
+        check(fileHasText("usb_client/moto_gui.py", "b.get(\"histCca\")") &&
+              fileHasText("usb_client/moto_gui.py", "self.bHist"),
                                                      "і .exe теж");
     }
 

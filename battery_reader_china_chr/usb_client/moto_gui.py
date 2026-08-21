@@ -1425,12 +1425,17 @@ class App:
         self.bWarn.grid_remove()
         self.bCyc = self._kv(bbox, "Циклів заряду (IMPRES):", 1)
         self.bCycN = self._kv(bbox, "Циклів не-IMPRES:", 2)
-        self.bPot = self._kv(bbox, "Реальна ємність:", 3)
-        self.bHealth = self._kv(bbox, "Знос / здоров'я:", 4)
-        self.bCal = self._kv(bbox, "Калібрувань пройдено:", 5)
-        self.bMfg = self._kv(bbox, "Дата виготовлення:", 6)
-        self.bUse = self._kv(bbox, "Перше користування:", 7)
-        self.bKey = self._kv(bbox, "Ключ:", 8)
+        # ⚑ Наробіток, записаний у САМОМУ пакеті: саме звідси зарядна станція
+        #  відновлює лічильники монітора після кожного сеансу. Після скидання
+        #  тут мусять бути нулі; якщо після зарядки знову числа — станція взяла
+        #  їх тут, і скидання до цього поля не дійшло.
+        self.bHist = self._kv(bbox, "Наробіток у пакеті (DS2433):", 3)
+        self.bPot = self._kv(bbox, "Реальна ємність:", 4)
+        self.bHealth = self._kv(bbox, "Знос / здоров'я:", 5)
+        self.bCal = self._kv(bbox, "Калібрувань пройдено:", 6)
+        self.bMfg = self._kv(bbox, "Дата виготовлення:", 7)
+        self.bUse = self._kv(bbox, "Перше користування:", 8)
+        self.bKey = self._kv(bbox, "Ключ:", 9)
         ttk.Label(f, text="Дамп DS2433 (512 Б):").pack(anchor="w", pady=(8, 0))
         self.tx33 = scrolledtext.ScrolledText(f, height=6, font=fnt("Consolas", 8), wrap="none",
                                               bg=MIL["field"], fg="#b9bd86", insertbackground=MIL["khaki"],
@@ -2444,7 +2449,7 @@ class App:
 
     def _render_bms(self, b):
         """Штатні поля Motorola з відповіді INFO."""
-        empty = [self.bCyc, self.bCycN, self.bPot, self.bHealth,
+        empty = [self.bCyc, self.bCycN, self.bHist, self.bPot, self.bHealth,
                  self.bCal, self.bMfg, self.bUse, self.bKey]
         if not b:
             for w in empty:
@@ -2455,6 +2460,10 @@ class App:
         # −1 = блок лічильника побитий, а не «жодного разу».
         _non = b.get("nonImpresCycles")
         self.bCycN.config(text="не читається" if (_non is None or _non < 0) else str(_non))
+        _hc, _hd = b.get("histCca"), b.get("histDca")
+        self.bHist.config(text="блока немає" if _hc is None else
+                          ("заряд %d / розряд %d%s" % (_hc, _hd,
+                           "" if (_hc or _hd) else "  (обнулено)")))
         if b.get("haveKey"):
             pot = b.get("potentialMah", 0); first = b.get("firstUseMah") or 0
             self.bPot.config(text=f"{pot} мА·год" + (f" (на початку {first})" if first else ""))

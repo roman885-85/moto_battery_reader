@@ -8,6 +8,7 @@
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — для дій «Новий АКБ» у меню
 #include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
 #include "textwrap.h"     // txtFit(): назва пункту меню не лізе на сусідній рядок
+#include "combo.h"        // комбінації кнопок (чиста логіка, спільна з display_color.h)
 #include "discharge.h"    // стан керованого розряду для сторінки моніторингу
 #include "charge.h"       // стан керованого заряду для сторінки моніторингу
 
@@ -242,6 +243,11 @@ inline int menuPageToDisplayPage(int mpg) {
 
 static char g_displayStatus[36] = "ЗАПУСК";  // нижня рядок статусу (UTF-8)
 static int  g_displayPage = 0;             // поточна сторінка меню
+// Стан комбінацій кнопок і повноекранного повідомлення: на них дивиться і
+// обробник кнопок, і рендер.
+static ComboState g_combo;
+static ComboFlash g_flash;
+inline bool displayFlashActive() { return comboFlashActive(g_flash, millis()); }
 static bool g_readRequested = false;       // запит повторного читання після циклу
 // Сторінка «Дії»: вибір операції (BTN2 коротко) + виконання (BTN2 довго).
 static int  g_menuSel = 1;                 // курсор у списку (0 — «‹ Показання»)
@@ -1252,6 +1258,11 @@ inline void displayChargeRefresh(bool /*full*/) { displayRender(); }
 //  Кличеться часто з loop(). Тут перемальовується ВЕСЬ буфер — на монохромному
 //  екрані це дешево (одна посилка кадру), на відміну від кольорового, де
 //  блимає лише смуга напису.
+// Зняти повноекранне повідомлення, коли його час вийшов.
+inline void displayFlashTask() {
+    if (comboFlashExpired(g_flash, millis())) displayRender();
+}
+
 inline void displayPsuBlinkTask() {
     static unsigned long lastMs = 0;
     if (!chargePsuScreenActive()) { g_psuBlinkOn = true; return; }
@@ -1262,8 +1273,23 @@ inline void displayPsuBlinkTask() {
     displayRender();
 }
 
+// Повноекранне повідомлення по комбінації: тримається COMBO_FLASH_MS і
+// знімається саме або першою ж кнопкою.
+inline void drawPageFlash() {
+    const char *s = "Ляшко ЛОХ";
+    u8g2.setFont(BODY_FONT);
+    int w = u8g2.getUTF8Width(s);
+    int x = (DISP_W - w) / 2; if (x < 0) x = 0;
+    u8g2.drawUTF8(x, DISP_H / 2 + 4, s);
+}
+
 inline void displayRender() {
     u8g2.clearBuffer();
+    if (comboFlashActive(g_flash, millis())) {
+        drawPageFlash();
+        u8g2.sendBuffer();
+        return;
+    }
     // Поки навантаження/заряд увімкнені — примусово моніторинг, хоч би яку
     // сторінку було обрано: довга операція із запобіжниками має бути видима.
     // Заряд і розряд не можуть іти одночасно (взаємно перевіряють одне одного
@@ -1492,26 +1518,64 @@ inline int displayConsumeActionRequest() {
 //  BTN1: коротке — наступна сторінка; довге (0.8с) — повторне читання АКБ.
 //  BTN2: на сторінці «Дії» — коротке = вибір операції, довге (0.8с) = ВИКОНАТИ;
 //        на інших сторінках — коротке = попередня сторінка.
-inline void displayHandleButton() {
-    static BtnState b1, b2;
+// Скільки триває «довге» натискання. Одне число на всі гілки.
+#define BTN_LONG_MS 800
+
+// ── КОМБІНАЦІЇ КНОПОК (те саме правило, що й на кольоровій панелі) ─────────
 #ifdef MENU_BTN3_PIN
-    static BtnState b3;
+  #define COMBO_READ_KEY CK_OK
+#else
+  #define COMBO_READ_KEY CK_RIGHT
 #endif
+
+inline void displayToggleChargeMode() {
+    bool off = chargeSetOffByUser(!chargeOffByUser());
+    g_menuSel = menuClampSel(g_menuSel);
+    displaySetStatus(off ? "ЗАРЯД ВИМКНЕНО" : "ЗАРЯД УВІМКНЕНО");
+    displayRender();
+    if (off) buzzErr(); else buzzOk();
+}
+
+inline void displayHandleButton() {
+    static BtnState b1, b2, b3;
 #ifdef MENU_BTN_ADC_PIN
     btnAdcRefresh();   // один аналоговий зчит на весь прохід нижче
 #endif
+
+    // ⚑ ОПИТУЄМО КНОПКИ ОДИН РАЗ НА ВСІ ГІЛКИ — див. пояснення в
+    //  display_color.h: комбінація це ЛАНЦЮЖОК, і зібрати його з чотирьох
+    //  незалежних детекторів (розряд / заряд / помилка живлення / меню)
+    //  неможливо — перехід між сторінками починав би його заново.
+    int e1 = pollButtonRaw(btn1Raw(), b1, BTN_LONG_MS);     // «›» далі
+    int e2 = pollButtonRaw(btn2Raw(), b2, BTN_LONG_MS);     // «‹» назад
+    int e3 = 0;
+#ifdef MENU_BTN3_PIN
+    e3 = pollButtonRaw(btn3Raw(), b3, BTN_LONG_MS);         // «OK»
+#endif
+
+    if (displayFlashActive()) {
+        if (e1 || e2 || e3) { g_flash.until = 0; comboBreak(g_combo); displayRender(); }
+        return;
+    }
+
+    if (e1 == 2 || e2 == 2 || e3 == 2) comboBreak(g_combo);
+    uint8_t ck = (e3 == 1) ? CK_OK : (e2 == 1) ? CK_LEFT : (e1 == 1) ? CK_RIGHT : CK_NONE;
+    if (ck != CK_NONE) {
+        switch (comboFeed(g_combo, millis(), ck, COMBO_READ_KEY)) {
+            case CMB_FLASH:  comboFlashArm(g_flash, millis(), COMBO_FLASH_MS);
+                             displayRender(); return;
+            case CMB_TOGGLE: displayToggleChargeMode(); return;
+            case CMB_EAT:    return;
+            default: break;
+        }
+    }
 
     // ── РЕЖИМ РОЗРЯДУ ──────────────────────────────────────────────────────
     // Поки навантаження увімкнене, кнопки НЕ гортають меню: на екрані
     // моніторинг, а зміна сторінки «у фоні» лише збиває з пантелику.
     //   коротке натискання — оновити показання; довге — АВАРІЙНА ЗУПИНКА.
     if (dischargeScreenActive()) {
-        int d1 = pollButtonRaw(btn1Raw(), b1, 800);
-        int d2 = pollButtonRaw(btn2Raw(), b2, 800);
-        int d3 = 0;
-#ifdef MENU_BTN3_PIN
-        d3 = pollButtonRaw(btn3Raw(), b3, 800);
-#endif
+        int d1 = e1, d2 = e2, d3 = e3;
         if (!dischargeRunning()) {
             // Показано ПІДСУМОК завершеного розряду: будь-яке натискання прибирає
             // його й повертає звичайне меню.
@@ -1528,12 +1592,7 @@ inline void displayHandleButton() {
 
     // ── РЕЖИМ ЗАРЯДУ — той самий принцип, що й розряд вище ─────────────────
     if (chargeScreenActive()) {
-        int d1 = pollButtonRaw(btn1Raw(), b1, 800);
-        int d2 = pollButtonRaw(btn2Raw(), b2, 800);
-        int d3 = 0;
-#ifdef MENU_BTN3_PIN
-        d3 = pollButtonRaw(btn3Raw(), b3, 800);
-#endif
+        int d1 = e1, d2 = e2, d3 = e3;
         if (!chargeRunning()) {
             if (d1 || d2 || d3) { chargeDismiss(); displayRender(); }
             return;
@@ -1550,13 +1609,7 @@ inline void displayHandleButton() {
     // Будь-яке натискання прибирає її. Сама несправність лишається: «!» у
     // шапці, код на світлодіоді, і при зміні стану сторінка з'явиться знову.
     if (chargePsuScreenActive()) {
-        int d1 = pollButtonRaw(btn1Raw(), b1, 0);
-        int d2 = pollButtonRaw(btn2Raw(), b2, 0);
-        int d3 = 0;
-#ifdef MENU_BTN3_PIN
-        d3 = pollButtonRaw(btn3Raw(), b3, 0);
-#endif
-        if (d1 || d2 || d3) { chargePsuDismiss(); displayRender(); }
+        if (e1 || e2 || e3) { chargePsuDismiss(); displayRender(); }
         return;
     }
 
@@ -1566,10 +1619,6 @@ inline void displayHandleButton() {
     //  Раніше «OK» означав п'ять різних речей залежно від сторінки, а на
     //  сторінці «Дії» взагалі не був вибором — він гортав список уперед.
 #ifdef MENU_BTN3_PIN
-    int e1 = pollButtonRaw(btn1Raw(), b1, 800);      // «›» далі
-    int e2 = pollButtonRaw(btn2Raw(), b2, 800);      // «‹» назад
-    int e3 = pollButtonRaw(btn3Raw(), b3, 800);      // «OK»
-
     if (g_displayPage == PAGE_MENU) {
         int total = menuCount();
         if      (e1 == 1) { g_menuSel = (g_menuSel + 1) % total;         displayRender(); }
@@ -1598,9 +1647,6 @@ inline void displayHandleButton() {
     else if (e3 == 2) { g_readRequested = true; displaySetStatus("ЗЧИТУВАННЯ..."); displayRender(); }
 #else
     // ДВІ кнопки: «›» — рух, «‹» — вибір/виконання.
-    int e1 = pollButtonRaw(btn1Raw(), b1, 800);
-    int e2 = pollButtonRaw(btn2Raw(), b2, 800);
-
     if (g_displayPage == PAGE_MENU) {
         int total = menuCount();
         if      (e1 == 1) { g_menuSel = (g_menuSel + 1) % total;  displayRender(); }

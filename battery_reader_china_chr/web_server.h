@@ -1957,10 +1957,68 @@ static String dischargeJson() {
 //  розрядом — на початку того файлу).
 // ===========================================================================
 
+// ===========================================================================
+//  ВЕРСІЯ ПРИСТРОЮ БЕЗ ЗАРЯДУ — зберігається між увімкненнями
+// ===========================================================================
+//  Це властивість ЗАЛІЗА, а не налаштування настрою: у цьому екземплярі
+//  силової частини немає й не з'явиться. Гасити її щоразу після ввімкнення
+//  чотирма натисканнями означало б, що пристрій при кожному старті кілька
+//  секунд скаржиться на блок живлення, якого в ньому не передбачено.
+//
+//  Файл окремий від /sound.cfg навмисно: звук — смак, а це — комплектація.
+//  Один рядок «ключ=значення», щоб можна було прочитати очима.
+#define DEVICE_CFG_PATH "/device.cfg"
+
+inline bool chargeModeSave() {
+    File f = SPIFFS.open(DEVICE_CFG_PATH, "w");
+    if (!f) { Serial.println("DEVICE: cannot write " DEVICE_CFG_PATH); return false; }
+    f.printf("v1 chgoff=%d\n", chargeOffByUser() ? 1 : 0);
+    f.close();
+    Serial.printf("DEVICE: заряд %s (збережено)\n", chargeOffByUser() ? "ВИМКНЕНО" : "увімкнено");
+    return true;
+}
+
+// Відсутній або побитий файл — не помилка: заряд лишається увімкненим, тобто
+// пристрій поводиться як повна комплектація. Це правильний бік замовчування:
+// зайвий вимикач у меню нікому не шкодить, а мовчазно вимкнений заряд на
+// повній платі виглядав би як поломка.
+inline void chargeModeLoad() {
+    if (!SPIFFS.exists(DEVICE_CFG_PATH)) return;
+    File f = SPIFFS.open(DEVICE_CFG_PATH, "r");
+    if (!f) return;
+    String line = f.readStringUntil('\n');
+    f.close();
+    int off = 0;
+    if (sscanf(line.c_str(), "v1 chgoff=%d", &off) != 1) {
+        Serial.println("DEVICE: bad cfg, заряд лишається увімкненим");
+        return;
+    }
+    if (off) {
+        chargeSetOffByUser(true);
+        chargeConsumeModeSave();     // це читання, а не правка — писати назад нічого
+        Serial.println("DEVICE: ця збірка без заряду (з " DEVICE_CFG_PATH ")");
+    }
+}
+
+// Одні двері для всіх кінцевих точок заряду. Повертає true, якщо запит уже
+// відхилено й відповідь надіслано.
+//
+//  ⚑ ЧОМУ ГЕЙТ ПОТРІБЕН, ХОЧ МЕНЮ Й СХОВАНЕ. Меню — лише один зі входів.
+//  Веб, USB-клієнт і збережений сценарій Майстра шлють КОД операції напряму,
+//  і «сховати кнопку» не означає «вимкнути функцію».
+inline bool chargeGateClosed() {
+    if (chargeAvailable()) return false;
+    String j = "{\"status\":\"error\",\"message\":\"";
+    j += chargeUnavailText();
+    j += "\"}";
+    server.send(409, "application/json", j);
+    return true;
+}
+
 // Старт заряду до обраного ВІДСОТКА (0 -> типово 100 %, повний заряд).
 // Повертає nullptr при успіху, інакше — текст причини відмови.
 const char *chargeStart(uint8_t targetPct) {
-    if (!chargeAvailable()) return "Заряд не налаштовано: задайте CHARGE_PWM_PIN, CHARGE_ISENSE_PIN і CHARGE_VSENSE_PIN у settings.h";
+    if (!chargeAvailable()) return chargeUnavailText();
     if (chargeRunning())    return "Заряд уже виконується";
     if (dischargeRunning()) return "Спочатку зупиніть розряд";
     // Без ШІМ заряд заборонено взагалі. На відміну від розряду (де відмова
@@ -2858,6 +2916,13 @@ static String chargeJson() {
     //  як і раніше, тобто гірше не стане.
     String j; j.reserve(1536);
     j = "{\"available\":" + String(chargeAvailable() ? "true" : "false");
+    // ЧОМУ заряду немає — окремо від самого факту. Причин дві, і вони вимагають
+    // різних дій: «не налаштовано» правлять у settings.h і перепрошивають, а
+    // «версія без заряду» вмикається назад на самому пристрої. Текст один на
+    // всі три клієнти й приходить із прошивки — три власні копії цієї пари
+    // розійшлися б на першій же правці.
+    j += ",\"chargeOff\":" + String(chargeOffByUser() ? "true" : "false");
+    j += ",\"availWhy\":\""; j += chargeUnavailText(); j += "\"";
     j += ",\"state\":\"" + String(g_chg.state == CHG_RUN ? "run"
                                : g_chg.state == CHG_DONE ? "done"
                                : g_chg.state == CHG_ABORT ? "abort" : "idle") + "\"";
@@ -4468,6 +4533,7 @@ void handleDischargeStatus() {
 //  повторного старту означало б щоразу збивати накопичену ємність сеансу.
 void handleChargeMa() {
     if (!requireAdmin()) return;
+    if (chargeGateClosed()) return;
     if (!server.hasArg("ma")) {
         server.send(400, "application/json",
                     "{\"status\":\"error\",\"message\":\"No ma\"}");
@@ -4490,6 +4556,7 @@ void handleChargeMa() {
 //  накопичену ємність сеансу.
 void handleChargeMv() {
     if (!requireAdmin()) return;
+    if (chargeGateClosed()) return;
     if (!server.hasArg("mv")) {
         server.send(400, "application/json",
                     "{\"status\":\"error\",\"message\":\"No mv\"}");
@@ -4510,6 +4577,7 @@ void handleChargeMv() {
 // за паспортною ємністю пакета).
 void handleChargeProfile() {
     if (!requireAdmin()) return;
+    if (chargeGateClosed()) return;
     if (!server.hasArg("p")) {
         server.send(400, "application/json",
                     "{\"status\":\"error\",\"message\":\"No p\"}");
@@ -4558,6 +4626,7 @@ void handleDischargeProfile() {
 
 void handleChargeStart() {
     if (!requireAdmin()) return;
+    if (chargeGateClosed()) return;
     uint8_t target = server.hasArg("target") ? (uint8_t)server.arg("target").toInt() : 0;
     // Дозволяємо задати струм тим самим запитом, що й старт: інакше між
     // «почати» і «поставити струм» був би прохід на автоматичній уставці.
@@ -4587,6 +4656,7 @@ void handleChargeStart() {
 // температури. Параметрів у нього немає взагалі — усе задає settings.h.
 void handleChargeWake() {
     if (!requireAdmin()) return;
+    if (chargeGateClosed()) return;
     const char *err = chargeWakeStart();
     if (err) {
         String j = "{\"status\":\"error\",\"message\":\""; j += err; j += "\"}";

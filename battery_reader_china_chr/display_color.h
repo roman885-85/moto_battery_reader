@@ -28,6 +28,7 @@
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — дії «Новий АКБ»
 #include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
 #include "battbar.h"      // коли шкалу батареї треба перемальовувати, а коли ні
+#include "combo.h"        // комбінації кнопок (чиста логіка, спільна з display.h)
 #include "textwrap.h"     // перенос по словах: текст не вилазить за плашку
 #include "discharge.h"    // стан керованого розряду для сторінки моніторингу
 #include "charge.h"       // стан керованого заряду для сторінки моніторингу
@@ -243,6 +244,11 @@ inline uint16_t TC(uint16_t c) { return g_errTint ? redFilter(c) : c; }
 
 static char g_displayStatus[36] = "ЗАПУСК";
 static int  g_displayPage = 0;
+// Стан комбінацій кнопок і повноекранного повідомлення — тут, бо на них
+// дивиться і обробник кнопок, і рендер.
+static ComboState g_combo;
+static ComboFlash g_flash;
+inline bool displayFlashActive() { return comboFlashActive(g_flash, millis()); }
 static bool g_readRequested = false;
 static int  g_menuSel = 1;                 // курсор у списку (0 — «‹ Показання»)
 static int  g_actionRequested = -1;        // -1 нема; інакше — КОД операції для .ino
@@ -831,7 +837,13 @@ inline void drawPageMain() {
     const char *src;
     int pct = batteryPercent(&src);
     int mah = batteryRemainingMah();
-    uint16_t col = chargeColor(pct);
+    // ⚑ ШКАЛА Й ТЕКСТ ФАРБУЮТЬСЯ ПО-РІЗНОМУ, І ЦЕ НАВМИСНО. Заливка —
+    //  battFillColor(): неперервний перехід червоне -> зелене, бо це і є показ
+    //  РІВНЯ, і на великій площі відтінок читається сам собою. Написи там, де
+    //  вони фарбуються станом, лишаються на chargeColor() — три чіткі
+    //  сходинки: дрібні гліфи проміжного відтінку на чорному видно гірше, а
+    //  колір тексту тут означає вирок («мало / середньо / добре»), а не рівень.
+    uint16_t col = battFillColor(pct);
 
     drawHeaderBar("Moto IMPRES");
 
@@ -1315,6 +1327,20 @@ inline void drawPagePsuFault() {
     tPut(EDGE, TFT_H - 8, "будь-яка кнопка — сховати");
 }
 
+// ── ПОВНОЕКРАННЕ ПОВІДОМЛЕННЯ ПО КОМБІНАЦІЇ ───────────────────────────────
+//  Займає весь екран, тримається COMBO_FLASH_MS і знімається сама або першою
+//  ж кнопкою. Малюється НАЙПЕРШОЮ — вище за все інше: у неї немає стану, який
+//  можна пропустити, і живе вона п'ять секунд.
+inline void drawPageFlash() {
+    tft.fillScreen(C_BG);
+    displayScreenCleared();
+    const char *s = "Ляшко ЛОХ";
+    tSet(FONT_HDR, C_YELLOW, C_BG);
+    int w = tWidth(s);
+    int x = (TFT_W - w) / 2; if (x < 0) x = 0;
+    tPut(x, TFT_H / 2 + 6, s);
+}
+
 // ── МЕНЮ: СПИСОК УСЬОГО, ЩО ПРИСТРІЙ УМІЄ ─────────────────────────────────
 //  Замість колишньої «сторінки Дій» — однієї картки з кільцем на три десятки
 //  пунктів, яке гортається лише вперед, — вертикальний СПИСОК із групами.
@@ -1454,7 +1480,7 @@ inline void opMonFrame(const char *title, uint16_t mv) {
     //  графічний рівень справді змінився.
     const char *csrc; int pct = batteryPercent(&csrc);
     int by = HDR_H + 44, bh = 22;
-    drawBatteryBar(EDGE, by, TFT_W - 2 * EDGE - 6, bh, pct, chargeColor(pct));
+    drawBatteryBar(EDGE, by, TFT_W - 2 * EDGE - 6, bh, pct, battFillColor(pct));
     g_pctTx = g_pctTy = g_pctTw = g_pctTh = 0;     // цифр усередині шкали немає
     g_monY = by + bh + 18;
 }
@@ -1725,6 +1751,7 @@ inline void displayRenderBody(bool clearBody) {
     // нього брехав би: стан той самий, а пікселів немає.
     if (clearBody) { tft.fillRect(0, HDR_H, TFT_W, FOOT_Y - HDR_H, C_BG);
                      displayScreenCleared(); }
+    if (comboFlashActive(g_flash, millis())) { drawPageFlash(); return; }
     // Поки навантаження увімкнене — примусово показуємо моніторинг розряду,
     // хоч би яку сторінку було обрано: це довга операція із запобіжниками, її
     // стан має бути на екрані завжди, а не за кілька натискань кнопки.
@@ -1755,6 +1782,13 @@ inline void displayRender() { displayRenderBody(true); }
 //  Кличеться часто з loop(). Поза сторінкою помилки — миттєво виходить.
 static bool          g_psuBlinkOn = true;
 static unsigned long g_psuBlinkMs = 0;
+
+// Зняти повноекранне повідомлення, коли його час вийшов. Окремим завданням із
+// loop(), як і блимання: сама по собі комбінація нічого більше не робить, і
+// чекати наступного натискання, щоб прибрати напис, було б дивно.
+inline void displayFlashTask() {
+    if (comboFlashExpired(g_flash, millis())) { displayScreenCleared(); displayRender(); }
+}
 
 inline void displayPsuBlinkTask() {
     if (!chargePsuScreenActive()) { g_psuBlinkOn = true; return; }
@@ -2185,14 +2219,71 @@ inline void menuActivate(bool longPress) {
     displayShow("ВИКОНУЮ...");
 }
 
-inline void displayHandleButton() {
-    static BtnState b1, b2;
+// Скільки триває «довге» натискання. Одне число на всі гілки: раніше кожна
+// заводила своє, і сторінка помилки живлення мовчки жила з нулем — тобто без
+// поняття «довге» взагалі.
+#define BTN_LONG_MS 800
+
+// ── КОМБІНАЦІЇ КНОПОК ─────────────────────────────────────────────────────
+//  Клавіша, на якій висить вимикач заряду, — та сама, що зчитує пакет: у
+//  складанні з трьома кнопками це «OK» (утримання = зчитати), у складанні з
+//  двома — «›». Правило одне: чотири швидкі КОРОТКІ натискання перемикають.
 #ifdef MENU_BTN3_PIN
-    static BtnState b3;
+  #define COMBO_READ_KEY CK_OK
+#else
+  #define COMBO_READ_KEY CK_RIGHT
 #endif
+
+// Перемкнути «версію без заряду» й показати, що вийшло.
+inline void displayToggleChargeMode() {
+    bool off = chargeSetOffByUser(!chargeOffByUser());
+    // Список щойно став коротшим (або довшим) — курсор міг лишитись за межами.
+    g_menuSel = menuClampSel(g_menuSel);
+    displaySetStatus(off ? "ЗАРЯД ВИМКНЕНО" : "ЗАРЯД УВІМКНЕНО");
+    displayScreenCleared();
+    displayRender();
+    if (off) buzzErr(); else buzzOk();
+}
+
+inline void displayHandleButton() {
+    static BtnState b1, b2, b3;
 #ifdef MENU_BTN_ADC_PIN
     btnAdcRefresh();   // один аналоговий зчит на весь прохід нижче
 #endif
+
+    // ⚑ ОПИТУЄМО КНОПКИ ОДИН РАЗ НА ВСІ ГІЛКИ. Раніше кожен режим (розряд,
+    //  заряд, помилка живлення, звичайне меню) опитував їх сам, своїм набором
+    //  BtnState. Поки подія просто розгалужувалась, це працювало; але
+    //  комбінація — це ЛАНЦЮЖОК натискань, і зібрати його з чотирьох
+    //  незалежних детекторів неможливо: перейшов між сторінками — і ланцюжок
+    //  почався заново, бо рахував його вже інший детектор.
+    int e1 = pollButtonRaw(btn1Raw(), b1, BTN_LONG_MS);     // «›» далі
+    int e2 = pollButtonRaw(btn2Raw(), b2, BTN_LONG_MS);     // «‹» назад
+    int e3 = 0;
+#ifdef MENU_BTN3_PIN
+    e3 = pollButtonRaw(btn3Raw(), b3, BTN_LONG_MS);         // «OK»
+#endif
+
+    // Поки на екрані повноекранне повідомлення — кнопки лише прибирають його.
+    if (displayFlashActive()) {
+        if (e1 || e2 || e3) { g_flash.until = 0; comboBreak(g_combo); displayRender(); }
+        return;
+    }
+
+    if (e1 == 2 || e2 == 2 || e3 == 2) comboBreak(g_combo);  // утримання рве ланцюжок
+    uint8_t ck = (e3 == 1) ? CK_OK : (e2 == 1) ? CK_LEFT : (e1 == 1) ? CK_RIGHT : CK_NONE;
+    if (ck != CK_NONE) {
+        switch (comboFeed(g_combo, millis(), ck, COMBO_READ_KEY)) {
+            case CMB_FLASH:
+                comboFlashArm(g_flash, millis(), COMBO_FLASH_MS);
+                displayScreenCleared();
+                displayRender();
+                return;
+            case CMB_TOGGLE: displayToggleChargeMode(); return;
+            case CMB_EAT:    return;
+            default: break;
+        }
+    }
 
     // ── РЕЖИМ РОЗРЯДУ ──────────────────────────────────────────────────────
     // Поки навантаження увімкнене, кнопки НЕ гортають меню: на екрані
@@ -2201,12 +2292,7 @@ inline void displayHandleButton() {
     //   коротке натискання — негайно оновити показання;
     //   довге (0.8 с) на будь-якій кнопці — АВАРІЙНА ЗУПИНКА.
     if (dischargeScreenActive()) {
-        int d1 = pollButtonRaw(btn1Raw(), b1, 800);
-        int d2 = pollButtonRaw(btn2Raw(), b2, 800);
-        int d3 = 0;
-#ifdef MENU_BTN3_PIN
-        d3 = pollButtonRaw(btn3Raw(), b3, 800);
-#endif
+        int d1 = e1, d2 = e2, d3 = e3;
         if (!dischargeRunning()) {
             // Показано ПІДСУМОК завершеного розряду: будь-яке натискання прибирає
             // його й повертає звичайне меню.
@@ -2223,12 +2309,7 @@ inline void displayHandleButton() {
 
     // ── РЕЖИМ ЗАРЯДУ — той самий принцип, що й розряд вище ─────────────────
     if (chargeScreenActive()) {
-        int d1 = pollButtonRaw(btn1Raw(), b1, 800);
-        int d2 = pollButtonRaw(btn2Raw(), b2, 800);
-        int d3 = 0;
-#ifdef MENU_BTN3_PIN
-        d3 = pollButtonRaw(btn3Raw(), b3, 800);
-#endif
+        int d1 = e1, d2 = e2, d3 = e3;
         if (!chargeRunning()) {
             if (d1 || d2 || d3) { chargeDismiss(); displayRender(); }
             return;
@@ -2246,13 +2327,7 @@ inline void displayHandleButton() {
     // несправність нікуди не дівається: лишаються «!» у шапці й код на
     // світлодіоді, а якщо стан зміниться на інший — сторінка з'явиться знову.
     if (chargePsuScreenActive()) {
-        int d1 = pollButtonRaw(btn1Raw(), b1, 0);
-        int d2 = pollButtonRaw(btn2Raw(), b2, 0);
-        int d3 = 0;
-#ifdef MENU_BTN3_PIN
-        d3 = pollButtonRaw(btn3Raw(), b3, 0);
-#endif
-        if (d1 || d2 || d3) { chargePsuDismiss(); displayRender(); }
+        if (e1 || e2 || e3) { chargePsuDismiss(); displayRender(); }
         return;
     }
 
@@ -2264,12 +2339,6 @@ inline void displayHandleButton() {
     //     «‹»/«›» — рух (сторінка або пункт), довге — стрибок (додому/група);
     //     «OK»    — увійти чи виконати, і більше нічого.
 #ifdef MENU_BTN3_PIN
-    // Опитуємо ВСІ ТРИ щоразу: BtnState тримає антидребезг, і пропущений
-    // виклик з'їдає не подію, а стан кнопки.
-    int e1 = pollButtonRaw(btn1Raw(), b1, 800);      // «›» далі
-    int e2 = pollButtonRaw(btn2Raw(), b2, 800);      // «‹» назад
-    int e3 = pollButtonRaw(btn3Raw(), b3, 800);      // «OK»
-
     if (g_displayPage == PAGE_MENU) {
         int total = menuCount();
         if      (e1 == 1) { g_menuSel = (g_menuSel + 1) % total;         displayRenderBody(false); }
@@ -2303,9 +2372,6 @@ inline void displayHandleButton() {
 #else
     // ДВІ кнопки: «›» — рух, «‹» — вибір/виконання. Те саме правило, лише
     // рух назад дістається довгому натисканню замість окремої кнопки.
-    int e1 = pollButtonRaw(btn1Raw(), b1, 800);
-    int e2 = pollButtonRaw(btn2Raw(), b2, 800);
-
     if (g_displayPage == PAGE_MENU) {
         int total = menuCount();
         if      (e1 == 1) { g_menuSel = (g_menuSel + 1) % total;  displayRenderBody(false); }

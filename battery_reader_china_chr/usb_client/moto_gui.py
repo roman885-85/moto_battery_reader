@@ -432,9 +432,15 @@ class OpMonitor(tk.Canvas):
                              text="стан %s не запитано" % ("заряду" if chg else "розряду"))
             return
         if not d.get("available"):
+            # Причину бере З ПРИСТРОЮ (availWhy): у заряду їх дві — «не
+            # налаштовано в settings.h» і «ця версія пристрою без заряду», — і
+            # власна копія цієї пари розійшлася б із прошивкою.
+            why = d.get("availWhy") or ("заряд недоступний" if chg
+                                        else "розряд не налаштовано (LOAD_PIN у settings.h)")
+            # width=/justify= — це перенос СИЛАМИ Tk: причина тепер приходить
+            # реченням, а не ярликом, і в один рядок панелі не влазить.
             self.create_text(W // 2, H // 2, fill=MIL["mut"], font=fnt("Segoe UI", 10),
-                             text=("заряд не налаштовано (CHARGE_PWM_PIN/ISENSE/VSENSE)" if chg
-                                   else "розряд не налаштовано (LOAD_PIN у settings.h)"))
+                             width=W - 2 * P, justify="center", text=why)
             return
 
         # --- шапка: пульсуючий вогник + стан + годинник ---

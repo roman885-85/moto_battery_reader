@@ -195,7 +195,7 @@ void setup() {
     // Разом зі звуком піднімаємо й системну дату: вона потрібна вже в меню
     // пристрою (наробіток рахується від дати першого запуску), а клієнт може
     // не прийти взагалі.
-    if (SPIFFS.begin(true)) { soundCfgLoad(); deviceClockLoad(); }
+    if (SPIFFS.begin(true)) { soundCfgLoad(); deviceClockLoad(); chargeModeLoad(); }
     buzzSelfTest();     // стартовий «чирп» самоперевірки динаміка (+ діагностика в Serial)
 
     // Ініціалізація батареї
@@ -368,6 +368,14 @@ void loop() {
     // виходить одразу.
     displayPsuBlinkTask();
 
+    // Повноекранне повідомлення по комбінації кнопок гасне САМЕ, за часом.
+    displayFlashTask();
+
+    // Перемикач «версія без заряду» правлять кнопками, тобто з display*.h, а
+    // файлова система живе тут. Прапорець ставить chargeSetOffByUser(), запис
+    // робимо в циклі — той самий прийом, що й зі зняттям сигналу enable.
+    if (chargeConsumeModeSave()) chargeModeSave();
+
     // Зняти утримання сигналу enable після зупинки розряду/заряду. Робиться
     // тут, а не в dischargeStop()/chargeStop(), щоб ці файли не залежали від
     // драйвера 1-Wire: зупинку викликають і з веба, і з USB, і з кнопки на
@@ -409,6 +417,15 @@ void loop() {
     // що показував екран; тепер розбір іде через opTemplateOf*/opExpert().
     int act = displayConsumeActionRequest();
     if (act >= 0) {
+        // Версія пристрою без заряду. Меню таких пунктів не показує, але меню —
+        // не єдиний вхід: той самий код приходить із веба, з USB і зі
+        // збереженого сценарію Майстра. Прибрати напис і лишити дію робочою
+        // означало б вимкнути тільки напис.
+        if (opNeedsCharge(act) && !chargeAvailable()) {
+            Serial.println(chargeUnavailText());
+            displayShow("БЕЗ ЗАРЯДУ"); ledSet(LED_IDLE);
+            act = -1;
+        }
         int tm = opTemplateOfModel(act);
         int tn = opTemplateOfNew(act);
         int ex = opExpert(act);

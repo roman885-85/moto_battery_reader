@@ -236,6 +236,63 @@ struct ChargeState {
 // перевіряв лише чисту логіку профілю/регулятора, без самої структури).
 static ChargeState g_chg = {};
 
+// ── ВЕРСІЯ ПРИСТРОЮ БЕЗ ЗАРЯДУ ─────────────────────────────────────────────
+//  Є екземпляри, зібрані без силової частини: ключа, дроселя, шунта й блока
+//  живлення там немає, а піни CHARGE_* нікуди не підключені. Прошивка в них
+//  та сама — переписувати її під кожен варіант плати означало б тримати дві
+//  прошивки й лагодити кожну знахідку двічі.
+//
+//  Тому заряд ВИМИКАЄТЬСЯ на самому пристрої й запам'ятовується. Вимкнений
+//  заряд — це не «кнопка не працює»: разом із ним зникає й контроль живлення,
+//  бо міряти нічого. Саме через нього такий екземпляр і скаржився: на
+//  непід'єднаному CHARGE_PSU_PIN АЦП показує що завгодно, і пристрій чесно
+//  повідомляв про несправний блок живлення, якого в ньому взагалі немає.
+//
+//  ⚑ ОДНЕ МІСЦЕ НА ВСЮ ПРОШИВКУ. Прапорець не перевіряють по всьому коду —
+//  його враховує chargeAvailable(), а решта вже питає саме її: меню, старт
+//  заряду, пробудження, JSON для клієнтів, контроль живлення. Другої копії
+//  умови тут бути не повинно.
+static bool g_chgOffByUser = false;
+// «Стан перемикача змінився — збережіть його». Прапорець, а не прямий виклик
+// запису: перемикають заряд КНОПКАМИ, тобто з display.h, а файлова система
+// живе у web_server.h, який підключається пізніше. Той самий прийом, що й зі
+// зняттям сигналу enable після зупинки.
+static bool g_chgModeDirty = false;
+inline bool chargeConsumeModeSave() { bool d = g_chgModeDirty; g_chgModeDirty = false; return d; }
+
+inline bool chargeOffByUser() { return g_chgOffByUser; }
+
+// Чи є силова частина ЗА ЗБІРКОЮ (піни описані в settings.h). Окремо від
+// chargeAvailable(): це різні причини відмови, і людині треба сказати саме ту,
+// яку вона може усунути.
+inline bool chargeHardware() {
+#if defined(CHARGE_PWM_PIN) && defined(CHARGE_ISENSE_PIN) && defined(CHARGE_VSENSE_PIN)
+    return true;
+#else
+    return false;
+#endif
+}
+
+inline bool chargeAvailable() { return chargeHardware() && !chargeOffByUser(); }
+
+// Чому заряду немає — одним реченням, придатним і для екрана, і для клієнтів.
+// Порожній рядок означає «заряд доступний».
+//
+//  ⚑ ТЕКСТ ТУТ, А НЕ В КОЖНОГО КЛІЄНТА СВІЙ. Причин дві, вони різні, і саме
+//  ця різниця важить: «не налаштовано» правлять у settings.h і перепрошивають,
+//  а «версія без заряду» вмикається назад чотирма натисканнями. Три копії цієї
+//  пари неминуче розійшлися б — веб уже пояснював відсутність заряду тільки
+//  першою причиною, хоча друга з'явилась.
+inline const char *chargeUnavailText() {
+    if (!chargeHardware())
+        return "Заряд не налаштовано: задайте CHARGE_PWM_PIN, CHARGE_ISENSE_PIN "
+               "і CHARGE_VSENSE_PIN у settings.h";
+    if (chargeOffByUser())
+        return "Ця версія пристрою — без заряду: силової частини немає, функцію "
+               "вимкнено на самому приладі";
+    return "";
+}
+
 // Прапорець «екран застарів» — той самий принцип, що й у розряду.
 static uint8_t g_chgDirty = 0;
 inline void chargeMarkDirty(uint8_t level) { if (level > g_chgDirty) g_chgDirty = level; }
@@ -340,17 +397,28 @@ inline uint16_t chargeAdcMv(int pin) {
 static uint16_t g_psuMv    = 0;
 static uint8_t  g_psuState = PSU_UNKNOWN;
 
-inline uint8_t  chargePsuState() { return g_psuState; }
-inline uint16_t chargePsuMv()    { return g_psuMv; }
-
-// Чи взагалі є апаратний контроль живлення на цій платі.
+// Чи взагалі є апаратний контроль живлення на ЦЬОМУ пристрої.
+//
+//  ⚑ ДРУГА УМОВА — НЕ ПЕРЕСТРАХОВКА. Пін може бути описаний у settings.h, а
+//  плата зібрана без силової частини: тоді на вході подільника нічого немає,
+//  АЦП ловить наводку, і пристрій сумлінно доповідає про несправний блок
+//  живлення, якого в ньому не передбачено. Саме ця скарга й привела до
+//  вимикача заряду. Немає заряду — немає й контролю його живлення.
 inline bool chargePsuSensed() {
 #ifdef CHARGE_PSU_PIN
-    return true;
+    return chargeAvailable();
 #else
     return false;
 #endif
 }
+
+// ⚑ ВІДПОВІДАЄМО «НЕ ЗНАЮ», А НЕ СТАРИМ ЧИСЛОМ. Гейт стоїть у ЧИТАЧІВ, а не
+//  в місці вимикання: інакше останній вимір, зроблений до вимикання, лишався
+//  б у пам'яті й далі означав «несправність», поки хтось не переміряє. А
+//  переміряти вже нікому — опитування в спокої теж вимкнеться. Одна умова, і
+//  вона там, де питають.
+inline uint8_t  chargePsuState() { return chargePsuSensed() ? g_psuState : PSU_UNKNOWN; }
+inline uint16_t chargePsuMv()    { return chargePsuSensed() ? g_psuMv    : 0; }
 
 // Один вимір напруги живлення, мВ (сирий, без класифікації).
 // Серія відліків: шина живлення — найшумніше місце в пристрої, на ній сидить
@@ -404,7 +472,8 @@ inline uint8_t chargePsuClassify(uint16_t mv, uint8_t prev) {
 }
 
 inline bool chargePsuFault() {
-    return g_psuState != PSU_OK && g_psuState != PSU_UNKNOWN;
+    uint8_t s = chargePsuState();          // саме через гейт, а не з g_psuState
+    return s != PSU_OK && s != PSU_UNKNOWN;
 }
 
 // ── СТОРІНКА ПОМИЛКИ ЖИВЛЕННЯ НА ЕКРАНІ ────────────────────────────────────
@@ -483,6 +552,9 @@ inline uint16_t chargeSupplyMv() {
 // (кожне опитування), і з головного циклу в спокої (рідко).
 inline uint8_t chargePsuPoll() {
 #ifdef CHARGE_PSU_PIN
+    // Версія без заряду: піна ніхто не підключав, і будь-який відлік із нього —
+    // наводка. Не міряємо взагалі; читачі й так отримають PSU_UNKNOWN.
+    if (!chargePsuSensed()) return PSU_UNKNOWN;
     g_psuMv    = chargePsuReadMv();
     g_psuState = chargePsuClassify(g_psuMv, g_psuState);
     // Живлення повернулось у норму — забуваємо підтвердження. Інакше та сама
@@ -1193,13 +1265,6 @@ inline void chargeInit() {
     g_chg.reason = CHGR_NONE;
 }
 
-inline bool chargeAvailable() {
-#if defined(CHARGE_PWM_PIN) && defined(CHARGE_ISENSE_PIN) && defined(CHARGE_VSENSE_PIN)
-    return true;
-#else
-    return false;
-#endif
-}
 inline bool chargeRunning() { return g_chg.state == CHG_RUN; }
 // Іде саме ПРОБУДЖЕННЯ, а не штатний заряд. Питання окреме від chargeRunning()
 // навмисно: для всіх, хто стежить за зайнятістю ключа (розряд, читання пам'яті,
@@ -1744,6 +1809,29 @@ inline void chargeStop(uint8_t reason) {
     g_chg.state  = chargeReasonIsDone(reason) ? CHG_DONE : CHG_ABORT;
     g_chg.reason = reason;
     ledSet(chargeReasonIsDone(reason) ? LED_OK : LED_ERROR);
+}
+
+// ── ПЕРЕМКНУТИ «ВЕРСІЮ БЕЗ ЗАРЯДУ» ────────────────────────────────────────
+//  Повертає новий стан прапорця (true = заряду немає).
+//
+//  ⚑ ВИМИКАЄМО — СПОЧАТКУ ГАСИМО. Прапорець сам по собі нічого не зупиняє:
+//  chargeTask() дивиться на СТАН машини, а не на доступність, і заряд, що вже
+//  йде, спокійно доїхав би до кінця з «вимкненою» функцією. Тобто пристрій
+//  показував би «заряду немає», тримаючи ключ відкритим — найгірше з можливих
+//  розходжень між написом і залізом.
+inline bool chargeSetOffByUser(bool off) {
+    if (off == g_chgOffByUser) return g_chgOffByUser;
+    if (off) chargeStop(CHGR_USER);
+    g_chgOffByUser = off;
+    // Підтвердження помилки живлення скидаємо в обидва боки: вмикаючи заряд
+    // назад, ми хочемо побачити стан блока заново, а не успадкувати «я вже це
+    // бачив» від сеансу піврічної давнини.
+    g_psuAck   = PSU_UNKNOWN;
+    g_psuState = PSU_UNKNOWN;
+    g_psuMv    = 0;
+    g_chgModeDirty = true;
+    chargeMarkDirty(2);
+    return g_chgOffByUser;
 }
 
 inline const char *chargeReasonText(uint8_t r) {

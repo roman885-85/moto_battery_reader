@@ -719,6 +719,9 @@ static void serialExec(const String &line) {
     else if (cmd == "DISCHARGE"){ String a2 = arg; a2.trim(); a2.toUpperCase();
                                   if (a2 == "STOP") { dischargeStop(DISR_USER); sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); }
                                   else if (a2 == "?" || a2 == "STATUS") sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}");
+                                  // DISCHARGE DISMISS — прибрати підсумок завершеного розряду.
+                                  else if (a2 == "DISMISS") { dischargeDismiss();
+                                      sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); }
                                   // DISCHARGE MA=<мА> — ручний струм; MA=0 повертає автомат.
                                   else if (a2.startsWith("MA=")) {
                                       long want = a2.substring(3).toInt();
@@ -746,6 +749,11 @@ static void serialExec(const String &line) {
     else if (cmd == "CHARGE")   { String a3 = arg; a3.trim(); a3.toUpperCase();
                                   if (a3 == "STOP") { chargeStop(CHGR_USER); sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}"); }
                                   else if (a3 == "?" || a3 == "STATUS") sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}");
+                                  // CHARGE DISMISS — прибрати підсумок завершеної операції.
+                                  // Перед гейтом «версії без заряду» навмисно: саме вимикач
+                                  // і створює підсумок, зупиняючи заряд, що йшов.
+                                  else if (a3 == "DISMISS") { chargeDismiss();
+                                      sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}"); }
                                   // Версія пристрою без заряду: усе, крім «покажи стан» і
                                   // «зупинись», відхиляємо однією й тією ж причиною з прошивки.
                                   // Стан НЕ відхиляємо навмисно — саме з нього клієнт і

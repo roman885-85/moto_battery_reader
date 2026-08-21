@@ -506,6 +506,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="btns">
         <button class="btn b-warn" id="btnDisStart" onclick="disStart()">🪫 ПОЧАТИ РОЗРЯД</button>
         <button class="btn b-dng" onclick="disStop()">⏹ ЗУПИНИТИ</button>
+        <button class="btn" id="btnDisDismiss" style="display:none" onclick="disDismiss()">✓ ЗАКРИТИ ПІДСУМОК</button>
         <button class="btn b-inf" onclick="disStatus()">🔄 Оновити зараз</button>
       </div>
     </div>
@@ -593,9 +594,11 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <div class="note i chgonly" id="chgProfNote"></div>
       <div class="btns">
         <button class="btn b-ok chgonly" id="btnChgStart" onclick="chgStart()">🔋 ПОЧАТИ ЗАРЯД</button>
-        <button class="btn b-dng" onclick="chgStop()">⏹ ЗУПИНИТИ</button>
+        <button class="btn b-dng" id="btnChgStop" onclick="chgStop()">⏹ ЗУПИНИТИ</button>
         <button class="btn b-inf" onclick="chgStatus()">🔄 Оновити зараз</button>
+        <button class="btn" id="btnChgDismiss" style="display:none" onclick="chgDismiss()">✓ ЗАКРИТИ ПІДСУМОК</button>
       </div>
+      <div class="note w" id="chgUnavail" style="display:none"></div>
       <!-- ── ПРИМУСОВЕ ПРОБУДЖЕННЯ ─────────────────────────────────────────
            Окремим блоком, а не ще однією кнопкою в ряду вище: інші умови,
            інший сенс, і випадкове натискання поруч із «ПОЧАТИ ЗАРЯД» було б
@@ -622,7 +625,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         <!-- Кнопка — у тому самому ряду, що й «ПОЧАТИ ЗАРЯД» та «ПОЧАТИ
              РОЗРЯД»: три операції — три однакові ряди. -->
         <div class="btns">
-          <button class="btn b-warn" onclick="chgWake()">🩺 РОЗБУДИТИ ПАКЕТ</button>
+          <button class="btn b-warn" id="btnChgWake" onclick="chgWake()">🩺 РОЗБУДИТИ ПАКЕТ</button>
           <button class="btn b-dng" onclick="chgStop()">⏹ ЗУПИНИТИ</button>
         </div>
       </div>
@@ -1786,6 +1789,7 @@ function disShow(d){
   const mon=$('disMon');
   if(!d){mon.className='dm';$('disSt').textContent='—';return;}
   if(!d.available){mon.className='dm';$('disSt').textContent='не налаштовано (LOAD_PIN)';return;}
+  { var bdd=$('btnDisDismiss'); if(bdd) bdd.style.display=(d.state==='done'||d.state==='abort')?'':'none'; }
   // Ручний струм і профіль — з ПРИСТРОЮ: показувати треба те, що ДІЄ, хто б
   // його не поставив (веб, USB чи кнопки на самому приладі).
   if(d.manualMa!==undefined){
@@ -1980,7 +1984,11 @@ function chgShow(d){
   // Причина приходить із прошивки (availWhy): «не налаштовано» і «ця версія
   // пристрою без заряду» — різні відповіді, і власна копія пари тут
   // розійшлася б із приладом.
-  if(!d.available){mon.className='dm';$('chgSt').textContent=d.availWhy||'заряд недоступний';return;}
+  // ⚑ Одного рядка замало: раніше причина писалась дрібним у стан панелі, а
+  // кнопки лишались живими — людина тиснула «ПОЧАТИ ЗАРЯД» і діставала помилку
+  // замість пояснення. Тепер видима плашка, а дії вимкнені.
+  chgSetUnavail(d.available?'':(d.availWhy||'заряд недоступний'));
+  if(!d.available){mon.className='dm';$('chgSt').textContent='функція недоступна';return;}
   const run=d.state==='run';
   mon.className='dm '+d.state;
   // ⚑ ПРОБУДЖЕННЯ — інший режим тієї самої панелі. d.wake приходить за РЕЖИМОМ,
@@ -2030,7 +2038,13 @@ function chgShow(d){
   // Перемикання панелі між двома режимами. Ховаються тільки УСТАВКИ (chgonly):
   // у пробудженні ні цілі, ні ручного струму, ні профілю не існує, і показувати
   // їх означало б обіцяти керування, якого немає.
-  document.querySelectorAll('.chgonly').forEach(function(e){ e.style.display = wake?'none':''; });
+  //  ⚑ ХОВАЄМО ЗА wakeRun, А НЕ ЗА wake — це різні питання: wake каже, яким
+  //  показати ПІДСУМОК і лишається правдою після зупинки, а зайняте залізо це
+  //  wakeRun. Поки їх плутали, після пробудження кнопка «ПОЧАТИ ЗАРЯД»
+  //  зникала назавжди.
+  var wakeRun = !!d.wakeRun;
+  document.querySelectorAll('.chgonly').forEach(function(e){ e.style.display = wakeRun?'none':''; });
+  { var bd=$('btnChgDismiss'); if(bd) bd.style.display=(d.state==='done'||d.state==='abort')?'':'none'; }
   // А плитки не ховаються й не переставляються — міняються лише підписи трьох
   // останніх: сітка, що перебудовується, змушує щоразу шукати величину заново.
   opTileHead('chg', wake?'wake':'chg');
@@ -2250,6 +2264,26 @@ function chgMaPaint(cur){
   document.querySelectorAll('#chgMaRow .tgtb').forEach(function(b){
     var t=b.textContent.trim(); var v=(t==='Авто')?0:parseInt(t,10);
     b.classList.toggle('on', !isNaN(v)&&v===(cur|0));
+  });
+}
+// Закрити підсумок завершеної операції: на пристрої це робить будь-яка кнопка,
+// а тут такої дороги не було — панель назавжди лишалась у стані «завершено».
+async function chgDismiss(){
+  if(!connected){toast('Підключіться');return;}
+  const r=await cmd('CHARGE DISMISS',10000);
+  if(r&&r.ok)chgShow(r.charge);
+}
+async function disDismiss(){
+  if(!connected){toast('Підключіться');return;}
+  const r=await cmd('DISCHARGE DISMISS',10000);
+  if(r&&r.ok)disShow(r.discharge);
+}
+// Плашка «функція недоступна» + вимкнені дії. Порожній текст = усе гаразд.
+function chgSetUnavail(why){
+  var box=$('chgUnavail');
+  if(box){ box.textContent=why; box.style.display=why?'':'none'; }
+  ['btnChgStart','btnChgStop','btnChgWake'].forEach(function(id){
+    var b=$(id); if(b) b.disabled=!!why;
   });
 }
 async function chgStop(){

@@ -76,8 +76,6 @@ static const struct { uint32_t issue; const char *why; } WIZ_INFO_ONLY[] = {
                          "спершу людина вписує дату й знос руками" },
     { ISS_DATE_INSANE,   "правильної дати не знає ніхто, крім власника: підставити «правдоподібну» "
                          "означало б вигадати її й закріпити в чипі" },
-    { ISS_ETM_FOREIGN,   "наробіток більший за вік буває і в справного пакета, який щойно повернувся "
-                         "зі станції. Що саме писати — вирішує людина на сторінці синхронізації" },
     { ISS_MONITOR_ZEROED,"монітор обнуляють НАВМИСНО перед калібруванням. Відновлювати історію "
                          "автоматично означало б скасовувати чуже свідоме рішення" },
 };
@@ -114,6 +112,7 @@ enum {
     ACT_HDRFIX,          // добудувати заголовок DS2433 із дзеркала DS2438
     ACT_CRYPT,           // перешифрувати дати й лічильники під ROM цього чипа
     ACT_DCAFIX,          // полагодити побитий лічильник розряду монітора з історії
+    ACT_ETMFIX,          // узгодити наробіток монітора з датою, записаною в пакеті
     ACT_VERIFY,          // фінальна перевірка
 };
 
@@ -183,6 +182,7 @@ static void wizActionMeta(uint8_t a, const char **title, const char **detail,
             case ACT_CRYPT:          *chips = OPC_33;   break;
             case ACT_RESET:
             case ACT_DCAFIX:
+            case ACT_ETMFIX:
             case ACT_SETCHARGE_AUTO: *chips = OPC_38;   break;
             default:                 *chips = OPC_NONE; break;  // читання/зовнішні
         }
@@ -212,6 +212,17 @@ static void wizActionMeta(uint8_t a, const char **title, const char **detail,
                                     "паливомір лишаються як були. Якщо історія попереду монітора "
                                     "(монітор обнулили навмисно) або сама неправдоподібна — крок "
                                     "відмовиться, а не запише здогадку."; break;
+        case ACT_ETMFIX:  *title = "Узгодити наробіток із датою";
+                          *detail = "Рація не питає DS2433 про «дату першого користування» — вона "
+                                    "рахує її як «зараз мінус наробіток» із монітора. Тому пакет, "
+                                    "який щойно повернувся зі станції, показує чужу дату: ЗП "
+                                    "переписує наробіток своїм числом. Крок ставить у монітор рівно "
+                                    "стільки, скільки минуло від дати першого запуску, записаної в "
+                                    "самому пакеті, — разом із мітками подій, інакше станція "
+                                    "відновить старе число з них. Стоїть ПІСЛЯ калібрування: до "
+                                    "нього правити марно, ЗП однаково перепише. Наробіток МЕНШИЙ за "
+                                    "вік крок не чіпає — це не поломка, і дораховувати пакетові "
+                                    "роботу, якої не було, він не буде."; break;
         case ACT_HDRFIX:  *title = "Добудувати заголовок";
                           *detail = "Зарядна станція сама дописала в стертий чип дзеркало заголовка з "
                                     "DS2438, але не виправила суму — і на цьому зупинилась. Крок копіює "
@@ -280,6 +291,10 @@ inline int wizPlanIssues(uint32_t issues, uint8_t *out, int cap) {
         !(is & (ISS_TAIL_FOREIGN | ISS_TAIL_ERASED | ISS_CCA_OVERFLOW |
                 ISS_NEEDS_CALIB | ISS_HEALTH_LOW)))
         add(ACT_DCAFIX);
+    // ⚑ НАРОБІТОК ПРАВЛЯТЬ ПІСЛЯ КАЛІБРУВАННЯ, А НЕ ДО НЬОГО — тому крок і
+    //  стоїть тут, нижче за станцію: ЗП однаково перепише наробіток своїм
+    //  числом, і правка перед нею була б витрачена даремно.
+    if (is & ISS_ETM_FOREIGN) add(ACT_ETMFIX);
 
     add(ACT_VERIFY);
     return n;
@@ -298,6 +313,7 @@ inline const char *wizActionId(uint8_t a) {
         case ACT_SETCHARGE_AUTO: return "charge";case ACT_CHARGE_STATION: return "station";
         case ACT_HDRFIX: return "hdrfix";
         case ACT_DCAFIX: return "dcafix";
+        case ACT_ETMFIX: return "etmfix";
         case ACT_CRYPT: return "crypt";
         case ACT_VERIFY: return "verify";        default: return "none";
     }

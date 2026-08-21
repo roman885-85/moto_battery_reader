@@ -305,6 +305,28 @@ int main() {
               "…а побитий лічильник — навпаки, лікується автоматично");
     }
 
+    // ── Наробіток: крок є, і стоїть ПІСЛЯ калібрування ─────────────────────
+    printf("\n9) наробіток більший за вік: крок є, і він після станції\n");
+    {
+        uint8_t a[WIZ_MAX_STEPS];
+        int n = wizPlanIssues(ISS_ETM_FOREIGN, a, WIZ_MAX_STEPS);
+        int iEtm = -1;
+        for (int i = 0; i < n; i++) if (a[i] == ACT_ETMFIX) iEtm = i;
+        check(iEtm >= 0, "проблема «наробіток більший за вік» тепер має крок");
+        check(!wizIssueInfoOnly(ISS_ETM_FOREIGN),
+              "…і більше не значиться свідомо залишеною без кроку");
+
+        // ⚑ ПОРЯДОК ТУТ — НЕ КОСМЕТИКА. ЗП переписує наробіток своїм числом,
+        //  тож правка ДО станції витрачається даремно.
+        n = wizPlanIssues(ISS_ETM_FOREIGN | ISS_NEEDS_CALIB, a, WIZ_MAX_STEPS);
+        int iSt = -1; iEtm = -1;
+        for (int i = 0; i < n; i++) {
+            if (a[i] == ACT_CHARGE_STATION) iSt = i;
+            if (a[i] == ACT_ETMFIX)         iEtm = i;
+        }
+        check(iSt >= 0 && iEtm > iSt, "крок наробітку стоїть ПІСЛЯ калібрування на станції");
+    }
+
     printf("\n%s (помилок: %d)\n", fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails != 0;
 }

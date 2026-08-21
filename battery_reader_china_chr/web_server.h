@@ -1356,6 +1356,63 @@ bool resetBatteryData() {
 //  обнуляє ETM, CCA, DCA й паливомір — на пакеті з 191 законним циклом заряду
 //  це втрата історії заради однієї зіпсованої комірки. Тут правиться саме та
 //  комірка, решта монітора лишається як була.
+// План правок складає функція, визначена нижче: оголошуємо наперед, щоб не
+// тягти сюди весь її блок — крок Майстра живе поруч із рештою правок пакета.
+static bool buildRestorePlanFor(const char *model, RestorePlan &p, bool refresh);
+
+// ── УЗГОДИТИ НАРОБІТОК МОНІТОРА З ДАТОЮ, ЗАПИСАНОЮ В ПАКЕТІ ───────────────
+//  Вирок і арифметика — у restore_plan.h (їх ганяє хостовий тест); тут лише
+//  те, чого на хості немає: буфери, чип і запис у нього.
+//
+//  ⚑ РАЗОМ ІЗ МІТКАМИ ПОДІЙ. Наробіток лежить не лише в самому лічильнику: у
+//  сторінці 2 монітора є мітки «відключення» й «кінець заряду», і станція
+//  вміє відновити старе число з них. Тому пишемо через impresSetEtm(), який
+//  знає про всі три місця, а не в один регістр.
+bool performEtmFix(String *note) {
+    auto say = [&](const char *m) { if (note) *note = m; };
+    if (!hasDump2438) { say("Немає читання монітора DS2438"); return false; }
+    if (!hasDump)     { say("Потрібен DS2433: дата першого запуску записана в ньому"); return false; }
+    char model[16] = "";
+    if (!impresModelName(batteryDump, model, sizeof(model))) {
+        say("Модель пакета не читається — плану не скласти"); return false;
+    }
+    RestorePlan p;
+    if (!buildRestorePlanFor(model, p, false)) {
+        say("Для цієї моделі немає вшитого еталона — плану не скласти"); return false;
+    }
+    restorePlanSetEtmSource(p, true);          // рахувати з дати першого запуску
+    uint32_t etm = 0; const char *why = "";
+    if (!restoreEtmFixPlan(p, &etm, &why)) {
+        // Мовчазна відмова тут була б найгіршою: натиснув крок, нічого не
+        // сталось, і незрозуміло — полагодилось чи ні.
+        say(why && *why ? why : "Узгоджувати наробіток нема з чим");
+        Serial.printf("=== ETM fix SKIPPED: %s ===\n", why ? why : "");
+        return false;
+    }
+    uint32_t before = impresEtm(batteryDump2438);
+    ledSet(LED_WRITE);
+    displayShow("ПРАВКА ETM...");
+    Serial.printf("\n=== ETM fix: %lu -> %lu c (з дати першого запуску) ===\n",
+                  (unsigned long)before, (unsigned long)etm);
+    impresSetEtm(batteryDump2438, etm);
+    if (!battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE)) {
+        // Дамп у пам'яті вже змінено, а чіп — ні. Повертаємо як було, інакше
+        // інтерфейс показував би узгоджене там, де запис не пройшов.
+        impresSetEtm(batteryDump2438, before);
+        say("Запис у монітор не пройшов — значення повернуто як було");
+        ledSet(LED_ERROR);
+        return false;
+    }
+    saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+    char m[80];
+    snprintf(m, sizeof(m), "Наробіток узгоджено: %lu -> %lu діб",
+             (unsigned long)(before / 86400UL), (unsigned long)(etm / 86400UL));
+    say(m);
+    displayShow("ETM OK");
+    ledSet(LED_OK);
+    return true;
+}
+
 bool performDcaFix(String *note) {
     auto say = [&](const char *m) { if (note) *note = m; };
     if (!hasDump2438) { say("Немає читання монітора DS2438"); return false; }

@@ -2202,6 +2202,14 @@ int main() {
         // Новий крок мусить не лише існувати в переліку, а й виконуватись.
         check(fileCalls("recovery.h", "performDcaFix(&dm)"),
                                              "крок правки лічильника справді щось виконує");
+        check(fileCalls("recovery.h", "performEtmFix(&em)") &&
+              fileCalls("web_server.h", "restoreEtmFixPlan(p, &etm, &why)"),
+                                             "крок узгодження наробітку теж виконується — і бере вирок зі спільної функції");
+        // ⚑ Разом із мітками подій: станція вміє відновити старе число з них.
+        check(fileCalls("web_server.h", "impresSetEtm(batteryDump2438, etm)"),
+                                             "…і пише наробіток разом із мітками подій");
+        check(fileCalls("web_server.h", "impresSetEtm(batteryDump2438, before)"),
+                                             "…а якщо запис не пройшов — повертає як було");
         check(fileCalls("web_server.h", "impresBmsFixDcaFromHist(batteryDump, batteryDump2438, &wrote)"),
                                              "…і бере значення зі спільної функції, а не рахує на місці");
         check(fileCalls("web_server.h", "battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE)"),

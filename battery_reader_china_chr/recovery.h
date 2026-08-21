@@ -498,6 +498,7 @@ static String wizExecStep(int idx, const String &model, const String &fixes = St
                                          : "Помилка підготовки"; break;
         case ACT_RESET:         ok = performReset();         msg = ok ? "Лічильники скинуто" : "Помилка скидання"; break;
         case ACT_DCAFIX:        { String dm; ok = performDcaFix(&dm); msg = dm; } break;
+        case ACT_ETMFIX:        { String em; ok = performEtmFix(&em); msg = em; } break;
         case ACT_CLEAN:         ok = performFactoryClean();  msg = ok ? "Історію очищено" : "Помилка очистки"; break;
         case ACT_SETCHARGE_AUTO:{ int p = chargePctFromVoltage(); ok = (p >= 0) && performSetChargePct(p);
                                   msg = ok ? (String("Заряд ~") + p + "% з напруги") : "Помилка (немає напруги?)"; } break;

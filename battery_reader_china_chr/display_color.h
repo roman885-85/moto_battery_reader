@@ -1593,8 +1593,8 @@ inline void drawPageWake() {
              (unsigned long)chargeMah(), (unsigned)CHARGE_WAKE_MAH_MAX);
     opMonRow(b, C_GREEN);
     snprintf(b, sizeof(b), "проб %u · %s", c.wakeProbes,
-             c.reason == CHGR_WOKE ? "ВІДПОВІВ" : "монітор мовчить");
-    opMonRow(b, c.reason == CHGR_WOKE ? C_GREEN : C_MUTED);
+             chargeWakeGoalText(c.wakeGoal, c.reason));
+    opMonRow(b, chargeReasonIsDone(c.reason) ? C_GREEN : C_MUTED);
 
     // ⚑ ТУТ ЗАЛИШОК ТОЧНИЙ, А НЕ ОЦІНКА: режим обмежений часом жорстко
     //  (CHARGE_WAKE_MAX_S), тож лишилось рівно стільки, скільки не минуло.

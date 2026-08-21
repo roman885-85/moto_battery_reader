@@ -1007,7 +1007,7 @@ inline void drawPageWake() {
     opMonRow(b);
 
     snprintf(b, sizeof(b), "проб %u  %s", c.wakeProbes,
-             c.reason == CHGR_WOKE ? "ВІДПОВІВ!" : "мовчить");
+             chargeWakeGoalShort(c.wakeGoal, c.reason));
     opMonRow(b);
 
     // Залишок ТОЧНИЙ: режим обмежений часом жорстко.

@@ -320,6 +320,90 @@ int main() {
         } else bad("не зчитався дамп, на якому правка спрацювала");
     }
 
+    // ── 7. Еталон не сміє принести в пакет наробіток ДОНОРА ────────────────
+    //  Скарга власника: обнулив усе, записав еталон і модель, передернув у
+    //  зарядку — «всі значення повернулись». Скидання тут ні до чого: воно
+    //  відпрацювало (розділ 9 у reset_consistency_check це доводить на корпусі).
+    //  Повертав їх ЕТАЛОН: він несе байт-у-байт вміст донорського DS2433,
+    //  зокрема блок NONSMART із ЙОГО CCA/DCA. Далі станція робила те, що
+    //  робить завжди, — переписувала наробіток із пакета в монітор.
+    printf("\n7) еталон не приносить у пакет наробіток донора\n");
+    {
+        int seenTpl = 0, carried = 0, wrongVal = 0, sumBad = 0, checked = 0;
+        for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++) {
+            const uint8_t *tpl33 = BATTERY_TEMPLATES[t].d33;
+            if (!tpl33) continue;
+            uint16_t tc = 0, td = 0;
+            if (!impresBmsHistCounters(tpl33, &tc, &td)) continue;
+            seenTpl++;
+            if (tc || td) carried++;      // еталон справді несе чужі числа
+
+            // Пакет із ВЛАСНИМ наробітком: після відновлення мусить лишитись
+            // його наробіток, а не донорський.
+            std::vector<std::string> all; collect(all);
+            for (auto &p33 : all) {
+                uint8_t a33[DUMP_SIZE], a38[DS2438_MEM_SIZE];
+                if (!load(p33.c_str(), a33, DUMP_SIZE)) continue;
+                std::string p38 = p33; size_t q = p38.find("2433");
+                if (q != std::string::npos) p38.replace(q, 4, "2438");
+                if (!load(p38.c_str(), a38, DS2438_MEM_SIZE)) continue;
+                uint16_t pc = 0, pd = 0;
+                if (!impresBmsHistCounters(a33, &pc, &pd)) continue;
+                if (pc == tc && pd == td) continue;   // не розрізнити — пропускаємо
+                checked++;
+
+                uint8_t rom2[8]; hexrom("A3427C17010050A6", rom2);
+                RestorePlan pl;
+                restorePlanBuild(pl, BATTERY_TEMPLATES[t].name, tpl33, BATTERY_TEMPLATES[t].d38,
+                                 a33, a38, rom2);
+                // Пишемо ЕТАЛОН, як це робить відновлення, і зверху — правки.
+                uint8_t w[DUMP_SIZE];
+                memcpy_P(w, tpl33, DUMP_SIZE);
+                restorePlanApply(pl, w, nullptr, true);
+
+                uint16_t wc = 0, wd = 0;
+                if (!impresBmsHistCounters(w, &wc, &wd)) { wrongVal++; continue; }
+                if (wc != pc || wd != pd) {
+                    if (wrongVal < 3)
+                        printf("      %s: стало %u/%u, а мало %u/%u (донор %u/%u)\n",
+                               p33.c_str() + 6, wc, wd, pc, pd, tc, td);
+                    wrongVal++;
+                }
+                if (!impresRecordOk(w, impresBmsVector(w, BMS_V_NONSMART))) sumBad++;
+                break;                       // одного пакета на еталон досить
+            }
+        }
+        printf("   еталонів із блоком наробітку: %d, з них несуть ненульові числа: %d\n",
+               seenTpl, carried);
+        printf("   перевірено пар «еталон + чужий пакет»: %d\n", checked);
+        check(seenTpl > 0,  "еталони взагалі мають цей блок");
+        // Без цього рядка перевірка нижче була б порожньою: якби еталони несли
+        // нулі, «донорські числа не пройшли» доводилось би саме собою.
+        check(carried > 0,  "…і принаймні один несе чужий наробіток — є чому не пройти");
+        check(checked > 0,  "є на чому перевірити");
+        check(wrongVal == 0, "після відновлення в пакеті лишається ЙОГО наробіток, а не донорський");
+        check(sumBad == 0,   "…і сума блока при цьому ціла");
+
+        // Чистий чип: узяти нема звідки — мусить лишитись нуль, а не донор.
+        uint8_t blank[DUMP_SIZE]; memset(blank, 0xFF, sizeof(blank));
+        for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++) {
+            const uint8_t *tpl33 = BATTERY_TEMPLATES[t].d33;
+            uint16_t tc = 0, td = 0;
+            if (!tpl33 || !impresBmsHistCounters(tpl33, &tc, &td) || (!tc && !td)) continue;
+            uint8_t rom2[8]; hexrom("A3427C17010050A6", rom2);
+            RestorePlan pl;
+            restorePlanBuild(pl, BATTERY_TEMPLATES[t].name, tpl33, BATTERY_TEMPLATES[t].d38,
+                             blank, nullptr, rom2);
+            uint8_t w[DUMP_SIZE]; memcpy_P(w, tpl33, DUMP_SIZE);
+            restorePlanApply(pl, w, nullptr, true);
+            uint16_t wc = 0, wd = 0;
+            impresBmsHistCounters(w, &wc, &wd);
+            check(wc == 0 && wd == 0,
+                  "на чистому чипі наробіток донора не лишається — там нуль");
+            break;
+        }
+    }
+
     printf("\n%s (помилок: %d)\n", fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails != 0;
 }

@@ -2297,16 +2297,28 @@ class App:
             self.connected = True
             self.btnConn.config(text="⏏ Відключити")
             self.status("Підключено (" + r.get("port", "") + ")", True)
-            self.cmd("PING", 3.0, cb=lambda _: (self.load_templates(), self.sound_load(),
+            self.cmd("PING", 3.0, cb=lambda p: (self._fw_stamp(p),
+                                                 self.load_templates(), self.sound_load(),
                                                  self.clock_load(), self.clone_samples_load(),
                                                  self.refresh()))
         else:
             self.status("Помилка порту: " + r.get("err", ""), False)
 
+    # ⚑ ВІДБИТОК ЗБІРКИ В ЗАГОЛОВКУ ВІКНА. Перше питання будь-якого розбору —
+    #  «а чи та прошивка взагалі в приладі?». Доти дата збірки лежала лише в
+    #  /api/fs, куди USB-клієнт навіть не ходить, і через це двічі виходило,
+    #  що правку шукали в приладі, який її не має. Заголовок вікна видно
+    #  завжди, з будь-якої вкладки й навіть із панелі задач.
+    def _fw_stamp(self, p):
+        b = (p or {}).get("build")
+        self.root.title("Moto IMPRES — USB" + (" · прошивка " + b if b else ""))
+
     def _set_disconnected(self):
         self.connected = False
         self.btnConn.config(text="🔌 Підключити")
         self.status("Не підключено", False)
+        # Від'єднались — відбиток більше нічого не описує, прибираємо.
+        self.root.title("Moto IMPRES — USB")
 
     def _on_close(self):
         try:

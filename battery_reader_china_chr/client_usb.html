@@ -51,6 +51,17 @@ header h1{font-size:1.05em;margin:0;color:var(--gold)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
 .card h2{font-size:1em;margin:0 0 10px}
 .row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line);gap:10px}
+/* Ряд уставки операції — один клас на всі ряди заряду й розряду. Підпис має
+   ФІКСОВАНУ колонку, тож кнопки обох карток стоять на одній вертикалі; доки
+   відступ ставили інлайновим style, ряди двох карток розповзались. */
+.oprow{flex-wrap:wrap;margin-top:10px}
+.oprow>.k{flex:0 0 132px}
+.oprow>span:last-child{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+@media(max-width:560px){ .oprow>.k{flex:1 1 100%} }
+/* Підблок третьої операції (пробудження) всередині картки заряду: це той самий
+   ключ і та сама машина, тож окремою карткою він брехав би про незалежність. */
+.opsub{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
+.opsub>h3{margin:0 0 8px;font-size:1em}
 .row:last-child{border-bottom:none}.k{color:var(--mut)}.v{font-weight:600;text-align:right;word-break:break-all}
 /* ⚠️ Колір ФОНУ задає й сам .btn, а не лише модифікатори: кнопка без .b-*
    діставала світло-сірий фон від браузера, і білий напис на ньому зникав
@@ -440,18 +451,14 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
              <div class="dmband" id="disBand"></div><div class="dmmark" id="disMark"></div></div>
         <div class="dmlab"><span>шпаруватість ключа (ШІМ)</span><span id="disDutyTxt">—</span></div>
         <div class="dmtrack"><div class="dmcur" id="disDuty" style="background:var(--blu)"></div></div>
-        <div class="dmg">
-          <div class="dmc hero"><div class="dmck">віддано, мА·год</div><div class="dmcv" id="disMah">—</div></div>
-          <div class="dmc"><div class="dmck">DCA, мА·год</div><div class="dmcv" id="disDca">—</div></div>
-          <div class="dmc"><div class="dmck">струм, мА</div><div class="dmcv" id="disMa">—</div></div>
-          <div class="dmc"><div class="dmck">потужність, Вт</div><div class="dmcv" id="disW">—</div></div>
-          <div class="dmc"><div class="dmck">температура, °C</div><div class="dmcv" id="disT">—</div></div>
-          <div class="dmc"><div class="dmck" id="disIcaK">паливомір ICA</div><div class="dmcv" id="disIca">—</div></div>
-          <div class="dmc"><div class="dmck">лишилось ≈</div><div class="dmcv" id="disEta">—</div></div>
-        </div>
+        <!-- Плитки будує opTiles() з тієї ж таблиці, що й у заряду: інакше
+             набори розходяться самі собою — саме на цій сторінці «фаза» й
+             «лишилось ≈» так і не з'явились плитками, хоча пристрій ці числа
+             віддавав. -->
+        <div class="dmg" id="disTiles"></div>
         <div class="dmwarn" id="disWarn"></div>
       </div>
-      <div class="row" id="disTgtRow" style="margin-top:10px"><span class="k">Розряджати до</span>
+      <div class="row oprow" id="disTgtRow"><span class="k">Розряджати до</span>
         <span>
           <button type="button" class="tgtb" onclick="disSetTarget(7800)">7.80 В</button>
           <button type="button" class="tgtb" onclick="disSetTarget(7600)">7.60 В</button>
@@ -462,7 +469,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
                  oninput="this.dataset.touched=1;disRamp()" style="width:90px"> <span style="opacity:.7">мВ</span>
         </span></div>
       <div class="note i" id="disRampNote"></div>
-      <div class="row" id="disMaRow"><span class="k">Струм розряду</span>
+      <div class="row oprow" id="disMaRow"><span class="k">Струм розряду</span>
         <span>
           <button type="button" class="tgtb" onclick="disSetMa(0)">Авто</button>
           <button type="button" class="tgtb" onclick="disSetMa(300)">300</button>
@@ -475,7 +482,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
                   onclick="disSetMa(+(document.getElementById('disMaInp').value||0))">Задати</button>
         </span></div>
       <div class="note i" id="disMaNote"></div>
-      <div class="row" id="disProfRow"><span class="k">Профіль розряду</span>
+      <div class="row oprow" id="disProfRow"><span class="k">Профіль розряду</span>
         <span>
           <button type="button" class="tgtb" id="disProf0" onclick="disSetProfile(0)">Заводський</button>
           <button type="button" class="tgtb" id="disProf1" onclick="disSetProfile(1)">Розумний 0.2C</button>
@@ -496,9 +503,11 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         <text id="disRampLo" x="4"   y="80" fill="#8b9166" font-size="9"></text>
         <text id="disRampHi" x="296" y="80" fill="#8b9166" font-size="9" text-anchor="end"></text>
       </svg>
-      <button class="btn b-warn" id="btnDisStart" onclick="disStart()">🪫 ПОЧАТИ РОЗРЯД</button>
-      <button class="btn b-dng" onclick="disStop()">⏹ ЗУПИНИТИ</button>
-      <button class="btn b-inf" onclick="disStatus()">🔄 Оновити зараз</button>
+      <div class="btns">
+        <button class="btn b-warn" id="btnDisStart" onclick="disStart()">🪫 ПОЧАТИ РОЗРЯД</button>
+        <button class="btn b-dng" onclick="disStop()">⏹ ЗУПИНИТИ</button>
+        <button class="btn b-inf" onclick="disStatus()">🔄 Оновити зараз</button>
+      </div>
     </div>
     <div class="card" style="border-color:var(--blu)">
       <h2>🔋 Керований заряд <span class="chipb">пише в DS2438</span></h2>
@@ -518,26 +527,28 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
              <span class="dmto" id="chgPctSub">—</span></div>
         <div class="dmbar"><div class="dmfill" id="chgFill"></div>
              <span class="dmbartxt" id="chgPctTxt"></span></div>
+        <!-- Крива напруги за сеанс і коридор уставки — такі самі, як у
+             розряду: без риски уставки видно лише «скільки тече», а не
+             «скільки МАЄ текти». -->
+        <svg class="dmspark" id="chgSpark" viewBox="0 0 300 58" preserveAspectRatio="none">
+          <polyline id="chgSparkArea" fill="rgba(111,143,58,.22)" stroke="none" points=""/>
+          <line id="chgSparkTarget" x1="0" x2="300" y1="-9" y2="-9" stroke="#a3312e"
+                stroke-width="1" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>
+          <polyline id="chgSparkLine" fill="none" stroke="#c8b04a" stroke-width="2"
+                    vector-effect="non-scaling-stroke" stroke-linejoin="round" points=""/>
+        </svg>
         <div class="dmlab"><span>струм / уставка</span><span id="chgLim">—</span></div>
-        <div class="dmtrack"><div class="dmcur" id="chgCurBar"></div></div>
+        <div class="dmtrack"><div class="dmcur" id="chgCur"></div>
+             <div class="dmband" id="chgBand"></div><div class="dmmark" id="chgMark"></div></div>
         <div class="dmlab"><span>шпаруватість ключа</span><span id="chgDutyTxt">—</span></div>
         <div class="dmtrack"><div class="dmcur" id="chgDutyBar" style="background:var(--blu)"></div></div>
-        <div class="dmg">
-          <div class="dmc hero"><div class="dmck">отримано, мА·год</div><div class="dmcv" id="chgMah">—</div></div>
-          <div class="dmc chgonly"><div class="dmck">CCA, мА·год</div><div class="dmcv" id="chgCca">—</div></div>
-          <div class="dmc"><div class="dmck">струм, мА</div><div class="dmcv" id="chgMa">—</div></div>
-          <div class="dmc"><div class="dmck">потужність, Вт</div><div class="dmcv" id="chgW">—</div></div>
-          <div class="dmc chgonly"><div class="dmck">температура, °C</div><div class="dmcv" id="chgT">—</div></div>
-          <div class="dmc chgonly"><div class="dmck" id="chgIcaK">паливомір ICA</div><div class="dmcv" id="chgIca">—</div></div>
-          <!-- Три картки лише для ПРОБУДЖЕННЯ: сусіди з класом chgonly читають
-               DS2438, а він у цьому режимі мовчить — у цьому вся суть режиму. -->
-          <div class="dmc wakeonly" style="display:none"><div class="dmck">проб монітора</div><div class="dmcv" id="chgWkProbes">—</div></div>
-          <div class="dmc wakeonly" style="display:none"><div class="dmck">межа ШІМ</div><div class="dmcv" id="chgWkCap">—</div></div>
-          <div class="dmc wakeonly" style="display:none"><div class="dmck">лишилось, с</div><div class="dmcv" id="chgWkLeft">—</div></div>
-        </div>
+        <!-- Ті самі плитки, що в розряду. Три останні МІНЯЮТЬ ПІДПИС у
+             пробудженні (DS2438 тоді мовчить — у цьому вся суть режиму), але
+             лишаються на своїх місцях: сітка не перебудовується. -->
+        <div class="dmg" id="chgTiles"></div>
         <div class="dmwarn" id="chgWarn"></div>
       </div>
-      <div class="row chgonly" id="chgTgtRow" style="margin-top:10px"><span class="k">Заряджати до</span>
+      <div class="row oprow chgonly" id="chgTgtRow"><span class="k">Заряджати до</span>
         <span>
           <button type="button" class="tgtb" onclick="chgSetTarget(100)">100%</button>
           <button type="button" class="tgtb" onclick="chgSetTarget(95)">95%</button>
@@ -547,7 +558,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
           <input type="number" id="chgTarget" value="100" min="50" max="100" step="5"
                  oninput="this.dataset.touched=1;chgTargetPaint()" style="width:90px"> <span style="opacity:.7">%</span>
         </span></div>
-      <div class="row chgonly" id="chgMaRow"><span class="k">Струм заряду</span>
+      <div class="row oprow chgonly" id="chgMaRow"><span class="k">Струм заряду</span>
         <span>
           <button type="button" class="tgtb" onclick="chgSetMa(0)">Авто</button>
           <button type="button" class="tgtb" onclick="chgSetMa(200)">200</button>
@@ -560,7 +571,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
                   onclick="chgSetMa(+(document.getElementById('chgMaInp').value||0))">Задати</button>
         </span></div>
       <div class="note i chgonly" id="chgMaNote">Порожньо або «Авто» — струм веде профіль за відсотком заряду.</div>
-      <div class="row chgonly" id="chgMvRow"><span class="k">Ціль у вольтах</span>
+      <div class="row oprow chgonly" id="chgMvRow"><span class="k">Ціль у вольтах</span>
         <span>
           <button type="button" class="tgtb" onclick="chgSetMv(0)">За %</button>
           <button type="button" class="tgtb" onclick="chgSetMv(8200)">8.20</button>
@@ -574,31 +585,44 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         </span></div>
       <div class="note i chgonly" id="chgMvNote">«За %» — ціль через криву SoC. Вольти потрібні для зберігання
         (7.40 В = 3.70 В на банку) і для ремонтних сценаріїв.</div>
-      <div class="row chgonly" id="chgProfRow"><span class="k">Профіль заряду</span>
+      <div class="row oprow chgonly" id="chgProfRow"><span class="k">Профіль заряду</span>
         <span>
           <button type="button" class="tgtb" id="chgProf0" onclick="chgSetProfile(0)">Заводський</button>
           <button type="button" class="tgtb" id="chgProf1" onclick="chgSetProfile(1)">Розумний CC/CV</button>
         </span></div>
       <div class="note i chgonly" id="chgProfNote"></div>
-      <button class="btn b-ok chgonly" id="btnChgStart" onclick="chgStart()">🔋 ПОЧАТИ ЗАРЯД</button>
-      <button class="btn b-dng" onclick="chgStop()">⏹ ЗУПИНИТИ</button>
-      <button class="btn b-inf" onclick="chgStatus()">🔄 Оновити зараз</button>
+      <div class="btns">
+        <button class="btn b-ok chgonly" id="btnChgStart" onclick="chgStart()">🔋 ПОЧАТИ ЗАРЯД</button>
+        <button class="btn b-dng" onclick="chgStop()">⏹ ЗУПИНИТИ</button>
+        <button class="btn b-inf" onclick="chgStatus()">🔄 Оновити зараз</button>
+      </div>
       <!-- ── ПРИМУСОВЕ ПРОБУДЖЕННЯ ─────────────────────────────────────────
            Окремим блоком, а не ще однією кнопкою в ряду вище: інші умови,
            інший сенс, і випадкове натискання поруч із «ПОЧАТИ ЗАРЯД» було б
            найгіршим із можливих сусідств. -->
-      <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
-        <h3 style="margin:0 0 6px">🩺 Пакет не читається після заміни елементів</h3>
+      <div class="opsub">
+        <h3>🩺 Пробудження — пакет не читається після заміни елементів</h3>
+        <div class="row oprow"><span class="k">Режим тримає</span>
+          <span>
+            <span class="v"><b id="wkMv">8.00</b> В</span><span style="opacity:.7">·</span>
+            <span class="v">стеля <b id="wkMa">150</b> мА</span><span style="opacity:.7">·</span>
+            <span class="v">не довше <b id="wkSec">120</b> с</span><span style="opacity:.7">·</span>
+            <span class="v">не більше <b id="wkMah">8</b> мА·год</span>
+          </span></div>
         <div class="note i">Контролер захисту після заміни банок часто лишається заблокованим і не відпускає
           клеми, доки не побачить <b>зовнішню зарядну напругу</b>. Поки він мовчить, мовчать і DS2438 з DS2433 —
           а звичайний заряд саме тому й відмовляє: без DS2438 немає температури. Пробудження розриває це коло:
-          коротко тримає на клемах <b id="wkMv">8.00</b> В (обмеження струму <b id="wkMa">150</b> мА) і раз на
-          кілька секунд пробує гукнути монітор. Щойно той відповів — режим сам зупиняється.</div>
-        <div class="note i">Чому це безпечно без датчика температури: режим не здатен віддати більше за
-          <b id="wkMah">8</b> мА·год і живе не довше за <b id="wkSec">120</b> с — менше, ніж пакет втрачає на
-          власний саморозряд. Якщо пакет <b>читається</b>, запуск буде відхилено: там є температура, отже є
-          звичайний заряд.</div>
-        <button class="btn b-warn" style="width:100%" onclick="chgWake()">🩺 ПРИМУСОВО РОЗБУДИТИ ПАКЕТ</button>
+          коротко тримає на клемах зазначену вище напругу і раз на кілька секунд пробує гукнути монітор. Щойно
+          той відповів — режим сам зупиняється.</div>
+        <div class="note i">Чому це безпечно без датчика температури: обидві межі в рядку вище — <b>тверді</b>,
+          і це менше, ніж пакет втрачає на власний саморозряд. Якщо пакет <b>читається</b>, запуск буде
+          відхилено: там є температура, отже є звичайний заряд.</div>
+        <!-- Кнопка — у тому самому ряду, що й «ПОЧАТИ ЗАРЯД» та «ПОЧАТИ
+             РОЗРЯД»: три операції — три однакові ряди. -->
+        <div class="btns">
+          <button class="btn b-warn" onclick="chgWake()">🩺 РОЗБУДИТИ ПАКЕТ</button>
+          <button class="btn b-dng" onclick="chgStop()">⏹ ЗУПИНИТИ</button>
+        </div>
       </div>
     </div>
     <div class="card" style="border-color:var(--ok)">
@@ -1663,29 +1687,88 @@ async function wizJournalDelete(serial){
   if(r&&r.ok){toast('Видалено'); wizJournalsLoad();} else toast('Помилка: '+((r&&r.err)||''));
 }
 // ---- керований розряд ------------------------------------------------------
-let disHist=[], disStep=10, disLast=null, disLastAt=0, disTimer=null, disPeriod=0, disBusy=false;
+let disLast=null, disLastAt=0, disTimer=null, disPeriod=0, disBusy=false;
+/* ── СПІЛЬНИЙ КАРКАС ПАНЕЛЕЙ ОПЕРАЦІЙ ─────────────────────────────────────
+   Той самий, що у веб-сторінці пристрою: заряд, розряд і пробудження мусять
+   показувати ОДНІ Й ТІ САМІ величини на ОДНИХ І ТИХ САМИХ місцях. Доки набори
+   плиток писались руками окремо, вони розходились — саме тут «фаза» й
+   «лишилось ≈» лишились узагалі без плиток, хоча пристрій ці числа віддавав. */
+const OP_TILES = [
+    {k:'Mah',   t:'мА·год',        hero:true},
+    {k:'Ma',    t:'струм, мА'},
+    {k:'W',     t:'потужність, Вт'},
+    {k:'Phase', t:'фаза'},
+    {k:'Eta',   t:'лишилось ≈'},
+    {k:'Cnt',   t:'лічильник чипа'},
+    {k:'T',     t:'температура, °C'},
+    {k:'Ica',   t:'паливомір ICA'}
+];
+const OP_HEADS = {
+    chg:  {Mah:'отримано, мА·год', Cnt:'CCA, мА·год',   T:'температура, °C', Ica:'паливомір ICA'},
+    dis:  {Mah:'віддано, мА·год',  Cnt:'DCA, мА·год',   T:'температура, °C', Ica:'паливомір ICA'},
+    wake: {Mah:'віддано, мА·год',  Cnt:'проб монітора', T:'температура, °C', Ica:'межа ШІМ'}
+};
+function opTiles(p){
+  const box=$(p+'Tiles'); if(!box)return;
+  box.innerHTML = OP_TILES.map(function(c){
+    return '<div class="dmc'+(c.hero?' hero':'')+'">'
+         +   '<div class="dmck" id="'+p+c.k+'K">'+c.t+'</div>'
+         +   '<div class="dmcv" id="'+p+c.k+'">—</div>'
+         + '</div>'; }).join('');
+}
+function opTileHead(p,mode){
+  const h=OP_HEADS[mode]; if(!h)return;
+  for(const k in h){ const e=$(p+k+'K'); if(e) e.textContent=h[k]; }
+}
+// Підпис ОДНІЄЇ плитки — коли до нього треба дописати число. Тільки через цю
+// функцію: id плиток породжує opTiles().
+function opTileLabel(p,k,txt){ const e=$(p+k+'K'); if(e) e.textContent=txt; }
+function opTileSet(p,k,v){
+  const e=$(p+k); if(!e||e.textContent===v)return;
+  e.textContent=v; e.classList.remove('flash'); void e.offsetWidth; e.classList.add('flash');
+}
+function opBand(p,ma,setMa,loMa,hiMa,inBand,run){
+  const scale=Math.max(setMa*1.25,ma*1.05,1);
+  const cur=$(p+'Cur'), band=$(p+'Band'), mark=$(p+'Mark');
+  if(cur){ cur.style.width=Math.min(100,ma*100/scale)+'%';
+           cur.className='dmcur'+(run&&!inBand?' out':''); }
+  if(band){ band.style.left=Math.max(0,Math.min(100,loMa*100/scale))+'%';
+            band.style.width=Math.max(0,(hiMa-loMa)*100/scale)+'%'; }
+  if(mark){ mark.style.left=Math.min(100,setMa*100/scale)+'%'; }
+}
+const opHist={chg:{pts:[],step:10}, dis:{pts:[],step:10}};
+function opReset(p){ const h=opHist[p]; if(h){h.pts=[]; h.step=10;} }
 function disFmtT(s){const h=Math.floor(s/3600),m=Math.floor(s/60)%60,x=s%60;
   return h+':'+String(m).padStart(2,'0')+':'+String(x).padStart(2,'0');}
 function disSchedule(ms){ if(disPeriod===ms&&disTimer)return;
   if(disTimer)clearInterval(disTimer); disPeriod=ms; disTimer=setInterval(disTick,ms); }
-function disSet(id,txt){ const el=$(id); if(!el||el.textContent===txt)return;
-  el.textContent=txt; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
 // Точки графіка не викидаються з початку — коли їх забагато, ряд проріджується
 // вдвічі, а крок подвоюється. Так на екрані лишається крива за ВЕСЬ сеанс.
-function disPush(t,mv){ const last=disHist[disHist.length-1];
-  if(last&&t-last.t<disStep)return; disHist.push({t:t,mv:mv});
-  if(disHist.length>300){disHist=disHist.filter((_,i)=>i%2===0); disStep*=2;} }
-function disSpark(targetMv){
-  const tl=$('disSparkTarget');
-  if(disHist.length<2){$('disSparkLine').setAttribute('points','');$('disSparkArea').setAttribute('points','');
-                       tl.setAttribute('y1',-9);tl.setAttribute('y2',-9);return;}
-  const vs=disHist.map(p=>p.mv); let lo=Math.min(...vs)-20, hi=Math.max(...vs)+20;
+// Історія в кожної машини своя, код — один.
+function opPush(p,t,mv){
+  const h=opHist[p]; if(!h)return;
+  // Час пішов назад — почався НОВИЙ сеанс: два сеанси в одному графіку
+  // читались би як один довгий.
+  if(h.pts.length&&t<h.pts[h.pts.length-1].t) opReset(p);
+  const last=h.pts[h.pts.length-1];
+  if(last&&t-last.t<h.step)return;
+  h.pts.push({t:t,mv:mv});
+  if(h.pts.length>300){h.pts=h.pts.filter((_,i)=>i%2===0); h.step*=2;}
+}
+function opSpark(p,targetMv){
+  const tl=$(p+'SparkTarget'), ln=$(p+'SparkLine'), ar=$(p+'SparkArea');
+  if(!tl||!ln||!ar)return;
+  const hp=(opHist[p]||{pts:[]}).pts;
+  if(hp.length<2){ln.setAttribute('points','');ar.setAttribute('points','');
+                  tl.setAttribute('y1',-9);tl.setAttribute('y2',-9);return;}
+  const vs=hp.map(q=>q.mv); let lo=Math.min(...vs)-20, hi=Math.max(...vs)+20;
   if(targetMv&&targetMv<lo) lo=targetMv-20;
-  const t0=disHist[0].t, t1=Math.max(disHist[disHist.length-1].t,t0+1);
-  const X=p=>3+((p.t-t0)/(t1-t0))*294, Y=v=>56-((v-lo)/(hi-lo||1))*52;
-  const pts=disHist.map(p=>X(p).toFixed(1)+','+Y(p.mv).toFixed(1)).join(' ');
-  $('disSparkLine').setAttribute('points',pts);
-  $('disSparkArea').setAttribute('points','3,58 '+pts+' 297,58');
+  if(targetMv&&targetMv>hi) hi=targetMv+20;      // у заряді ціль ЗГОРИ
+  const t0=hp[0].t, t1=Math.max(hp[hp.length-1].t,t0+1);
+  const X=q=>3+((q.t-t0)/(t1-t0))*294, Y=v=>56-((v-lo)/(hi-lo||1))*52;
+  const pts=hp.map(q=>X(q).toFixed(1)+','+Y(q.mv).toFixed(1)).join(' ');
+  ln.setAttribute('points',pts);
+  ar.setAttribute('points','3,58 '+pts+' 297,58');
   const ty=Y(targetMv); tl.setAttribute('y1',ty); tl.setAttribute('y2',ty);
 }
 function disShow(d){
@@ -1727,11 +1810,8 @@ function disShow(d){
   $('disSt').textContent={idle:'очікування',run:'ІДЕ РОЗРЯД',
     done:'✅ ГОТОВО — на IMPRES-ЗП',abort:'⛔ '+(d.reason||'аварія')}[d.state]||d.state;
 
-  if(run){
-    if(disHist.length&&d.elapsedS<disHist[disHist.length-1].t){disHist=[];disStep=10;}
-    disPush(d.elapsedS,d.mv);
-  }
-  disSpark(d.targetMv);
+  if(run) opPush('dis',d.elapsedS,d.mv);
+  opSpark('dis',d.targetMv);
 
   $('disMvBig').innerHTML=(d.mv/1000).toFixed(2)+'<small>В</small>';
   $('disMvSub').textContent='старт '+(d.startMv/1000).toFixed(2)+' В → ціль '+(d.targetMv/1000).toFixed(2)+' В';
@@ -1739,33 +1819,35 @@ function disShow(d){
   const pct=span>0?Math.max(0,Math.min(100,Math.round(dn*100/span))):0;
   $('disFill').style.width=pct+'%'; $('disPct').textContent=pct+' %';
 
-  // Струм тут СЕРЕДНІЙ (ключ під ШІМом): шкала — до 125 % уставки, щоб коридор
-  // займав більшу частину доріжки, а вихід за нього одразу впадав в око.
-  const ma=Math.abs(d.ma), scale=Math.max(d.setMa*1.25,ma*1.05,1);
-  $('disCur').style.width=Math.min(100,ma*100/scale)+'%';
-  $('disCur').className='dmcur'+(run&&!d.inBand?' out':'');
-  $('disBand').style.left=(d.bandLoMa*100/scale)+'%';
-  $('disBand').style.width=Math.max(0,(d.bandHiMa-d.bandLoMa)*100/scale)+'%';
-  $('disMark').style.left=Math.min(100,d.setMa*100/scale)+'%';
+  // Струм тут СЕРЕДНІЙ (ключ під ШІМом). Коридор малює спільний opBand():
+  // шкала — до 125 % уставки, щоб вихід за коридор одразу впадав в око.
+  const ma=Math.abs(d.ma);
+  opBand('dis',ma,d.setMa,d.bandLoMa,d.bandHiMa,d.inBand,run);
   $('disLim').textContent=d.pwm?('уставка '+d.setMa+' мА · пік '+d.peakMa+' мА'):'⚠ ШІМ недоступний';
   $('disLim').style.color=d.pwm?(d.inBand?'var(--grn)':'var(--org)'):'var(--red)';
   $('disDuty').style.width=(d.pwm?d.duty:100)+'%';
   $('disDutyTxt').textContent=d.pwm?(d.duty+' %'):'ключ відкрито постійно';
 
-  disSet('disMah',String(d.mah));
-  disSet('disDca',String(d.dcaMah));      // апаратний лічильник — перевірка нашого інтеграла
-  disSet('disMa',String(d.ma));
-  disSet('disW',String(d.watts));
-  disSet('disT',String(d.tempC));
-  disSet('disIca',String(d.ica));
-  $('disIcaK').textContent='паливомір ICA · старт '+d.icaStart;
+  // Плитки — тими ж ключами й у тому ж порядку, що в заряду й пробудженні.
+  opTileSet('dis','Mah',String(d.mah));
+  opTileSet('dis','Ma',String(d.ma));
+  opTileSet('dis','W',String(d.watts));
+  opTileSet('dis','Phase',d.phaseText||'—');
+  opTileSet('dis','Cnt',String(d.dcaMah));  // апаратний лічильник — перевірка нашого інтеграла
+  opTileSet('dis','T',String(d.tempC));
+  opTileSet('dis','Ica',String(d.ica));
+  opTileLabel('dis','Ica','паливомір ICA · старт '+d.icaStart);
 
+  // Оцінку рахує ПРИСТРІЙ (залишок ємності / струм) — у нього є і паспортна
+  // ємність, і чинний струм, і всі три клієнти показують ОДНЕ число. Темп
+  // падіння напруги лишається запасним: він працює й без відомої ємності.
   let eta='—';
-  if(run&&d.elapsedS>60&&d.startMv>d.mv){
+  if(d.etaS!==undefined && d.etaS) eta=etaFmt(d.etaS);
+  else if(run&&d.elapsedS>60&&d.startMv>d.mv){
     const left=Math.max(0,(d.mv-d.targetMv)/((d.startMv-d.mv)/d.elapsedS));
     eta=left>0?disFmtT(Math.round(left)):'ось-ось';
   }
-  disSet('disEta',eta);
+  opTileSet('dis','Eta',eta);
 
   const w=$('disWarn');
   if(!d.pwm&&(run||d.state==='done')){ w.style.display='block';
@@ -1854,7 +1936,7 @@ async function disStart(){
   { const mi=$('disMaInp'); const ma=mi&&mi.value?(+mi.value|0):0;
     if(ma) await cmd('DISCHARGE MA='+ma,8000); }
   const r=await cmd('DISCHARGE '+t,15000);
-  if(r&&r.ok){toast('✅ Розряд почато');disHist=[];disStep=10;disShow(r.discharge);}
+  if(r&&r.ok){toast('✅ Розряд почато');opReset('dis');disShow(r.discharge);}
   else toast('Помилка: '+((r&&r.err)||''),'err');
 }
 async function disStop(){
@@ -1927,11 +2009,17 @@ function chgShow(d){
   }
   $('chgSt').textContent=st;
 
-  // Перемикання панелі між двома режимами: chgonly читають DS2438 або профіль
-  // струму, а під час пробудження монітор мовчить і профілю немає — показувати
-  // «CCA 0» й «темп. 0.0» означало б видавати відсутність даних за дані.
+  // Крива напруги за сеанс — той самий opPush()/opSpark(), що в розряду.
+  if(run) opPush('chg',d.elapsedS,d.mv);
+  opSpark('chg', wake ? (d.wakeMv||0) : d.targetMv);
+
+  // Перемикання панелі між двома режимами. Ховаються тільки УСТАВКИ (chgonly):
+  // у пробудженні ні цілі, ні ручного струму, ні профілю не існує, і показувати
+  // їх означало б обіцяти керування, якого немає.
   document.querySelectorAll('.chgonly').forEach(function(e){ e.style.display = wake?'none':''; });
-  document.querySelectorAll('.wakeonly').forEach(function(e){ e.style.display = wake?'':'none'; });
+  // А плитки не ховаються й не переставляються — міняються лише підписи трьох
+  // останніх: сітка, що перебудовується, змушує щоразу шукати величину заново.
+  opTileHead('chg', wake?'wake':'chg');
 
   $('chgMvBig').innerHTML=(d.mv/1000).toFixed(2)+'<small>В</small>';
   if(wake){
@@ -1941,16 +2029,18 @@ function chgShow(d){
     $('chgPctSub').textContent='тримаємо '+((d.wakeMv||0)/1000).toFixed(2)+' В · старт '
       +(d.startMv/1000).toFixed(2)+' В · стеля струму '+(d.wakeMa||0)+' мА';
     $('chgFill').style.width=p+'%'; $('chgPctTxt').textContent=el+' / '+lim+' с';
-    $('chgWkProbes').textContent=String(d.wakeProbes||0);
-    $('chgWkCap').textContent=(d.dutyCap||0)+' / '+(d.dutyFull||0);
-    $('chgWkLeft').textContent=String(Math.max(0,lim-d.elapsedS));
+    opTileSet('chg','Cnt',String(d.wakeProbes||0));
+    opTileSet('chg','T','—');                    // давача в цьому режимі немає
+    opTileSet('chg','Ica',(d.dutyCap||0)+' / '+(d.dutyFull||0));
   }else{
     $('chgPctSub').textContent=d.pct+' % · старт '+(d.startMv/1000).toFixed(2)+' В → ціль '+(d.targetMv/1000).toFixed(2)+' В';
     $('chgFill').style.width=d.pct+'%'; $('chgPctTxt').textContent=d.pct+' %';
   }
 
-  const ma=Math.abs(d.ma), scale=Math.max(d.setMa*1.25,ma*1.05,1);
-  $('chgCurBar').style.width=Math.min(100,ma*100/scale)+'%';
+  // Коридор уставки — спільний із розрядом. У пробудженні «уставкою» служить
+  // стеля струму режиму: іншої там немає, і саме її регулятор тримає.
+  const ma=Math.abs(d.ma), setMa=wake?(d.wakeMa||0):d.setMa, dead=d.deadbandMa||30;
+  opBand('chg',ma,setMa,Math.max(0,setMa-dead),setMa+dead,Math.abs(ma-setMa)<=dead,run);
   if(d.manualMa!==undefined){
     var mi=$('chgMaInp');
     if(mi&&document.activeElement!==mi) mi.value=d.manualMa?d.manualMa:'';
@@ -1976,13 +2066,23 @@ function chgShow(d){
       +' · пік '+d.peakMa+' мА з '+d.peakMaxMa+' (шунт '+(d.shuntMohm/1000).toFixed(2)+' Ом)')
     :'керування недоступне';
 
-  disSet('chgMah', wake ? (d.mah+' / '+(d.wakeMahMax||0)) : String(d.mah));
-  disSet('chgCca',String(d.ccaMah));
-  disSet('chgMa',String(d.ma));
-  disSet('chgW',String(d.watts));
-  disSet('chgT',String(d.tempC));
-  disSet('chgIca',String(d.ica));
-  $('chgIcaK').textContent='паливомір ICA · старт '+d.icaStart;
+  // Ті самі п'ять перших плиток, що в розряду. Три останні в пробудженні вже
+  // заповнені вище — там у них інші джерела.
+  opTileSet('chg','Mah', wake ? (d.mah+' / '+(d.wakeMahMax||0)) : String(d.mah));
+  opTileSet('chg','Ma',String(d.ma));
+  opTileSet('chg','W',String(d.watts));
+  // У пробудженні «фази» профілю немає — є сам режим, і так і підписано:
+  // порожня плитка в спільній сітці читалась би як «дані не дійшли».
+  opTileSet('chg','Phase', wake ? 'ПРОБУДЖЕННЯ' : (d.phaseText||'—'));
+  opTileSet('chg','Eta', wake
+    ? (d.wakeMaxS!==undefined ? etaFmt(Math.max(0,(d.wakeMaxS|0)-(d.elapsedS|0))) : '—')
+    : etaFmt(d.etaS));
+  if(!wake){
+    opTileSet('chg','Cnt',String(d.ccaMah));
+    opTileSet('chg','T',String(d.tempC));
+    opTileSet('chg','Ica',String(d.ica));
+    opTileLabel('chg','Ica','паливомір ICA · старт '+d.icaStart);
+  }
 
   const w=$('chgWarn');
   if(!d.pwm&&(run||d.state==='done')){w.style.display='block';
@@ -2556,6 +2656,9 @@ async function hxWrite(){
 
 // Синхронне прокручування + прив'язка обробників редактора
 window.addEventListener('DOMContentLoaded',function(){
+  // Плитки обох панелей — з ОДНІЄЇ таблиці, до першого опитування.
+  opTiles('dis'); opTileHead('dis','dis');
+  opTiles('chg'); opTileHead('chg','chg');
   const d=$('hxD'), a=$('hxAsc');
   if(d){
     d.addEventListener('scroll',function(){$('hxGut').scrollTop=d.scrollTop; a.scrollTop=d.scrollTop;});

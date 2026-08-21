@@ -257,30 +257,72 @@ def select_all(w):
         pass
 
 
-class DischargeMonitor(tk.Canvas):
-    """Панель процесу розряду — той самий вигляд, що у веб-версії пристрою.
+def psu_v(mv):
+    """14000 -> «14», 13800 -> «13.8». Номінал блока живлення має читатись як
+    номінал, а не як результат вимірювання. Функція модульна, бо потрібна і
+    панелі операції, і головному вікну — тримати її методом одного з них
+    означало б, що другий кличе чужий клас."""
+    return ("%.1f" % (mv / 1000.0)).rstrip("0").rstrip(".")
 
-    Розряд триває годинами, тож дивитись доводиться довго: рядок тексту для
-    цього не годиться. Тут пульсуючий індикатор стану, смуга прогресу з
-    «течією» (єдина ознака, що процес живий: між опитуваннями пристрою числа
-    стоять на місці), графік напруги за ВЕСЬ сеанс, коридор уставки струму,
-    шпаруватість ключа й плитки показань.
+
+# «Скільки ще лишилось» у людському вигляді. 0/None = оцінити не можна, і ми
+# так і пишемо: показати вигадане число гірше, ніж не показати жодного.
+def _eta_txt(s):
+    try:
+        s = int(s or 0)
+    except (TypeError, ValueError):
+        return "—"
+    if s <= 0:
+        return "—"
+    if s < 60:
+        return "<1 хв"
+    if s < 3600:
+        return "%d хв" % round(s / 60.0)
+    return "%d год %d хв" % (s // 3600, round((s % 3600) / 60.0))
+
+
+# Плитки показань — ОДИН порядок на всі три операції. Перші п'ять однакові
+# завжди; три останні міняють ЛИШЕ ПІДПИС (див. OP_HEADS).
+OP_TILES = ["Mah", "Ma", "W", "Phase", "Eta", "Cnt", "T", "Ica"]
+OP_HEADS = {
+    "chg":  {"Mah": "отримано, мА·год", "Cnt": "CCA, мА·год",   "T": "температура, °C", "Ica": "паливомір ICA"},
+    "dis":  {"Mah": "віддано, мА·год",  "Cnt": "DCA, мА·год",   "T": "температура, °C", "Ica": "паливомір ICA"},
+    "wake": {"Mah": "віддано, мА·год",  "Cnt": "проб монітора", "T": "температура, °C", "Ica": "межа ШІМ"},
+}
+OP_FIXED = {"Ma": "струм, мА", "W": "потужність, Вт", "Phase": "фаза", "Eta": "лишилось ≈"}
+
+
+class OpMonitor(tk.Canvas):
+    """Панель процесу операції — заряду, розряду або пробудження.
+
+    ⚑ ОДИН КЛАС НА ВСІ ТРИ. Раніше їх було два, і збудовані вони були на різних
+    речах: розряд — полотном (графік, коридор уставки, плитки), заряд —
+    набором ttk-віджетів без графіка й без коридору. Через це три операції
+    того самого пристрою читались як три різні програми: у заряду не було
+    видно ні кривої напруги, ні уставки на доріжці струму, плитки стояли в
+    іншому порядку, а «фаза» й «залишок часу» до нього просто не дійшли —
+    хоча пристрій ці числа віддавав. Тепер малює одна процедура, а
+    відмінності двох машин зібрані в кількох дрібних гілках нижче.
+
+    Панель триває годинами під наглядом, тож рядка тексту тут мало: пульсуючий
+    індикатор стану, смуга прогресу з «течією» (єдина ознака, що процес живий:
+    між опитуваннями пристрою числа стоять на місці), крива напруги за ВЕСЬ
+    сеанс, коридор уставки струму, шпаруватість ключа й плитки показань.
 
     Малює себе сама раз на 80 мс (анімація й рівний хід годинника), дані
     отримує ззовні через update_state() — опитування живе в App.
 
     МАСШТАБ. redraw() малює в БАЗОВИХ координатах (W×H нижче), а наприкінці всю
-    картинку розтягує canvas.scale(). Шрифти при цьому не чіпаються — вони й так
-    приходять із fnt(), тобто вже масштабовані тим самим коефіцієнтом. Тому
-    достатньо тримати self.k рівним масштабу інтерфейсу, і панель росте разом із
-    рештою вікна, а розмічати її можна й далі в зручних числах.
+    картинку розтягує canvas.scale(). Шрифти при цьому не чіпаються — вони й
+    так приходять із fnt(), тобто вже масштабовані тим самим коефіцієнтом.
     """
     W, H = 720, 358          # базові («дизайнерські») розміри, масштаб 100 %
     PAD = 14
 
-    def __init__(self, master):
+    def __init__(self, master, kind):
         super().__init__(master, width=self.W, height=self.H, bg=MIL["field"],
                          highlightthickness=1, highlightbackground=MIL["line"])
+        self.kind = kind         # 'dis' або 'chg' (пробудження — режим 'chg')
         self.d = None            # останній стан із пристрою
         self.at = 0.0            # коли він прийшов — щоб годинник ішов рівно
         self.hist = []           # [(t, mv)] — крива напруги за весь сеанс
@@ -315,7 +357,7 @@ class DischargeMonitor(tk.Canvas):
                 self.reset_history()
             # Точки не викидаються з початку: коли їх забагато, ряд
             # проріджується вдвічі, а крок подвоюється — так уся крива
-            # лишається на екрані незалежно від тривалості розряду.
+            # лишається на екрані незалежно від тривалості сеансу.
             if not self.hist or t - self.hist[-1][0] >= self.step:
                 self.hist.append((t, mv))
                 if len(self.hist) > 300:
@@ -369,23 +411,30 @@ class DischargeMonitor(tk.Canvas):
     def _redraw_base(self):
         P, W, H = self.PAD, self.W, self.H
         d = self.d
+        chg = self.kind == "chg"
         state = (d or {}).get("state", "idle")
         run = state == "run"
+        # ⚑ ПРОБУДЖЕННЯ — ІНШИЙ РЕЖИМ ТІЄЇ САМОЇ МАШИНИ. Прапорець приходить за
+        #  РЕЖИМОМ, а не за станом: підсумок лишається видимим після зупинки, і
+        #  показати його як «ЗАРЯД ЗАВЕРШЕНО» означало б збрехати саме там, де
+        #  читають результат.
+        wake = bool((d or {}).get("wake")) if chg else False
+        mode = "wake" if wake else self.kind
 
         # Тло малюємо явно, а не покладаємось на bg полотна: так панель
         # виглядає однаково незалежно від теми і коректно лягає в postscript().
         self.create_rectangle(0, 0, W, H, fill=MIL["field"], outline="")
-        # рамка стану
         edge = {"run": MIL["khaki"], "done": MIL["olive"], "abort": MIL["maroon"]}.get(state, MIL["line"])
         self.create_rectangle(1, 1, W - 2, H - 2, outline=edge, width=2)
 
         if not d:
-            self.create_text(W // 2, H // 2, text="стан розряду не запитано",
-                             fill=MIL["mut"], font=fnt("Segoe UI", 10))
+            self.create_text(W // 2, H // 2, fill=MIL["mut"], font=fnt("Segoe UI", 10),
+                             text="стан %s не запитано" % ("заряду" if chg else "розряду"))
             return
         if not d.get("available"):
-            self.create_text(W // 2, H // 2, text="розряд не налаштовано (LOAD_PIN у settings.h)",
-                             fill=MIL["mut"], font=fnt("Segoe UI", 10))
+            self.create_text(W // 2, H // 2, fill=MIL["mut"], font=fnt("Segoe UI", 10),
+                             text=("заряд не налаштовано (CHARGE_PWM_PIN/ISENSE/VSENSE)" if chg
+                                   else "розряд не налаштовано (LOAD_PIN у settings.h)"))
             return
 
         # --- шапка: пульсуючий вогник + стан + годинник ---
@@ -394,16 +443,34 @@ class DischargeMonitor(tk.Canvas):
             r = 5 + 2.2 * (0.5 + 0.5 * math.sin(self.phase * 2.2))
         dot = {"run": MIL["khaki"], "done": MIL["olive"], "abort": MIL["maroon"]}.get(state, MIL["mut"])
         self.create_oval(P + 8 - r, 20 - r, P + 8 + r, 20 + r, fill=dot, outline="")
-        names = {"idle": "очікування", "run": "ІДЕ РОЗРЯД",
-                 "done": "ГОТОВО — на IMPRES-ЗП", "abort": "АВАРІЯ: " + (d.get("reason") or "")}
-        self.create_text(P + 22, 20, text=names.get(state, state), anchor="w",
-                         fill=MIL["fg"], font=fnt("Segoe UI", 11, "bold"))
+        if wake:
+            names = {"idle": "очікування", "run": "🩺 ІДЕ ПРОБУДЖЕННЯ",
+                     "done": "✅ " + str(d.get("reason") or "пакет ожив"),
+                     "abort": "⛔ " + str(d.get("reason") or "аварія")}
+        elif chg:
+            names = {"idle": "очікування", "run": "ІДЕ ЗАРЯД",
+                     "done": "ЗАРЯД ЗАВЕРШЕНО", "abort": "АВАРІЯ: " + str(d.get("reason") or "")}
+        else:
+            names = {"idle": "очікування", "run": "ІДЕ РОЗРЯД",
+                     "done": "ГОТОВО — на IMPRES-ЗП", "abort": "АВАРІЯ: " + str(d.get("reason") or "")}
+        head, hcol = names.get(state, state), MIL["fg"]
+        # ЖИВЛЕННЯ +14 В — попереду стану заряду: несправний блок означає, що
+        # заряд не піде взагалі, і «очікування» поверх цього приховало б єдину
+        # причину, яку користувач може усунути сам.
+        if chg and d.get("psuSensed") and not d.get("psuOk", True):
+            head = "⛔ %s (%.2f В, треба %s В)" % (
+                d.get("psuText", "живлення поза допуском"), d.get("psuMv", 0) / 1000.0,
+                psu_v(d.get("psuNomMv", 14000)))
+            hcol = MIL["maroon"]
+        self.create_text(P + 22, 20, text=head, anchor="w", fill=hcol,
+                         font=fnt("Segoe UI", 11, "bold"))
         el = d.get("elapsedS", 0) + (time.time() - self.at if run else 0)
         self.create_text(W - P, 20, text=self._fmt_t(el), anchor="e",
                          fill=MIL["mut"], font=fnt("Consolas", 11))
 
         # --- велика напруга ---
-        mv, tgt, st0 = d.get("mv", 0), d.get("targetMv", 0), d.get("startMv", 0)
+        mv, st0 = d.get("mv", 0), d.get("startMv", 0)
+        tgt = (d.get("wakeMv", 0) if wake else d.get("targetMv", 0))
         big = self.create_text(P, 58, text="%.2f" % (mv / 1000.0), anchor="w",
                                fill=MIL["fg"], font=fnt("Segoe UI", 26, "bold"))
         # Підпис «В» і рядок цілі ставимо ПО ФАКТИЧНІЙ ширині числа: шрифт
@@ -413,14 +480,31 @@ class DischargeMonitor(tk.Canvas):
         # ділимо на масштаб, інакше на 150 % підпис поїхав би праворуч.
         x = P + (self.bbox(big)[2] - P) / self.k + 6
         self.create_text(x, 62, text="В", anchor="w", fill=MIL["mut"], font=fnt("Segoe UI", 11))
-        self.create_text(x + 22, 62, text="старт %.2f В  →  ціль %.2f В" % (st0 / 1000.0, tgt / 1000.0),
-                         anchor="w", fill=MIL["mut"], font=fnt("Segoe UI", 9))
+        if wake:
+            sub = "тримаємо %.2f В · старт %.2f В · стеля струму %d мА" % (
+                tgt / 1000.0, st0 / 1000.0, d.get("wakeMa", 0))
+        else:
+            sub = "старт %.2f В  →  ціль %.2f В" % (st0 / 1000.0, tgt / 1000.0)
+        self.create_text(x + 22, 62, text=sub, anchor="w", fill=MIL["mut"], font=fnt("Segoe UI", 9))
 
         # --- прогрес до цілі ---
-        span, done = st0 - tgt, st0 - mv
-        pct = max(0, min(100, int(round(done * 100.0 / span)))) if span > 0 else 0
+        if wake:
+            # Смуга показує ЧАС, а не відсоток заряду: відсоток рахується з
+            # напруги на клемі, а вона зараз показує не пакет, а те, що ми самі
+            # туди подали.
+            lim = d.get("wakeMaxS", 120) or 120
+            done_s = min(int(d.get("elapsedS", 0)), lim)
+            pct = max(0, min(100, int(done_s * 100 // lim)))
+            ptxt = "%d / %d с" % (done_s, lim)
+        elif chg:
+            pct = max(0, min(100, int(d.get("pct", 0))))
+            ptxt = "%d %%" % pct
+        else:
+            span, done = st0 - tgt, st0 - mv
+            pct = max(0, min(100, int(round(done * 100.0 / span)))) if span > 0 else 0
+            ptxt = "%d %%" % pct
         self._bar(P, 80, W - 2 * P, 17, pct / 100.0, MIL["olive"], striped=run)
-        self.create_text(W - P - 8, 88, text="%d %%" % pct, anchor="e",
+        self.create_text(W - P - 8, 88, text=ptxt, anchor="e",
                          fill=MIL["fg"], font=fnt("Segoe UI", 8, "bold"))
 
         # --- графік напруги за весь сеанс ---
@@ -430,7 +514,9 @@ class DischargeMonitor(tk.Canvas):
             vs = [p[1] for p in self.hist]
             lo, hi = min(vs) - 20, max(vs) + 20
             if tgt and tgt < lo:
-                lo = tgt - 20            # ціль завжди в кадрі
+                lo = tgt - 20            # ціль завжди в кадрі…
+            if tgt and tgt > hi:
+                hi = tgt + 20            # …з обох боків: у заряді вона ЗГОРИ
             t0 = self.hist[0][0]; t1 = max(self.hist[-1][0], t0 + 1)
             X = lambda t: gx + 3 + (t - t0) / float(t1 - t0) * (gw - 6)
             Y = lambda v: gy + gh - 4 - (v - lo) / float(hi - lo or 1) * (gh - 8)
@@ -441,66 +527,126 @@ class DischargeMonitor(tk.Canvas):
             self.create_line(gx + 2, ty, gx + gw - 2, ty, fill=MIL["maroon"], dash=(4, 4))
             self.create_line([c for p in pts for c in p], fill=MIL["khaki"], width=2)
         else:
-            self.create_text(gx + gw / 2, gy + gh / 2, text="крива напруги збирається під час розряду",
-                             fill=MIL["mut"], font=fnt("Segoe UI", 8))
+            self.create_text(gx + gw / 2, gy + gh / 2, fill=MIL["mut"], font=fnt("Segoe UI", 8),
+                             text="крива напруги збирається під час сеансу")
 
         # --- струм у коридорі уставки ---
         pwm = bool(d.get("pwm"))
-        ma = abs(d.get("ma", 0)); setMa = d.get("setMa", 0) or 1
-        lo_ma, hi_ma = d.get("bandLoMa", 0), d.get("bandHiMa", 0)
+        ma = abs(d.get("ma", 0))
+        if wake:
+            # «Уставкою» тут служить стеля струму режиму: іншої немає, і саме
+            # її регулятор і тримає.
+            setMa = d.get("wakeMa", 0) or 1
+        else:
+            setMa = d.get("setMa", 0) or 1
+        if chg:
+            # У заряду коридор симетричний навколо уставки, шириною в мертву
+            # зону регулятора: нижче неї він однаково не розрізняє струм.
+            dead = d.get("deadbandMa", 30) or 30
+            lo_ma, hi_ma = max(0, setMa - dead), setMa + dead
+            in_band = abs(ma - setMa) <= dead
+        else:
+            lo_ma, hi_ma = d.get("bandLoMa", 0), d.get("bandHiMa", 0)
+            in_band = bool(d.get("inBand"))
         # Шкала — до 125 % уставки: коридор займає більшу частину доріжки, а
         # вихід за нього одразу впадає в око.
         scale = max(setMa * 1.25, ma * 1.05, 1)
         self.create_text(P, 186, text="струм / уставка", anchor="w", fill=MIL["mut"], font=fnt("Segoe UI", 8))
-        right = ("уставка %d мА · пік %d мА" % (setMa, d.get("peakMa", 0))) if pwm \
-                else "ШІМ недоступний — струм не обмежено"
+        if not pwm:
+            right = "ШІМ недоступний — струм не обмежено" if not chg else "керування недоступне"
+        elif wake:
+            right = "стеля %d мА · зараз %d мА" % (setMa, ma)
+        elif chg:
+            right = "уставка %d мА · зараз %d мА" % (setMa, ma)
+        else:
+            right = "уставка %d мА · пік %d мА" % (setMa, d.get("peakMa", 0))
         self.create_text(W - P, 186, text=right, anchor="e",
-                         fill=(MIL["olive"] if d.get("inBand") else MIL["khaki"]) if pwm else MIL["maroon"],
+                         fill=(MIL["olive"] if in_band else MIL["khaki"]) if pwm else MIL["maroon"],
                          font=fnt("Segoe UI", 8))
         bx, by, bw = P, 196, W - 2 * P
-        self._bar(bx, by, bw, 14, ma / scale, MIL["khaki"] if (not run or d.get("inBand")) else MIL["maroon"])
+        self._bar(bx, by, bw, 14, ma / scale, MIL["khaki"] if (not run or in_band) else MIL["maroon"])
         # коридор — ПОВЕРХ заливки, інакше вона його перекриє
-        cl = bx + 1 + (bw - 2) * lo_ma / scale
+        cl = bx + 1 + (bw - 2) * min(lo_ma, scale) / scale
         cr = bx + 1 + (bw - 2) * min(hi_ma, scale) / scale
         self.create_rectangle(cl, by + 1, cr, by + 13, outline="#e7e3d2", width=2)
         mkx = bx + 1 + (bw - 2) * min(setMa, scale) / scale
         self.create_line(mkx, by, mkx, by + 14, fill=MIL["fg"], width=2)
 
         # --- шпаруватість ключа ---
+        # У заряді керована величина — шпаруватість силового ключа, і міряти її
+        # треба від РОБОЧОЇ стелі, а не від повної шкали: саме до стелі може
+        # дійти регулятор. У пробудженні стеля інша — стеля СЕАНСУ (dutyCap):
+        # саме вона тримає напругу на клемах.
         duty = d.get("duty", 0) if pwm else 100
+        if chg:
+            dutyFull = d.get("dutyFull", 1) or 1
+            dutyMax = d.get("dutyMax", dutyFull) or dutyFull
+            cap = (d.get("dutyCap", dutyMax) or dutyMax) if wake else dutyMax
+            frac = (duty / float(cap)) if pwm else 1.0
+            right = ("%d%% ШІМ (%d/%d, стеля %d%s) · пік %d мА з %d (шунт %.2f Ом)"
+                     % (d.get("dutyPct", 0), duty, dutyFull, cap,
+                        " — межа напруги" if wake else "", d.get("peakMa", 0),
+                        d.get("peakMaxMa", 0), (d.get("shuntMohm", 0) or 0) / 1000.0)) \
+                    if pwm else "керування недоступне"
+        else:
+            frac = duty / 100.0
+            right = ("%d %%" % duty) if pwm else "ключ відкрито постійно"
         self.create_text(P, 222, text="шпаруватість ключа (ШІМ)", anchor="w",
                          fill=MIL["mut"], font=fnt("Segoe UI", 8))
-        self.create_text(W - P, 222, text=("%d %%" % duty) if pwm else "ключ відкрито постійно",
-                         anchor="e", fill=MIL["mut"], font=fnt("Segoe UI", 8))
-        self._bar(P, 232, W - 2 * P, 14, duty / 100.0, "#4a5a38")
+        self.create_text(W - P, 222, text=right, anchor="e", fill=MIL["mut"], font=fnt("Segoe UI", 8))
+        self._bar(P, 232, W - 2 * P, 14, frac, "#4a5a38")
 
         # --- плитки показань: одиниці в підписі, значення — саме число ---
-        tiles = [("віддано, мА·год", str(d.get("mah", 0)), True),
-                 ("DCA, мА·год",     str(d.get("dcaMah", 0)), False),
-                 ("струм, мА",       str(d.get("ma", 0)), False),
-                 ("потужність, Вт",  str(d.get("watts", "—")), False),
-                 ("температура, °C", str(d.get("tempC", "—")), False),
-                 ("ICA · старт %s" % d.get("icaStart", "—"), str(d.get("ica", 0)), False),
-                 ("лишилось ≈",      self._eta(d, run), False)]
+        vals = self._tile_values(d, wake, run)
+        heads = dict(OP_FIXED); heads.update(OP_HEADS[mode])
+        if not wake:
+            heads["Ica"] = "ICA · старт %s" % d.get("icaStart", "—")
         tw, gap, ty0 = (W - 2 * P - 3 * 8) / 4.0, 8, 258
-        for i, (lab, val, acc) in enumerate(tiles):
+        for i, key in enumerate(OP_TILES):
             col, row = i % 4, i // 4
-            self._tile(P + col * (tw + gap), ty0 + row * 48, tw, 44, lab, val, acc)
+            self._tile(P + col * (tw + gap), ty0 + row * 48, tw, 44,
+                       heads[key], vals[key], key == "Mah")
 
         if pwm or not run:
             return
         self.create_text(W // 2, H - 8, anchor="s", fill="#ff9b8f", font=fnt("Segoe UI", 8),
-                         text="ШІМ недоступний: ключ відкритий постійно, струм не обмежується")
+                         text=("керування недоступне: каналу LEDC не знайшлося" if chg
+                               else "ШІМ недоступний: ключ відкритий постійно, струм не обмежується"))
 
-    def _eta(self, d, run):
-        # Оцінка з фактичного темпу за весь сеанс. Груба (наприкінці крива
-        # положистіша, та й струм ми навмисне зменшуємо), тож і подана як «≈»,
-        # але дає зрозуміти, чекати десять хвилин чи дві години.
-        el, mv, st0, tgt = d.get("elapsedS", 0), d.get("mv", 0), d.get("startMv", 0), d.get("targetMv", 0)
-        if not run or el <= 60 or st0 <= mv:
-            return "—"
-        left = (mv - tgt) / ((st0 - mv) / float(el))
-        return self._fmt_t(left) if left > 0 else "ось-ось"
+    def _tile_values(self, d, wake, run):
+        """Числа для восьми плиток. Ключі — ті самі, що в OP_TILES, тож
+        «забути» плитку не можна: словник збирається повністю тут."""
+        v = {"Ma": str(d.get("ma", 0)), "W": str(d.get("watts", "—"))}
+        if wake:
+            # ⚑ У ПРОБУДЖЕННІ ТРИ ПЛИТКИ БУЛИ Б ВИГАДКОЮ: лічильник, температура
+            #  й паливомір читаються з DS2438, а він мовчить — у цьому вся суть
+            #  режиму. Показати «0» означало б видати відсутність даних за дані,
+            #  тому на їх місце стають ті числа, які тут справді є.
+            lim = d.get("wakeMaxS", 120) or 120
+            v["Mah"] = "%d / %d" % (d.get("mah", 0), d.get("wakeMahMax", 0))
+            v["Phase"] = "ПРОБУДЖЕННЯ"     # фази профілю тут немає — є сам режим
+            v["Eta"] = _eta_txt(max(0, lim - int(d.get("elapsedS", 0))))
+            v["Cnt"] = str(d.get("wakeProbes", 0))
+            v["T"] = "—"
+            v["Ica"] = "%s / %s" % (d.get("dutyCap", 0), d.get("dutyFull", 0))
+            return v
+        v["Mah"] = str(d.get("mah", 0))
+        v["Phase"] = str(d.get("phaseText") or "—")
+        v["Cnt"] = str(d.get("ccaMah", 0) if self.kind == "chg" else d.get("dcaMah", 0))
+        v["T"] = str(d.get("tempC", "—"))
+        v["Ica"] = str(d.get("ica", 0))
+        # Оцінку рахує ПРИСТРІЙ (залишок ємності / струм) — усі клієнти
+        # показують одне число. Темп падіння напруги лишається запасним: він
+        # працює й тоді, коли паспортна ємність невідома.
+        eta = _eta_txt(d.get("etaS"))
+        if eta == "—" and not self.kind == "chg":
+            el, mv = d.get("elapsedS", 0), d.get("mv", 0)
+            st0, tgt = d.get("startMv", 0), d.get("targetMv", 0)
+            if run and el > 60 and st0 > mv:
+                left = (mv - tgt) / ((st0 - mv) / float(el))
+                eta = self._fmt_t(left) if left > 0 else "ось-ось"
+        v["Eta"] = eta
+        return v
 
     def _tick(self):
         if not self._alive:
@@ -511,163 +657,6 @@ class DischargeMonitor(tk.Canvas):
             self.after(80, self._tick)
         except tk.TclError:
             self._alive = False          # вікно закрилось під час перемальовки
-
-
-def psu_v(mv):
-    """14000 -> «14», 13800 -> «13.8». Номінал блока живлення має читатись як
-    номінал, а не як результат вимірювання. Функція модульна, бо потрібна і
-    ChargeMonitor, і головному вікну — тримати її методом одного з них
-    означало б, що другий кличе чужий клас."""
-    return ("%.1f" % (mv / 1000.0)).rstrip("0").rstrip(".")
-
-
-# «Скільки ще лишилось» у людському вигляді. 0/None = оцінити не можна, і ми
-# так і пишемо: показати вигадане число гірше, ніж не показати жодного.
-def _eta_txt(s):
-    try:
-        s = int(s or 0)
-    except (TypeError, ValueError):
-        return "—"
-    if s <= 0:
-        return "—"
-    if s < 60:
-        return "<1 хв"
-    if s < 3600:
-        return "%d хв" % round(s / 60.0)
-    return "%d год %d хв" % (s // 3600, round((s % 3600) / 60.0))
-
-
-class ChargeMonitor(ttk.Frame):
-    """Панель стану керованого заряду — простіша за DischargeMonitor: ціль
-    фіксована (CHARGE_TARGET_MV), тож немає що малювати «уставку струму за
-    напругою», графік історії не потрібен. Прості ttk-віджети замість Canvas.
-    """
-    def __init__(self, master):
-        super().__init__(master)
-        self.d = None
-        self.lblState = ttk.Label(self, text="—", font=fnt("Segoe UI", 11, "bold"))
-        self.lblState.grid(row=0, column=0, columnspan=3, sticky="w")
-        self.lblClock = ttk.Label(self, text="0:00:00", foreground=MIL["mut"])
-        self.lblClock.grid(row=0, column=3, sticky="e")
-        self.lblMv = ttk.Label(self, text="—", font=fnt("Consolas", 20, "bold"))
-        self.lblMv.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        self.lblSub = ttk.Label(self, text="—", foreground=MIL["mut"])
-        self.lblSub.grid(row=1, column=2, columnspan=2, sticky="e", pady=(4, 0))
-        self.bar = ttk.Progressbar(self, maximum=100, length=420)
-        self.bar.grid(row=2, column=0, columnspan=4, sticky="we", pady=(4, 4))
-        self.lblLim = ttk.Label(self, text="—")
-        self.lblLim.grid(row=3, column=0, columnspan=4, sticky="w")
-        self.lblOut = ttk.Label(self, text="—")
-        self.lblOut.grid(row=4, column=0, columnspan=4, sticky="w")
-        tiles = ttk.Frame(self); tiles.grid(row=5, column=0, columnspan=4, sticky="we", pady=(6, 0))
-        self.tileVars = {}
-        for i, (key, label) in enumerate([
-            ("mah", "отримано, мА·год"), ("cca", "CCA, мА·год"), ("ma", "струм, мА"),
-            ("w", "потужність, Вт"), ("t", "температура, °C"), ("ica", "паливомір ICA"),
-        ]):
-            f = ttk.Frame(tiles); f.grid(row=i // 3, column=i % 3, sticky="we", padx=3, pady=3)
-            ttk.Label(f, text=label, foreground=MIL["mut"], font=fnt("Segoe UI", 8)).pack(anchor="w")
-            v = ttk.Label(f, text="—", font=fnt("Consolas", 12, "bold")); v.pack(anchor="w")
-            self.tileVars[key] = v
-        self.lblWarn = ttk.Label(self, text="", foreground=MIL["maroon"], wraplength=420, justify="left")
-        self.lblWarn.grid(row=6, column=0, columnspan=4, sticky="w", pady=(4, 0))
-
-    def _fmt_t(self, s):
-        s = int(max(0, s))
-        return "%d:%02d:%02d" % (s // 3600, (s // 60) % 60, s % 60)
-
-    def update_state(self, d):
-        self.d = d
-        if not d:
-            self.lblState.config(text="—")
-            return
-        if not d.get("available"):
-            self.lblState.config(text="не налаштовано (CHARGE_PWM_PIN/ISENSE/VSENSE)")
-            return
-        state = d.get("state", "idle")
-        run = state == "run"
-        # ⚑ ПРОБУДЖЕННЯ — інший режим тієї самої панелі. Прапорець приходить за
-        #  РЕЖИМОМ, а не за станом: підсумок лишається видимим після зупинки, і
-        #  показати його як «ЗАРЯД ЗАВЕРШЕНО» означало б збрехати саме там, де
-        #  читають результат.
-        wake = bool(d.get("wake"))
-        txt = {"idle": "очікування", "run": "ІДЕ ЗАРЯД",
-               "done": "✅ ЗАРЯД ЗАВЕРШЕНО", "abort": "⛔ " + str(d.get("reason") or "аварія")}.get(state, state)
-        if wake:
-            txt = {"idle": "очікування", "run": "🩺 ІДЕ ПРОБУДЖЕННЯ",
-                   "done": "✅ " + str(d.get("reason") or "пакет ожив"),
-                   "abort": "⛔ " + str(d.get("reason") or "аварія")}.get(state, state)
-        # ЖИВЛЕННЯ +14 В — попереду стану заряду: несправний блок означає, що
-        # заряд не піде взагалі, і «очікування» поверх цього приховало б єдину
-        # причину, яку користувач може усунути сам.
-        bad_psu = d.get("psuSensed") and not d.get("psuOk", True)
-        if bad_psu:
-            txt = "⛔ %s (%.2f В, треба %s В)" % (
-                d.get("psuText", "живлення поза допуском"), d.get("psuMv", 0) / 1000.0,
-                psu_v(d.get("psuNomMv", 14000)))
-        self.lblState.config(text=txt,
-                             foreground=(MIL["maroon"] if bad_psu else
-                                         MIL["olive"] if run else MIL["fg"]))
-        mv, pct = d.get("mv", 0), d.get("pct", 0)
-        self.lblMv.config(text="%.2f В" % (mv / 1000.0))
-        ma, setMa, pwm = d.get("ma", 0), d.get("setMa", 0), d.get("pwm", False)
-        if wake:
-            # Смуга показує ЧАС, а не відсоток заряду: відсоток рахується з
-            # напруги на клемі, а вона зараз показує не пакет, а те, що ми самі
-            # туди подали.
-            lim = d.get("wakeMaxS", 120) or 120
-            el = min(int(d.get("elapsedS", 0)), lim)
-            self.lblSub.config(text="тримаємо %.2f В · старт %.2f В · стеля струму %d мА"
-                                    % (d.get("wakeMv", 0) / 1000.0,
-                                       d.get("startMv", 0) / 1000.0, d.get("wakeMa", 0)))
-            self.bar["value"] = max(0, min(100, el * 100 // lim))
-            self.lblLim.config(text=("стеля %d мА · зараз %d мА · лишилось %d с"
-                                     % (d.get("wakeMa", 0), ma, max(0, lim - int(d.get("elapsedS", 0)))))
-                                    if pwm else "⚠ керування недоступне",
-                               foreground=MIL["olive"] if pwm else MIL["maroon"])
-        else:
-            self.lblSub.config(text="%d %% · старт %.2f В → ціль %.2f В"
-                                     % (pct, d.get("startMv", 0) / 1000.0, d.get("targetMv", 0) / 1000.0))
-            self.bar["value"] = max(0, min(100, pct))
-            self.lblLim.config(text=("уставка %d мА · зараз %d мА" % (setMa, ma)) if pwm else "⚠ керування недоступне",
-                                foreground=MIL["olive"] if pwm else MIL["maroon"])
-        # Керування тепер — ШПАРУВАТІСТЬ силового ключа (через керуючий NPN), а не «цільова
-        # напруга DC/DC». Поруч — вершина пульсацій струму дроселя: вона злітає,
-        # коли дросель фактично випав із кола (обрив, насичення, пробитий ключ).
-        duty, dutyFull = d.get("duty", 0), d.get("dutyFull", 1) or 1
-        dutyMax, dutyPct = d.get("dutyMax", dutyFull), d.get("dutyPct", 0)
-        peak, peakMax = d.get("peakMa", 0), d.get("peakMaxMa", 0)
-        shunt = (d.get("shuntMohm", 0) or 0) / 1000.0
-        # У пробудженні стеля інша — стеля СЕАНСУ (dutyCap): саме вона тримає
-        # напругу на клемах, і показувати замість неї заводську означало б
-        # малювати регулятор, якому «ще є куди рости».
-        cap = (d.get("dutyCap", dutyMax) or dutyMax) if wake else dutyMax
-        self.lblOut.config(text=("ШІМ %d%% (%d/%d, стеля %d%s) · пік %d мА з %d (шунт %.2f Ом)"
-                                 % (dutyPct, duty, dutyFull, cap,
-                                    " — межа напруги" if wake else "", peak, peakMax, shunt))
-                                 if pwm else "керування недоступне")
-        # ⚑ У ПРОБУДЖЕННІ ТРИ ПЛИТКИ БУЛИ Б ВИГАДКОЮ: CCA, температура й ICA
-        #  читаються з DS2438, а він мовчить — у цьому вся суть режиму.
-        #  Показати «0» означало б видати відсутність даних за дані, тому на їх
-        #  місце стають ті числа, які в цьому режимі справді є.
-        if wake:
-            self.tileVars["mah"].config(text="%d / %d" % (d.get("mah", 0), d.get("wakeMahMax", 0)))
-            self.tileVars["cca"].config(text="проб %d" % d.get("wakeProbes", 0))
-            self.tileVars["t"].config(text="—")
-            self.tileVars["ica"].config(text="—")
-        else:
-            self.tileVars["mah"].config(text=str(d.get("mah", 0)))
-            self.tileVars["cca"].config(text=str(d.get("ccaMah", 0)))
-            self.tileVars["t"].config(text=str(d.get("tempC", 0)))
-            self.tileVars["ica"].config(text=str(d.get("ica", 0)))
-        self.tileVars["ma"].config(text=str(ma))
-        self.tileVars["w"].config(text=str(d.get("watts", 0)))
-        if not pwm and (run or state == "done"):
-            self.lblWarn.config(text="Керування недоступне: каналу LEDC не знайшлося — "
-                                      "вимкніть заряд і перевірте CHARGE_LEDC_CH у settings.h.")
-        else:
-            self.lblWarn.config(text="")
-        self.lblClock.config(text=self._fmt_t(d.get("elapsedS", 0)))
 
 
 class App:
@@ -1033,8 +1022,13 @@ class App:
             st.configure("TNotebook.Tab", padding=(int(round(12 * k)), int(round(6 * k))))
         except tk.TclError:
             pass
-        if hasattr(self, "monDis"):
-            self.monDis.set_scale(k)
+        # Обидві панелі операцій — той самий OpMonitor на полотні, тож
+        # масштабуються однаково. Доки заряд був на ttk-віджетах, він у це
+        # місце не потрапляв узагалі — і при зміні масштабу вікна дві панелі
+        # ставали різного розміру.
+        for nm in ("monDis", "monChg"):
+            if hasattr(self, nm):
+                getattr(self, nm).set_scale(k)
         if hasattr(self, "lblZoom"):
             self.lblZoom.config(text="%d %%" % round(k * 100))
 
@@ -1620,7 +1614,7 @@ class App:
         ttk.Button(df, text="🔄 Оновити зараз", command=self.discharge_status).pack(side="left", padx=2)
         # Стан тягнеться сам (див. _dis_tick) — кнопка лишилась тільки щоб не
         # чекати періоду, коли й так стоїш біля пристрою.
-        self.monDis = DischargeMonitor(b2d); self.monDis.pack(anchor="w", pady=(6, 0))
+        self.monDis = OpMonitor(b2d, 'dis'); self.monDis.pack(anchor="w", pady=(6, 0))
 
         b2e = ttk.LabelFrame(p_cal, text="Керований заряд (понижувач на силовому ключі)  ·  пише в DS2438", padding=8); b2e.pack(fill="x", pady=4)
         self.lblSwName = ttk.Label(b2e, text="силовий ключ: —", foreground="#c8b04a")
@@ -1694,7 +1688,7 @@ class App:
         ttk.Button(cf, text="🔋 Почати заряд", command=self.charge_start).pack(side="left", padx=2)
         ttk.Button(cf, text="⏹ Зупинити", command=self.charge_stop).pack(side="left", padx=2)
         ttk.Button(cf, text="🔄 Оновити зараз", command=self.charge_status).pack(side="left", padx=2)
-        self.monChg = ChargeMonitor(b2e); self.monChg.pack(anchor="w", pady=(6, 0))
+        self.monChg = OpMonitor(b2e, 'chg'); self.monChg.pack(anchor="w", pady=(6, 0))
 
         # ── ПРИМУСОВЕ ПРОБУДЖЕННЯ ──────────────────────────────────────────
         #  Окремою рамкою, а не ще однією кнопкою в ряду вище: у режиму інші
@@ -2522,7 +2516,7 @@ class App:
 
     # ---- керований розряд ---------------------------------------------
     def _dis_show(self, r):
-        # Уся візуалізація — у DischargeMonitor; тут лише передаємо стан і
+        # Уся візуалізація — в OpMonitor; тут лише передаємо стан і
         # знімаємо ознаку «запит у польоті».
         self._disBusy = False
         d = (r or {}).get("discharge") if isinstance(r, dict) else None

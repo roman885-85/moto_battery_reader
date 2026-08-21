@@ -105,5 +105,107 @@ print("   місць запису шифрованого: %d" % sites)
 if sites == 0:
     bad("жодного виклику не знайдено — перевірка нічого не значить")
 
+# ── ЄДИНИЙ ВИГЛЯД ПАНЕЛЕЙ ОПЕРАЦІЙ У ВСІХ ТРЬОХ КЛІЄНТАХ ───────────────────
+#  Заряд, розряд і пробудження мусять показувати ОДНІ Й ТІ САМІ величини на
+#  ОДНИХ І ТИХ САМИХ місцях — і однаково в усіх трьох клієнтах.
+#
+#  ⚑ ЧОМУ ЦЕ ПЕРЕВІРЯЄТЬСЯ, А НЕ «ПРОСТО ДОТРИМУЄТЬСЯ». Доки набори плиток
+#  писались руками в кожному клієнті окремо, вони розійшлись самі собою: на
+#  USB-сторінці «фаза» й «лишилось ≈» так і не з'явились плитками, хоча
+#  пристрій ці числа віддавав, а в exe-клієнті заряд узагалі був збудований
+#  на інших віджетах — без графіка й без коридору уставки. Помітити це очима
+#  можна лише відкривши три клієнти поруч, і саме тому це робить тест.
+print("\n=== єдиний вигляд панелей заряду / розряду / пробудження")
+def op_tiles_of(src, name):
+    m = re.search(r'OP_TILES\s*=\s*\[(.*?)\]', src, re.S)
+    if not m:
+        bad("%s: таблиці плиток OP_TILES немає — панелі знову збираються руками" % name)
+        return None
+    return re.findall(r"[{\"']k?[\"']?\s*:?\s*['\"](\w+)['\"]", m.group(1)) or \
+           re.findall(r"['\"](\w+)['\"]", m.group(1))
+
+def op_heads_of(src, name):
+    m = re.search(r'OP_HEADS\s*=\s*\{(.*?)\n\}', src, re.S) or \
+        re.search(r'OP_HEADS\s*=\s*\{(.*?)\};', src, re.S)
+    if not m:
+        bad("%s: таблиці підписів OP_HEADS немає" % name)
+        return None
+    out = {}
+    # Ключ режиму буває і голим словом (JS), і в лапках (Python) — беремо обидва.
+    for mode, body in re.findall(r'[\'"]?(\w+)[\'"]?\s*:\s*\{(.*?)\}', m.group(1), re.S):
+        out[mode] = re.findall(r"[{,]?\s*['\"]?(\w+)['\"]?\s*:", body)
+    return out
+
+CLIENTS = [('index.html', (root/'index.html').read_text(encoding='utf-8')),
+           ('client_usb.html', (root/'client_usb.html').read_text(encoding='utf-8')),
+           ('usb_client/moto_gui.py', (root/'usb_client/moto_gui.py').read_text(encoding='utf-8'))]
+ref_tiles, ref_heads = None, None
+for name, src in CLIENTS:
+    tiles, heads = op_tiles_of(src, name), op_heads_of(src, name)
+    if tiles is None or heads is None:
+        continue
+    if ref_tiles is None:
+        ref_tiles, ref_heads = tiles, heads
+        print("   зразок (%s): %d плиток %s" % (name, len(tiles), " ".join(tiles)))
+        if len(tiles) < 5:
+            bad("плиток лише %d — таблиця явно неповна" % len(tiles))
+    else:
+        # ⚑ Порівнюємо СПИСКОМ, а не множиною: однаковий набір у різному
+        #  порядку — це і є «різні панелі», бо око шукає величину за місцем.
+        if tiles != ref_tiles:
+            bad("%s: інший склад або порядок плиток: %s" % (name, " ".join(tiles)))
+    if sorted(heads) != sorted(ref_heads):
+        bad("%s: інший набір режимів підписів: %s" % (name, sorted(heads)))
+    for mode, keys in heads.items():
+        unknown = [k for k in keys if k not in (ref_tiles or tiles)]
+        if unknown:
+            bad("%s [%s]: підпис для неіснуючої плитки %s" % (name, mode, unknown))
+    # ⚑ Порівнюємо В КОЖНОМУ клієнті, а не лише в зразковому: пробудження
+    #  мусить перепідписувати РІВНО ті плитки, що й заряд. Якщо воно перепише
+    #  менше, у спільній сітці лишиться підпис заряду над числом, якого в цьому
+    #  режимі немає, — «CCA» над лічильником проб. Спіймано звіркою від
+    #  протилежного: перевірка на одному зразку цього не бачила.
+    if set(heads.get("wake", [])) != set(heads.get("chg", [])):
+        bad("%s: пробудження перепідписує не ті плитки, що заряд: %s проти %s"
+            % (name, sorted(heads.get("wake", [])), sorted(heads.get("chg", []))))
+    # Кожна плитка мусить ОТРИМУВАТИ ЗНАЧЕННЯ — інакше вона є, але порожня.
+    for k in (ref_tiles or tiles):
+        if name.endswith('.py'):
+            filled = ('"%s"' % k) in src
+        else:
+            filled = ("'%s'" % k) in src
+        if not filled:
+            bad("%s: плитка «%s» ніде не заповнюється" % (name, k))
+if ref_tiles:
+    for must in ('Phase', 'Eta'):
+        if must not in ref_tiles:
+            bad("у панелях немає плитки «%s» — саме її колись і загубили" % must)
+
+# Спільний каркас, а не три копії: у кожному клієнті панелі мусять малюватись
+# ОДНИМ кодом. У вебі це opTiles()/opBand()/opSpark(), в exe — один клас.
+for name, src in CLIENTS[:2]:
+    for fn in ('opTiles(', 'opTileHead(', 'opTileSet(', 'opBand(', 'opSpark('):
+        if src.count(fn) < 2:            # оголошення + щонайменше один виклик
+            bad("%s: %s) не використовується — панелі знову малюються нарізно" % (name, fn))
+    for pre in ("'chg'", "'dis'"):
+        if ("opTiles(%s)" % pre) not in src:
+            bad("%s: панель %s не будується зі спільної таблиці" % (name, pre))
+        if ("opSpark(%s" % pre) not in src:
+            bad("%s: у панелі %s немає кривої напруги за сеанс" % (name, pre))
+        if ("opBand(%s" % pre) not in src:
+            bad("%s: у панелі %s немає коридору уставки струму" % (name, pre))
+gui = CLIENTS[2][1]
+if 'class OpMonitor' not in gui:
+    bad("exe-клієнт: спільного класу панелі OpMonitor немає")
+for dead in ('class ChargeMonitor', 'class DischargeMonitor'):
+    if dead in gui:
+        bad("exe-клієнт: %s лишився — це знову дві різні панелі" % dead)
+if gui.count("OpMonitor(") < 3:          # оголошення + дві панелі
+    bad("exe-клієнт: OpMonitor створюється менш ніж для двох операцій")
+for nm in ("monDis", "monChg"):
+    if ("%s.set_scale" % nm) not in gui and ("\"%s\"" % nm) not in gui:
+        bad("exe-клієнт: панель %s не масштабується разом із вікном" % nm)
+print("   спільний каркас: у вебі opTiles/opBand/opSpark, в exe — OpMonitor")
+
 print("\n%s (помилок: %d)" % ("Є ПОМИЛКИ" if fails else "усі перевірки пройдено", fails))
 sys.exit(1 if fails else 0)

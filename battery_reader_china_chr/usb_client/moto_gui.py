@@ -1568,7 +1568,26 @@ class App:
         ttk.Button(b2m, text="🔗 Синхронізувати за планом",
                    command=self.mirror_apply).pack(anchor="w", pady=3)
 
-        b2d = ttk.LabelFrame(p_cal, text="Розряд перед калібруванням (навантаження MOSFET)  ·  пише в DS2438", padding=8); b2d.pack(fill="x", pady=4)
+        # ⚑ ТРИ ОПЕРАЦІЇ — ОДНЕ ВІКНО. Заряд, розряд і пробудження ніколи не
+        #  йдуть разом: прошивка їх взаємно блокує. Поки вони жили трьома
+        #  рамками поспіль, це доводилось тримати в голові, а сторінку —
+        #  гортати, щоб знайти ту, що зараз працює. Тепер режим обирається
+        #  списком, і на екрані рівно те, що стосується обраного.
+        b2m = ttk.LabelFrame(p_cal, text="Операція з пакетом  ·  пише в DS2438", padding=8)
+        b2m.pack(fill="x", pady=4)
+        mrow = ttk.Frame(b2m); mrow.pack(anchor="w")
+        ttk.Label(mrow, text="Режим:").pack(side="left")
+        self.opMode = tk.StringVar(value="chg")
+        self.opModeBox = ttk.Combobox(mrow, width=18, state="readonly",
+                                      values=("🔋 Заряд", "🪫 Розряд", "🩺 Пробудження"))
+        self.opModeBox.current(0)
+        self.opModeBox.pack(side="left", padx=6)
+        self.opModeBox.bind("<<ComboboxSelected>>", lambda _e: self.op_mode_pick())
+        self.lblOpNote = ttk.Label(b2m, text="", foreground="#b9bd86",
+                                   wraplength=560, justify="left")
+        self.lblOpNote.pack(anchor="w", pady=(2, 0))
+
+        b2d = ttk.LabelFrame(b2m, text="Розряд перед калібруванням (навантаження MOSFET)  ·  пише в DS2438", padding=8); b2d.pack(fill="x", pady=4)
         ttk.Label(b2d, text="Розряд — це приймальний контроль після перепайки: він міряє реальну ємність нових\n"
                             "банок. Для калібрування він НЕ обов'язковий — фірмова станція бере в цикл навіть\n"
                             "повністю заряджений пакет, якщо він оригінальний. Але якщо станція вперлась і не\n"
@@ -1631,7 +1650,7 @@ class App:
         # чекати періоду, коли й так стоїш біля пристрою.
         self.monDis = OpMonitor(b2d, 'dis'); self.monDis.pack(anchor="w", pady=(6, 0))
 
-        b2e = ttk.LabelFrame(p_cal, text="Керований заряд (понижувач на силовому ключі)  ·  пише в DS2438", padding=8); b2e.pack(fill="x", pady=4)
+        b2e = ttk.LabelFrame(b2m, text="Керований заряд (понижувач на силовому ключі)  ·  пише в DS2438", padding=8); b2e.pack(fill="x", pady=4)
         self.lblSwName = ttk.Label(b2e, text="силовий ключ: —", foreground="#c8b04a")
         self.lblSwName.pack(anchor="w")
         ttk.Label(b2e, text="Понижувальний перетворювач на власному ключі: ШІМ 25 кГц -> керуючий NPN ->\n"
@@ -1718,7 +1737,7 @@ class App:
         #  Окремою рамкою, а не ще однією кнопкою в ряду вище: у режиму інші
         #  умови й інший сенс, і сусідство з «Почати заряд» було б найгіршим із
         #  можливих.
-        b2w = ttk.LabelFrame(p_cal, text="Пакет не читається після заміни елементів  ·  нічого не пише",
+        b2w = ttk.LabelFrame(b2m, text="Пакет не читається після заміни елементів  ·  нічого не пише",
                              padding=8); b2w.pack(fill="x", pady=4)
         ttk.Label(b2w, text="Контролер захисту після заміни банок часто лишається заблокованим і не відпускає\n"
                             "клеми, доки не побачить ЗОВНІШНЮ зарядну напругу. Поки він мовчить, мовчать і\n"
@@ -1733,6 +1752,9 @@ class App:
         self.btnChgWake = ttk.Button(b2w, text="🩺 Примусово розбудити пакет",
                                      command=self.charge_wake)
         self.btnChgWake.pack(anchor="w", pady=(4, 0))
+        # Три рамки одного вікна: показуємо рівно ту, що відповідає режиму.
+        self._opFrames = {"dis": b2d, "chg": b2e, "wake": b2w}
+        self.op_mode_apply()
 
         b2c = ttk.LabelFrame(p_cal, text="Крок 3 — калібрування на IMPRES-ЗП (обов'язково)", padding=8); b2c.pack(fill="x", pady=4)
         ttk.Label(b2c, text="Після ремонту навчена калібровка порожня — рація приймає пакет як фірмовий і просить\n"
@@ -2558,6 +2580,8 @@ class App:
         # знімаємо ознаку «запит у польоті».
         self._disBusy = False
         d = (r or {}).get("discharge") if isinstance(r, dict) else None
+        self._opDisD = d
+        self.op_mode_apply()
         # Підсумок можна закрити — і лише тоді, коли він справді є.
         if isinstance(d, dict) and hasattr(self, "btnDisDismiss"):
             if d.get("state") in ("done", "abort"):
@@ -2722,6 +2746,8 @@ class App:
         self._chgBusy = False
         d = (r or {}).get("charge") if isinstance(r, dict) else None
         self.monChg.update_state(d)
+        self._opChgD = d
+        self.op_mode_apply()
         if isinstance(d, dict):
             self._chg_set_unavail("" if d.get("available")
                                   else (d.get("availWhy") or "заряд недоступний"))
@@ -2987,6 +3013,71 @@ class App:
         if not self.need_conn():
             return
         self.cmd("CHARGE STOP", 10.0, cb=lambda r: (self.status("Зупинено"), self._chg_show(r)))
+
+    # ═══════ ТРИ ОПЕРАЦІЇ В ОДНОМУ ВІКНІ ═════════════════════════════════
+    #  Заряд, розряд і пробудження ніколи не йдуть разом — прошивка їх взаємно
+    #  блокує. Поки операція ЙДЕ, режим задає залізо й список замкнений; щойно
+    #  скінчилась — список знову слухається людини. Саме цього бракувало, коли
+    #  підсумок пробудження назавжди ховав кнопку «Почати заряд».
+    OP_MODES = ("chg", "dis", "wake")
+    OP_NOTE = {
+        "chg":  "Керований заряд власним понижувачем до обраного відсотка.",
+        "dis":  "Приймальний контроль після перепайки: міряє реальну ємність нових банок.",
+        "wake": "Коротко подати на клеми зарядну напругу, щоб зняти блокування контролера захисту.",
+    }
+
+    def op_forced_mode(self):
+        """Що САМЕ зараз на залізі. Порожньо — залізо вільне."""
+        d = getattr(self, "_opDisD", None)
+        c = getattr(self, "_opChgD", None)
+        if isinstance(d, dict) and d.get("state") == "run":
+            return "dis"
+        if isinstance(c, dict) and c.get("state") == "run":
+            return "wake" if c.get("wakeRun") else "chg"
+        return ""
+
+    def op_summary_mode(self):
+        """Чий підсумок висить незакритим."""
+        d = getattr(self, "_opDisD", None)
+        c = getattr(self, "_opChgD", None)
+        if isinstance(d, dict) and d.get("state") in ("done", "abort"):
+            return "dis"
+        if isinstance(c, dict) and c.get("state") in ("done", "abort"):
+            return "wake" if c.get("wake") else "chg"
+        return ""
+
+    def op_mode_pick(self):
+        """Людина обрала режим у списку."""
+        i = self.opModeBox.current()
+        if 0 <= i < len(self.OP_MODES):
+            self.opMode.set(self.OP_MODES[i])
+        self.op_mode_apply()
+
+    def op_mode_apply(self):
+        if not hasattr(self, "_opFrames"):
+            return
+        forced = self.op_forced_mode()
+        # Щойно операція почалась або скінчилась — показуємо саме її: інакше
+        # результат лишився б у прихованій рамці. Далі список знову вільний.
+        snap = forced or self.op_summary_mode()
+        if snap and snap != getattr(self, "_opSnapped", ""):
+            self.opMode.set(snap)
+        self._opSnapped = snap
+        if forced:
+            self.opMode.set(forced)
+        m = self.opMode.get()
+        if m in self.OP_MODES:
+            self.opModeBox.current(self.OP_MODES.index(m))
+        self.opModeBox.config(state=("disabled" if forced else "readonly"))
+        self.lblOpNote.config(text=self.OP_NOTE.get(m, ""))
+        for key, frame in self._opFrames.items():
+            # Заряд і пробудження мають СПІЛЬНИЙ монітор, але різні керування,
+            # тож рамка заряду лишається видимою й у режимі пробудження.
+            show = (key == m) or (key == "chg" and m == "wake")
+            if show:
+                frame.pack(fill="x", pady=4)
+            else:
+                frame.pack_forget()
 
     def charge_dismiss(self):
         """Закрити підсумок завершеної операції — те саме, що будь-яка кнопка

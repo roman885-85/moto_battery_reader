@@ -2028,11 +2028,32 @@ const char *chargeStart(uint8_t targetPct) {
                "пакет можна перегріти). Спершу домогтися читання: сторінка "
                "стану скаже, чого бракує — підтяжки 4.7к, лінії даних чи enable";
     }
-    // Правдоподібність власного вимірювального кола. Нуль на подільнику при
-    // під'єднаному пакеті означає обрив вимірювальної лінії або переплутані
-    // клеми — заряджати, не бачачи напруги, не можна.
-    if (mv < BATTERY_EMPTY_MV / 2)
-        return "Подільник напруги показує майже нуль — перевірте CHARGE_VSENSE_PIN і клеми";
+    // Правдоподібність власного вимірювального кола: заряджати, не бачачи
+    // напруги, не можна.
+    //
+    // ⚑ АЛЕ ПРИЧИН У НУЛЯ ДВІ, І ДРУГА — НЕ ПОЛОМКА. Сюди ми доходимо вже
+    //  ПІСЛЯ dischargeSample(), тобто монітор напевно відповів. Отже пакет на
+    //  місці, 1-Wire цілий, enable піднято — а на клемі нуль. Найімовірніше це
+    //  спрацював захист самого пакета: він розмикає СИЛОВИЙ ключ, а DS2438
+    //  сидить до нього й говорить далі. Відрізнити це вимірюванням від обриву
+    //  лінії CHARGE_VSENSE_PIN неможливо — картина однакова, — але дія в обох
+    //  випадках та сама й безпечна: подати обмежений струмом і енергією
+    //  імпульс і подивитись, чи з'явиться напруга. Це й робить пробудження.
+    //  Тому тут не «перевірте пін», а конкретні числа й шлях далі.
+    if (!chargeRailAlive(mv)) {
+        static char msg[260];
+        snprintf(msg, sizeof(msg),
+                 "На клемі %u мВ, а монітор УСЕРЕДИНІ пакета бачить %u мВ. Пакет "
+                 "живий, але його клеми розімкнуті — найімовірніше спрацював "
+                 "захист. Заряджати наосліп не можна; запустіть ПРОБУДЖЕННЯ — "
+                 "воно обмеженим імпульсом просить захист відпустити клеми, а "
+                 "якщо не відпустить, скаже про це прямо. Друга можлива причина "
+                 "тієї ж картини — обірвана лінія CHARGE_VSENSE_PIN.",
+                 mv, dummyMv);
+        Serial.printf("=== Charge NOSTART: клема %u мВ, чип %u мВ — захист пакета "
+                      "або обрив VSENSE ===\n", mv, dummyMv);
+        return msg;
+    }
     if (maIdle > CHARGE_DEADBAND_MA)
         return "На закритому ключі шунт бачить струм — перевірте ключ (можливо, пробитий MOSFET)";
     if (mv >= targetMv)                 return "Пакет уже заряджений до обраної цілі";
@@ -2144,6 +2165,8 @@ const char *chargeWakeStart() {
                       no, mv, idleMa, chargePsuMv(), chipReads ? "відповідає" : "мовчить");
         return chargeWakeRefuseText(no);
     }
+    // Мета сеансу — за станом НА СТАРТІ й більше не переглядається.
+    uint8_t goal = chargeWakeGoal(chipReads);
 
     memset(&g_chg, 0, sizeof(g_chg));
     g_chg.state     = CHG_RUN;
@@ -2157,6 +2180,10 @@ const char *chargeWakeStart() {
     g_chg.setMa     = CHARGE_WAKE_MA;
     g_chg.startMs   = g_chg.lastPollMs = g_chg.wakeProbeMs = millis();
     g_chg.lastPct   = (uint8_t)impresPercentFromMv(mv);
+    g_chg.wakeGoal  = goal;
+    // У меті RAIL монітор говорить — отже температура є з першої ж миті, і
+    // вирок мусить її бачити ще до першої проби.
+    if (goal == WAKE_GOAL_RAIL) { g_chg.chipMv = chipMv; g_chg.lastTempC10 = chipT; }
 
     // ⚑ І ОСЬ ВОНА, ЄДИНА РІЧ, ЩО ТРИМАЄ ВЕСЬ РЕЖИМ: стеля шпаруватості.
     //  Вона ж стеля напруги на клемах. Ставиться ДО першого ж підняття
@@ -2169,8 +2196,11 @@ const char *chargeWakeStart() {
     ledSet(LED_CHARGE_TAPER);          // «малий струм» — той самий сигнал, що й дозаряд
     dischargeDismiss();
     chargeMarkDirty(2);
-    Serial.printf("\n=== Wake started: клема %u мВ -> тримаємо %u мВ (стеля duty %u з %u, "
+    Serial.printf("\n=== Wake started (%s): клема %u мВ -> тримаємо %u мВ (стеля duty %u з %u, "
                   "живлення %u мВ), струм до %u мА, межі: %u с / %u мА·год ===\n",
+                  goal == WAKE_GOAL_RAIL
+                      ? "монітор говорить, чекаємо напругу на клемі"
+                      : "монітор мовчить, чекаємо його відповідь",
                   mv, (unsigned)CHARGE_WAKE_MV, chargeDutyCap(), (unsigned)CHARGE_DUTY_FULL,
                   chargeSupplyMv(), (unsigned)CHARGE_WAKE_MA,
                   (unsigned)CHARGE_WAKE_MAX_S, (unsigned)CHARGE_WAKE_MAH_MAX);
@@ -2235,8 +2265,9 @@ inline void chargeWakeTask() {
     //  1-Wire читається лише на закритому ключі (шунт у мінусовому проводі), а
     //  контролеру, якого ми будимо, потрібна саме безперервна напруга.
     bool     probe   = (now - g_chg.wakeProbeMs) >= (unsigned long)CHARGE_WAKE_PROBE_S * 1000UL;
-    bool     mvFresh = false, chipOk = false;
+    bool     mvFresh = false, chipOk = false, tempFresh = false;
     uint16_t mv      = g_chg.lastMv;
+    int16_t  tempC10 = g_chg.lastTempC10;
     if (probe) {
         uint16_t save = g_chg.duty;
         chargeSetDuty(0);
@@ -2245,7 +2276,8 @@ inline void chargeWakeTask() {
         mvFresh = true;
         uint16_t cmv = 0; int16_t cma = 0, ct = 0;
         chipOk = dischargeSample(&cmv, &cma, &ct);
-        if (chipOk) { g_chg.chipMv = cmv; g_chg.lastTempC10 = ct; }
+        if (chipOk) { g_chg.chipMv = cmv; g_chg.lastTempC10 = ct;
+                      tempC10 = ct; tempFresh = true; }
         g_chg.wakeProbeMs = now;
         if (g_chg.wakeProbes < 255) g_chg.wakeProbes++;
         chargeSetDuty(save);           // назад під напругу, поки вирішуємо
@@ -2268,6 +2300,9 @@ inline void chargeWakeTask() {
     in.mv       = mv;
     in.elapsedS = g_chg.elapsedS;
     in.mah      = chargeMah();
+    in.goal     = g_chg.wakeGoal;
+    in.tempFresh= tempFresh;
+    in.tempC10  = tempC10;
     uint8_t v = chargeWakeVerdict(in);
 
     g_chg.lastMa  = (int16_t)avgMa;
@@ -2276,7 +2311,7 @@ inline void chargeWakeTask() {
     g_chg.polls++;
 
     if (v != WAKEV_GO) {
-        uint8_t reason = chargeWakeReason(v);
+        uint8_t reason = chargeWakeReason(v, g_chg.wakeGoal);
         chargeStop(reason);
         // LED_FAULT — сигнал «залізо несправне», і вішати його на кожну невдачу
         // не можна: «монітор так і не відповів» або «вичерпано ємність» — це не
@@ -2289,6 +2324,13 @@ inline void chargeWakeTask() {
                           "мА·год, проб %u. Пакет живий — читайте його й запускайте "
                           "звичайний заряд ===\n",
                           g_chg.chipMv, g_chg.lastTempC10 / 10.0f,
+                          (unsigned long)g_chg.elapsedS, (unsigned long)chargeMah(),
+                          g_chg.wakeProbes);
+        else if (v == WAKEV_RAIL)
+            Serial.printf("=== Wake DONE: захист відпустив клеми — на клемі %u мВ "
+                          "(усередині %u мВ, %.1f C) за %lus і %lu мА·год, проб %u. "
+                          "Запускайте звичайний заряд ===\n",
+                          mv, g_chg.chipMv, g_chg.lastTempC10 / 10.0f,
                           (unsigned long)g_chg.elapsedS, (unsigned long)chargeMah(),
                           g_chg.wakeProbes);
         else
@@ -2810,6 +2852,11 @@ static String chargeJson() {
     j += ",\"wakeMaxS\":" + String((unsigned)CHARGE_WAKE_MAX_S);
     j += ",\"wakeMahMax\":" + String((unsigned)CHARGE_WAKE_MAH_MAX);
     j += ",\"wakeProbes\":" + String(g_chg.wakeProbes);
+    // Чого чекає сеанс. Клієнти підписують рядок проб за цим полем: у меті
+    // RAIL монітор говорить із самого початку, і напис «монітор мовчить» був
+    // би неправдою — причому саме там, куди людина й дивиться.
+    j += ",\"wakeGoal\":" + String((unsigned)g_chg.wakeGoal);
+    j += ",\"wakeGoalText\":\"" + String(chargeWakeGoalText(g_chg.wakeGoal, g_chg.reason)) + "\"";
     j += ",\"dutyCap\":"  + String(chargeDutyCap());
     j += ",\"shuntMohm\":"+ String((unsigned)CHARGE_SHUNT_MOHM);
     j += ",\"pwm\":"      + String(chargePwmOk() ? "true" : "false");

@@ -1241,6 +1241,7 @@ int main() {
         auto fresh = [&]() {
             in.chipOk = false; in.avgMa = 0; in.mvFresh = false; in.mv = 0;
             in.elapsedS = 0; in.mah = 0;
+            in.goal = WAKE_GOAL_CHIP; in.tempFresh = false; in.tempC10 = 250;
         };
         fresh();
         check(chargeWakeVerdict(in) == WAKEV_GO, "нічого не сталося — працюємо далі");
@@ -1288,20 +1289,151 @@ int main() {
 
         // Переклад вироків у причини зупинки — і те, що успіх справді
         // вважається завершенням, а не аварією.
-        check(chargeWakeReason(WAKEV_WOKE)    == CHGR_WOKE,      "WOKE -> CHGR_WOKE");
-        check(chargeWakeReason(WAKEV_OVERI)   == CHGR_WAKE_OVERI,"OVERI -> CHGR_WAKE_OVERI");
-        check(chargeWakeReason(WAKEV_OVERV)   == CHGR_HARD_MAX,  "OVERV -> CHGR_HARD_MAX");
-        check(chargeWakeReason(WAKEV_MAH)     == CHGR_WAKE_MAH,  "MAH -> CHGR_WAKE_MAH");
-        check(chargeWakeReason(WAKEV_TIMEOUT) == CHGR_WAKE_FAIL, "TIMEOUT -> CHGR_WAKE_FAIL");
+        check(chargeWakeReason(WAKEV_WOKE,  WAKE_GOAL_CHIP) == CHGR_WOKE,      "WOKE -> CHGR_WOKE");
+        check(chargeWakeReason(WAKEV_OVERI, WAKE_GOAL_CHIP) == CHGR_WAKE_OVERI,"OVERI -> CHGR_WAKE_OVERI");
+        check(chargeWakeReason(WAKEV_OVERV, WAKE_GOAL_CHIP) == CHGR_HARD_MAX,  "OVERV -> CHGR_HARD_MAX");
+        check(chargeWakeReason(WAKEV_MAH,   WAKE_GOAL_CHIP) == CHGR_WAKE_MAH,  "MAH -> CHGR_WAKE_MAH");
+        check(chargeWakeReason(WAKEV_TIMEOUT, WAKE_GOAL_CHIP) == CHGR_WAKE_FAIL,
+              "TIMEOUT у меті CHIP -> CHGR_WAKE_FAIL");
+        // ⚑ ТОЙ САМИЙ ВИРОК, ІНША МЕТА — ІНША ПРИЧИНА. У меті RAIL монітор
+        //  говорив увесь сеанс, тож «монітор так і мовчить» відправило б
+        //  людину шукати геть не там.
+        check(chargeWakeReason(WAKEV_TIMEOUT, WAKE_GOAL_RAIL) == CHGR_WAKE_NORAIL,
+              "TIMEOUT у меті RAIL -> CHGR_WAKE_NORAIL, а не «монітор мовчить»");
+        check(chargeWakeReason(WAKEV_RAIL, WAKE_GOAL_RAIL) == CHGR_WAKE_RAIL,
+              "RAIL -> CHGR_WAKE_RAIL");
+        check(chargeWakeReason(WAKEV_HOT, WAKE_GOAL_RAIL) == CHGR_TEMP,
+              "перегрів перекладається у звичайний CHGR_TEMP, а не в окрему причину");
         check(chargeReasonIsDone(CHGR_WOKE),  "пробудження — це ЗАВЕРШЕННЯ, а не аварія");
+        check(chargeReasonIsDone(CHGR_WAKE_RAIL),
+              "…і оживлена клема теж завершення: інакше успіх показали б як збій");
         check(!chargeReasonIsDone(CHGR_WAKE_FAIL) && !chargeReasonIsDone(CHGR_WAKE_MAH) &&
-              !chargeReasonIsDone(CHGR_WAKE_OVERI),
+              !chargeReasonIsDone(CHGR_WAKE_OVERI) && !chargeReasonIsDone(CHGR_WAKE_NORAIL),
               "решта вироків пробудження — не завершення");
         // Кожна нова причина мусить мати текст: порожній рядок у клієнті
         // виглядав би як «зупинилось саме по собі».
         check(chargeReasonText(CHGR_WOKE)[0] && chargeReasonText(CHGR_WAKE_FAIL)[0] &&
-              chargeReasonText(CHGR_WAKE_MAH)[0] && chargeReasonText(CHGR_WAKE_OVERI)[0],
+              chargeReasonText(CHGR_WAKE_MAH)[0] && chargeReasonText(CHGR_WAKE_OVERI)[0] &&
+              chargeReasonText(CHGR_WAKE_RAIL)[0] && chargeReasonText(CHGR_WAKE_NORAIL)[0],
               "усі нові причини мають текст для інтерфейсу");
+        // Два тексти причин не сміють збігатися: інакше різні події читались
+        // би як одна.
+        check(strcmp(chargeReasonText(CHGR_WAKE_FAIL),
+                     chargeReasonText(CHGR_WAKE_NORAIL)) != 0,
+              "«монітор мовчить» і «клема мертва» — різні тексти");
+    }
+
+    printf("\n22а) друга мета пробудження: пакет ЧИТАЄТЬСЯ, а клема мертва\n");
+    {
+        // Робочий випадок власника: захист пакета розімкнув силовий ключ.
+        // 1-Wire сидить ДО нього, тож монітор говорить, а на клемі нуль. Обидві
+        // двері були зачинені: пробудження казало «пакет читається», штатний
+        // заряд — «подільник показує нуль».
+        check(chargeWakeRefuse(true, true, false, PSU_OK, true, 0, 0) == WAKENO_OK,
+              "ЧИТАЄТЬСЯ + мертва клема -> пробудження ДОЗВОЛЕНО (це і був глухий кут)");
+        check(chargeWakeGoal(true)  == WAKE_GOAL_RAIL, "мета: чекаємо напругу на клемі");
+        check(chargeWakeGoal(false) == WAKE_GOAL_CHIP, "мовчить -> чекаємо його відповідь");
+
+        // ── САМ ПОРІГ «КЛЕМА ЖИВА» ─────────────────────────────────────────
+        //  Він тепер керує ДВОМА рішеннями (пускати штатний заряд і пускати
+        //  пробудження), тож його число мусить бути прибите, а не «яке
+        //  вийшло»: з'їде вгору — глибоко розряджений, але цілком підключений
+        //  пакет почнуть вважати від'єднаним; з'їде вниз — шум подільника
+        //  зарахують за живу клему.
+        check(!chargeRailAlive(0), "рівно нуль — клема мертва");
+        check(!chargeRailAlive(500),
+              "залишкові сотні мВ крізь подільник — теж мертва, а не «майже жива»");
+        check(chargeRailAlive(BATTERY_EMPTY_MV),
+              "порожній, але ПІД'ЄДНАНИЙ пакет — клема жива");
+        check(chargeRailAlive(BATTERY_EMPTY_MV / 2) &&
+              !chargeRailAlive((uint16_t)(BATTERY_EMPTY_MV / 2 - 1)),
+              "поріг стоїть рівно на половині порожнього пакета");
+        // ⚑ І ОСЬ ВІД ЧОГО ЗАЛЕЖИТЬ ЦІЛИЙ ШМАТОК МІРКУВАНЬ у chargeWakeRefuse():
+        //  WAKENO_FULL не має доданка про мету саме тому, що «мертва клема» і
+        //  «вище напруги пробудження» несумісні. Поки це співвідношення
+        //  тримається, доданок не потрібен; щойно воно поїде — FULL почне
+        //  відхиляти мету RAIL, і зловити це має саме тут.
+        // Питаємо саме ФУНКЦІЮ, а не два макроси: інакше перевірка стерегла
+        // б співвідношення констант, а поїхати може й сам поріг.
+        check(chargeRailAlive((uint16_t)CHARGE_WAKE_MV),
+              "усе, що дотягує до напруги пробудження, уже вважається живою клемою — "
+              "тому WAKENO_FULL не потребує доданка про мету");
+
+        ChargeWakeIn in;
+        auto rail = [&]() {
+            in.chipOk = true; in.avgMa = 0; in.mvFresh = false; in.mv = 0;
+            in.elapsedS = 0; in.mah = 0;
+            in.goal = WAKE_GOAL_RAIL; in.tempFresh = true; in.tempC10 = 250;
+        };
+        // ⚑ НАЙВАЖЛИВІШЕ В УСЬОМУ РОЗДІЛІ. У цій меті монітор відповідає з
+        //  першої ж проби. Якби успіхом лишалось «chipOk», режим оголошував би
+        //  перемогу, не зробивши НІЧОГО, — і виглядало б це як робота.
+        rail();
+        check(chargeWakeVerdict(in) == WAKEV_GO,
+              "відповідь монітора тут НЕ успіх: він говорив і до старту");
+        rail(); in.mvFresh = true; in.mv = (uint16_t)(BATTERY_EMPTY_MV / 2);
+        check(chargeWakeVerdict(in) == WAKEV_RAIL, "напруга на клемі з'явилась — успіх");
+        rail(); in.mvFresh = true; in.mv = (uint16_t)(BATTERY_EMPTY_MV / 2 - 1);
+        check(chargeWakeVerdict(in) == WAKEV_GO, "на відлік нижче — ще чекаємо");
+        rail(); in.mvFresh = false; in.mv = 8000;
+        check(chargeWakeVerdict(in) == WAKEV_GO,
+              "несвіжий вимір не зараховується: під напругою на клемі стоїмо МИ");
+        // Стеля АЦП — не «клема ожила», а розімкнене коло: зарахувати її
+        // означало б оголосити успіх саме тоді, коли пакета в колі немає.
+        rail(); in.mvFresh = true; in.mv = (uint16_t)CHARGE_VSENSE_SAT_MV;
+        check(chargeWakeVerdict(in) == WAKEV_GO, "насичений відлік — не успіх");
+
+        // Температура: у цій меті вона Є, і не скористатись нею було б
+        // марнуванням єдиної переваги над сліпою метою CHIP.
+        rail(); in.tempC10 = (int16_t)(CHARGE_MAX_TEMP_C * 10);
+        check(chargeWakeVerdict(in) == WAKEV_HOT, "гарячий пакет -> стоп");
+        rail(); in.tempC10 = (int16_t)(CHARGE_MAX_TEMP_C * 10 - 1);
+        check(chargeWakeVerdict(in) == WAKEV_GO, "на десяту нижче — працюємо");
+        rail(); in.tempFresh = false; in.tempC10 = (int16_t)(CHARGE_MAX_TEMP_C * 10 + 100);
+        check(chargeWakeVerdict(in) == WAKEV_GO, "несвіжа температура до вироку не пускається");
+        // Мороз НЕ зупиняє: 8 мА·год — це сигнал контролеру, а не заряд, і
+        // відмова на холоді лишила б людину без єдиного способу оживити пакет.
+        rail(); in.tempC10 = -200;
+        check(chargeWakeVerdict(in) == WAKEV_GO, "холод не забороняє: це сигнал, а не заряд");
+        // А в сліпій меті температури немає взагалі — і вона там не діє.
+        ChargeWakeIn blind;
+        blind.chipOk = false; blind.avgMa = 0; blind.mvFresh = false; blind.mv = 0;
+        blind.elapsedS = 0; blind.mah = 0; blind.goal = WAKE_GOAL_CHIP;
+        blind.tempFresh = true; blind.tempC10 = (int16_t)(CHARGE_MAX_TEMP_C * 10 + 100);
+        check(chargeWakeVerdict(blind) == WAKEV_GO,
+              "у меті CHIP температура не діє — там її фізично немає");
+
+        // Межі енергії й часу — спільні для обох мет: саме на них тримається
+        // дозвіл працювати без датчика, і мета їх не послаблює.
+        rail(); in.mah = CHARGE_WAKE_MAH_MAX;
+        check(chargeWakeVerdict(in) == WAKEV_MAH, "стеля ємності діє й тут");
+        rail(); in.elapsedS = CHARGE_WAKE_MAX_S;
+        check(chargeWakeVerdict(in) == WAKEV_TIMEOUT, "стеля часу діє й тут");
+        rail(); in.avgMa = CHARGE_WAKE_MA_ABORT + 1;
+        check(chargeWakeVerdict(in) == WAKEV_OVERI, "аварійний струм діє й тут");
+
+        // Рядок стану мусить бути ЧЕСНИЙ: у меті RAIL монітор не мовчить.
+        check(strcmp(chargeWakeGoalText(WAKE_GOAL_RAIL, CHGR_NONE),
+                     chargeWakeGoalText(WAKE_GOAL_CHIP, CHGR_NONE)) != 0,
+              "підпис проб залежить від мети, а не один на два випадки");
+        check(strstr(chargeWakeGoalText(WAKE_GOAL_RAIL, CHGR_NONE), "мовч") == nullptr &&
+              strstr(chargeWakeGoalShort(WAKE_GOAL_RAIL, CHGR_NONE), "мовч") == nullptr,
+              "…і в меті RAIL він НЕ каже «монітор мовчить» — той говорить");
+        check(strcmp(chargeWakeGoalText(WAKE_GOAL_RAIL, CHGR_WAKE_RAIL),
+                     chargeWakeGoalText(WAKE_GOAL_RAIL, CHGR_NONE)) != 0,
+              "успіх у рядку стану видно");
+
+        // ⚑ РІВНО ТОЙ ВИРАЗ, ЩО СТОЇТЬ У ДРАЙВЕРАХ ЕКРАНА. Самі драйвери на
+        //  хості не збираються (u8g2, Adafruit GFX), тож поле стану, якого
+        //  вони торкаються, більше ніде не перевіряється: додати виклик і
+        //  забути додати поле — помилка, яку впіймає лише прошивка на столі.
+        ChargeState cs = {};
+        cs.wakeGoal = WAKE_GOAL_RAIL; cs.reason = CHGR_WAKE_RAIL;
+        char row[64];
+        snprintf(row, sizeof(row), "проб %u  %s", cs.wakeProbes,
+                 chargeWakeGoalShort(cs.wakeGoal, cs.reason));
+        check(row[0] && chargeReasonIsDone(cs.reason),
+              "вираз рядка проб із драйверів збирається й дає завершення");
     }
 
     printf("\n23) коли пробудження НЕ дають — і чому саме так\n");
@@ -1319,13 +1451,18 @@ int main() {
         check(chargeWakeRefuse(true, true, false, PSU_LOW, false, okMv, 0) == WAKENO_PSU,
               "занижене живлення — теж відмова");
 
-        // ⚑ ГОЛОВНА ВІДМОВА РЕЖИМУ. Пробудження працює без контролю
-        //  температури; єдине, що не дає перетворити його на «заряд без
-        //  датчика», — оця відмова запускатись, коли датчик доступний.
+        // ⚑ ГОЛОВНА ВІДМОВА РЕЖИМУ, І УМОВА В НІЙ ПОДВІЙНА. Пробудження працює
+        //  без контролю температури; єдине, що не дає перетворити його на
+        //  «заряд без датчика», — відмова запускатись там, де штатний заряд
+        //  ДОСТУПНИЙ. А доступний він лише тоді, коли пакет і читається, і
+        //  показує напругу на клемі: без напруги штатний заряд не стартує сам.
         check(chargeWakeRefuse(true, true, false, PSU_OK, true, okMv, 0) == WAKENO_READS,
-              "ПАКЕТ ЧИТАЄТЬСЯ -> відмова: є температура, отже є штатний заряд");
+              "ЧИТАЄТЬСЯ + жива клема -> відмова: штатний заряд можливий і безпечніший");
         check(chargeWakeRefuse(true, true, false, PSU_UNKNOWN, true, okMv, 0) == WAKENO_READS,
               "…і без контролю живлення теж: причина не в блоці");
+        check(chargeWakeRefuse(true, true, false, PSU_OK, true,
+                               (uint16_t)(BATTERY_EMPTY_MV / 2), 0) == WAKENO_READS,
+              "рівно на порозі «клема жива» — уже штатний заряд");
 
         // Дві ознаки пробитого ключа, обидві зняті на ЗАКРИТОМУ ключі.
         check(chargeWakeRefuse(true, true, false, PSU_OK, false,
@@ -1337,6 +1474,12 @@ int main() {
         check(chargeWakeRefuse(true, true, false, PSU_OK, false, okMv,
                                CHARGE_DEADBAND_MA) == WAKENO_OK,
               "струм у мертвій зоні — це шум АЦП, а не витік");
+        // ⚑ І В НОВІЙ МЕТІ ТЕЖ. Раніше «пакет читається» відхиляло режим
+        //  першим, тобто ознаки пробитого ключа при живому моніторі ніхто не
+        //  дивився взагалі. Тепер дивиться — і мусить бачити.
+        check(chargeWakeRefuse(true, true, false, PSU_OK, true, 0,
+                               CHARGE_DEADBAND_MA + 1) == WAKENO_LEAK,
+              "струм при закритому ключі ловиться й тоді, коли монітор говорить");
 
         // Будити нема чого, якщо напруга вже є.
         check(chargeWakeRefuse(true, true, false, PSU_OK, false,
@@ -1345,6 +1488,15 @@ int main() {
         check(chargeWakeRefuse(true, true, false, PSU_OK, false,
                                (uint16_t)(CHARGE_WAKE_MV - 1), 0) == WAKENO_OK,
               "на відлік нижче — уже можна");
+        // ⚑ WAKENO_FULL — питання ЛИШЕ до мети CHIP. У меті RAIL клема за
+        //  визначенням мертва, тож ця перевірка там ніколи б і не спрацювала,
+        //  а спрацювавши — відхилила б єдиний випадок, заради якого мету й
+        //  завели. Пара нижче тримає обидві половини твердження.
+        check(chargeWakeRefuse(true, true, false, PSU_OK, true, 0, 0) == WAKENO_OK,
+              "мертва клема при ЖИВОМУ моніторі — дозволено (мета RAIL)");
+        check(chargeWakeRefuse(true, true, false, PSU_OK, false,
+                               (uint16_t)CHARGE_WAKE_MV, 0) == WAKENO_FULL,
+              "…а при мовчазному та сама перевірка на місці");
 
         // Робочий випадок власника: банки замінені (пакет тримає ~7.4 В через
         // тіло ключа), монітор мовчить, живлення справне -> дозволено.

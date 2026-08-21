@@ -1381,12 +1381,13 @@ bool performEtmFix(String *note) {
         say("Для цієї моделі немає вшитого еталона — плану не скласти"); return false;
     }
     restorePlanSetEtmSource(p, true);          // рахувати з дати першого запуску
-    uint32_t etm = 0; const char *why = "";
-    if (!restoreEtmFixPlan(p, &etm, &why)) {
+    uint32_t etm = 0; char why[176] = "";
+    if (!restoreEtmFixPlan(p, &etm, why, sizeof(why))) {
         // Мовчазна відмова тут була б найгіршою: натиснув крок, нічого не
-        // сталось, і незрозуміло — полагодилось чи ні.
-        say(why && *why ? why : "Узгоджувати наробіток нема з чим");
-        Serial.printf("=== ETM fix SKIPPED: %s ===\n", why ? why : "");
+        // сталось, і незрозуміло — полагодилось чи ні. Текст уже несе числа,
+        // з яких складено вирок, тож розбір не потребує другого заходу.
+        say(why[0] ? why : "Узгоджувати наробіток нема з чим");
+        Serial.printf("=== ETM fix SKIPPED: %s ===\n", why);
         return false;
     }
     uint32_t before = impresEtm(batteryDump2438);
@@ -3266,7 +3267,10 @@ static bool       g_mirPlanReady = false;
 //  розходились саме числа (ETM 6397 діб проти віку 15, CCA/DCA 31/37 циклів
 //  проти 1+5 у лічильниках Motorola).
 static void mirrorPlanFactsRefresh() {
-    long etmD = 0, age = 0;
+    // ⚑ ВІК НЕВІДОМИЙ — ЦЕ −1. Нуль діб законний (пакетові щойно вписали
+    //  сьогоднішню дату виготовлення), тож починати з нуля означало б
+    //  оголосити «вік відомий і дорівнює нулю» ще до того, як його порахують.
+    long etmD = 0, age = -1;
     MirrorValIn in;
     memset(&in, 0, sizeof(in));
 

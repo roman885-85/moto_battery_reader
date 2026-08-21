@@ -2490,7 +2490,7 @@ int main() {
     //  «завершено»/«аварія»; а оскільки уставки й кнопку «ПОЧАТИ ЗАРЯД» веб
     //  ховав за тим самим прапорцем, яким малює вигляд ПІДСУМКУ пробудження,
     //  після сеансу пробудження кнопка старту заряду зникала назавжди.
-    printf("\n48) панель операції повертається в початковий стан\n");
+    printf("\n48) три операції в одному вікні; панель повертається в початковий стан\n");
     {
         // а) ДВА РІЗНІ ПИТАННЯ — ДВА РІЗНІ ПОЛЯ. «Яким показати підсумок» і
         //    «чи зайняте залізо» — не одне й те саме, і прошивка це вже знала
@@ -2500,13 +2500,40 @@ int main() {
         check(fileCalls("web_server.h", "chargeWaking() ? \"true\" : \"false\""),
                                                      "…і окремо — чи пробудження ЙДЕ (wakeRun)");
 
-        // б) обидві веб-панелі ховають УСТАВКИ за «йде», а не за «показуємо».
+        // б) ТРИ ОПЕРАЦІЇ В ОДНОМУ ВІКНІ, режим — випадаючим списком. Показом
+        //    відає ОДНА функція, і саме вона знає обидва питання: що обрала
+        //    людина і що зараз на залізі. Друга копія цього рішення в поллері
+        //    розійшлася б із нею на першій же правці.
         for (const char *c : { "index.html", "client_usb.html" }) {
-            check(fileHasText(c, "display = wakeRun?'none'"),
-                                                     "клієнт ховає уставки, лише поки режим ІДЕ");
+            check(fileHasText(c, "id=\"opMode\"") && fileHasText(c, "onchange=\"opModeApply()\""),
+                                                     "у клієнті один вибір режиму — випадаючим списком");
+            check(fileHasText(c, "id=\"opBlkDis\"") && fileHasText(c, "id=\"opBlkChg\"") &&
+                  fileHasText(c, "id=\"opBlkWake\""),
+                                                     "…і три блоки одного вікна, по одному на режим");
+            check(fileHasText(c, "function opModeApply("),
+                                                     "…показом відає одна функція");
+            check(fileHasText(c, "opChgD.wakeRun?'wake':'chg'"),
+                                                     "…яка бере поточний режим із того, що ЙДЕ на залізі");
+            check(fileHasText(c, "display=(m==='chg')?'':'none'"),
+                                                     "…а уставки заряду показує за ОБРАНИМ режимом");
+            // ⚑ ЗАМИКАЄ СПИСОК ЛИШЕ РОБОТА, А НЕ ПІДСУМОК. Саме на цьому й
+            //  була скарга: незакритий підсумок пробудження назавжди ховав
+            //  кнопку «ПОЧАТИ ЗАРЯД», бо режим не можна було змінити.
+            check(fileHasText(c, "sel.disabled=!!forced"),
+                                                     "…і замикає вибір лише поки операція ЙДЕ");
+            check(fileHasNo(c, "sel.disabled=!!snap"),
+                                                     "…незакритий підсумок вибору режиму не замикає");
+            check(fileHasText(c, "opChgD=d; opModeApply();") &&
+                  fileHasText(c, "opDisD=d; opModeApply();"),
+                                                     "…обидва опитування годують її станом");
             check(fileHasNo(c, "display = wake?'none'"),
-                                                     "…і більше не ховає їх за виглядом підсумку");
+                                                     "…і ніде не лишилось старого правила «ховати за підсумком»");
         }
+        check(fileHasText("usb_client/moto_gui.py", "def op_mode_apply(self)") &&
+              fileHasText("usb_client/moto_gui.py", "ttk.Combobox") &&
+              fileHasText("usb_client/moto_gui.py", "\"wake\" if c.get(\"wakeRun\") else \"chg\"") &&
+              fileHasText("usb_client/moto_gui.py", "\"disabled\" if forced else \"readonly\""),
+                                                     "і .exe теж: один список, і замикає його лише робота");
 
         // в) підсумок є чим закрити — на всіх трьох поверхнях і в обох машинах.
         check(fileCalls("web_server.h", "server.on(\"/api/charge/dismiss\", HTTP_POST, handleChargeDismiss)") &&

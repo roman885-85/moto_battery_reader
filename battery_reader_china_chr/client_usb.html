@@ -428,7 +428,20 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
   <div class="sub" id="fwcal">
     <div class="subintro">Розряд перед калібруванням і сама процедура на IMPRES-ЗП. Прошивкою вона не замінюється.</div>
 <div class="card" style="border-color:var(--org)">
-      <h2>🪫 Розряд перед калібруванням <span class="chipb">пише в DS2438</span></h2>
+      <h2>⚙️ Операція з пакетом <span class="chipb">пише в DS2438</span></h2>
+      <!-- ⚑ ТРИ ОПЕРАЦІЇ — ОДНЕ ВІКНО: прошивка їх взаємно блокує, тож разом
+           вони не йдуть ніколи. Режим обирається списком, і на екрані рівно
+           те, що стосується обраного. -->
+      <div class="row oprow"><span class="k">Режим</span>
+        <select id="opMode" onchange="opModeApply()">
+          <option value="chg">🔋 Заряд</option>
+          <option value="dis">🪫 Розряд</option>
+          <option value="wake">🩺 Пробудження</option>
+        </select></div>
+      <div class="note i" id="opModeNote"></div>
+      <div class="note w" id="chgUnavail" style="display:none"></div>
+      <div id="opBlkDis" class="opblk" style="display:none">
+      <h3>🪫 Розряд перед калібруванням</h3>
       <div class="note i">Розряд — це <b>приймальний контроль після перепайки</b>: він міряє реальну ємність нових банок. Для калібрування він <b>не обов'язковий</b> — фірмова станція бере в цикл навіть повністю заряджений пакет, якщо він оригінальний. Але якщо станція вперлась і не переходить у калібрування, часткова розрядка це підштовхує.</div>
       <div class="note w">⚠️ Аварійна зупинка: напруга &lt; 6.00 В, перегрів 45 °C, стеля часу, втрата зв'язку з
         монітором. Резистор гріється (~14 Вт на 5 Ом) — не лишайте без нагляду.</div>
@@ -509,9 +522,9 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         <button class="btn" id="btnDisDismiss" style="display:none" onclick="disDismiss()">✓ ЗАКРИТИ ПІДСУМОК</button>
         <button class="btn b-inf" onclick="disStatus()">🔄 Оновити зараз</button>
       </div>
-    </div>
-    <div class="card" style="border-color:var(--blu)">
-      <h2>🔋 Керований заряд <span class="chipb">пише в DS2438</span></h2>
+      </div><!-- /opBlkDis -->
+      <div id="opBlkChg" class="opblk">
+      <h3>🔋 Керований заряд</h3>
       <div class="note i">Понижувальний перетворювач на власному ключі: ШІМ 25 кГц → керуючий NPN → силовий
         силовий ключ <b id="swName">—</b> → діод Шотткі й дросель 104 мкГн. Струм і напруга — з власних давачів (шунт 0.5 Ом у
         мінусі, подільник 20к/10к на плюсі); DS2438 лишається для температури. Профіль струму
@@ -598,12 +611,11 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         <button class="btn b-inf" onclick="chgStatus()">🔄 Оновити зараз</button>
         <button class="btn" id="btnChgDismiss" style="display:none" onclick="chgDismiss()">✓ ЗАКРИТИ ПІДСУМОК</button>
       </div>
-      <div class="note w" id="chgUnavail" style="display:none"></div>
       <!-- ── ПРИМУСОВЕ ПРОБУДЖЕННЯ ─────────────────────────────────────────
            Окремим блоком, а не ще однією кнопкою в ряду вище: інші умови,
            інший сенс, і випадкове натискання поруч із «ПОЧАТИ ЗАРЯД» було б
            найгіршим із можливих сусідств. -->
-      <div class="opsub">
+      <div class="opsub" id="opBlkWake">
         <h3>🩺 Пробудження — пакет не читається після заміни елементів</h3>
         <div class="row oprow"><span class="k">Режим тримає</span>
           <span>
@@ -629,6 +641,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
           <button class="btn b-dng" onclick="chgStop()">⏹ ЗУПИНИТИ</button>
         </div>
       </div>
+      </div><!-- /opBlkChg -->
     </div>
     <div class="card" style="border-color:var(--ok)">
       <h2>🔌 Калібрування на зарядній станції</h2>
@@ -1788,6 +1801,7 @@ function opSpark(p,targetMv){
 function disShow(d){
   const mon=$('disMon');
   if(!d){mon.className='dm';$('disSt').textContent='—';return;}
+  opDisD=d; opModeApply();
   if(!d.available){mon.className='dm';$('disSt').textContent='не налаштовано (LOAD_PIN)';return;}
   { var bdd=$('btnDisDismiss'); if(bdd) bdd.style.display=(d.state==='done'||d.state==='abort')?'':'none'; }
   // Ручний струм і профіль — з ПРИСТРОЮ: показувати треба те, що ДІЄ, хто б
@@ -1987,6 +2001,7 @@ function chgShow(d){
   // ⚑ Одного рядка замало: раніше причина писалась дрібним у стан панелі, а
   // кнопки лишались живими — людина тиснула «ПОЧАТИ ЗАРЯД» і діставала помилку
   // замість пояснення. Тепер видима плашка, а дії вимкнені.
+  opChgD=d; opModeApply();
   chgSetUnavail(d.available?'':(d.availWhy||'заряд недоступний'));
   if(!d.available){mon.className='dm';$('chgSt').textContent='функція недоступна';return;}
   const run=d.state==='run';
@@ -2038,12 +2053,8 @@ function chgShow(d){
   // Перемикання панелі між двома режимами. Ховаються тільки УСТАВКИ (chgonly):
   // у пробудженні ні цілі, ні ручного струму, ні профілю не існує, і показувати
   // їх означало б обіцяти керування, якого немає.
-  //  ⚑ ХОВАЄМО ЗА wakeRun, А НЕ ЗА wake — це різні питання: wake каже, яким
-  //  показати ПІДСУМОК і лишається правдою після зупинки, а зайняте залізо це
-  //  wakeRun. Поки їх плутали, після пробудження кнопка «ПОЧАТИ ЗАРЯД»
-  //  зникала назавжди.
-  var wakeRun = !!d.wakeRun;
-  document.querySelectorAll('.chgonly').forEach(function(e){ e.style.display = wakeRun?'none':''; });
+  // Показом уставок відає opModeApply(): він знає і про обраний режим, і про
+  // те, що зараз на залізі. Друга копія цього рішення тут розійшлася б із ним.
   { var bd=$('btnChgDismiss'); if(bd) bd.style.display=(d.state==='done'||d.state==='abort')?'':'none'; }
   // А плитки не ховаються й не переставляються — міняються лише підписи трьох
   // останніх: сітка, що перебудовується, змушує щоразу шукати величину заново.
@@ -2266,6 +2277,42 @@ function chgMaPaint(cur){
     b.classList.toggle('on', !isNaN(v)&&v===(cur|0));
   });
 }
+// ═══════════ ТРИ ОПЕРАЦІЇ В ОДНОМУ ВІКНІ ══════════════════════════════════
+//  Заряд, розряд і пробудження ніколи не йдуть разом — прошивка їх взаємно
+//  блокує. Тому й вікно одне, а режим обирається списком. Поки операція ЙДЕ,
+//  режим задає залізо й список замкнений; щойно скінчилась — знову вільний.
+let opChgD=null, opDisD=null, opSnapped='';
+function opForcedMode(){
+  if(opDisD && opDisD.state==='run') return 'dis';
+  if(opChgD && opChgD.state==='run') return opChgD.wakeRun?'wake':'chg';
+  return '';
+}
+function opSummaryMode(){
+  if(opDisD && (opDisD.state==='done'||opDisD.state==='abort')) return 'dis';
+  if(opChgD && (opChgD.state==='done'||opChgD.state==='abort')) return opChgD.wake?'wake':'chg';
+  return '';
+}
+const OP_NOTE={
+  chg:'Керований заряд власним понижувачем до обраного відсотка.',
+  dis:'Приймальний контроль після перепайки: міряє реальну ємність нових банок.',
+  wake:'Коротко подати на клеми зарядну напругу, щоб зняти блокування контролера захисту.'
+};
+function opModeApply(){
+  var sel=$('opMode'); if(!sel) return;
+  var forced=opForcedMode();
+  var snap=forced||opSummaryMode();
+  if(snap && snap!==opSnapped) sel.value=snap;
+  opSnapped=snap;
+  if(forced) sel.value=forced;
+  sel.disabled=!!forced;
+  var m=sel.value;
+  var nb=$('opModeNote'); if(nb) nb.textContent=OP_NOTE[m]||'';
+  var bd=$('opBlkDis'); if(bd) bd.style.display=(m==='dis')?'':'none';
+  var bc=$('opBlkChg'); if(bc) bc.style.display=(m==='dis')?'none':'';
+  document.querySelectorAll('.chgonly').forEach(function(e){ e.style.display=(m==='chg')?'':'none'; });
+  var bw=$('opBlkWake'); if(bw) bw.style.display=(m==='wake')?'':'none';
+}
+
 // Закрити підсумок завершеної операції: на пристрої це робить будь-яка кнопка,
 // а тут такої дороги не було — панель назавжди лишалась у стані «завершено».
 async function chgDismiss(){
@@ -2711,6 +2758,7 @@ async function hxWrite(){
 window.addEventListener('DOMContentLoaded',function(){
   // Плитки обох панелей — з ОДНІЄЇ таблиці, до першого опитування.
   opTiles('dis'); opTileHead('dis','dis');
+  opModeApply();   // одразу привести вікно до обраного режиму
   opTiles('chg'); opTileHead('chg','chg');
   const d=$('hxD'), a=$('hxAsc');
   if(d){

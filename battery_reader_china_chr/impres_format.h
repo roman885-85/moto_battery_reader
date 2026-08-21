@@ -443,6 +443,35 @@ inline bool impresMirrorUsable(const uint8_t *d38) {
     }
     return !z && !f;
 }
+
+// ── «СТАНЦІЯ ПОЧАЛА ДОБУДОВУ, АЛЕ НЕ ЗАКІНЧИЛА» ───────────────────────────
+//  Одномісний зарядний WPLN4226A, побачивши стертий DS2433, сам вписує туди
+//  дзеркало заголовка з DS2438 (26 байт), але контрольну суму не виправляє й
+//  на цьому спиняється: профілю, запису моделі й блоків BMS не з'являється.
+//
+//  ⚑ ТРИ УМОВИ, І КОЖНА ПОТРІБНА.
+//   • сума заголовка хибна — інакше нема чого добудовувати;
+//   • дзеркало вже на місці й сходиться — це і є слід станції;
+//   • РЕШТА ЧИПА ЩЕ ПОРОЖНЯ. Ось цієї умови бракувало, і саме вона несе всю
+//     вагу: у СПРАВНОГО пакета дзеркало теж сходиться (на те воно й
+//     дзеркало), тож пакет, який просто втратив байт суми, отримував діагноз
+//     «станція почала добудову» і пораду добудувати давно побудоване.
+//     Спіймано на 20-vymahaie-vidnovlennya/03 — 269 непорожніх байтів після
+//     0x020 проти рівно 0 у справжньому випадку (19-stantsiya-dobudova).
+//
+//  ⚑ ЖИВЕ ТУТ, А НЕ В recovery.h, НАВМИСНО. recovery.h на хості не
+//  збирається, тож тест тримав ДОСЛІВНУ КОПІЮ цього правила — і копія
+//  пережила виправлення оригіналу, лишившись зеленою. Тепер правило одне.
+inline bool impresChargerPartial(const uint8_t *d33, const uint8_t *d38, bool has38) {
+    if (!d33 || !has38 || !d38) return false;
+    bool blank = true;
+    for (int i = 0; i < IMPRES_HDR_END; i++)
+        if (d33[i] != 0xFF) { blank = false; break; }
+    if (blank || impresHeaderOk(d33)) return false;
+    for (int i = IMPRES_HDR_END; i < IMPRES_33_SIZE; i++)
+        if (d33[i] != 0xFF) return false;          // чіп уже побудований
+    return impresMirrorUsable(d38) && impresMirrorOk(d33, d38);
+}
 inline void impresSyncMirror(uint8_t *d33, const uint8_t *d38) {
     for (int i = 0; i < IMPRES_MIRROR_LEN; i++)
         d33[IMPRES_MIRROR_D33_AT + i] = d38[IMPRES_MIRROR_D38_AT + i];

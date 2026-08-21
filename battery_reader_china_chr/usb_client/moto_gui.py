@@ -2412,7 +2412,9 @@ class App:
             return
         cyc = b.get("cycles", -1)
         self.bCyc.config(text=str(cyc) if cyc >= 0 else "— (блок гістограми побитий)")
-        self.bCycN.config(text=str(b.get("nonImpresCycles", "—")))
+        # −1 = блок лічильника побитий, а не «жодного разу».
+        _non = b.get("nonImpresCycles")
+        self.bCycN.config(text="не читається" if (_non is None or _non < 0) else str(_non))
         if b.get("haveKey"):
             pot = b.get("potentialMah", 0); first = b.get("firstUseMah") or 0
             self.bPot.config(text=f"{pot} мА·год" + (f" (на початку {first})" if first else ""))
@@ -2423,13 +2425,24 @@ class App:
             self.bHealth.config(text=f"{h} %{note}",
                                 foreground="#7ea24a" if h >= 80 else ("" if h >= 60 else "#c0392b"))
             self.bCal.config(text=str(b.get("calCycles", "—")))
-            self.bMfg.config(text=b.get("mfgDate") or "—")
-            self.bUse.config(text=b.get("firstUseDate") or "— (пакет ще не вмикався)")
+            # Неправдоподібну дату пристрій не віддає — лише прапорець:
+            # «2072-14-22» значенням означало б видати сміття за факт.
+            _mfgBad = b.get("mfgDateOk") == 0
+            self.bMfg.config(
+                text=b.get("mfgDate")
+                     or ("⚠ неправдоподібна (блок DATE побитий)" if _mfgBad else "—"))
+            # «Не вмикався» і «не обчислити» — різні твердження: перше
+            # користування рахується ВІД дати виготовлення.
+            self.bUse.config(
+                text=b.get("firstUseDate")
+                     or ("— не обчислити (немає дати виготовлення)" if _mfgBad
+                         else "— (пакет ще не вмикався)"))
             self.bKey.config(text="підібрано перебором (ROM чипа недоступний)"
                              if b.get("keyGuessed") else "з ROM-ID чипа DS2433")
             self.ovCap.config(text=f"{pot} мА·год / знос {h}%")
             self.ovCyc.config(text=f"{cyc} зар. IMPRES" +
-                              (f" / +{b['nonImpresCycles']} звич. ЗП" if b.get("nonImpresCycles") else ""))
+                              (f" / +{_non} звич. ЗП" if (_non or 0) > 0
+                               else " / звич. ЗП — не читається" if (_non or 0) < 0 else ""))
         else:
             for w in (self.bPot, self.bHealth, self.bCal, self.bMfg, self.bUse):
                 w.config(text="—", foreground="")

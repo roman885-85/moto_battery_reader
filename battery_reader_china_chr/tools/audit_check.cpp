@@ -26,6 +26,7 @@
 
 static int fails = 0;
 static void bad(const char *m) { printf("   ЗБІЙ  %s\n", m); fails++; }
+static void check(bool c, const char *m) { if (c) printf("   ок    %s\n", m); else bad(m); }
 static bool load(const char *p, uint8_t *b, size_t n) {
     FILE *f = fopen(p, "rb"); if (!f) return false;
     size_t g = fread(b, 1, n, f); fclose(f); return g == n;
@@ -165,7 +166,7 @@ int main() {
     printf("\n4) увесь корпус дампів (ROM невідомий — судимо лише зі змісту)\n");
     {
         std::vector<std::string> all; collect(all);
-        int nSum = 0, nDate = 0, nUse = 0, n = 0;
+        int nSum = 0, nDate = 0, nUse = 0, nDca = 0, n = 0;
         for (auto &p33 : all) {
             uint8_t a33[DUMP_SIZE];
             if (!load(p33.c_str(), a33, DUMP_SIZE)) continue;
@@ -178,14 +179,56 @@ int main() {
             if (f & AUD_BLOCK_SUM)    { nSum++; printf("      сума: %s\n", p33.c_str() + 6); }
             if (f & AUD_DATE_INSANE)    nDate++;
             if (f & AUD_USE_BEFORE_CHG) nUse++;
+            if (f & AUD_DCA_INSANE)   { nDca++; printf("      DCA:  %s\n", p33.c_str() + 6); }
         }
-        printf("   дампів %d: побитих сум %d, безглуздих дат %d, «запуск без заряду» %d\n",
-               n, nSum, nDate, nUse);
+        printf("   дампів %d: побитих сум %d, безглуздих дат %d, «запуск без заряду» %d, "
+               "побитий DCA %d\n", n, nSum, nDate, nUse, nDca);
         if (n < 40) bad("корпус не зчитався — перевірка нічого не значить");
         // Без ROM ключ підбирається, і на частині дампів він не знаходиться —
         // тоді дати не читаються взагалі. Це не привід валити тест, але й
         // тиші тут бути не може: якщо ЖОДНОЇ знахідки, аудит просто мовчить.
         if (nSum + nDate + nUse == 0) bad("аудит не знайшов нічого на 49 дампах — підозріло");
+        // ⚑ РІВНО ОДИН, І ЦЕ ГОЛОВНЕ. Перевірка «DCA не в рази більший за CCA»
+        //  має ловити побитий регістр монітора — і НЕ чіпати нормальну
+        //  експлуатацію, де DCA законно ходить поруч із CCA. У корпусі такий
+        //  випадок рівно один (20-vymahaie-vidnovlennya/08: CCA 559, DCA 33384,
+        //  тобто «розряджено» у 60 разів більше, ніж заряджено). Якщо стане
+        //  більше — запас порогу з'їли й почались хибні тривоги; якщо менше —
+        //  перевірка перестала ловити те, заради чого написана.
+        if (nDca != 1) bad("побитий DCA має знаходитись рівно в одного дампа корпусу");
+    }
+
+    // ── 5. Невідоме мусить лишатись невідомим ──────────────────────────────
+    //  Два лічильники в BMS читаються без ключа: цикли IMPRES (гістограма) і
+    //  цикли не-IMPRES. Обидва можуть виявитись нечитаними — і тоді обидва
+    //  мусять сказати про це однаково. Раніше перший чесно віддавав −1, а
+    //  другий тихо лишався нулем, тобто видавав «блок побитий» за «жодного
+    //  разу не заряджали простою ЗП» — конкретним, правдоподібним числом.
+    printf("\n5) нечитаний лічильник не має прикидатися нулем\n");
+    {
+        std::vector<std::string> all; collect(all);
+        int nBadNon = 0, nGoodNon = 0, nZeroNon = 0;
+        for (auto &p33 : all) {
+            uint8_t a33[DUMP_SIZE];
+            if (!load(p33.c_str(), a33, DUMP_SIZE)) continue;
+            std::string p38 = p33; size_t q = p38.find("2433");
+            if (q != std::string::npos) p38.replace(q, 4, "2438");
+            uint8_t a38[DS2438_MEM_SIZE];
+            bool has38 = load(p38.c_str(), a38, DS2438_MEM_SIZE);
+            ImpresBms b;
+            if (!impresBmsParse(a33, has38 ? a38 : nullptr, nullptr, 0.0f, &b)) continue;
+            if (b.nonImpresCycles < 0)       nBadNon++;
+            else if (b.nonImpresCycles == 0) nZeroNon++;
+            else                             nGoodNon++;
+        }
+        printf("   не-IMPRES: прочитано %d, рівно нуль %d, НЕ читається %d\n",
+               nGoodNon, nZeroNon, nBadNon);
+        check(nBadNon > 0, "у корпусі є дампи, де лічильник не-IMPRES не читається");
+        check(nGoodNon > 0, "…і є дампи, де він читається — інакше перевірка порожня");
+        // Нуль лишається ЗАКОННИМ показанням: пакет, який ніколи не бачив
+        // простої ЗП. Саме тому «невідомо» й довелось робити окремим станом,
+        // а не позначати нулем.
+        check(nZeroNon > 0, "…і нуль теж трапляється — це законне показання, а не «невідомо»");
     }
 
     printf("\n%s (помилок: %d)\n", fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

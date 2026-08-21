@@ -49,8 +49,25 @@ def record_ok(d, off):
     return (sum(d[off:off + ln]) & 0xFF) == REC_SUM
 
 
+# ⚑ ЗАПИС КОРОТШИЙ ЗА 4 БАЙТИ КОНТРОЛЬНОЇ СУМИ НЕ МАЄ. Це прапорці зарядної
+#  станції; у прошивці це знають ТРИ місця (аудит, перерахунок сум і ремонт
+#  цілісності — усі пропускають len < 4), а цей розбирач не знав, і кричав
+#  «≠5A» на КОЖНОМУ справному пакеті: 3-байтовий запис у хвості є в усіх
+#  11 дампах партії 20-vymahaie-vidnovlennya, зокрема в тих, які рація
+#  приймає без зауважень. Хибна тривога на кожному пакеті — гірша за
+#  відсутність перевірки: її перестають читати.
+REC_MIN_SUMMED = 4
+
+
+def rec_summed(ln):
+    """Чи має запис такої довжини контрольну суму. Те саме правило, що в
+    прошивці (impres_audit.h / repairDumps): коротші за 4 байти — прапорці."""
+    return ln >= REC_MIN_SUMMED
+
+
 def walk(d, start):
-    """Ланцюг записів від start -> [(зсув, довжина, ok)], кінцевий зсув."""
+    """Ланцюг записів від start -> [(зсув, довжина, ok)], кінцевий зсув.
+    ok = None для записів, які суми не мають."""
     out, i = [], start
     while i < len(d):
         if d[i] == 0xFF:
@@ -59,7 +76,7 @@ def walk(d, start):
         ln = d[i]
         if ln < 2 or i + ln > len(d):
             return out, -1
-        out.append((i, ln, record_ok(d, i)))
+        out.append((i, ln, record_ok(d, i) if rec_summed(ln) else None))
         i += ln
     return out, i
 
@@ -164,7 +181,7 @@ def decode(d33, d38):
     print("\nЛанцюг записів від 0x120  (зсув  довж  Σ  дані):")
     recs, end = walk(d33, 0x120)
     for off, ln, ok in recs:
-        mark = "OK " if ok else "≠5A"
+        mark = "—  " if ok is None else ("OK " if ok else "≠5A")
         tag = ""
         if off == MODEL_REC:      tag = "  <- МОДЕЛЬ"
         elif off == FACTORY_REC:  tag = "  <- заводська таблиця"

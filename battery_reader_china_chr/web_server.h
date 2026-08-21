@@ -965,9 +965,25 @@ void handleDumpInfo2438() {
             json += ",\"calCycles\":" + String(bms.calCycles);
             json += ",\"reverts\":" + String(bms.reverts);
             json += ",\"topOffCycles\":" + String(bms.topOffCycles);
+            // ⚑ НЕПРАВДОПОДІБНУ ДАТУ НЕ ВІДДАЄМО ЯК ДАТУ. Блок DATE
+            //  розшифровується ключем із ROM, і коли він побитий (або чип
+            //  прошито чужим інструментом), звідти виходить, приміром,
+            //  «2072-14-22» — місяць 14, день 22. Показати таке значенням
+            //  означає видати сміття за факт: людина побачить дату й почне з
+            //  неї міркувати. Клієнту йде окремий прапорець, а сама дата — ні.
+            bool mfgOk = impresBmsDateSane(bms.mfgY, bms.mfgM, bms.mfgD);
+            json += ",\"mfgDateOk\":" + String(mfgOk ? 1 : 0);
             char d[12];
-            snprintf(d, sizeof(d), "%04d-%02d-%02d", bms.mfgY, bms.mfgM, bms.mfgD);
-            json += ",\"mfgDate\":\"" + String(d) + "\"";
+            if (mfgOk) {
+                snprintf(d, sizeof(d), "%04d-%02d-%02d", bms.mfgY, bms.mfgM, bms.mfgD);
+                json += ",\"mfgDate\":\"" + String(d) + "\"";
+            }
+            // ⚑ І ДРУГА ПОЛОВИНА ТІЄЇ Ж БІДИ. Дата першого користування
+            //  рахується ВІД дати виготовлення, тож при побитій даті вона
+            //  просто не рахується. Клієнт показував тоді «пакет ще не
+            //  вмикався» — а це зовсім інше твердження, і хибне: пакет із
+            //  1421 циклом вмикали, і не раз. Розрізняємо явно.
+            json += ",\"firstUseKnown\":" + String(bms.useY ? 1 : 0);
             if (bms.useY) {
                 snprintf(d, sizeof(d), "%04d-%02d-%02d", bms.useY, bms.useM, bms.useD);
                 json += ",\"firstUseDate\":\"" + String(d) + "\"";
@@ -3080,10 +3096,17 @@ static void mirrorPlanFactsRefresh() {
             // Порівнюємо з накопиченим зарядом монітора СУМУ обох: CCA не
             // розрізняє, від IMPRES-станції прийшов заряд чи від простої ЗП.
             if (b.cycles >= 0) {
+                // ⚑ НЕВІДОМЕ НЕ ДОДАЄМО. nonImpresCycles = −1 означає «блок
+                //  побитий, числа немає». Додати його як є — це відняти
+                //  цикл; додати як нуль — це тихо оголосити, що простою ЗП
+                //  пакет не заряджали жодного разу, і саме це число потім
+                //  поїхало б у монітор рядком CCA/DCA плану синхронізації.
+                //  Тому невідоме лишається невідомим.
+                long non = (b.nonImpresCycles >= 0) ? (long)b.nonImpresCycles : 0;
                 in.packCycKnown  = true;
-                in.packCycles    = (long)b.cycles + (long)b.nonImpresCycles;
+                in.packCycles    = (long)b.cycles + non;
                 in.packCycImpres = (long)b.cycles;
-                in.packNonImpres = (long)b.nonImpresCycles;
+                in.packNonImpres = (long)b.nonImpresCycles;   // −1 доходить як −1
             }
 
             if (haveToday && b.ok && b.haveKey &&

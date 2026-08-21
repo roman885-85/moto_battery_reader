@@ -61,6 +61,7 @@ enum {
     // Структурно це «побитий заголовок», але дані в ньому вже правильні,
     // тому лікується не переписуванням, а добудовою (див. ACT_HDRFIX).
     ISS_CHARGER_PARTIAL = 1u << 18,
+    ISS_DCA_INSANE   = 1u << 19, // регістр розряду монітора побитий (DCA >> CCA)
 };
 
 // ---- Дії Майстра ----------------------------------------------------------
@@ -112,6 +113,8 @@ static const RecoveryRule RECOVERY_RULES[] = {
                            "Ремонт цілісності (перерахунок сум блоків)" },
     { ISS_DATE_INSANE,  1, "Неправдоподібна дата виготовлення",
                            "Вписати дату вручну в «Ремонті» — вона піде під ключем цього чипа" },
+    { ISS_DCA_INSANE,   2, "Лічильник РОЗРЯДУ монітора побитий: «взято» в рази більше, ніж залито",
+                           "Синхронізація дзеркала: узяти DCA з історії DS2433 і записати в монітор" },
     { ISS_ETM_FOREIGN,  2, "Наробіток більший за вік пакета — DS2438 не від цього АКБ",
                            "Перечитайте монітор; якщо пакет щойно був на ЗП — правте наробіток ПІСЛЯ калібрування" },
     { ISS_USE_BEFORE_CHG, 1, "Пакет позначено як увімкнений, але жодного разу не заряджений",
@@ -263,12 +266,10 @@ static void wizAnalyze(BatteryDiag &d) {
         d.hdrOk = headerChecksumOk(batteryDump);
         if (!d.hdrOk && !blank) d.issues |= ISS_HDR_BAD;
 
-        // ⚑ Відрізняємо «станція почала добудову» від просто побитого
-        // заголовка: тут дзеркало вже НА МІСЦІ (26 байт зі своєї частини
-        // DS2438), лишилась не виправлена сума. «Просто побитий» заголовок
-        // такого збігу не дає — там дзеркало або відсутнє, або розходиться.
-        if (!d.hdrOk && !blank && hasDump2438 &&
-            mirrorSourceValid(batteryDump2438) && mirrorOk(batteryDump, batteryDump2438)) {
+        // «Станція почала добудову» проти просто побитого заголовка. Саме
+        // правило — в impres_format.h, ОДНИМ екземпляром: тут воно жило поруч
+        // із дослівною копією в тесті, і копія пережила виправлення оригіналу.
+        if (impresChargerPartial(batteryDump, batteryDump2438, hasDump2438)) {
             d.issues |= ISS_CHARGER_PARTIAL;
             d.issues &= ~ISS_HDR_BAD;   // конкретніший діагноз — той самий крок ремонту,
         }                               // але людині зрозуміліше, що саме сталося.
@@ -354,6 +355,7 @@ static void wizAnalyze(BatteryDiag &d) {
         if (a & AUD_CRYPT_UNKNOWN)  d.issues |= ISS_CRYPT_UNKNOWN;
         if (a & AUD_BLOCK_SUM)      d.issues |= ISS_BLOCK_SUM;
         if (a & AUD_DATE_INSANE)    d.issues |= ISS_DATE_INSANE;
+        if (a & AUD_DCA_INSANE)     d.issues |= ISS_DCA_INSANE;
         if (a & AUD_ETM_FOREIGN)    d.issues |= ISS_ETM_FOREIGN;
         if (a & AUD_USE_BEFORE_CHG) d.issues |= ISS_USE_BEFORE_CHG;
     }

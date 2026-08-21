@@ -2972,6 +2972,15 @@ static String chargeJson() {
     //  Межі йдуть поруч зі станом, щоб клієнт не тримав власної копії чисел із
     //  settings.h (така копія розійшлась би на першій же правці).
     j += ",\"wake\":"     + String(chargeWakeShown() ? "true" : "false");
+    // ⚑ ДРУГЕ ПОЛЕ, І ЦЕ НЕ ДУБЛЬ. «wake» відповідає на питання «яким показати
+    //  ПІДСУМОК» — і лишається правдою після зупинки, інакше результат
+    //  пробудження читався б під заголовком «ЗАРЯД». Але клієнти ховали по
+    //  ньому ще й УСТАВКИ разом із кнопкою «ПОЧАТИ ЗАРЯД» — а це вже інше
+    //  питання: «чи зайняте залізо». Виходило, що після пробудження кнопка
+    //  старту заряду зникала назавжди: підсумок висить, отже wake=true, отже
+    //  кнопки немає, а прибрати підсумок із веба не було чим. Одне поле на два
+    //  різні питання — і є та помилка.
+    j += ",\"wakeRun\":"  + String(chargeWaking() ? "true" : "false");
     j += ",\"wakeMv\":"   + String((unsigned)CHARGE_WAKE_MV);
     j += ",\"wakeMa\":"   + String((unsigned)CHARGE_WAKE_MA);
     j += ",\"wakeMaxS\":" + String((unsigned)CHARGE_WAKE_MAX_S);
@@ -4667,6 +4676,29 @@ void handleChargeWake() {
         String("{\"status\":\"success\",\"message\":\"Пробудження почато\",\"charge\":")
         + chargeJson() + "}");
 }
+// ── ПРИБРАТИ ПІДСУМОК ЗАВЕРШЕНОЇ ОПЕРАЦІЇ ─────────────────────────────────
+//  На пристрої підсумок знімає будь-яка кнопка (див. displayHandleButton), а в
+//  клієнтів такої дороги не було взагалі: панель назавжди лишалась у стані
+//  «завершено»/«аварія», а разом із нею — у вигляді того режиму, який щойно
+//  скінчився. Рівно на це й скарга.
+//
+//  ⚑ ГЕЙТА ЗАРЯДУ ТУТ НЕМАЄ НАВМИСНО. Вимикач «версія без заряду» сам зупиняє
+//  заряд, що йшов, тобто саме він і створює підсумок. Закрити гейтом дорогу до
+//  його прибирання означало б лишити на панелі напис, який уже нічим не
+//  прибрати.
+void handleChargeDismiss() {
+    if (!requireAdmin()) return;
+    chargeDismiss();                       // не діє, якщо заряд справді йде
+    server.send(200, "application/json",
+        String("{\"status\":\"success\",\"charge\":") + chargeJson() + "}");
+}
+void handleDischargeDismiss() {
+    if (!requireAdmin()) return;
+    dischargeDismiss();
+    server.send(200, "application/json",
+        String("{\"status\":\"success\",\"discharge\":") + dischargeJson() + "}");
+}
+
 void handleChargeStop() {
     if (!requireAdmin()) return;
     // Одна кнопка на обидва режими: зупиняє те, що саме йде. Друга кнопка
@@ -5358,6 +5390,8 @@ void setupWebServer() {
     server.on("/api/charge/ma", HTTP_POST, handleChargeMa);     // ручний струм заряду
     server.on("/api/charge/wake", HTTP_POST, handleChargeWake); // примусове пробудження
     server.on("/api/charge/stop", HTTP_POST, handleChargeStop);          // зупинити заряд
+    server.on("/api/charge/dismiss", HTTP_POST, handleChargeDismiss);    // прибрати підсумок
+    server.on("/api/discharge/dismiss", HTTP_POST, handleDischargeDismiss);
     server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
     server.on("/api/clone", HTTP_POST, handleCloneRestore);      // крайній засіб: режим копії
     server.on("/api/clone/samples", HTTP_GET, handleCloneSamples); // вбудовані зразки копій

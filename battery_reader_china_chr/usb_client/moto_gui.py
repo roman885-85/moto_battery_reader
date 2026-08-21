@@ -1624,6 +1624,8 @@ class App:
         df = ttk.Frame(b2d); df.pack(anchor="w", pady=3)
         ttk.Button(df, text="🪫 Почати розряд", command=self.discharge_start).pack(side="left", padx=2)
         ttk.Button(df, text="⏹ Зупинити", command=self.discharge_stop).pack(side="left", padx=2)
+        self.btnDisDismiss = ttk.Button(df, text="✓ Закрити підсумок",
+                                        command=self.discharge_dismiss)
         ttk.Button(df, text="🔄 Оновити зараз", command=self.discharge_status).pack(side="left", padx=2)
         # Стан тягнеться сам (див. _dis_tick) — кнопка лишилась тільки щоб не
         # чекати періоду, коли й так стоїш біля пристрою.
@@ -1698,9 +1700,18 @@ class App:
         self.lblChgProf.pack(anchor="w")
 
         cf = ttk.Frame(b2e); cf.pack(anchor="w", pady=3)
-        ttk.Button(cf, text="🔋 Почати заряд", command=self.charge_start).pack(side="left", padx=2)
-        ttk.Button(cf, text="⏹ Зупинити", command=self.charge_stop).pack(side="left", padx=2)
+        self.btnChgStart = ttk.Button(cf, text="🔋 Почати заряд", command=self.charge_start)
+        self.btnChgStart.pack(side="left", padx=2)
+        self.btnChgStop = ttk.Button(cf, text="⏹ Зупинити", command=self.charge_stop)
+        self.btnChgStop.pack(side="left", padx=2)
         ttk.Button(cf, text="🔄 Оновити зараз", command=self.charge_status).pack(side="left", padx=2)
+        # З'являється лише коли операція скінчилась: на пристрої підсумок знімає
+        # будь-яка кнопка, а тут такої дороги не було — панель назавжди лишалась
+        # у стані завершеної операції, разом із виглядом того режиму.
+        self.btnChgDismiss = ttk.Button(cf, text="✓ Закрити підсумок", command=self.charge_dismiss)
+        # Плашка «функція недоступна»: одного рядка дрібним у панелі замало.
+        self.lblChgUnavail = ttk.Label(b2e, text="", foreground=MIL["maroon"],
+                                       wraplength=560, justify="left")
         self.monChg = OpMonitor(b2e, 'chg'); self.monChg.pack(anchor="w", pady=(6, 0))
 
         # ── ПРИМУСОВЕ ПРОБУДЖЕННЯ ──────────────────────────────────────────
@@ -1719,8 +1730,9 @@ class App:
                             "мА·год за хвилини — менше, ніж пакет втрачає на власний саморозряд. Межі задає\n"
                             "settings.h і перевіряє компілятор. Якщо пакет ЧИТАЄТЬСЯ — запуск буде відхилено.",
                   foreground="#b9bd86", justify="left").pack(anchor="w")
-        ttk.Button(b2w, text="🩺 Примусово розбудити пакет",
-                   command=self.charge_wake).pack(anchor="w", pady=(4, 0))
+        self.btnChgWake = ttk.Button(b2w, text="🩺 Примусово розбудити пакет",
+                                     command=self.charge_wake)
+        self.btnChgWake.pack(anchor="w", pady=(4, 0))
 
         b2c = ttk.LabelFrame(p_cal, text="Крок 3 — калібрування на IMPRES-ЗП (обов'язково)", padding=8); b2c.pack(fill="x", pady=4)
         ttk.Label(b2c, text="Після ремонту навчена калібровка порожня — рація приймає пакет як фірмовий і просить\n"
@@ -2546,6 +2558,12 @@ class App:
         # знімаємо ознаку «запит у польоті».
         self._disBusy = False
         d = (r or {}).get("discharge") if isinstance(r, dict) else None
+        # Підсумок можна закрити — і лише тоді, коли він справді є.
+        if isinstance(d, dict) and hasattr(self, "btnDisDismiss"):
+            if d.get("state") in ("done", "abort"):
+                self.btnDisDismiss.pack(side="left", padx=2)
+            else:
+                self.btnDisDismiss.pack_forget()
         # Межі лінійки і цілі — з пристрою: він їх і застосовує, тож клієнт не
         # має права мати власну думку.
         if isinstance(d, dict) and d.get("rampHiMv"):
@@ -2704,6 +2722,14 @@ class App:
         self._chgBusy = False
         d = (r or {}).get("charge") if isinstance(r, dict) else None
         self.monChg.update_state(d)
+        if isinstance(d, dict):
+            self._chg_set_unavail("" if d.get("available")
+                                  else (d.get("availWhy") or "заряд недоступний"))
+            if hasattr(self, "btnChgDismiss"):
+                if d.get("state") in ("done", "abort"):
+                    self.btnChgDismiss.pack(side="left", padx=2)
+                else:
+                    self.btnChgDismiss.pack_forget()
         # Профіль, ручна ціль у вольтах, фаза й «скільки ще лишилось» — із
         # пристрою: у вебі, USB і на екрані має бути видно одне й те саме.
         _c = (r or {}).get("charge") if isinstance(r, dict) else None
@@ -2961,6 +2987,34 @@ class App:
         if not self.need_conn():
             return
         self.cmd("CHARGE STOP", 10.0, cb=lambda r: (self.status("Зупинено"), self._chg_show(r)))
+
+    def charge_dismiss(self):
+        """Закрити підсумок завершеної операції — те саме, що будь-яка кнопка
+        на самому пристрої. Без цієї дороги панель назавжди лишалась у стані
+        «завершено»/«аварія», а разом із нею — у вигляді того режиму, який
+        щойно скінчився."""
+        if not self.need_conn():
+            return
+        self.cmd("CHARGE DISMISS", 10.0, cb=self._chg_show)
+
+    def discharge_dismiss(self):
+        if not self.need_conn():
+            return
+        self.cmd("DISCHARGE DISMISS", 10.0, cb=self._dis_show)
+
+    def _chg_set_unavail(self, why):
+        """Показати причину недоступності заряду й вимкнути дії. Порожній
+        рядок означає «усе гаразд»."""
+        if hasattr(self, "lblChgUnavail"):
+            self.lblChgUnavail.config(text=why)
+            if why:
+                self.lblChgUnavail.pack(anchor="w", pady=(2, 0))
+            else:
+                self.lblChgUnavail.pack_forget()
+        for name in ("btnChgStart", "btnChgStop", "btnChgWake"):
+            b = getattr(self, name, None)
+            if b is not None:
+                b.config(state=("disabled" if why else "normal"))
 
     def charge_wake(self):
         """Примусове пробудження пакета, який не читається після заміни елементів.

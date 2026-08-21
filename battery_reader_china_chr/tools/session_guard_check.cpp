@@ -2464,6 +2464,85 @@ int main() {
                                                          "і .exe теж");
     }
 
+    // ── 48. ПАНЕЛЬ ОПЕРАЦІЇ ПОВЕРТАЄТЬСЯ В ПОЧАТКОВИЙ СТАН ──────────────────
+    //  Скарга власника: «після відміни зарядки кнопка початку не повертається,
+    //  панель постійно показує попередній режим». Причина — одна на дві біди:
+    //  підсумок завершеної операції на пристрої знімає будь-яка кнопка, а в
+    //  клієнтів такої дороги не було ВЗАГАЛІ. Панель назавжди лишалась у стані
+    //  «завершено»/«аварія»; а оскільки уставки й кнопку «ПОЧАТИ ЗАРЯД» веб
+    //  ховав за тим самим прапорцем, яким малює вигляд ПІДСУМКУ пробудження,
+    //  після сеансу пробудження кнопка старту заряду зникала назавжди.
+    printf("\n48) панель операції повертається в початковий стан\n");
+    {
+        // а) ДВА РІЗНІ ПИТАННЯ — ДВА РІЗНІ ПОЛЯ. «Яким показати підсумок» і
+        //    «чи зайняте залізо» — не одне й те саме, і прошивка це вже знала
+        //    (chargeWakeShown/chargeWaking); назовні ж віддавала одне поле.
+        check(fileCalls("web_server.h", "chargeWakeShown() ? \"true\" : \"false\""),
+                                                     "JSON віддає вигляд підсумку (wake)");
+        check(fileCalls("web_server.h", "chargeWaking() ? \"true\" : \"false\""),
+                                                     "…і окремо — чи пробудження ЙДЕ (wakeRun)");
+
+        // б) обидві веб-панелі ховають УСТАВКИ за «йде», а не за «показуємо».
+        for (const char *c : { "index.html", "client_usb.html" }) {
+            check(fileHasText(c, "display = wakeRun?'none'"),
+                                                     "клієнт ховає уставки, лише поки режим ІДЕ");
+            check(fileHasNo(c, "display = wake?'none'"),
+                                                     "…і більше не ховає їх за виглядом підсумку");
+        }
+
+        // в) підсумок є чим закрити — на всіх трьох поверхнях і в обох машинах.
+        check(fileCalls("web_server.h", "server.on(\"/api/charge/dismiss\", HTTP_POST, handleChargeDismiss)") &&
+              fileCalls("web_server.h", "server.on(\"/api/discharge/dismiss\", HTTP_POST, handleDischargeDismiss)"),
+                                                     "кінцеві точки «прибрати підсумок» існують і підключені");
+        check(fileCalls("web_server.h", "void handleChargeDismiss()") &&
+              fileCalls("web_server.h", "chargeDismiss();"),
+                                                     "…і справді викликають chargeDismiss()");
+        // ⚑ Гейта «версії без заряду» на цій точці бути НЕ ПОВИННО: вимикач сам
+        //  зупиняє заряд, тобто саме він і створює підсумок. Закрити гейтом
+        //  дорогу до його прибирання означало б лишити напис, який нічим не
+        //  прибрати.
+        check(fileHasNo("web_server.h",
+                        "void handleChargeDismiss() {\n    if (!requireAdmin()) return;\n    if (chargeGateClosed()) return;"),
+                                                     "…і прибрати підсумок можна навіть при вимкненому заряді");
+        check(fileHasText("serial_api.h", "a3 == \"DISMISS\"") &&
+              fileHasText("serial_api.h", "a2 == \"DISMISS\""),
+                                                     "USB-протокол уміє прибирати підсумок обох машин");
+
+        // ⚑ ПЕРЕВІРЯЄМО ВИЗНАЧЕННЯ, А НЕ ЗГАДКУ ІМЕНІ. Кнопка з onclick лишає
+        //  ім'я у файлі навіть тоді, коли самої функції вже немає, — і
+        //  перевірка «ім'я зустрічається» лишається зеленою на клієнті, де
+        //  натискання кнопки валиться в порожнечу. Звірка від протилежного це
+        //  й показала: перейменував функцію — тест не впав.
+        for (const char *c : { "index.html", "client_usb.html" }) {
+            check(fileHasText(c, "function chgDismiss(") && fileHasText(c, "function disDismiss("),
+                                                     "клієнт має дію «закрити підсумок» для обох машин");
+            check(fileHasText(c, "onclick=\"chgDismiss()\"") &&
+                  fileHasText(c, "onclick=\"disDismiss()\""),
+                                                     "…і кнопки, які цю дію справді викликають");
+            check(fileHasText(c, "btnChgDismiss") && fileHasText(c, "btnDisDismiss"),
+                                                     "…і показує їх саме на підсумку");
+        }
+        check(fileHasText("usb_client/moto_gui.py", "def charge_dismiss(self)") &&
+              fileHasText("usb_client/moto_gui.py", "def discharge_dismiss(self)") &&
+              fileHasText("usb_client/moto_gui.py", "command=self.charge_dismiss") &&
+              fileHasText("usb_client/moto_gui.py", "btnChgDismiss"),
+                                                     "і .exe теж");
+
+        // г) «функція недоступна» — видима плашка, а не рядок дрібним, і дії
+        //    вимкнені: інакше людина тисне кнопку й дістає помилку замість
+        //    пояснення. Саме на це й була скарга «оповіщення не працює».
+        for (const char *c : { "index.html", "client_usb.html" }) {
+            check(fileHasText(c, "function chgSetUnavail(") && fileHasText(c, "chgSetUnavail(d.available"),
+                                                     "клієнт має окремий показ недоступності — і кличе його");
+            check(fileHasText(c, "btnChgStart") && fileHasText(c, "btnChgWake"),
+                                                     "…і знає, які саме дії вимикати");
+        }
+        check(fileHasText("usb_client/moto_gui.py", "def _chg_set_unavail(self") &&
+              fileHasText("usb_client/moto_gui.py", "self._chg_set_unavail(") &&
+              fileHasText("usb_client/moto_gui.py", "btnChgWake"),
+                                                     "і .exe теж");
+    }
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

@@ -649,6 +649,7 @@
             <div class="btns">
                 <button class="btn btn-warn" onclick="disStart()">🪫 ПОЧАТИ РОЗРЯД</button>
                 <button class="btn btn-danger" onclick="disStop()">⏹ ЗУПИНИТИ</button>
+                <button class="btn" id="btnDisDismiss" style="display:none" onclick="disDismiss()">✓ ЗАКРИТИ ПІДСУМОК</button>
             </div>
         </div>
 <div class="card" style="border-color:var(--ok)">
@@ -754,9 +755,14 @@
             <div class="note i chgonly" id="chgProfNote"></div>
             <input type="password" class="pw" id="pwChg" placeholder="🔑 Пароль адміністратора">
             <div class="btns">
-                <button class="btn btn-ok chgonly" onclick="chgStart()">🔋 ПОЧАТИ ЗАРЯД</button>
-                <button class="btn btn-danger" onclick="chgStop()">⏹ ЗУПИНИТИ</button>
+                <button class="btn btn-ok chgonly" id="btnChgStart" onclick="chgStart()">🔋 ПОЧАТИ ЗАРЯД</button>
+                <button class="btn btn-danger" id="btnChgStop" onclick="chgStop()">⏹ ЗУПИНИТИ</button>
+                <!-- З'являється лише коли операція скінчилась: на пристрої підсумок
+                     знімає будь-яка кнопка, а тут такої дороги не було взагалі, і
+                     панель назавжди лишалась у стані завершеної операції. -->
+                <button class="btn" id="btnChgDismiss" style="display:none" onclick="chgDismiss()">✓ ЗАКРИТИ ПІДСУМОК</button>
             </div>
+            <div class="note w" id="chgUnavail" style="display:none"></div>
             <!-- ── ПРИМУСОВЕ ПРОБУДЖЕННЯ ─────────────────────────────────────
                  Окремий блок, а не ще одна кнопка в ряду вище: у нього інші
                  умови й інший сенс, і випадкове натискання поруч із «ПОЧАТИ
@@ -790,7 +796,7 @@
                 <!-- Кнопка — у тому самому ряду .btns, що й «ПОЧАТИ ЗАРЯД» та
                      «ПОЧАТИ РОЗРЯД»: три операції — три однакові ряди. -->
                 <div class="btns">
-                    <button class="btn btn-warn" onclick="chgWake()">🩺 РОЗБУДИТИ ПАКЕТ</button>
+                    <button class="btn btn-warn" id="btnChgWake" onclick="chgWake()">🩺 РОЗБУДИТИ ПАКЕТ</button>
                     <button class="btn btn-danger" onclick="chgStop()">⏹ ЗУПИНИТИ</button>
                 </div>
             </div>
@@ -2083,6 +2089,7 @@ async function disPoll(){
     const mon=$('disMon');
     if(!d.available){ mon.className='dm'; $('disState').textContent='не налаштовано (LOAD_PIN у settings.h)';
                       disSchedule(20000); return; }
+    { const b=$('btnDisDismiss'); if(b) b.style.display=(d.state==='done'||d.state==='abort')?'':'none'; }
     // Межі лінійки і цілі — з пристрою: він їх і застосовує, тож інтерфейс не
     // має права мати власну думку.
     if(d.rampHiMv){ disRampCfg=d; if($('disTarget')){
@@ -2298,8 +2305,12 @@ async function chgPoll(){
     // Причину бере З ПРИСТРОЮ (availWhy), а не пише свою: причин дві —
     // «не налаштовано в settings.h» і «ця версія пристрою без заряду», — і
     // власна копія цієї пари в кожному клієнті розійшлася б із прошивкою.
+    // ⚑ ОДНОГО РЯДКА ЗАМАЛО. Раніше причина писалась дрібним у стан панелі, а
+    //  кнопки лишались живими: людина тиснула «ПОЧАТИ ЗАРЯД» і отримувала
+    //  помилку замість пояснення. Тепер видима плашка, а дії вимкнені.
+    chgSetUnavail(d.available ? '' : (d.availWhy||'заряд недоступний'));
     if(!d.available){ mon.className='dm';
-                      $('chgState').textContent=d.availWhy||'заряд недоступний';
+                      $('chgState').textContent='функція недоступна';
                       chgSchedule(20000); return; }
     const run=d.state==='run';
     mon.className='dm '+d.state;
@@ -2372,7 +2383,14 @@ async function chgPoll(){
     //  chgonly — УСТАВКИ, яких у пробудженні немає: ціль, ручний струм, ціль у
     //  вольтах, профіль. Їх ховаємо — вони б обіцяли керування, якого в цьому
     //  режимі не існує.
-    document.querySelectorAll('.chgonly').forEach(e=>{ e.style.display = wake?'none':''; });
+    //  ⚑ ХОВАЄМО ЗА wakeRun, А НЕ ЗА wake. Це різні питання: wake каже, яким
+    //  показати ПІДСУМОК (і лишається правдою після зупинки), а зайняте залізо —
+    //  це wakeRun. Поки їх плутали, після пробудження кнопка «ПОЧАТИ ЗАРЯД»
+    //  зникала назавжди: підсумок висить -> wake=true -> кнопки немає.
+    const wakeRun = !!d.wakeRun;
+    document.querySelectorAll('.chgonly').forEach(e=>{ e.style.display = wakeRun?'none':''; });
+    // Підсумок можна закрити — і лише тоді, коли він справді є.
+    { const b=$('btnChgDismiss'); if(b) b.style.display=(d.state==='done'||d.state==='abort')?'':'none'; }
     //  А ПЛИТКИ не ховаються й не переставляються — міняються лише підписи
     //  трьох останніх. Під час пробудження монітор мовчить, тож «CCA 0» чи
     //  «темп. 0.0» означали б видавати відсутність даних за дані; але сітка,
@@ -2727,6 +2745,26 @@ async function chgStart(){
         await chgPoll();
     }catch(e){toast('Помилка: '+e.message,'err')}
     prog(false);
+}
+// ── ЗАКРИТИ ПІДСУМОК ЗАВЕРШЕНОЇ ОПЕРАЦІЇ ──────────────────────────────────
+//  На пристрої це робить будь-яка кнопка; у клієнтів такої дороги не було, і
+//  панель назавжди лишалась у стані «завершено»/«аварія» — разом із виглядом
+//  того режиму, який щойно скінчився.
+async function chgDismiss(){
+    try{ await postForm('/api/charge/dismiss',{password:$('pwChg').value}); await chgPoll(); }
+    catch(e){ toast('Помилка: '+e.message,'err'); }
+}
+async function disDismiss(){
+    try{ await postForm('/api/discharge/dismiss',{password:$('pwDis').value}); await disPoll(); }
+    catch(e){ toast('Помилка: '+e.message,'err'); }
+}
+// Плашка «функція недоступна» + вимкнені дії. Порожній текст = усе гаразд.
+function chgSetUnavail(why){
+    const box=$('chgUnavail');
+    if(box){ box.textContent=why; box.style.display=why?'':'none'; }
+    ['btnChgStart','btnChgStop','btnChgWake'].forEach(function(id){
+        const b=$(id); if(b) b.disabled=!!why;
+    });
 }
 async function chgStop(){
     prog(true,'Зупинка...');

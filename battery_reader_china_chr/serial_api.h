@@ -505,7 +505,13 @@ static void serialExec(const String &line) {
         return;
     }
 
-    if (cmd == "PING")            sResp(String("{\"ok\":true,\"dev\":\"MotoBatteryReader\",\"ver\":3,\"needAuth\":false,\"authed\":") + (g_serAuthed ? "true" : "false") + "}");
+    // ⚑ ВІДБИТОК ЗБІРКИ ЙДЕ ВЖЕ В РУКОСТИСКАННІ. Перше питання будь-якого
+    //  розбору — «а чи та прошивка взагалі в приладі?», і доти жоден клієнт
+    //  не міг на нього відповісти: дата збірки лежала тільки в /api/fs, куди
+    //  ніхто не заглядає, а USB-клієнти туди й не ходять. PING — єдина
+    //  команда, яку виконують ГАРАНТОВАНО й до всього іншого, тож відповідь
+    //  видно ще до читання пакета. Дату й час підставляє компілятор.
+    if (cmd == "PING")            sResp(String("{\"ok\":true,\"dev\":\"MotoBatteryReader\",\"ver\":3,\"build\":\"" __DATE__ " " __TIME__ "\",\"needAuth\":false,\"authed\":") + (g_serAuthed ? "true" : "false") + "}");
     else if (cmd == "READ")     { bool a, b; readAllChips(a, b);
                                   sResp(String("{\"ok\":") + ((a || b) ? "true" : "false") +
                                         ",\"ds2433\":" + (a ? "true" : "false") +

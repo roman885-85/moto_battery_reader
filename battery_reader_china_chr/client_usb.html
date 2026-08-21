@@ -221,7 +221,11 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 </head>
 <body>
 <header>
-  <h1>🔋 Moto IMPRES — USB</h1>
+  <!-- ⚑ ВІДБИТОК ЗБІРКИ В ШАПЦІ. Перше питання будь-якого розбору — «а чи та
+       прошивка взагалі в приладі?». Доти відповідь лежала в /api/fs, куди
+       USB-клієнт навіть не ходить, і через це двічі виходило, що правку
+       шукали в приладі, який її не має. Дату підставляє компілятор. -->
+  <h1>🔋 Moto IMPRES — USB<span id="fwStamp" style="font-size:.5em;font-weight:400;opacity:.75"></span></h1>
   <span class="bar"><span class="dot" id="dot"></span><span id="st">Не підключено</span></span>
   <div style="flex:1"></div>
   <button class="btn b-pri" style="width:auto" id="btnConn" onclick="toggleConn()">🔌 Підключити</button>
@@ -961,7 +965,9 @@ async function connect(){
     const p=await cmd('PING',3000);
     if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')';
     // Ім'я силового ключа — з ПРИСТРОЮ: власної назви заліза клієнт не тримає.
-    if(p.swName&&$('swName')) $('swName').textContent=p.swName; await refresh(); await loadTemplates(); await sndLoad(); await clLoadSamples();
+    // Збірку прошивки називає ПРИСТРІЙ — вона приходить у самому рукостисканні.
+    if(p.build&&$('fwStamp')) $('fwStamp').textContent=' · прошивка '+p.build;
+                 await refresh(); await loadTemplates(); await sndLoad(); await clLoadSamples();
                  await disTick(); await chgTick(); }   // одразу підхопити розряд/заряд, якщо вже йде
     else { $('st').textContent='Немає відповіді (перевірте порт/швидкість)'; }
   }catch(e){ log('! '+e.message); $('st').textContent='Помилка: '+e.message; disconnect(); }
@@ -1061,6 +1067,10 @@ async function refresh(){
   // Шкалу «заряд за напругою» називає ПРИСТРІЙ — інакше підпис кнопки лишався б
   // брехати після зміни BATTERY_EMPTY_MV у прошивці.
   if(d.scaleTxt){ const b=$('btnChgAuto'); if(b)b.textContent='⚡ ЗА НАПРУГОЮ ('+d.scaleTxt+')'; }
+  // Ім'я силового ключа теж називає ПРИСТРІЙ. Раніше його брали з відповіді на
+  // PING, де його ніколи не було (його дає INFO), — умова не могла спрацювати
+  // жодного разу, і підпис довічно лишався прочерком.
+  if(d.swName&&$('swName')) $('swName').textContent=d.swName;
   if(rmah!==null)$('mahv').value=rmah;
   $('fill').style.width=(pct!==null?pct:0)+'%';
   $('fill').style.background=pct===null?'#555':(pct<20?'#e74c3c':pct<50?'#f39c12':'#2ecc71');

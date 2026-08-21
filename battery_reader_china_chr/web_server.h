@@ -3091,6 +3091,12 @@ static String chargeJson() {
         j += ",\"pmStack\":" + String((unsigned long)g_pmPrev.stackLeft);
     }
     // Поточні числа — щоб тренд було видно НЕ ЛИШЕ після падіння.
+    // ⚑ ВІДБИТОК ЗБІРКИ — У ЗВИЧАЙНОМУ СТАНІ, А НЕ ЛИШЕ В /api/fs. Найперше
+    //  питання будь-якого розбору — «а чи та прошивка взагалі в приладі?» — і
+    //  доти на нього не було відповіді жодному клієнтові: дата збірки лежала в
+    //  діагностичній кінцевій точці, куди ніхто не заглядає. Дату й час
+    //  підставляє компілятор, тож збігтися випадково вони не можуть.
+    j += ",\"build\":\"" __DATE__ " " __TIME__ "\"";
     j += ",\"heap\":"      + String((unsigned long)ESP.getFreeHeap());
     j += ",\"heapBlock\":" + String((unsigned long)ESP.getMaxAllocHeap());
     j += ",\"stack\":"     + String((unsigned long)uxTaskGetStackHighWaterMark(NULL));

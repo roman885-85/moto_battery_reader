@@ -1650,6 +1650,8 @@ const char *dischargeStart(uint16_t targetMv) {
     battery.holdEnable(true);
     // Шунт саме цього пакета — від нього залежить і струм, і облік мА·год.
     g_dis.rsense = impresBmsRsense(batteryDump2438);
+    // Те саме, що в заряді: розумний профіль веде струм у частках C.
+    dischargeSetRatedMah((uint16_t)(hasDump ? impresRatedFromDump(batteryDump) : 0));
     dischargeWatchdog(true);            // сторож — лише на час розряду
 
     // Початкова шпаруватість — З РОЗРАХУНКУ, не 100 %. Інакше перші 5 секунд
@@ -1657,7 +1659,11 @@ const char *dischargeStart(uint16_t targetMv) {
     // від чого ми йдемо. Оцінка піка за законом Ома завищена, тож розрахована
     // шпаруватість свідомо занижена — стартуємо м'якше, ніж треба, а перший
     // вимір це виправить.
-    g_dis.setMa   = dischargeSetpointMa(mv, g_dis.targetMv);
+    // Уставку бере ОДНА функція — профіль (заводський/розумний) плюс ручна
+    // поправка. На старті температури ще немає (її дає перше опитування), тож
+    // tempFresh=false: розумний профіль поводиться як за нормальної
+    // температури, а вікно перевіриться першим же проходом.
+    g_dis.setMa   = dischargeSetpointFor(mv, g_dis.targetMv, 0, false, &g_dis.phase);
     g_dis.peakMa  = (uint16_t)dischargeExpectedMa(mv);
     g_dis.dutyPct = dischargeDutyFor(g_dis.peakMa, g_dis.setMa);
     loadDuty(g_dis.dutyPct);
@@ -1763,7 +1769,7 @@ inline void dischargeTask() {
     if (peak < (uint16_t)(est / 4)) peak = (uint16_t)est;
 
     g_dis.peakMa  = peak;
-    g_dis.setMa   = dischargeSetpointMa(mv, g_dis.targetMv);
+    g_dis.setMa   = dischargeSetpointFor(mv, g_dis.targetMv, t, okV, &g_dis.phase);
     g_dis.dutyPct = dischargeDutyFor(peak, g_dis.setMa);
     loadDuty(g_dis.dutyPct);
 
@@ -1860,6 +1866,20 @@ static String dischargeJson() {
     j += ",\"bandLoMa\":" + String((uint32_t)g_dis.setMa * DISCHARGE_BAND_LO_PCT / 100u);
     j += ",\"bandHiMa\":" + String((uint32_t)g_dis.setMa * DISCHARGE_BAND_HI_PCT / 100u);
     j += ",\"pwm\":"      + String(dischargePwmOk() ? "true" : "false");
+    // ── профіль, ручний струм, залишок часу ──────────────────────────────
+    j += ",\"profile\":"  + String(dischargeProfile());
+    j += ",\"profileText\":\""; j += dischargeProfileText(dischargeProfile()); j += "\"";
+    j += ",\"phase\":"    + String(g_dis.phase);
+    j += ",\"phaseText\":\"";   j += dischargePhaseText(g_dis.phase); j += "\"";
+    j += ",\"manualMa\":" + String(dischargeManualMa());
+    j += ",\"manMinMa\":" + String((unsigned)DISCHARGE_MANUAL_MA_MIN);
+    j += ",\"manMaxMa\":" + String((unsigned)DISCHARGE_MANUAL_MA_MAX);
+    j += ",\"ratedMah\":" + String(dischargeRatedMah());
+    j += ",\"etaS\":"     + String((unsigned long)dischargeEtaS(
+                                  impresPercentFromMv(g_dis.lastMv),
+                                  impresPercentFromMv(g_dis.targetMv),
+                                  dischargeRatedMah(),
+                                  (uint16_t)(g_dis.lastMa < 0 ? -g_dis.lastMa : g_dis.lastMa)));
     // Межі лінійки струму — щоб інтерфейси описували її, а не зашивали числа.
     j += ",\"rampHiMv\":" + String(DISCHARGE_RAMP_HI_MV);
     j += ",\"maHi\":"     + String(DISCHARGE_MA_HI);
@@ -1903,6 +1923,15 @@ const char *chargeStart(uint8_t targetPct) {
     // targetPct прийшов ззовні (клієнт міг надіслати щось дивне).
     uint16_t targetMv = (uint16_t)impresMvFromPercent(targetPct);
     if (targetMv > CHARGE_TARGET_MV) targetMv = CHARGE_TARGET_MV;
+    // ⚑ РУЧНА ЦІЛЬ У ВОЛЬТАХ ПЕРЕБИВАЄ ВІДСОТОК. Відсоток проходить через
+    //  криву SoC, тобто «85 %» — це стільки, скільки крива вважає за 85 %.
+    //  Для зберігання (7.4 В) і для ремонтних сценаріїв потрібні саме вольти.
+    //  Затиск уже зроблено в chargeSetManualMv(), але повторюємо його й тут:
+    //  значення могло прийти з інших часів, а стеля тут одна для всіх шляхів.
+    if (chargeManualMv()) {
+        targetMv = chargeManualMvClamp(chargeManualMv());
+        if (targetMv > CHARGE_TARGET_MV) targetMv = CHARGE_TARGET_MV;
+    }
     // ⚑ ПІСЛЯ ЗАТИСКУ ЦІЛЬ У ВІДСОТКАХ ТРЕБА ПЕРЕРАХУВАТИ — інакше профіль
     //  струму масштабується під ціль, якої не буде.
     //
@@ -2024,6 +2053,9 @@ const char *chargeStart(uint8_t targetPct) {
     g_chg.startIca = g_chg.lastIca = batteryDump2438[12];
     g_chg.lastPct  = (uint8_t)impresPercentFromMv(mv);
     g_chg.rsense   = impresBmsRsense(batteryDump2438);   // шунт ПАКЕТА — лише для CCA
+    // Паспортна ємність САМОГО пакета — з чипа. Розумний профіль рахує від неї
+    // струм у частках C; 0 (чипа не читали) означає «беремо номінал».
+    chargeSetRatedMah((uint16_t)(hasDump ? impresRatedFromDump(batteryDump) : 0));
     (void)ma;                        // струм DS2438 тут не потрібен: міряємо своїм шунтом
 
     // ⚑ СТАРТ ІЗ РОЗРАХОВАНОЇ ТОЧКИ НУЛЬОВОГО СТРУМУ, а не з нуля.
@@ -2039,8 +2071,12 @@ const char *chargeStart(uint8_t targetPct) {
     //  прохід ішов би з чужою шпаруватістю — рівно та «сходинка» на початку,
     //  задля усунення якої розрахунок стартової точки й робився.
     //  inTaper на старті ще false, тож тут це просто «ручне замість профілю».
-    g_chg.setMa = chargeApplyManual(chargeSetpointMaForPct(g_chg.lastPct, targetPct),
-                                    chargeManualMa(), false);
+    // Уставку бере ОДНА функція — профіль (заводський/розумний) плюс ручна
+    // поправка. На старті температури ще немає (перший вимір буде на першому
+    // опитуванні), тож tempFresh=false.
+    g_chg.inTaper = false;
+    g_chg.setMa = chargeSetpointFor(g_chg.lastPct, targetPct, mv, targetMv,
+                                    0, false, &g_chg.inTaper, &g_chg.phase);
     g_chg.duty  = chargeStartDuty(mv, g_chg.setMa);
     chargeSetDuty(g_chg.duty);
 
@@ -2462,9 +2498,8 @@ inline void chargeTask() {
         // Гістерезис: інакше уставка брязкає 1000 <-> 100 мА на межі (див. charge.h).
         // Ручна уставка (якщо задана) накладається ПОВЕРХ профілю, але дозаряду
         // не скасовує — у зоні дозаряду береться менше з двох (див. charge.h).
-        g_chg.setMa   = chargeApplyManual(
-                            chargeSetpointMaForPctH(pct, g_chg.targetPct, &g_chg.inTaper),
-                            chargeManualMa(), g_chg.inTaper);
+        g_chg.setMa   = chargeSetpointFor(pct, g_chg.targetPct, mv, g_chg.targetMv,
+                                          t, chipFresh, &g_chg.inTaper, &g_chg.phase);
         g_chg.duty    = chargeNextDuty(g_chg.duty, (int32_t)avgMa, g_chg.setMa);
         chargeSetDuty(g_chg.duty);
     }
@@ -2621,6 +2656,31 @@ inline void chargeTask() {
     } else if (t >= CHARGE_MAX_TEMP_C * 10) {
         chargeStop(CHGR_TEMP);
         Serial.println("=== Charge ABORT: overheat ===");
+    } else if (chargeProfile() == CHG_PROF_SMART) {
+        // ⚑ РОЗУМНИЙ ПРОФІЛЬ ЗАВЕРШУЄТЬСЯ ЗА СТРУМОМ, А НЕ ЗА НАПРУГОЮ.
+        //  Це не послаблення, а різниця між двома різними зарядами. Дотик до
+        //  цільової напруги — це ПОЧАТОК фази CV, а не її кінець: саме в ній
+        //  пакет добирає останні відсотки, поки струм спадає сам. Зупинка на
+        //  дотику (правило заводського профілю) обірвала б CV на самому
+        //  початку — тобто розумний режим давав би МЕНШЕ ємності, ніж
+        //  звичайний, роблячи при цьому вигляд, що він розумніший.
+        //
+        //  Що при цьому НЕ змінилось: аварійна стеля (ціль + headroom),
+        //  перегрів, «пакет закрився сам» і «пакета немає» — усі перевірки
+        //  вище лишились тими самими й стоять РАНІШЕ за цю гілку. Заряд у CV
+        //  не піднімає напругу над ціллю в принципі: що ближче до неї, то
+        //  менша уставка струму.
+        ChargeSmartOut so; so.phase = g_chg.phase; so.setMa = g_chg.setMa;
+        uint16_t endMa = chargeSmartEndMa(chargeRatedMah());
+        if (chargeSmartFull(so, (int32_t)g_chg.lastMa, endMa, &g_chg.fullPolls)) {
+            chargeStop(CHGR_TARGET);
+            Serial.printf("=== Charge DONE (CC/CV): струм %d мА впав до порога %u мА "
+                          "на %u мВ (ціль %u, ємність пакета %u мА·год). "
+                          "%lu mAh за %lus ===\n",
+                          g_chg.lastMa, endMa, mv, g_chg.targetMv,
+                          chargeRatedMah(),
+                          (unsigned long)chargeMah(), (unsigned long)g_chg.elapsedS);
+        }
     } else if (mv >= g_chg.targetMv) {
         chargeStop(CHGR_TARGET);
         Serial.printf("=== Charge DONE: %lu mAh in %lus ===\n",
@@ -2779,6 +2839,20 @@ static String chargeJson() {
     j += ",\"heapBlock\":" + String((unsigned long)ESP.getMaxAllocHeap());
     j += ",\"stack\":"     + String((unsigned long)uxTaskGetStackHighWaterMark(NULL));
 
+    // ── профіль, ручні уставки, фаза, залишок часу ───────────────────────
+    j += ",\"profile\":"  + String(chargeProfile());
+    j += ",\"profileText\":\""; j += chargeProfileText(chargeProfile()); j += "\"";
+    j += ",\"phase\":"    + String(g_chg.phase);
+    j += ",\"phaseText\":\"";   j += chargePhaseText(g_chg.phase); j += "\"";
+    j += ",\"manualMv\":" + String(chargeManualMv());
+    j += ",\"manMinMv\":" + String((unsigned)CHARGE_MANUAL_MV_MIN);
+    j += ",\"manMaxMv\":" + String((unsigned)CHARGE_MANUAL_MV_MAX);
+    j += ",\"ratedMah\":" + String(chargeRatedMah());
+    j += ",\"smartCcMa\":"  + String(chargeSmartCMa(chargeRatedMah(), CHARGE_SMART_CC_PCT));
+    j += ",\"smartEndMa\":" + String(chargeSmartEndMa(chargeRatedMah()));
+    j += ",\"etaS\":"     + String((unsigned long)chargeEtaS(
+                                  g_chg.phase, g_chg.lastPct, g_chg.targetPct,
+                                  chargeRatedMah(), g_chg.lastMa));
     j += ",\"psuSensed\":" + String(chargePsuSensed() ? "true" : "false");
     j += ",\"psuMv\":"    + String(chargePsuMv());
     // НОМІНАЛ блока живлення — головне число в повідомленні про помилку:
@@ -4243,6 +4317,12 @@ void handleRestore() {
 void handleDischargeStart() {
     if (!requireAdmin()) return;
     uint16_t target = server.hasArg("target") ? (uint16_t)server.arg("target").toInt() : 0;
+    // Струм і профіль — тим самим запитом, що й старт (дзеркально до заряду).
+    if (server.hasArg("ma")) {
+        long m = server.arg("ma").toInt();
+        dischargeSetManualMa(m > 0 ? (uint16_t)m : 0);
+    }
+    if (server.hasArg("profile")) dischargeSetProfile((uint8_t)server.arg("profile").toInt());
     const char *err = dischargeStart(target);
     if (err) {
         String j = "{\"status\":\"error\",\"message\":\""; j += err; j += "\"}";
@@ -4286,6 +4366,78 @@ void handleChargeMa() {
     server.send(200, "application/json", j);
 }
 
+// Ручна ЦІЛЬ заряду у мілівольтах. mv=0 — повернутись до цілі за відсотком.
+//  Окремий обробник із тієї ж причини, що й струм: напругу міняють, дивлячись
+//  на пакет, і вимагати заради цього зупинки означало б щоразу збивати
+//  накопичену ємність сеансу.
+void handleChargeMv() {
+    if (!requireAdmin()) return;
+    if (!server.hasArg("mv")) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"No mv\"}");
+        return;
+    }
+    long want = server.arg("mv").toInt();
+    if (want < 0) want = 0;
+    uint16_t got = chargeSetManualMv((uint16_t)want);
+    Serial.printf("charge: ручна ціль %ld мВ -> %u мВ (%s)\n",
+                  want, got, got ? "ручна напруга" : "за відсотком");
+    String j = "{\"status\":\"success\",\"manualMv\":"; j += got;
+    j += ",\"asked\":"; j += want;
+    j += ",\"charge\":"; j += chargeJson(); j += "}";
+    server.send(200, "application/json", j);
+}
+
+// Профіль заряду: 0 — заводський (таблиця за відсотком), 1 — розумний (CC/CV
+// за паспортною ємністю пакета).
+void handleChargeProfile() {
+    if (!requireAdmin()) return;
+    if (!server.hasArg("p")) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"No p\"}");
+        return;
+    }
+    uint8_t got = chargeSetProfile((uint8_t)server.arg("p").toInt());
+    Serial.printf("charge: профіль -> %s\n", chargeProfileText(got));
+    String j = "{\"status\":\"success\",\"profile\":"; j += got;
+    j += ",\"charge\":"; j += chargeJson(); j += "}";
+    server.send(200, "application/json", j);
+}
+
+// Ручний струм розряду. ma=0 — повернутись до лінійки за напругою.
+void handleDischargeMa() {
+    if (!requireAdmin()) return;
+    if (!server.hasArg("ma")) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"No ma\"}");
+        return;
+    }
+    long want = server.arg("ma").toInt();
+    if (want < 0) want = 0;
+    uint16_t got = dischargeSetManualMa((uint16_t)want);
+    Serial.printf("discharge: ручна уставка %ld мА -> %u мА (%s)\n",
+                  want, got, got ? "ручний режим" : "автомат");
+    String j = "{\"status\":\"success\",\"manualMa\":"; j += got;
+    j += ",\"asked\":"; j += want;
+    j += ",\"discharge\":"; j += dischargeJson(); j += "}";
+    server.send(200, "application/json", j);
+}
+
+// Профіль розряду: 0 — заводська лінійка, 1 — розумний (0.2C).
+void handleDischargeProfile() {
+    if (!requireAdmin()) return;
+    if (!server.hasArg("p")) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"No p\"}");
+        return;
+    }
+    uint8_t got = dischargeSetProfile((uint8_t)server.arg("p").toInt());
+    Serial.printf("discharge: профіль -> %s\n", dischargeProfileText(got));
+    String j = "{\"status\":\"success\",\"profile\":"; j += got;
+    j += ",\"discharge\":"; j += dischargeJson(); j += "}";
+    server.send(200, "application/json", j);
+}
+
 void handleChargeStart() {
     if (!requireAdmin()) return;
     uint8_t target = server.hasArg("target") ? (uint8_t)server.arg("target").toInt() : 0;
@@ -4295,6 +4447,13 @@ void handleChargeStart() {
         long m = server.arg("ma").toInt();
         chargeSetManualMa(m > 0 ? (uint16_t)m : 0);
     }
+    // Те саме для ручної ЦІЛІ у вольтах: задати її тим самим запитом, що й
+    // старт, інакше перший прохід ішов би до цілі за відсотком.
+    if (server.hasArg("mv")) {
+        long v = server.arg("mv").toInt();
+        chargeSetManualMv(v > 0 ? (uint16_t)v : 0);
+    }
+    if (server.hasArg("profile")) chargeSetProfile((uint8_t)server.arg("profile").toInt());
     const char *err = chargeStart(target);
     if (err) {
         String j = "{\"status\":\"error\",\"message\":\""; j += err; j += "\"}";
@@ -5004,6 +5163,10 @@ void setupWebServer() {
     server.on("/api/discharge/stop", HTTP_POST, handleDischargeStop);    // зупинити розряд
     server.on("/api/charge", HTTP_GET, handleChargeStatus);              // стан заряду
     server.on("/api/charge/start", HTTP_POST, handleChargeStart);        // почати заряд
+    server.on("/api/charge/mv", HTTP_POST, handleChargeMv);              // ручна ціль, мВ
+    server.on("/api/charge/profile", HTTP_POST, handleChargeProfile);    // заводський/розумний
+    server.on("/api/discharge/ma", HTTP_POST, handleDischargeMa);        // ручний струм, мА
+    server.on("/api/discharge/profile", HTTP_POST, handleDischargeProfile);
     server.on("/api/charge/ma", HTTP_POST, handleChargeMa);     // ручний струм заряду
     server.on("/api/charge/wake", HTTP_POST, handleChargeWake); // примусове пробудження
     server.on("/api/charge/stop", HTTP_POST, handleChargeStop);          // зупинити заряд

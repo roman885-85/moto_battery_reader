@@ -1433,132 +1433,184 @@ inline void drawPageMenu() {
 // Сторінка МОНІТОРИНГУ РОЗРЯДУ. Показується автоматично, поки навантаження
 // увімкнене, і має пріоритет над гортанням меню: розряд — довга операція, під
 // час якої на екрані має бути видно все службове, що змінюється.
-inline void drawPageDischarge() {
-    drawHeaderBar("РОЗРЯД");
-    const DischargeState &d = g_dis;
+// ═══════ СПІЛЬНИЙ КАРКАС ЕКРАНІВ ОПЕРАЦІЙ (заряд / розряд / пробудження) ══
+//  Скарга власника: «зроби для заряду, розряду й оживлення однотипний вигляд».
+//  Було три окремі верстки, які лише СХОЖІ одна на одну — і розходились на
+//  кожній правці: у розряду «ціль … (%)», у заряду те саме з іншим
+//  розрахунком, а пробудження взагалі жило вкладеною гілкою всередині заряду
+//  й писало «тримаємо …». Тепер каркас ОДИН, а сторінки лише наповнюють його
+//  рядками в однаковому порядку:
+//
+//      напруга (великим) -> шкала -> ціль -> режим і фаза -> струм ->
+//      уставка/ШІМ -> ємність -> температура -> час і СКІЛЬКИ ЩЕ ЛИШИЛОСЬ.
+//
+//  Позиція рядка тримається у файловій змінній, а не в лямбді: помічники
+//  мусять бути звичайними функціями, щоб їх кликали всі три сторінки.
+static int g_monY = 0;
 
-    // Напруга — найбільшим, це головне число процесу.
-    char b[56];                    // кирилиця в UTF-8 — 2 байти на літеру
+inline void opMonFrame(const char *title, uint16_t mv) {
+    drawHeaderBar(title);
+    char b[40];
     tft.fillRect(0, HDR_H + 4, TFT_W, 40, C_BG);
-    snprintf(b, sizeof(b), "%u.%02u В", d.lastMv / 1000, (d.lastMv % 1000) / 10);
-    tSet(FONT_MODEL, chargeColor(impresPercentFromMv(d.lastMv)));
+    snprintf(b, sizeof(b), "%u.%02u В", mv / 1000, (mv % 1000) / 10);
+    tSet(FONT_MODEL, chargeColor(impresPercentFromMv(mv)));
     tPut(EDGE, HDR_H + 36, b);
 
-    // Прогрес до цілі — числом у рядку «ціль» нижче.
+    // Шкала — та сама анімована іконка, що й на головній сторінці.
+    // ⚑ Смугу НЕ затираємо: саме затирання й «скидало» анімацію на кожному
+    //  опитуванні. drawBatteryBar() чистить власний слід сам і лише тоді, коли
+    //  графічний рівень справді змінився.
+    const char *csrc; int pct = batteryPercent(&csrc);
+    int by = HDR_H + 44, bh = 22;
+    drawBatteryBar(EDGE, by, TFT_W - 2 * EDGE - 6, bh, pct, chargeColor(pct));
+    g_pctTx = g_pctTy = g_pctTw = g_pctTh = 0;     // цифр усередині шкали немає
+    g_monY = by + bh + 18;
+}
+
+// Черговий рядок показань. Кожен сам чистить свою смужку на всю ширину, тож
+// оновлення раз на секунду не блимає і старий текст не «просвічує». Рядки, що
+// не влізли до підвалу, просто не малюємо: на 240×240 місця менше, і краще
+// втратити останній рядок, ніж заїхати текстом на статус.
+inline void opMonRow(const char *txt, uint16_t col) {
+    if (g_monY > FOOT_Y - 4) return;
+    tft.fillRect(0, g_monY - 12, TFT_W, 16, C_BG);
+    tSet(FONT_BODY, col);
+    tPut(EDGE, g_monY, txt);
+    g_monY += 18;
+}
+
+// «Скільки ще лишилось» у компактному вигляді. Порожній рядок = невідомо.
+inline void opMonEtaText(uint32_t etaS, char *out, size_t n) {
+    if (!etaS)             { snprintf(out, n, "—"); return; }
+    if (etaS < 60)         { snprintf(out, n, "<1 хв"); return; }
+    if (etaS < 3600)       { snprintf(out, n, "%lu хв", (unsigned long)(etaS / 60)); return; }
+    snprintf(out, n, "%lu год %lu хв", (unsigned long)(etaS / 3600),
+             (unsigned long)((etaS % 3600) / 60));
+}
+
+// Час і залишок — ОДНИМ рядком і однаково в усіх трьох режимах.
+//  etaS == 0 означає «оцінити не можна», і тоді ми так і пишемо: показати
+//  вигадане число гірше, ніж не показати жодного, бо на нього розраховують.
+inline void opMonTime(uint32_t elapsedS, uint32_t etaS) {
+    char b[56], e[24];
+    opMonEtaText(etaS, e, sizeof(e));
+    unsigned long el = elapsedS;
+    snprintf(b, sizeof(b), "%lu:%02lu:%02lu · ще %s%s",
+             el / 3600, (el / 60) % 60, el % 60, etaS ? "≈" : "", e);
+    opMonRow(b, C_TEXT);
+}
+
+inline void opMonFoot(bool running, bool aborted, const char *text) {
+    tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
+    tft.drawFastHLine(0, FOOT_Y, TFT_W, C_BLUE);
+    tSet(FONT_SMALL, aborted ? C_RED : C_MUTED, C_CARD);
+    tPut(EDGE, TFT_H - 8, running ? "[OK] тримати = ЗУПИНИТИ" : text);
+}
+
+inline void drawPageDischarge() {
+    const DischargeState &d = g_dis;
+    opMonFrame("РОЗРЯД", d.lastMv);
+    char b[56];
+
+    // Прогрес до цілі — числом у рядку «ціль».
     int span = (int)d.startMv - (int)d.targetMv;
     int done = (int)d.startMv - (int)d.lastMv;
     int pct  = (span > 0) ? (done * 100 / span) : 0;
-    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
 
-    // Рівень заряду — ТАКОЮ Ж анімованою іконкою батареї, як на головній
-    // сторінці: drawBatteryBar() запам'ятовує геометрію в g_battX/Y/W/H, а
-    // displayAnimTick() ганяє по заповненню той самий градієнт.
-    const char *csrc; int chargePct = batteryPercent(&csrc);
-    int by = HDR_H + 44, bh = 22;
-    int bx = EDGE, bw = TFT_W - 2 * EDGE - 6;      // −6 px під «плюсовий» вивід
-    // ⚑ Смугу тут БІЛЬШЕ НЕ ЗАТИРАЄМО. Саме це затирання й «скидало» анімацію
-    //  на кожному опитуванні: воно стирало градієнт, а drawBatteryBar() клав
-    //  рівну заливку. Тепер шкала чистить власний слід сама — і лише тоді,
-    //  коли графічний рівень справді змінився.
-    drawBatteryBar(bx, by, bw, bh, chargePct, chargeColor(chargePct));
-    g_pctTx = g_pctTy = g_pctTw = g_pctTh = 0;     // цифр усередині шкали немає
+    snprintf(b, sizeof(b), "ціль %u.%02u В  (%d%%)",
+             d.targetMv / 1000, (d.targetMv % 1000) / 10, pct);
+    opMonRow(b, C_TEXT);
 
-    // Рядки показань. Кожен сам чистить свою смужку на всю ширину, тож при
-    // оновленні раз на 5 с екран не блимає і старий текст не «просвічує».
-    tSet(FONT_BODY, C_TEXT);
-    int y = by + bh + 18;
-    // Рядки, що не влізли до статус-смуги, просто не малюємо: на вузьких
-    // панелях (240×240) місця менше, і краще втратити «час», ніж заїхати
-    // текстом на підвал. Порядок нижче — за спаданням важливості.
-    auto row = [&](const char *txt, uint16_t col) {
-        if (y > FOOT_Y - 4) return;
-        tft.fillRect(0, y - 12, TFT_W, 16, C_BG);
-        tSet(FONT_BODY, col);
-        tPut(EDGE, y, txt);
-        y += 18;
-    };
+    // Режим і фаза — на тому самому місці, що й у заряді.
+    snprintf(b, sizeof(b), "режим %s · %s%s",
+             dischargeProfileShort(dischargeProfile()),
+             dischargePhaseShort(d.phase),
+             dischargeManualMa() ? " · руч." : "");
+    opMonRow(b, d.phase == DIS_PH_HOLD ? C_YELLOW : C_MUTED);
 
-    snprintf(b, sizeof(b), "ціль %u.%02u В  (%d%%)", d.targetMv / 1000, (d.targetMv % 1000) / 10, pct);
-    row(b, C_TEXT);
-
-    // Струм і потужність — з ВБУДОВАНОГО датчика струму DS2438 (його резистор
-    // стоїть усередині пакета послідовно з банками). Показуємо СЕРЕДНІЙ струм:
-    // ключ працює ШІМом, тож саме він і тече, а не виміряний пік.
+    // Струм і потужність — із ВБУДОВАНОГО датчика DS2438 (його резистор стоїть
+    // усередині пакета послідовно з банками). Показуємо СЕРЕДНІЙ струм: ключ
+    // працює ШІМом, тож саме він і тече, а не виміряний пік.
     int wx10 = dischargeWattsX10(d.lastMv, d.lastMa);
     snprintf(b, sizeof(b), "струм %d мА · %d.%d Вт", d.lastMa, wx10 / 10, wx10 % 10);
-    row(b, (d.state == DIS_RUN && !dischargeInBand(d)) ? C_YELLOW : C_TEXT);
+    opMonRow(b, (d.state == DIS_RUN && !dischargeInBand(d)) ? C_YELLOW : C_TEXT);
 
-    // Обмеження струму: уставка веде за напругою (1000 мА на повному заряді ->
-    // 300 мА у кінці), ключ тримає її шпаруватістю. Пік — струм при 100 %.
     if (dischargePwmOk()) {
         snprintf(b, sizeof(b), "уст %u · ШІМ %u%% · пік %u", d.setMa, d.dutyPct, d.peakMa);
-        row(b, C_MUTED);
+        opMonRow(b, C_MUTED);
     } else {
-        row("БЕЗ ШІМ: не обмежено!", C_RED);
+        opMonRow("БЕЗ ШІМ: не обмежено!", C_RED);
     }
 
-    // Віддано: наш інтеграл по опитуваннях і апаратний лічильник DCA самого
-    // DS2438. DCA рахує неперервно, тож велика розбіжність = опитування щось
-    // пропускає.
     snprintf(b, sizeof(b), "віддано %lu мА·год", (unsigned long)dischargeMah());
-    row(b, C_GREEN);
-    snprintf(b, sizeof(b), "DCA %lu мА·год · ICA %u", (unsigned long)dischargeDcaMah(), d.lastIca);
-    row(b, C_MUTED);
+    opMonRow(b, C_GREEN);
+    snprintf(b, sizeof(b), "DCA %lu мА·год · ICA %u",
+             (unsigned long)dischargeDcaMah(), d.lastIca);
+    opMonRow(b, C_MUTED);
 
     snprintf(b, sizeof(b), "темп. %d.%d °C", d.lastTempC10 / 10, abs(d.lastTempC10 % 10));
-    row(b, d.lastTempC10 >= DISCHARGE_MAX_TEMP_C * 10 - 50 ? C_RED : C_TEXT);
+    opMonRow(b, d.lastTempC10 >= DISCHARGE_MAX_TEMP_C * 10 - 50 ? C_RED : C_TEXT);
 
-    unsigned long el = d.elapsedS;
-    snprintf(b, sizeof(b), "час  %lu:%02lu:%02lu", el / 3600, (el / 60) % 60, el % 60);
-    row(b, C_TEXT);
+    opMonTime(d.elapsedS,
+              dischargeEtaS(impresPercentFromMv(d.lastMv),
+                            impresPercentFromMv(d.targetMv),
+                            dischargeRatedMah(),
+                            (uint16_t)(d.lastMa < 0 ? -d.lastMa : d.lastMa)));
 
-    // Підвал: стан або причина зупинки.
-    tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
-    tft.drawFastHLine(0, FOOT_Y, TFT_W, C_BLUE);
-    const char *foot = (d.state == DIS_RUN)   ? "[OK] тримати = ЗУПИНИТИ"
-                     : (d.state == DIS_DONE)  ? "ГОТОВО -> на IMPRES-ЗП"
-                     : dischargeReasonText(d.reason);
-    tSet(FONT_SMALL, d.state == DIS_ABORT ? C_RED : C_MUTED, C_CARD);
-    tPut(EDGE, TFT_H - 8, foot);
+    opMonFoot(d.state == DIS_RUN, d.state == DIS_ABORT,
+              (d.state == DIS_DONE) ? "ГОТОВО -> на IMPRES-ЗП"
+                                    : dischargeReasonText(d.reason));
 }
 
-// Сторінка МОНІТОРИНГУ ЗАРЯДУ (кольорова) — та сама схема, що й розряд вище,
-// але прогрес рахується у бік ЗРОСТАННЯ напруги (ціль вища за старт), і
-// показуємо ЦІЛЬОВУ вихідну напругу ДС/ДС замість шпаруватості (крива
-// керування нелінійна, див. charge.h/settings.h — сира напруга сама по собі
-// нічого не каже про очікуваний струм).
-inline void drawPageCharge() {
-    // Заголовок за РЕЖИМОМ, а не за станом: підсумок лишається на екрані й
-    // після зупинки, і назвати пробудження «зарядом» означало б збрехати саме
-    // там, де користувач читає результат.
-    drawHeaderBar(chargeWakeShown() ? "ПРОБУДЖЕННЯ" : "ЗАРЯД");
+// Сторінка МОНІТОРИНГУ ЗАРЯДУ — той самий каркас, що й розряд вище.
+//  ⚑ ПРОБУДЖЕННЯ — ОКРЕМА СТОРІНКА, А НЕ ГІЛКА ВСЕРЕДИНІ ЗАРЯДУ. Половина
+//  рядків заряду в ньому була б вигадкою: ціль у відсотках, CCA, ICA й
+//  температура беруться з DS2438, а він мовчить — у цьому вся суть режиму.
+//  Показувати «темп. 0.0 °C» і «CCA 0» означало б видавати відсутність даних
+//  за дані. Каркас при цьому спільний, тож виглядають вони однаково.
+inline void drawPageWake() {
     const ChargeState &c = g_chg;
-
+    opMonFrame("ПРОБУДЖЕННЯ", c.lastMv);
     char b[56];
-    tft.fillRect(0, HDR_H + 4, TFT_W, 40, C_BG);
-    snprintf(b, sizeof(b), "%u.%02u В", c.lastMv / 1000, (c.lastMv % 1000) / 10);
-    tSet(FONT_MODEL, chargeColor(impresPercentFromMv(c.lastMv)));
-    tPut(EDGE, HDR_H + 36, b);
 
-    const char *csrc; int chargePct = batteryPercent(&csrc);
-    int by = HDR_H + 44, bh = 22;
-    int bx = EDGE, bw = TFT_W - 2 * EDGE - 6;
-    // ⚑ Смугу тут БІЛЬШЕ НЕ ЗАТИРАЄМО. Саме це затирання й «скидало» анімацію
-    //  на кожному опитуванні: воно стирало градієнт, а drawBatteryBar() клав
-    //  рівну заливку. Тепер шкала чистить власний слід сама — і лише тоді,
-    //  коли графічний рівень справді змінився.
-    drawBatteryBar(bx, by, bw, bh, chargePct, chargeColor(chargePct));
-    g_pctTx = g_pctTy = g_pctTw = g_pctTh = 0;
+    snprintf(b, sizeof(b), "тримаємо %u.%02u В",
+             c.targetMv / 1000, (c.targetMv % 1000) / 10);
+    opMonRow(b, C_TEXT);
+    snprintf(b, sizeof(b), "режим пробудження · %u с", (unsigned)CHARGE_WAKE_MAX_S);
+    opMonRow(b, C_MUTED);
+    snprintf(b, sizeof(b), "струм %d мА зі стелі %u", c.lastMa, (unsigned)CHARGE_WAKE_MA);
+    opMonRow(b, C_TEXT);
+    if (chargePwmOk()) {
+        snprintf(b, sizeof(b), "ШІМ %u%% (межа %u з %u)", chargeDutyPct(),
+                 chargeDutyCap(), (unsigned)CHARGE_DUTY_FULL);
+        opMonRow(b, C_MUTED);
+    } else {
+        opMonRow("БЕЗ КЕРУВАННЯ: перевірте!", C_RED);
+    }
+    snprintf(b, sizeof(b), "віддано %lu з %u мА·год",
+             (unsigned long)chargeMah(), (unsigned)CHARGE_WAKE_MAH_MAX);
+    opMonRow(b, C_GREEN);
+    snprintf(b, sizeof(b), "проб %u · %s", c.wakeProbes,
+             c.reason == CHGR_WOKE ? "ВІДПОВІВ" : "монітор мовчить");
+    opMonRow(b, c.reason == CHGR_WOKE ? C_GREEN : C_MUTED);
 
-    tSet(FONT_BODY, C_TEXT);
-    int y = by + bh + 18;
-    auto row = [&](const char *txt, uint16_t col) {
-        if (y > FOOT_Y - 4) return;
-        tft.fillRect(0, y - 12, TFT_W, 16, C_BG);
-        tSet(FONT_BODY, col);
-        tPut(EDGE, y, txt);
-        y += 18;
-    };
+    // ⚑ ТУТ ЗАЛИШОК ТОЧНИЙ, А НЕ ОЦІНКА: режим обмежений часом жорстко
+    //  (CHARGE_WAKE_MAX_S), тож лишилось рівно стільки, скільки не минуло.
+    uint32_t left = (c.elapsedS < (uint32_t)CHARGE_WAKE_MAX_S)
+                  ? ((uint32_t)CHARGE_WAKE_MAX_S - c.elapsedS) : 0;
+    opMonTime(c.elapsedS, (c.state == CHG_RUN) ? left : 0);
+
+    opMonFoot(c.state == CHG_RUN, c.state == CHG_ABORT,
+              (c.state == CHG_DONE) ? "ГОТОВО" : chargeReasonText(c.reason));
+}
+
+inline void drawPageCharge() {
+    if (chargeWakeShown()) { drawPageWake(); return; }
+    const ChargeState &c = g_chg;
+    opMonFrame("ЗАРЯД", c.lastMv);
+    char b[56];
 
     // ЖИВЛЕННЯ — найпершим рядком і тільки коли з ним негаразд. Без блока
     // заряд не піде взагалі, тож ховати причину нижче за наслідки не можна.
@@ -1567,81 +1619,48 @@ inline void drawPageCharge() {
                  (chargePsuMv() % 1000) / 10,
                  chargePsuState() == PSU_ABSENT ? "НЕМАЄ ЖИВЛЕННЯ" :
                  chargePsuState() == PSU_LOW    ? "НАПРУГА ЗАНИЖЕНА" : "НАПРУГА ЗАВИЩЕНА");
-        row(b, C_RED);
-        snprintf(b, sizeof(b), "потрібен блок %u.%u..%u.%u В",
-                 CHARGE_PSU_MIN_MV / 1000, (CHARGE_PSU_MIN_MV % 1000) / 100,
-                 CHARGE_PSU_MAX_MV / 1000, (CHARGE_PSU_MAX_MV % 1000) / 100);
-        row(b, C_RED);
+        opMonRow(b, C_RED);
     }
 
-    // ⚑ У ПРОБУДЖЕННІ ПОЛОВИНА ЦИХ РЯДКІВ БУЛА Б ВИГАДКОЮ. Ціль у відсотках,
-    //  CCA, ICA й температура беруться з DS2438 — а він мовчить, у цьому вся
-    //  суть режиму. Показувати «темп. 0.0 °C» і «CCA 0» означало б видавати
-    //  відсутність даних за дані.
-    if (chargeWakeShown()) {
-        snprintf(b, sizeof(b), "тримаємо %u.%02u В", c.targetMv / 1000, (c.targetMv % 1000) / 10);
-        row(b, C_TEXT);
-        snprintf(b, sizeof(b), "струм %d мА зі стелі %u", c.lastMa, (unsigned)CHARGE_WAKE_MA);
-        row(b, C_TEXT);
-        if (chargePwmOk()) {
-            snprintf(b, sizeof(b), "ШІМ %u%% (межа %u з %u)", chargeDutyPct(),
-                     chargeDutyCap(), (unsigned)CHARGE_DUTY_FULL);
-            row(b, C_MUTED);
-        } else {
-            row("БЕЗ КЕРУВАННЯ: перевірте!", C_RED);
-        }
-        snprintf(b, sizeof(b), "віддано %lu з %u мА·год",
-                 (unsigned long)chargeMah(), (unsigned)CHARGE_WAKE_MAH_MAX);
-        row(b, C_GREEN);
-        snprintf(b, sizeof(b), "проб %u · %s", c.wakeProbes,
-                 c.reason == CHGR_WOKE ? "ВІДПОВІВ" : "монітор мовчить");
-        row(b, c.reason == CHGR_WOKE ? C_GREEN : C_MUTED);
-        snprintf(b, sizeof(b), "час  %lu з %u с",
-                 (unsigned long)c.elapsedS, (unsigned)CHARGE_WAKE_MAX_S);
-        row(b, C_TEXT);
-    } else {
     snprintf(b, sizeof(b), "ціль %u.%02u В (%u%%)",
              c.targetMv / 1000, (c.targetMv % 1000) / 10, c.targetPct);
-    row(b, C_TEXT);
+    opMonRow(b, C_TEXT);
 
-    // Струм і потужність — із ВЛАСНОГО шунта пристрою (CHARGE_SHUNT_MOHM у
-    // мінусовому проводі), а не з DS2438: монітор пакета читається лише на
-    // закритому ключі й дає температуру, а не струм заряду.
+    snprintf(b, sizeof(b), "режим %s · %s%s",
+             chargeProfileShort(chargeProfile()), chargePhaseShort(c.phase),
+             chargeManualMa() ? " · руч." : "");
+    opMonRow(b, c.phase == CHG_PH_HOLD ? C_YELLOW : C_MUTED);
+
+    // Струм і потужність — із ВЛАСНОГО шунта пристрою, а не з DS2438: монітор
+    // пакета читається лише на закритому ключі й дає температуру, не струм.
     int wx10 = chargeWattsX10(c.lastMv, c.lastMa);
     snprintf(b, sizeof(b), "струм %d мА · %d.%d Вт", c.lastMa, wx10 / 10, wx10 % 10);
-    row(b, C_TEXT);
+    opMonRow(b, C_TEXT);
 
-    // Уставка, вершина пульсацій струму і шпаруватість ключа: вершина злітає,
-    // коли дросель фактично випав із кола, а середнє це ще приховує.
+    // Вершина пульсацій злітає, коли дросель фактично випав із кола, а середнє
+    // це ще приховує — тому пік показуємо окремо.
     if (chargePwmOk()) {
-        snprintf(b, sizeof(b), "уст %u мА · пік %u мА · %u%%", c.setMa, c.peakMa, chargeDutyPct());
-        row(b, C_MUTED);
+        snprintf(b, sizeof(b), "уст %u мА · пік %u мА · %u%%",
+                 c.setMa, c.peakMa, chargeDutyPct());
+        opMonRow(b, C_MUTED);
     } else {
-        row("БЕЗ КЕРУВАННЯ: перевірте!", C_RED);
+        opMonRow("БЕЗ КЕРУВАННЯ: перевірте!", C_RED);
     }
 
-    // Отримано: наш інтеграл по опитуваннях і апаратний лічильник CCA самого
-    // DS2438.
     snprintf(b, sizeof(b), "отримано %lu мА·год", (unsigned long)chargeMah());
-    row(b, C_GREEN);
-    snprintf(b, sizeof(b), "CCA %lu мА·год · ICA %u", (unsigned long)chargeCcaMah(), c.lastIca);
-    row(b, C_MUTED);
+    opMonRow(b, C_GREEN);
+    snprintf(b, sizeof(b), "CCA %lu мА·год · ICA %u",
+             (unsigned long)chargeCcaMah(), c.lastIca);
+    opMonRow(b, C_MUTED);
 
     snprintf(b, sizeof(b), "темп. %d.%d °C", c.lastTempC10 / 10, abs(c.lastTempC10 % 10));
-    row(b, c.lastTempC10 >= CHARGE_MAX_TEMP_C * 10 - 50 ? C_RED : C_TEXT);
+    opMonRow(b, c.lastTempC10 >= CHARGE_MAX_TEMP_C * 10 - 50 ? C_RED : C_TEXT);
 
-    unsigned long el = c.elapsedS;
-    snprintf(b, sizeof(b), "час  %lu:%02lu:%02lu", el / 3600, (el / 60) % 60, el % 60);
-    row(b, C_TEXT);
-    }
+    opMonTime(c.elapsedS,
+              chargeEtaS(c.phase, c.lastPct, c.targetPct, chargeRatedMah(), c.lastMa));
 
-    tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
-    tft.drawFastHLine(0, FOOT_Y, TFT_W, C_BLUE);
-    const char *foot = (c.state == CHG_RUN)  ? "[OK] тримати = ЗУПИНИТИ"
-                      : (c.state == CHG_DONE) ? "ГОТОВО"
-                      : chargeReasonText(c.reason);
-    tSet(FONT_SMALL, c.state == CHG_ABORT ? C_RED : C_MUTED, C_CARD);
-    tPut(EDGE, TFT_H - 8, foot);
+    opMonFoot(c.state == CHG_RUN, c.state == CHG_ABORT,
+              (c.state == CHG_DONE) ? "ГОТОВО" : chargeReasonText(c.reason));
 }
 
 // Сторінка Майстра відновлення (кольорова). Дані готує wizDeviceRefresh().

@@ -202,6 +202,9 @@ struct ChargeState {
     uint16_t satChipMv;
     bool     satChipOk;
     bool     inTaper;         // уже перейшли на дозаряд малим струмом (з гістерезисом)
+    // ── РОЗУМНИЙ ПРОФІЛЬ ───────────────────────────────────────────────────
+    uint8_t  phase;           // CHG_PH_* — що саме зараз робить профіль
+    uint8_t  fullPolls;       // скільки опитувань поспіль виконано критерій «повний»
     uint8_t  badPsuPolls;     // скільки опитувань поспіль живлення поза допуском
     float    rsense;          // шунт ПАКЕТА з DS2438, Ом — лише для перерахунку CCA
     // ── ПРОБУДЖЕННЯ ────────────────────────────────────────────────────────
@@ -717,6 +720,273 @@ inline uint16_t chargeSetpointMaForPctH(int pct, int targetPct, bool *inTaper) {
     // саме це й робить перехід одностороннім.
     if (*inTaper) return CHARGE_MA_TAPER;
     return chargeSetpointMaForPct(pct, targetPct);
+}
+
+// ═════════════ РОЗУМНИЙ ПРОФІЛЬ: CC/CV ЗА ЄМНІСТЮ САМОГО ПАКЕТА ═══════════
+//  Заводський профіль вище задає струм ТАБЛИЦЕЮ у відсотках заряду, і таблиця
+//  однакова для будь-якого пакета. Розумний рахує струм від ПАСПОРТНОЇ
+//  ЄМНОСТІ цього пакета в частках C і веде класичний літієвий цикл:
+//  передзаряд -> CC -> CV -> завершення за струмом.
+//
+//  ⚑ ЧОМУ ЦЕ ЧИСТА ФУНКЦІЯ, А НЕ ЩЕ ОДНА МАШИНА СТАНІВ. Уся обв'язка заряду —
+//  сторож, відсічки за піком, живленням, температурою й «пакета немає»,
+//  облік мА·год — уже написана й перевірена. Розумний режим МІНЯЄ РІВНО ОДНЕ:
+//  звідки береться уставка струму. Тому він і зроблений як заміна однієї
+//  функції, а не як паралельний шлях: усе, що захищає заряд, лишається тим
+//  самим кодом, і його не треба перевіряти вдруге.
+
+// Паспортна ємність ПОТОЧНОГО пакета. Її знає верхній рівень (розбір DS2433),
+// а charge.h підключається раніше за нього — тож значення кладуть сюди ззовні.
+// 0 = невідома: тоді беремо номінал із settings.h, щоб режим лишався робочим
+// на пакеті, який ще не прочитали.
+static uint16_t g_chgRatedMah = 0;
+inline void     chargeSetRatedMah(uint16_t m) { g_chgRatedMah = m; }
+inline uint16_t chargeRatedMah() {
+    return g_chgRatedMah ? g_chgRatedMah : (uint16_t)BATTERY_RATED_MAH;
+}
+
+// Фази розумного заряду (їх видно на екрані й у клієнтах).
+enum { CHG_PH_HOLD = 0,   // пауза: температура поза вікном
+       CHG_PH_PRE,        // передзаряд глибоко розрядженого пакета
+       CHG_PH_CC,         // постійний струм
+       CHG_PH_CV,         // постійна напруга (уставка спадає)
+       CHG_PH_FULL };     // критерій завершення виконано
+
+// Коротко — для вузького рядка на екрані пристрою (там 26 гліфів на весь
+// рядок, і повні назви туди не влазять разом із назвою профілю).
+inline const char *chargePhaseShort(uint8_t ph) {
+    switch (ph) {
+        case CHG_PH_PRE:  return "перед";
+        case CHG_PH_CC:   return "CC";
+        case CHG_PH_CV:   return "CV";
+        case CHG_PH_FULL: return "повний";
+        default:          return "пауза t";
+    }
+}
+inline const char *chargePhaseText(uint8_t ph) {
+    switch (ph) {
+        case CHG_PH_PRE:  return "передзаряд";
+        case CHG_PH_CC:   return "CC (пост. струм)";
+        case CHG_PH_CV:   return "CV (пост. напруга)";
+        case CHG_PH_FULL: return "повний";
+        default:          return "пауза (температура)";
+    }
+}
+
+// Струм у частках C, мА. Затиск — ті самі апаратні межі, що й у ручного
+// режиму: частка C це побажання, а не дозвіл перевищити залізо.
+inline uint16_t chargeSmartClamp(uint32_t ma) {
+    if (ma < (uint32_t)CHARGE_SMART_MA_MIN) ma = CHARGE_SMART_MA_MIN;
+    if (ma > (uint32_t)CHARGE_MA_80)        ma = CHARGE_MA_80;
+    return (uint16_t)ma;
+}
+inline uint16_t chargeSmartCMa(uint16_t ratedMah, uint8_t pctOfC) {
+    return chargeSmartClamp((uint32_t)ratedMah * pctOfC / 100u);
+}
+// Струм завершення (0.05C). Він же — ПІДЛОГА уставки у фазі CV: одне число на
+// дві ролі, інакше режим міг би не завершитись ніколи (див. CHARGE_SMART_MA_MIN).
+inline uint16_t chargeSmartEndMa(uint16_t ratedMah) {
+    return chargeSmartCMa(ratedMah, CHARGE_SMART_END_PCT);
+}
+
+struct ChargeSmartIn {
+    uint16_t packMv;      // напруга пакета (міряна на ЗАКРИТОМУ ключі)
+    uint16_t targetMv;    // ціль цього сеансу
+    uint16_t ratedMah;    // паспортна ємність пакета
+    int16_t  tempC10;     // температура пакета ×10
+    bool     tempFresh;   // чи вимір температури взагалі є
+};
+struct ChargeSmartOut { uint16_t setMa; uint8_t phase; };
+
+inline ChargeSmartOut chargeSmart(const ChargeSmartIn &in) {
+    ChargeSmartOut o; o.setMa = 0; o.phase = CHG_PH_HOLD;
+
+    // 1) ТЕМПЕРАТУРНЕ ВІКНО — найперше, бо воно скасовує все інше.
+    //  Порівнюємо в десятих градуса, БЕЗ ділення на 10: для від'ємних значень
+    //  цілочисельне ділення тягне до нуля, і -0.5 °C стало б рівно 0 °C, тобто
+    //  «дозволено». Саме на межі нуля ця помилка й була б небезпечною.
+    if (in.tempFresh &&
+        (in.tempC10 < (int16_t)(CHARGE_SMART_T_MIN_C * 10) ||
+         in.tempC10 > (int16_t)(CHARGE_SMART_T_MAX_C * 10)))
+        return o;                                   // HOLD, струм 0
+
+    uint16_t ccMa  = chargeSmartCMa(in.ratedMah, CHARGE_SMART_CC_PCT);
+    uint16_t preMa = chargeSmartCMa(in.ratedMah, CHARGE_SMART_PRE_PCT);
+    uint16_t endMa = chargeSmartEndMa(in.ratedMah);
+
+    // 2) ХОЛОДНИЙ ПАКЕТ — струм навпіл. Між 0 і 10 °C літій приймає заряд
+    //    помітно гірше, і повний струм на холоді дає те саме металеве
+    //    осадження, що й заряд глибоко розрядженого.
+    if (in.tempFresh && in.tempC10 < (int16_t)(CHARGE_SMART_T_COOL_C * 10)) {
+        ccMa  = chargeSmartClamp((uint32_t)ccMa  * CHARGE_SMART_COOL_PCT / 100u);
+        preMa = chargeSmartClamp((uint32_t)preMa * CHARGE_SMART_COOL_PCT / 100u);
+    }
+
+    // 3) ПЕРЕДЗАРЯД.
+    if (in.packMv < (uint16_t)CHARGE_SMART_PRE_MV) {
+        o.phase = CHG_PH_PRE; o.setMa = preMa; return o;
+    }
+
+    uint16_t cvFrom = (in.targetMv > (uint16_t)CHARGE_SMART_CV_BAND_MV)
+                    ? (uint16_t)(in.targetMv - CHARGE_SMART_CV_BAND_MV) : 0;
+
+    // 4) CC — поки до цілі ще далеко.
+    if (in.packMv <= cvFrom) { o.phase = CHG_PH_CC; o.setMa = ccMa; return o; }
+
+    // 5) CV. Регулятор фізично керує СТРУМОМ, тож «постійну напругу» робимо
+    //    так: уставка лінійно спадає від струму CC на межі зони до струму
+    //    завершення рівно на цілі. Що ближче напруга до цілі — то менший
+    //    струм у неї йде, тобто напруга сама впирається в ціль і стоїть.
+    o.phase = CHG_PH_CV;
+    if (ccMa <= endMa || in.packMv >= in.targetMv) { o.setMa = endMa; return o; }
+    uint32_t span = (uint32_t)in.targetMv - cvFrom;
+    uint32_t left = (uint32_t)in.targetMv - in.packMv;
+    o.setMa = chargeSmartClamp((uint32_t)endMa + (uint32_t)(ccMa - endMa) * left / span);
+    return o;
+}
+
+// «Пакет повний» у розумному профілі. Критерій — не «напруга торкнулась
+// цілі», а «на цільовій напрузі струм упав до найменшої уставки»: саме так
+// закінчують заряд літію, і саме це відрізняє повний пакет від пакета, у який
+// струм ще йде.
+//
+// Лічильник тримає викликач — функція лишається чистою, щоб її ганяв тест.
+// Допуск у CHARGE_DEADBAND_MA — не послаблення: нижче своєї мертвої зони
+// регулятор однаково не розрізняє струм, тож вимагати точної рівності
+// означало б чекати на шум.
+inline bool chargeSmartFull(const ChargeSmartOut &o, int32_t measMa,
+                            uint16_t endMa, uint8_t *polls) {
+    bool atFloor = (o.phase == CHG_PH_CV) &&
+                   ((uint32_t)o.setMa <= (uint32_t)endMa + CHARGE_DEADBAND_MA);
+    bool lowI    = (measMa >= 0) && (measMa <= (int32_t)endMa + CHARGE_DEADBAND_MA);
+    if (atFloor && lowI) { if (*polls < 255) (*polls)++; }
+    else                 { *polls = 0; }
+    return *polls >= CHARGE_SMART_END_POLLS;
+}
+
+// ── СКІЛЬКИ ЩЕ ЛИШИЛОСЬ ───────────────────────────────────────────────────
+//  Повертає секунди або 0 = «оцінити не можна». Нуль тут не «зараз
+//  закінчиться», а чесне «не знаю»: показати вигадане число гірше, ніж не
+//  показати жодного, бо на нього почнуть розраховувати.
+//
+//  ⚑ ЦЕ ОЦІНКА, І ВОНА ПІДПИСАНА ЯК ОЦІНКА («≈» в інтерфейсі). Рахуємо
+//  найпростішим чесним способом: скільки ємності лишилось добрати (різниця
+//  відсотків × паспортна ємність) поділити на струм, який іде ЗАРАЗ.
+//
+//  ⚠️ У фазі CV струм спадає сам, тож лінійна оцінка бреше в оптимістичний
+//  бік — і бреше сильно, бо саме в CV пакет добирає останні відсотки
+//  найдовше. Множимо на два: це не підгонка під конкретний пакет, а грубе
+//  правило (струм у CV падає приблизно експоненційно, і час до порога
+//  завершення виходить того ж порядку, що й уже пройдений шлях). Точніше
+//  сказати неможливо, не знаючи внутрішнього опору саме цього пакета.
+inline uint32_t chargeEtaS(uint8_t phase, int pctNow, int pctTarget,
+                           uint16_t ratedMah, int32_t maNow) {
+    if (phase == CHG_PH_HOLD || phase == CHG_PH_FULL) return 0;
+    if (maNow <= (int32_t)CHARGE_DEADBAND_MA) return 0;   // струму немає — нема від чого рахувати
+    if (pctTarget <= pctNow || !ratedMah) return 0;
+    uint32_t remainMah = (uint32_t)ratedMah * (uint32_t)(pctTarget - pctNow) / 100u;
+    if (!remainMah) return 0;
+    uint32_t s = remainMah * 3600u / (uint32_t)maNow;
+    if (phase == CHG_PH_CV) s *= 2;
+    // Більше за стелю сеансу — це вже не оцінка, а число з нізвідки.
+    if (s > (uint32_t)CHARGE_MAX_MIN * 60u) return 0;
+    return s;
+}
+
+// ── ЯКИЙ ПРОФІЛЬ ЗАРАЗ ────────────────────────────────────────────────────
+//  Живе поза ChargeState з тієї ж причини, що й ручний струм: це НАЛАШТУВАННЯ
+//  користувача, а не стан сеансу.
+enum { CHG_PROF_FACTORY = 0, CHG_PROF_SMART = 1 };
+static uint8_t g_chgProfile = CHG_PROF_FACTORY;
+inline uint8_t chargeProfile() { return g_chgProfile; }
+inline uint8_t chargeSetProfile(uint8_t p) {
+    g_chgProfile = (p == CHG_PROF_SMART) ? CHG_PROF_SMART : CHG_PROF_FACTORY;
+    return g_chgProfile;
+}
+inline uint8_t chargeCycleProfile() {
+    return chargeSetProfile(g_chgProfile == CHG_PROF_SMART ? CHG_PROF_FACTORY
+                                                           : CHG_PROF_SMART);
+}
+inline const char *chargeProfileText(uint8_t p) {
+    return (p == CHG_PROF_SMART) ? "розумний" : "заводський";
+}
+inline const char *chargeProfileShort(uint8_t p) {
+    return (p == CHG_PROF_SMART) ? "CC/CV" : "табл.";
+}
+
+// ── РУЧНА ЦІЛЬ ЗАРЯДУ В МІЛІВОЛЬТАХ ───────────────────────────────────────
+//  0 — ціль береться з відсотка через криву SoC, як і було. Інакше — рівно ця
+//  напруга. Потрібно для зберігання (7.4 В) і для ремонтних сценаріїв, де
+//  «85 %» — це стільки, скільки крива вважає за 85 %, а треба саме вольти.
+static uint16_t g_chgManualMv = 0;
+inline uint16_t chargeManualMvClamp(uint16_t mv) {
+    if (mv < (uint16_t)CHARGE_MANUAL_MV_MIN) return CHARGE_MANUAL_MV_MIN;
+    if (mv > (uint16_t)CHARGE_MANUAL_MV_MAX) return CHARGE_MANUAL_MV_MAX;
+    return mv;
+}
+inline uint16_t chargeManualMv() { return g_chgManualMv; }
+inline uint16_t chargeSetManualMv(uint16_t mv) {
+    g_chgManualMv = mv ? chargeManualMvClamp(mv) : 0;
+    return g_chgManualMv;
+}
+
+// Єдина точка, звідки машина заряду бере уставку струму: профіль плюс ручна
+// поправка. Саме вона й робить розумний режим заміною ОДНІЄЇ функції: усе
+// інше в chargeTask() лишається тим самим кодом, що й було.
+//
+//  inTaper тримає викликач: у заводському профілі це гістерезис порога
+//  дозаряду (див. вище), у розумному — просто ознака фази CV. Обидва означають
+//  одне й те саме для ручної поправки: «кінець заряду, піднімати струм не
+//  можна».
+inline uint16_t chargeSetpointFor(int pct, int targetPct,
+                                  uint16_t packMv, uint16_t targetMv,
+                                  int16_t tempC10, bool tempFresh,
+                                  bool *inTaper, uint8_t *phaseOut) {
+    uint16_t autoMa; uint8_t ph;
+    if (g_chgProfile == CHG_PROF_SMART) {
+        ChargeSmartIn in;
+        in.packMv = packMv; in.targetMv = targetMv;
+        in.ratedMah = chargeRatedMah();
+        in.tempC10 = tempC10; in.tempFresh = tempFresh;
+        ChargeSmartOut o = chargeSmart(in);
+        ph = o.phase;
+        *inTaper = (ph == CHG_PH_CV);
+        if (phaseOut) *phaseOut = ph;
+        if (ph == CHG_PH_HOLD) return 0;            // пауза за температурою
+        autoMa = o.setMa;
+    } else {
+        autoMa = chargeSetpointMaForPctH(pct, targetPct, inTaper);
+        ph = *inTaper ? CHG_PH_CV : CHG_PH_CC;
+        if (phaseOut) *phaseOut = ph;
+    }
+    return chargeApplyManual(autoMa, g_chgManualMa, *inTaper);
+}
+
+// ── ПЕРЕМИКАННЯ РУЧНИХ УСТАВОК НА ПРИСТРОЇ ────────────────────────────────
+//  У вебі й в exe значення набирають полем, а на самому пристрої поля немає —
+//  тож там воно перемикається по колу з готового набору, тим самим прийомом,
+//  що й цілі. НУЛЬ у наборі — не «нуль вольт», а «повернутись до автомата»:
+//  саме тому він стоїть першим, і саме тому набір починається з нього.
+static const uint16_t CHARGE_MANUAL_MV_PRESETS[] = { 0, 8200, 8000, 7800, 7400 };
+#define CHARGE_MANUAL_MV_PRESET_N \
+    ((int)(sizeof(CHARGE_MANUAL_MV_PRESETS) / sizeof(CHARGE_MANUAL_MV_PRESETS[0])))
+inline uint16_t chargeCycleManualMv() {
+    int i = 0;
+    for (; i < CHARGE_MANUAL_MV_PRESET_N; i++)
+        if (CHARGE_MANUAL_MV_PRESETS[i] == g_chgManualMv) break;
+    i = (i + 1) % CHARGE_MANUAL_MV_PRESET_N;
+    return chargeSetManualMv(CHARGE_MANUAL_MV_PRESETS[i]);
+}
+
+static const uint16_t CHARGE_MANUAL_MA_PRESETS[] = { 0, 200, 400, 700, 1000 };
+#define CHARGE_MANUAL_MA_PRESET_N \
+    ((int)(sizeof(CHARGE_MANUAL_MA_PRESETS) / sizeof(CHARGE_MANUAL_MA_PRESETS[0])))
+inline uint16_t chargeCycleManualMa() {
+    int i = 0;
+    for (; i < CHARGE_MANUAL_MA_PRESET_N; i++)
+        if (CHARGE_MANUAL_MA_PRESETS[i] == g_chgManualMa) break;
+    i = (i + 1) % CHARGE_MANUAL_MA_PRESET_N;
+    return chargeSetManualMa(CHARGE_MANUAL_MA_PRESETS[i]);
 }
 
 // ── ЦІЛЬ ЗАРЯДУ у ВІДСОТКАХ, обрана на пристрої ─────────────────────────────

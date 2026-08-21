@@ -28,11 +28,17 @@
 #include <cstring>
 #include <cstdint>
 #include <cstdlib>
+#include <initializer_list>
 
-// Цілі заряду/розряду живуть у charge.h/discharge.h, які тут не потрібні:
-// operations.h оголошує їх наперед, а нам досить сталих значень.
-inline uint16_t dischargeTargetMv() { return 7200; }
-inline uint8_t  chargeTargetPct()   { return 100; }
+// Цілі, профілі й ручні уставки живуть у charge.h/discharge.h, які тут не
+// потрібні: operations.h оголошує їх наперед, а нам досить сталих значень.
+inline uint16_t dischargeTargetMv()  { return 7200; }
+inline uint8_t  chargeTargetPct()    { return 100; }
+inline uint8_t  chargeProfile()      { return 0; }
+inline uint16_t chargeManualMa()     { return 0; }
+inline uint16_t chargeManualMv()     { return 0; }
+inline uint8_t  dischargeProfile()   { return 0; }
+inline uint16_t dischargeManualMa()  { return 0; }
 
 #include "operations.h"
 #include "textwrap.h"
@@ -138,7 +144,8 @@ int main() {
         bool dailyClean = true;
         for (int i = 0; i < total; i++) {
             uint8_t k2, g2; int c2; menuRow(i, &k2, &c2, &g2);
-            if (g2 != MG_REPAIR && g2 != MG_POWER && g2 != MG_COUNTERS) continue;
+            if (g2 != MG_REPAIR && g2 != MG_CHARGE && g2 != MG_DISCHARGE &&
+                g2 != MG_COUNTERS) continue;
             menuInfo(i, &n, &l1, &l2, &d, &ch, buf, sizeof(buf));
             if (d == OPD_WIPE) dailyClean = false;
         }
@@ -150,6 +157,40 @@ int main() {
           "«Ціль заряду» — наступний пункт після «Заряд ШІМ»");
     check(menuIndexOfOp(OP_DISCHARGE_TGT) == menuIndexOfOp(OP_DISCHARGE) + 1,
           "«Ціль розряду» — наступний пункт після «Розряд»");
+
+    printf("\n5а) заряд і розряд — ОДНАКОВОЇ будови\n");
+    {
+        // Скарга власника: «зроби для заряду, розряду й оживлення однотипний
+        // вигляд». На рівні меню це означає: обидві силові машини — свої
+        // групи однакової форми «дія -> ціль -> ручні уставки -> профіль», а
+        // не купа впереміш в одній групі «ЖИВЛЕННЯ», як було.
+        int c0 = menuIndexOfOp(OP_CHARGE_DCDC), d0 = menuIndexOfOp(OP_DISCHARGE);
+        check(menuGroupStarts(c0), "група ЗАРЯД починається саме з дії заряду");
+        check(menuGroupStarts(d0), "група РОЗРЯД — з дії розряду");
+        uint8_t k, g; int c;
+        menuRow(c0, &k, &c, &g); check(g == MG_CHARGE,    "…і це справді група ЗАРЯД");
+        menuRow(d0, &k, &c, &g); check(g == MG_DISCHARGE, "…а та — РОЗРЯД");
+        // Профіль — останній «налаштувальний» пункт у кожній групі.
+        check(menuIndexOfOp(OP_CHARGE_PROFILE) > menuIndexOfOp(OP_CHARGE_MANUAL_MA),
+              "у заряді профіль іде після ручних уставок");
+        check(menuIndexOfOp(OP_DIS_PROFILE) > menuIndexOfOp(OP_DIS_MANUAL_MA),
+              "у розряді так само");
+        // Пробудження — у групі ЗАРЯДУ: це особливий спосіб його почати.
+        menuRow(menuIndexOfOp(OP_CHARGE_WAKE), &k, &c, &g);
+        check(g == MG_CHARGE, "пробудження стоїть у групі заряду, а не окремо");
+        // Усі нові пункти — безпечні: вони нічого не пишуть у чипи, тож
+        // вмикаються коротким натисканням, без утримання.
+        char buf[OP_NAME_BUF]; const char *n, *l1, *l2; uint8_t d, ch;
+        bool allSafe = true;
+        for (int op : { OP_CHARGE_PROFILE, OP_CHARGE_MANUAL_MA, OP_CHARGE_MANUAL_MV,
+                        OP_DIS_PROFILE, OP_DIS_MANUAL_MA }) {
+            int i = menuIndexOfOp(op);
+            if (i < 0) { allSafe = false; break; }
+            menuInfo(i, &n, &l1, &l2, &d, &ch, buf, sizeof(buf));
+            if (d != OPD_SAFE || ch != OPC_NONE) allSafe = false;
+        }
+        check(allSafe, "уставки й профілі позначені як безпечні (нічого не пишуть у чипи)");
+    }
 
     printf("\n6) стрибок по групах обходить УСІ групи й замикається в коло\n");
     {
@@ -164,7 +205,7 @@ int main() {
         check(steps == firstStarts, "«наступна група» обходить усі групи рівно за один оберт");
         // Назад із середини групи спершу повертає на її початок — так поводяться
         // всі списки з такою навігацією, і це рятує від «промахнувся».
-        int mid = menuIndexOfOp(OP_DISCHARGE);      // не перший у своїй групі
+        int mid = menuIndexOfOp(OP_DISCHARGE_TGT);  // не перший у своїй групі
         check(mid > 0 && !menuGroupStarts(mid), "для перевірки взято пункт усередині групи");
         check(menuGroupStarts(menuPrevGroup(mid)), "«попередня група» з середини стає на початок групи");
         check(menuPrevGroup(menuGroupFirst(mid)) < menuGroupFirst(mid),

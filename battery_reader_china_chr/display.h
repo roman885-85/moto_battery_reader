@@ -897,131 +897,165 @@ inline void drawPageRaw2433() { drawRawPage((DISP_H >= 128) ? "DS2433 дамп 0
 // [<] коротко — наступна операція; [<] утримати (0.8с) — ВИКОНАТИ; [>] — вихід.
 // Сторінка МОНІТОРИНГУ РОЗРЯДУ (монохром). Показується автоматично, поки
 // навантаження увімкнене, і має пріоритет над гортанням меню.
+// ═══════ СПІЛЬНИЙ КАРКАС ЕКРАНІВ ОПЕРАЦІЙ (заряд / розряд / пробудження) ══
+//  Той самий каркас, що й на кольоровій панелі, лише рядків менше — на
+//  128 пікселів їх влазить чотири. Порядок однаковий у всіх трьох режимах:
+//      шапка з відсотком -> напруга й струм -> уставка/ШІМ -> ємність ->
+//      час і СКІЛЬКИ ЩЕ ЛИШИЛОСЬ.
+static int g_monLine = 0;
+
+inline void opMonHead(const char *title, uint16_t mv, int16_t ma) {
+    drawHeader(title);
+    char b[48];
+    u8g2.setFont(u8g2_font_6x12_t_cyrillic);
+    snprintf(b, sizeof(b), "%u.%02u В %d мА", mv / 1000, (mv % 1000) / 10, ma);
+    u8g2.drawUTF8(0, HEAD_LINE + 13, b);
+    const char *csrc; int pct = batteryPercent(&csrc);
+    drawBatteryIcon(DISP_W - 27, HEAD_LINE + 4, 22, 10, pct);
+    u8g2.setFont(BODY_FONT);
+    g_monLine = 0;
+}
+
+inline void opMonRow(const char *txt) {
+    int y = HEAD_LINE + 24 + g_monLine * 9;
+    if (y > FOOT_HL - 2) return;          // під підвал не пишемо
+    u8g2.drawUTF8(0, y, txt);
+    g_monLine++;
+}
+
+// «Скільки ще лишилось» — компактно; 0 = оцінити не можна, і так і пишемо.
+inline void opMonEtaText(uint32_t etaS, char *out, size_t n) {
+    if (!etaS)       { snprintf(out, n, "-"); return; }
+    if (etaS < 60)   { snprintf(out, n, "<1хв"); return; }
+    if (etaS < 3600) { snprintf(out, n, "%luхв", (unsigned long)(etaS / 60)); return; }
+    snprintf(out, n, "%luг%02luхв", (unsigned long)(etaS / 3600),
+             (unsigned long)((etaS % 3600) / 60));
+}
+
+inline void opMonTime(uint32_t elapsedS, uint32_t etaS) {
+    char b[48], e[16];
+    opMonEtaText(etaS, e, sizeof(e));
+    unsigned long el = elapsedS;
+    snprintf(b, sizeof(b), "%lu:%02lu:%02lu ще %s%s",
+             el / 3600, (el / 60) % 60, el % 60, etaS ? "~" : "", e);
+    opMonRow(b);
+}
+
+inline void opMonFoot(bool running, const char *text) {
+    u8g2.drawHLine(0, FOOT_HL, DISP_W);
+    u8g2.drawUTF8(0, FOOT_Y, running ? "трим=ЗУПИНИТИ" : text);
+}
+
 inline void drawPageDischarge() {
     const DischargeState &d = g_dis;
-    char b[48];                    // кирилиця в UTF-8 — 2 байти на літеру
+    char b[48];
     snprintf(b, sizeof(b), "РОЗРЯД %d%%",
              (d.startMv > d.targetMv)
                  ? (int)(((long)d.startMv - d.lastMv) * 100 / ((long)d.startMv - d.targetMv))
                  : 0);
-    drawHeader(b);
+    opMonHead(b, d.lastMv, d.lastMa);
 
-    // Напруга + струм із вбудованого датчика DS2438 — найбільшим шрифтом,
-    // праворуч — та сама анімована іконка батареї, що й на головній сторінці
-    // (drawBatteryIcon запам'ятовує геометрію для displayAnimTick).
-    u8g2.setFont(u8g2_font_6x12_t_cyrillic);
-    snprintf(b, sizeof(b), "%u.%02u В %d мА", d.lastMv / 1000, (d.lastMv % 1000) / 10, d.lastMa);
-    u8g2.drawUTF8(0, HEAD_LINE + 13, b);
-    {
-        const char *csrc; int chargePct = batteryPercent(&csrc);
-        int iw = 22, ih = 10;
-        drawBatteryIcon(DISP_W - iw - 5, HEAD_LINE + 4, iw, ih, chargePct);
-    }
-
-    u8g2.setFont(BODY_FONT);
-    // Уставка струму й шпаруватість ключа: розряд іде не «скільки дасть
-    // резистор», а на заданому струмі — 1000 мА на повному заряді, 300 мА у
-    // кінці, ШІМ тримає уставку. Цільової напруги тут немає свідомо: на
-    // 128 пікселів рядок не влазить, а прогрес до цілі вже у шапці (кольоровий
-    // екран і веб показують і ціль, і пік).
-    if (dischargePwmOk()) {
-        snprintf(b, sizeof(b), "уст%uмА ШІМ%u%%", d.setMa, d.dutyPct);
-    } else {
+    // Уставка й шпаруватість: розряд іде не «скільки дасть резистор», а на
+    // заданому струмі. Поруч — режим: без нього не видно, звідки взялась
+    // уставка (лінійка за напругою, 0.2C від ємності чи ручне число).
+    if (dischargePwmOk())
+        snprintf(b, sizeof(b), "уст%uмА ШІМ%u%% %s", d.setMa, d.dutyPct,
+                 dischargeManualMa() ? "руч" : dischargeProfileShort(dischargeProfile()));
+    else
         snprintf(b, sizeof(b), "БЕЗ ШІМ! пік%u", d.peakMa);
-    }
-    u8g2.drawUTF8(0, HEAD_LINE + 24, b);
+    opMonRow(b);
 
-    // Наш інтеграл і апаратний лічильник DCA самого DS2438 — поруч, для звірки.
     snprintf(b, sizeof(b), "%lu мА·год (DCA %lu)",
              (unsigned long)dischargeMah(), (unsigned long)dischargeDcaMah());
-    u8g2.drawUTF8(0, HEAD_LINE + 33, b);
+    opMonRow(b);
 
-    snprintf(b, sizeof(b), "ICA %u  %d.%dC  %lu:%02lu:%02lu",
-             d.lastIca, d.lastTempC10 / 10, abs(d.lastTempC10 % 10),
-             (unsigned long)(d.elapsedS / 3600), (unsigned long)((d.elapsedS / 60) % 60),
-             (unsigned long)(d.elapsedS % 60));
-    u8g2.drawUTF8(0, HEAD_LINE + 42, b);
+    snprintf(b, sizeof(b), "ICA %u  %d.%dC  %s", d.lastIca,
+             d.lastTempC10 / 10, abs(d.lastTempC10 % 10),
+             dischargePhaseShort(d.phase));
+    opMonRow(b);
 
-    u8g2.drawHLine(0, FOOT_HL, DISP_W);
-    u8g2.drawUTF8(0, FOOT_Y, d.state == DIS_RUN ? "трим=ЗУПИНИТИ"
-                           : d.state == DIS_DONE ? "ГОТОВО -> на ЗП"
-                           : dischargeReasonText(d.reason));
+    opMonTime(d.elapsedS,
+              dischargeEtaS(impresPercentFromMv(d.lastMv),
+                            impresPercentFromMv(d.targetMv),
+                            dischargeRatedMah(),
+                            (uint16_t)(d.lastMa < 0 ? -d.lastMa : d.lastMa)));
+
+    opMonFoot(d.state == DIS_RUN,
+              d.state == DIS_DONE ? "ГОТОВО -> на ЗП" : dischargeReasonText(d.reason));
 }
 
-// Сторінка МОНІТОРИНГУ ЗАРЯДУ (монохром) — та сама схема, що й розряд вище,
-// але прогрес рахується у бік ЗРОСТАННЯ напруги (ціль вища за старт).
-inline void drawPageCharge() {
+// ⚑ ПРОБУДЖЕННЯ — ОКРЕМА СТОРІНКА, А НЕ ГІЛКИ ВСЕРЕДИНІ ЗАРЯДУ. Відсоток, ICA,
+//  CCA й температура беруться з DS2438, а він мовчить — у цьому вся суть
+//  режиму, і показувати замість них нулі означало б видавати відсутність
+//  даних за дані. Каркас спільний, тож виглядає воно однаково із зарядом.
+inline void drawPageWake() {
     const ChargeState &c = g_chg;
     char b[48];
-    // Пробудження — не заряд і не має відсотка: відсоток рахується з напруги на
-    // клемі, а вона під час пробудження показує не пакет, а те, що ми самі туди
-    // подали. Тому в заголовку час, а не «%».
-    if (chargeWakeShown()) snprintf(b, sizeof(b), "ПРОБУДЖ. %lus", (unsigned long)c.elapsedS);
-    else                  snprintf(b, sizeof(b), "ЗАРЯД %d%%", c.lastPct);
-    drawHeader(b);
+    snprintf(b, sizeof(b), "ПРОБУДЖ. %lus", (unsigned long)c.elapsedS);
+    opMonHead(b, c.lastMv, c.lastMa);
 
-    u8g2.setFont(u8g2_font_6x12_t_cyrillic);
-    snprintf(b, sizeof(b), "%u.%02u В %d мА", c.lastMv / 1000, (c.lastMv % 1000) / 10, c.lastMa);
-    u8g2.drawUTF8(0, HEAD_LINE + 13, b);
-    {
-        const char *csrc; int chargePct = batteryPercent(&csrc);
-        int iw = 22, ih = 10;
-        drawBatteryIcon(DISP_W - iw - 5, HEAD_LINE + 4, iw, ih, chargePct);
-    }
-
-    u8g2.setFont(BODY_FONT);
-    // Уставка струму й ЦІЛЬОВА вихідна напруга ДС/ДС (не шпаруватість — крива
-    // керування нелінійна, див. charge.h/settings.h): чинний струм тримається
-    // на уставці, а сама напруга видно для діагностики «регулятор рухається».
-    if (!chargePwmOk()) {
-        snprintf(b, sizeof(b), "БЕЗ КЕРУВАННЯ!");
-    } else if (chargeWakeShown()) {
-        // У пробудженні уставки струму немає — є стеля, і головне число тут
-        // саме та НАПРУГА, яку ми тримаємо на клемах.
+    if (chargePwmOk())
         snprintf(b, sizeof(b), "трим%u.%02uВ ШІМ%u%%", c.targetMv / 1000,
                  (c.targetMv % 1000) / 10, chargeDutyPct());
-    } else {
-        snprintf(b, sizeof(b), "уст%uмА ШІМ%u%%", c.setMa, chargeDutyPct());
-    }
-    u8g2.drawUTF8(0, HEAD_LINE + 24, b);
+    else
+        snprintf(b, sizeof(b), "БЕЗ КЕРУВАННЯ!");
+    opMonRow(b);
 
-    // Наш інтеграл і апаратний лічильник CCA самого DS2438 — поруч, для звірки.
-    // Але якщо несправне ЖИВЛЕННЯ — на цьому рядку саме воно: без блока заряд
-    // не піде взагалі, і показувати натомість накопичені мА·год означало б
-    // ховати причину за наслідком.
-    if (chargePsuFault()) {
+    snprintf(b, sizeof(b), "%lu з %u мА·год  %uмА",
+             (unsigned long)chargeMah(), (unsigned)CHARGE_WAKE_MAH_MAX,
+             (unsigned)CHARGE_WAKE_MA);
+    opMonRow(b);
+
+    snprintf(b, sizeof(b), "проб %u  %s", c.wakeProbes,
+             c.reason == CHGR_WOKE ? "ВІДПОВІВ!" : "мовчить");
+    opMonRow(b);
+
+    // Залишок ТОЧНИЙ: режим обмежений часом жорстко.
+    uint32_t left = (c.elapsedS < (uint32_t)CHARGE_WAKE_MAX_S)
+                  ? ((uint32_t)CHARGE_WAKE_MAX_S - c.elapsedS) : 0;
+    opMonTime(c.elapsedS, (c.state == CHG_RUN) ? left : 0);
+
+    opMonFoot(c.state == CHG_RUN,
+              c.state == CHG_DONE ? "ГОТОВО" : chargeReasonText(c.reason));
+}
+
+// Сторінка МОНІТОРИНГУ ЗАРЯДУ (монохром) — той самий каркас, що й розряд.
+inline void drawPageCharge() {
+    if (chargeWakeShown()) { drawPageWake(); return; }
+    const ChargeState &c = g_chg;
+    char b[48];
+    snprintf(b, sizeof(b), "ЗАРЯД %d%%", c.lastPct);
+    opMonHead(b, c.lastMv, c.lastMa);
+
+    if (!chargePwmOk())
+        snprintf(b, sizeof(b), "БЕЗ КЕРУВАННЯ!");
+    else
+        snprintf(b, sizeof(b), "уст%uмА ШІМ%u%% %s", c.setMa, chargeDutyPct(),
+                 chargeManualMa() ? "руч" : chargeProfileShort(chargeProfile()));
+    opMonRow(b);
+
+    // Якщо несправне ЖИВЛЕННЯ — на цьому рядку саме воно: без блока заряд не
+    // піде взагалі, і показувати натомість мА·год означало б ховати причину.
+    if (chargePsuFault())
         snprintf(b, sizeof(b), "БЖ %u.%02u В — %s", chargePsuMv() / 1000,
                  (chargePsuMv() % 1000) / 10,
                  chargePsuState() == PSU_ABSENT ? "НЕМАЄ" :
                  chargePsuState() == PSU_LOW    ? "ЗАНИЖЕНО" : "ЗАВИЩЕНО");
-    } else if (chargeWakeShown()) {
-        // CCA рахується з лічильника DS2438, а він мовчить — тому лише наш
-        // інтеграл, і одразу поруч із межею, до якої він має право дорости.
-        snprintf(b, sizeof(b), "%lu з %u мА·год  %uмА",
-                 (unsigned long)chargeMah(), (unsigned)CHARGE_WAKE_MAH_MAX, c.lastMa);
-    } else {
+    else
         snprintf(b, sizeof(b), "%lu мА·год (CCA %lu)",
                  (unsigned long)chargeMah(), (unsigned long)chargeCcaMah());
-    }
-    u8g2.drawUTF8(0, HEAD_LINE + 33, b);
+    opMonRow(b);
 
-    if (chargeWakeShown()) {
-        // ICA й температура — теж із монітора, тобто невідомі. Замість них те,
-        // що в цьому режимі справді є: скільки разів ми його гукали.
-        snprintf(b, sizeof(b), "проб %u  %s", c.wakeProbes,
-                 c.reason == CHGR_WOKE ? "ВІДПОВІВ!" : "мовчить");
-    } else {
-        snprintf(b, sizeof(b), "ICA %u  %d.%dC  %lu:%02lu:%02lu",
-                 c.lastIca, c.lastTempC10 / 10, abs(c.lastTempC10 % 10),
-                 (unsigned long)(c.elapsedS / 3600), (unsigned long)((c.elapsedS / 60) % 60),
-                 (unsigned long)(c.elapsedS % 60));
-    }
-    u8g2.drawUTF8(0, HEAD_LINE + 42, b);
+    snprintf(b, sizeof(b), "ICA %u  %d.%dC  %s", c.lastIca,
+             c.lastTempC10 / 10, abs(c.lastTempC10 % 10),
+             chargePhaseShort(c.phase));
+    opMonRow(b);
 
-    u8g2.drawHLine(0, FOOT_HL, DISP_W);
-    u8g2.drawUTF8(0, FOOT_Y, c.state == CHG_RUN ? "трим=ЗУПИНИТИ"
-                           : c.state == CHG_DONE ? "ГОТОВО"
-                           : chargeReasonText(c.reason));
+    opMonTime(c.elapsedS,
+              chargeEtaS(c.phase, c.lastPct, c.targetPct, chargeRatedMah(), c.lastMa));
+
+    opMonFoot(c.state == CHG_RUN,
+              c.state == CHG_DONE ? "ГОТОВО" : chargeReasonText(c.reason));
 }
 
 // ── СТОРІНКА ПОМИЛКИ ЖИВЛЕННЯ (монохромна) ────────────────────────────────

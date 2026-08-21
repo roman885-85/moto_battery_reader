@@ -521,6 +521,22 @@ def psu_v(mv):
     return ("%.1f" % (mv / 1000.0)).rstrip("0").rstrip(".")
 
 
+# «Скільки ще лишилось» у людському вигляді. 0/None = оцінити не можна, і ми
+# так і пишемо: показати вигадане число гірше, ніж не показати жодного.
+def _eta_txt(s):
+    try:
+        s = int(s or 0)
+    except (TypeError, ValueError):
+        return "—"
+    if s <= 0:
+        return "—"
+    if s < 60:
+        return "<1 хв"
+    if s < 3600:
+        return "%d хв" % round(s / 60.0)
+    return "%d год %d хв" % (s // 3600, round((s % 3600) / 60.0))
+
+
 class ChargeMonitor(ttk.Frame):
     """Панель стану керованого заряду — простіша за DischargeMonitor: ціль
     фіксована (CHARGE_TARGET_MV), тож немає що малювати «уставку струму за
@@ -1575,6 +1591,29 @@ class App:
         self.cvDisRamp.pack(anchor="w", pady=(4, 0))
         self._dis_ramp_note()
 
+        # Ручний струм розряду. 0/порожньо — автоматична уставка. Межі
+        # приходять із пристрою (manMinMa/manMaxMa), власної копії тут немає.
+        mfd = ttk.Frame(b2d); mfd.pack(anchor="w", pady=(4, 0))
+        ttk.Label(mfd, text="Струм розряду:").pack(side="left")
+        self.disManual = tk.IntVar(value=0)
+        for ma, lbl in ((0, "Авто"), (300, "300"), (500, "500"), (700, "700"), (1000, "1000")):
+            ttk.Radiobutton(mfd, text=lbl, value=ma, variable=self.disManual,
+                            command=lambda v=ma: self.discharge_set_ma(v)).pack(side="left", padx=2)
+        ttk.Label(mfd, text="або, мА:").pack(side="left", padx=(8, 2))
+        self.eDisMa = ttk.Entry(mfd, width=6)
+        self.eDisMa.pack(side="left")
+        ttk.Button(mfd, text="Задати", width=8,
+                   command=lambda: self.discharge_set_ma(None)).pack(side="left", padx=3)
+
+        pfd = ttk.Frame(b2d); pfd.pack(anchor="w", pady=(4, 0))
+        ttk.Label(pfd, text="Профіль розряду:").pack(side="left")
+        self.disProf = tk.IntVar(value=0)
+        for pv, lbl in ((0, "Заводський"), (1, "Розумний 0.2C")):
+            ttk.Radiobutton(pfd, text=lbl, value=pv, variable=self.disProf,
+                            command=lambda v=pv: self.discharge_set_profile(v)).pack(side="left", padx=2)
+        self.lblDisProf = ttk.Label(b2d, text="", foreground="#b9bd86")
+        self.lblDisProf.pack(anchor="w")
+
         df = ttk.Frame(b2d); df.pack(anchor="w", pady=3)
         ttk.Button(df, text="🪫 Почати розряд", command=self.discharge_start).pack(side="left", padx=2)
         ttk.Button(df, text="⏹ Зупинити", command=self.discharge_stop).pack(side="left", padx=2)
@@ -1624,6 +1663,32 @@ class App:
         self.lblChgMa = ttk.Label(b2e, text="Автоматичний профіль за відсотком заряду.",
                                   foreground="#b9bd86")
         self.lblChgMa.pack(anchor="w")
+
+        # Ручна ЦІЛЬ у вольтах. Відсоток проходить через криву SoC, тобто «85 %»
+        # — це стільки, скільки крива вважає за 85 %; для зберігання (7.40 В =
+        # 3.70 В на банку) і для ремонту потрібні саме вольти. 0 = за відсотком.
+        vfc = ttk.Frame(b2e); vfc.pack(anchor="w", pady=(4, 0))
+        ttk.Label(vfc, text="Ціль у вольтах:").pack(side="left")
+        self.chgMv = tk.IntVar(value=0)
+        for mv, lbl in ((0, "За %"), (8200, "8.20"), (8000, "8.00"),
+                        (7800, "7.80"), (7400, "7.40")):
+            ttk.Radiobutton(vfc, text=lbl, value=mv, variable=self.chgMv,
+                            command=lambda v=mv: self.charge_set_mv(v)).pack(side="left", padx=2)
+        ttk.Label(vfc, text="або, мВ:").pack(side="left", padx=(8, 2))
+        self.eChgMv = ttk.Entry(vfc, width=6)
+        self.eChgMv.pack(side="left")
+        ttk.Button(vfc, text="Задати", width=8,
+                   command=lambda: self.charge_set_mv(None)).pack(side="left", padx=3)
+
+        # Профіль: заводська таблиця чи розумний CC/CV за ємністю пакета.
+        pfc = ttk.Frame(b2e); pfc.pack(anchor="w", pady=(4, 0))
+        ttk.Label(pfc, text="Профіль заряду:").pack(side="left")
+        self.chgProf = tk.IntVar(value=0)
+        for pv, lbl in ((0, "Заводський"), (1, "Розумний CC/CV")):
+            ttk.Radiobutton(pfc, text=lbl, value=pv, variable=self.chgProf,
+                            command=lambda v=pv: self.charge_set_profile(v)).pack(side="left", padx=2)
+        self.lblChgProf = ttk.Label(b2e, text="", foreground="#b9bd86")
+        self.lblChgProf.pack(anchor="w")
 
         cf = ttk.Frame(b2e); cf.pack(anchor="w", pady=3)
         ttk.Button(cf, text="🔋 Почати заряд", command=self.charge_start).pack(side="left", padx=2)
@@ -2471,6 +2536,19 @@ class App:
         if isinstance(d, dict) and d.get("state") == "run":
             self._disNowMv = d.get("mv", 0)
             self._dis_ramp_draw(self._dis_target_mv())
+        # Профіль, ручний струм, фаза й «скільки ще лишилось» — із ПРИСТРОЮ:
+        # показувати треба те, що ДІЄ, хто б його не поставив.
+        if isinstance(d, dict):
+            if d.get("manualMa") is not None:
+                self.disManual.set(int(d.get("manualMa") or 0))
+            if d.get("profile") is not None:
+                self.disProf.set(int(d.get("profile") or 0))
+                self.lblDisProf.config(text=(
+                    "Розумний 0.2C від ємності пакета (%s мА·год). Фаза: %s. Лишилось %s."
+                    % (d.get("ratedMah", "?"), d.get("phaseText", "—"), _eta_txt(d.get("etaS")))
+                ) if int(d.get("profile") or 0) else (
+                    "Заводська лінійка за напругою. Фаза: %s. Лишилось %s."
+                    % (d.get("phaseText", "—"), _eta_txt(d.get("etaS")))))
         self.monDis.update_state(d)
 
     def _dis_tick(self):
@@ -2606,6 +2684,24 @@ class App:
         self._chgBusy = False
         d = (r or {}).get("charge") if isinstance(r, dict) else None
         self.monChg.update_state(d)
+        # Профіль, ручна ціль у вольтах, фаза й «скільки ще лишилось» — із
+        # пристрою: у вебі, USB і на екрані має бути видно одне й те саме.
+        _c = (r or {}).get("charge") if isinstance(r, dict) else None
+        if isinstance(_c, dict):
+            if _c.get("manualMv") is not None:
+                self.chgMv.set(int(_c.get("manualMv") or 0))
+            if _c.get("profile") is not None:
+                self.chgProf.set(int(_c.get("profile") or 0))
+                _eta = (max(0, int(_c.get("wakeMaxS") or 0) - int(_c.get("elapsedS") or 0))
+                        if _c.get("wake") else _c.get("etaS"))
+                self.lblChgProf.config(text=(
+                    "Розумний CC/CV від ємності пакета (%s мА·год): CC %s мА, завершення за "
+                    "струмом %s мА. Фаза: %s. Лишилось %s."
+                    % (_c.get("ratedMah", "?"), _c.get("smartCcMa", "?"),
+                       _c.get("smartEndMa", "?"), _c.get("phaseText", "—"), _eta_txt(_eta))
+                ) if int(_c.get("profile") or 0) else (
+                    "Заводський профіль за відсотком. Фаза: %s. Лишилось %s."
+                    % (_c.get("phaseText", "—"), _eta_txt(_eta))))
         self.psu_alert_update(d)          # смуга аварії живлення — над вкладками
         self._chg_manual_show(d)          # ручна уставка струму
 
@@ -2757,6 +2853,89 @@ class App:
             self._chg_show(r)
 
         self.maybe_auth(lambda: self.cmd("CHARGE MA=%d" % ma, 10.0, cb=done))
+
+    def charge_set_mv(self, mv):
+        """Ручна ЦІЛЬ заряду у мілівольтах. None — узяти з поля вводу; 0 —
+        повернутись до цілі за відсотком."""
+        if not self.need_conn():
+            return
+        if mv is None:
+            raw = self.eChgMv.get().strip()
+            try:
+                mv = int(raw) if raw else 0
+            except ValueError:
+                messagebox.showwarning("Ціль", "Вкажіть ціле число мВ (0 — за відсотком)")
+                return
+        if mv < 0:
+            mv = 0
+
+        def done(r):
+            if not (isinstance(r, dict) and r.get("ok")):
+                self.status("Помилка: " + str((r or {}).get("err", "")), False)
+                return
+            got = int(r.get("manualMv", 0) or 0)
+            asked = int(r.get("asked", got) or 0)
+            if got and asked and got != asked:
+                self.status("Ціль затиснуто в межі: %d мВ" % got)
+            else:
+                self.status(("✅ Ціль %.2f В" % (got / 1000.0)) if got else "✅ Ціль за відсотком")
+            self._chg_show(r)
+
+        self.maybe_auth(lambda: self.cmd("CHARGE MV=%d" % mv, 10.0, cb=done))
+
+    def charge_set_profile(self, p):
+        """Профіль заряду: 0 — заводська таблиця, 1 — розумний CC/CV."""
+        if not self.need_conn():
+            return
+
+        def done(r):
+            if isinstance(r, dict) and r.get("ok"):
+                self.status("✅ Профіль: " +
+                            ("розумний CC/CV" if int(r.get("profile", 0) or 0) else "заводський"))
+                self._chg_show(r)
+            else:
+                self.status("Помилка: " + str((r or {}).get("err", "")), False)
+
+        self.maybe_auth(lambda: self.cmd("CHARGE " + ("SMART" if p else "AUTO"), 10.0, cb=done))
+
+    def discharge_set_ma(self, ma):
+        """Ручний струм розряду. None — з поля вводу; 0 — автоматична лінійка."""
+        if not self.need_conn():
+            return
+        if ma is None:
+            raw = self.eDisMa.get().strip()
+            try:
+                ma = int(raw) if raw else 0
+            except ValueError:
+                messagebox.showwarning("Струм", "Вкажіть ціле число мА (0 — автомат)")
+                return
+        if ma < 0:
+            ma = 0
+
+        def done(r):
+            if not (isinstance(r, dict) and r.get("ok")):
+                self.status("Помилка: " + str((r or {}).get("err", "")), False)
+                return
+            got = int(r.get("manualMa", 0) or 0)
+            self.status(("✅ Струм %d мА" % got) if got else "✅ Автоматична лінійка")
+            self._dis_show(r)
+
+        self.maybe_auth(lambda: self.cmd("DISCHARGE MA=%d" % ma, 10.0, cb=done))
+
+    def discharge_set_profile(self, p):
+        """Профіль розряду: 0 — заводська лінійка, 1 — розумний 0.2C."""
+        if not self.need_conn():
+            return
+
+        def done(r):
+            if isinstance(r, dict) and r.get("ok"):
+                self.status("✅ Профіль: " +
+                            ("розумний 0.2C" if int(r.get("profile", 0) or 0) else "заводський"))
+                self._dis_show(r)
+            else:
+                self.status("Помилка: " + str((r or {}).get("err", "")), False)
+
+        self.maybe_auth(lambda: self.cmd("DISCHARGE " + ("SMART" if p else "AUTO"), 10.0, cb=done))
 
     def charge_stop(self):
         if not self.need_conn():

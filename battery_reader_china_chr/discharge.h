@@ -89,6 +89,7 @@ struct DischargeState {
     uint16_t polls;          // скільки разів опитали
     // --- обмеження струму ШІМом ---
     uint16_t setMa;          // уставка струму зараз (за напругою), мА
+    uint8_t  phase;          // DIS_PH_* — що саме зараз робить профіль
     uint16_t peakMa;         // виміряний струм при шпаруватості 100 %, мА
     uint8_t  dutyPct;        // чинна шпаруватість ключа, %
     // Вимірювальний резистор ЦЬОГО пакета, Ом. Береться з DS2438[56..57] на
@@ -96,7 +97,13 @@ struct DischargeState {
     float    rsense;
 };
 
-static DischargeState g_dis = {DIS_IDLE, DISR_NONE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0f};
+// ⚑ ПОРОЖНІ ДУЖКИ, А НЕ СПИСОК НУЛІВ. Тут стояв позиційний список із двох
+//  десятків нулів і 0.0f у кінці — і кожне нове поле в структурі зсувало його
+//  цілком: щойно додане `phase` поставило float на місце uint8_t, і збірка
+//  впала на narrowing. Значуще в цьому списку було рівно нічого: DIS_IDLE і
+//  DISR_NONE — самі нулі. `{}` обнуляє всі поля незалежно від їхньої
+//  кількості й порядку.
+static DischargeState g_dis = {};
 
 // Прапорець «екран застарів»: 0 — нічого, 1 — легке оновлення (ті самі поля,
 // без очищення тіла, щоб не блимало), 2 — ПОВНА перемальовка (вхід у режим і
@@ -156,6 +163,164 @@ inline uint16_t dischargeSetpointMa(uint16_t mv, uint16_t targetMv) {
     long d    = (long)mv - targetMv;
     return (uint16_t)(DISCHARGE_MA_LO +
                       (d * ((long)DISCHARGE_MA_HI - DISCHARGE_MA_LO)) / span);
+}
+
+// ═════════════ РОЗУМНИЙ ПРОФІЛЬ РОЗРЯДУ: СТРУМ ВІД ЄМНОСТІ ════════════════
+//  Лінійка вище задає струм у мілі амперах, однаково для будь-якого пакета:
+//  1000 мА для пакета на 1300 мА·год — це 0.77C (ємність вийде заниженою
+//  через просадку на внутрішньому опорі), для пакета на 2900 — 0.34C.
+//  Розумний профіль рахує струм від ПАСПОРТНОЇ ЄМНОСТІ в частках C: 0.2C —
+//  стандартна ставка саме для ВИМІРУ ємності.
+//
+//  Як і в заряді, це заміна ОДНІЄЇ функції — уставки. Уся обв'язка розряду
+//  (сторож, аварійні межі, облік мА·год, вимір на знятому навантаженні)
+//  лишається тим самим перевіреним кодом.
+static uint16_t g_disRatedMah = 0;
+inline void     dischargeSetRatedMah(uint16_t m) { g_disRatedMah = m; }
+inline uint16_t dischargeRatedMah() {
+    return g_disRatedMah ? g_disRatedMah : (uint16_t)BATTERY_RATED_MAH;
+}
+
+enum { DIS_PH_HOLD = 0,    // пауза: температура поза вікном
+       DIS_PH_CC,          // постійний струм
+       DIS_PH_TAPER };     // плавний спад перед ціллю
+
+inline const char *dischargePhaseShort(uint8_t ph) {
+    switch (ph) {
+        case DIS_PH_CC:    return "CC";
+        case DIS_PH_TAPER: return "спад";
+        default:           return "пауза t";
+    }
+}
+inline const char *dischargePhaseText(uint8_t ph) {
+    switch (ph) {
+        case DIS_PH_CC:    return "CC (пост. струм)";
+        case DIS_PH_TAPER: return "спад до цілі";
+        default:           return "пауза (температура)";
+    }
+}
+
+inline uint16_t dischargeSmartClamp(uint32_t ma) {
+    if (ma < (uint32_t)DISCHARGE_MA_LO) ma = DISCHARGE_MA_LO;
+    if (ma > (uint32_t)DISCHARGE_MA_HI) ma = DISCHARGE_MA_HI;
+    return (uint16_t)ma;
+}
+
+// Уставка розумного розряду. phase — куди писати фазу (може бути nullptr).
+inline uint16_t dischargeSmartMa(uint16_t mv, uint16_t targetMv, uint16_t ratedMah,
+                                 int16_t tempC10, bool tempFresh, uint8_t *phase) {
+    if (!targetMv) targetMv = DISCHARGE_TARGET_MV;
+    // Температурне вікно — так само найперше, і так само в десятих градуса,
+    // без ділення (для від'ємних воно тягне до нуля й ховало б холод).
+    if (tempFresh &&
+        (tempC10 < (int16_t)(DISCHARGE_SMART_T_MIN_C * 10) ||
+         tempC10 > (int16_t)(DISCHARGE_SMART_T_MAX_C * 10))) {
+        if (phase) *phase = DIS_PH_HOLD;
+        return 0;
+    }
+    uint16_t ccMa = dischargeSmartClamp((uint32_t)ratedMah * DISCHARGE_SMART_C_PCT / 100u);
+    uint32_t band = (uint32_t)targetMv + DISCHARGE_SMART_BAND_MV;
+    if (mv >= band) { if (phase) *phase = DIS_PH_CC; return ccMa; }
+    if (phase) *phase = DIS_PH_TAPER;
+    if (mv <= targetMv) return DISCHARGE_MA_LO;
+    // Спад від ccMa на межі зони до DISCHARGE_MA_LO рівно на цілі.
+    if (ccMa <= (uint16_t)DISCHARGE_MA_LO) return DISCHARGE_MA_LO;
+    uint32_t left = (uint32_t)mv - targetMv;                 // 0..BAND
+    return dischargeSmartClamp((uint32_t)DISCHARGE_MA_LO +
+        (uint32_t)(ccMa - DISCHARGE_MA_LO) * left / (uint32_t)DISCHARGE_SMART_BAND_MV);
+}
+
+// ── СКІЛЬКИ ЩЕ ЛИШИЛОСЬ ───────────────────────────────────────────────────
+//  Той самий принцип, що в заряді: скільки ємності лишилось віддати, поділити
+//  на струм, який іде зараз. 0 = «оцінити не можна» (а не «зараз кінець»).
+//  Розряд простіший за заряд: струм майже сталий і спадає лише в самому кінці,
+//  тож поправки на фазу тут не треба — досить того, що біля цілі уставка й так
+//  падає, і оцінка перераховується щоопитування.
+inline uint32_t dischargeEtaS(int pctNow, int pctTarget, uint16_t ratedMah, uint16_t avgMa) {
+    if (!avgMa || !ratedMah) return 0;
+    if (pctNow <= pctTarget) return 0;
+    uint32_t remainMah = (uint32_t)ratedMah * (uint32_t)(pctNow - pctTarget) / 100u;
+    if (!remainMah) return 0;
+    uint32_t s = remainMah * 3600u / (uint32_t)avgMa;
+    if (s > (uint32_t)DISCHARGE_MAX_MIN * 60u) return 0;
+    return s;
+}
+
+// ── ЯКИЙ ПРОФІЛЬ І РУЧНИЙ СТРУМ ───────────────────────────────────────────
+//  Обидва живуть ПОЗА DischargeState: це налаштування користувача, а стан
+//  сеансу обнуляється на кожному старті/зупинці.
+enum { DIS_PROF_FACTORY = 0, DIS_PROF_SMART = 1 };
+static uint8_t  g_disProfile  = DIS_PROF_FACTORY;
+static uint16_t g_disManualMa = 0;
+
+inline uint8_t dischargeProfile() { return g_disProfile; }
+inline uint8_t dischargeSetProfile(uint8_t p) {
+    g_disProfile = (p == DIS_PROF_SMART) ? DIS_PROF_SMART : DIS_PROF_FACTORY;
+    return g_disProfile;
+}
+inline uint8_t dischargeCycleProfile() {
+    return dischargeSetProfile(g_disProfile == DIS_PROF_SMART ? DIS_PROF_FACTORY
+                                                              : DIS_PROF_SMART);
+}
+inline const char *dischargeProfileText(uint8_t p) {
+    return (p == DIS_PROF_SMART) ? "розумний" : "заводський";
+}
+inline const char *dischargeProfileShort(uint8_t p) {
+    return (p == DIS_PROF_SMART) ? "0.2C" : "лінійка";
+}
+
+inline uint16_t dischargeManualClamp(uint16_t ma) {
+    if (ma < (uint16_t)DISCHARGE_MANUAL_MA_MIN) return DISCHARGE_MANUAL_MA_MIN;
+    if (ma > (uint16_t)DISCHARGE_MANUAL_MA_MAX) return DISCHARGE_MANUAL_MA_MAX;
+    return ma;
+}
+inline uint16_t dischargeManualMa() { return g_disManualMa; }
+inline uint16_t dischargeSetManualMa(uint16_t ma) {
+    g_disManualMa = ma ? dischargeManualClamp(ma) : 0;
+    return g_disManualMa;
+}
+
+// Перемикання ручного струму по колу — для меню пристрою (поля там немає).
+// Нуль першим: він означає «повернутись до автомата», а не «нуль міліампер».
+static const uint16_t DISCHARGE_MANUAL_MA_PRESETS[] = { 0, 300, 500, 700, 1000 };
+#define DISCHARGE_MANUAL_MA_PRESET_N \
+    ((int)(sizeof(DISCHARGE_MANUAL_MA_PRESETS) / sizeof(DISCHARGE_MANUAL_MA_PRESETS[0])))
+inline uint16_t dischargeCycleManualMa() {
+    int i = 0;
+    for (; i < DISCHARGE_MANUAL_MA_PRESET_N; i++)
+        if (DISCHARGE_MANUAL_MA_PRESETS[i] == g_disManualMa) break;
+    i = (i + 1) % DISCHARGE_MANUAL_MA_PRESET_N;
+    return dischargeSetManualMa(DISCHARGE_MANUAL_MA_PRESETS[i]);
+}
+
+// Ручна уставка поверх автоматичної.
+//
+//  ⚑ БІЛЯ САМОЇ ЦІЛІ РУЧНИЙ РЕЖИМ НЕ ПІДНІМАЄ СТРУМ — той самий принцип, що
+//  в заряді. Малий струм у кінці не «продавлює» напругу передчасно й дає
+//  чесніший вимір ємності; дозволити тут будь-яке більше число означало б
+//  зіпсувати саме те, заради чого розряд і робиться.
+inline uint16_t dischargeApplyManual(uint16_t autoMa, uint16_t manualMa, bool inTaper) {
+    if (!manualMa) return autoMa;
+    uint16_t m = dischargeManualClamp(manualMa);
+    if (!inTaper) return m;
+    return (m < autoMa) ? m : autoMa;
+}
+
+// Єдина точка, звідки машина розряду бере уставку: профіль + ручна поправка.
+inline uint16_t dischargeSetpointFor(uint16_t mv, uint16_t targetMv,
+                                     int16_t tempC10, bool tempFresh, uint8_t *phase) {
+    uint16_t autoMa;
+    uint8_t  ph = DIS_PH_CC;
+    if (g_disProfile == DIS_PROF_SMART) {
+        autoMa = dischargeSmartMa(mv, targetMv, dischargeRatedMah(),
+                                  tempC10, tempFresh, &ph);
+        if (ph == DIS_PH_HOLD) { if (phase) *phase = ph; return 0; }
+    } else {
+        autoMa = dischargeSetpointMa(mv, targetMv);
+        ph = (mv <= (uint32_t)targetMv + DISCHARGE_SMART_BAND_MV) ? DIS_PH_TAPER : DIS_PH_CC;
+    }
+    if (phase) *phase = ph;
+    return dischargeApplyManual(autoMa, g_disManualMa, ph == DIS_PH_TAPER);
 }
 
 // Потрібна шпаруватість, %: середній струм = пік * шпаруватість, тож

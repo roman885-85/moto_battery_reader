@@ -436,6 +436,30 @@ void loop() {
         else if (act == OP_CHARGE_TGT)    { char m[24];
                                             snprintf(m, sizeof(m), "ЦІЛЬ %u%%", chargeCycleTarget());
                                             displayShow(m); ledSet(LED_IDLE); }
+        // Профілі й ручні уставки нічого не пишуть у чипи — це налаштування
+        // самого пристрою. На екрані поля для чисел немає, тож кожен пункт
+        // перемикає своє значення ПО КОЛУ з готового набору (той самий прийом,
+        // що й у цілей), а нуль у наборі означає «повернутись до автомата».
+        else if (act == OP_CHARGE_PROFILE) { char m[28];
+                                            snprintf(m, sizeof(m), "ЗАРЯД: %s",
+                                                     chargeProfileText(chargeCycleProfile()));
+                                            displayShow(m); ledSet(LED_IDLE); }
+        else if (act == OP_CHARGE_MANUAL_MA) { uint16_t v = chargeCycleManualMa(); char m[28];
+                                            if (v) snprintf(m, sizeof(m), "СТРУМ %u мА", v);
+                                            else   snprintf(m, sizeof(m), "СТРУМ АВТО");
+                                            displayShow(m); ledSet(LED_IDLE); }
+        else if (act == OP_CHARGE_MANUAL_MV) { uint16_t v = chargeCycleManualMv(); char m[28];
+                                            if (v) snprintf(m, sizeof(m), "ЦІЛЬ %.2f В", v / 1000.0);
+                                            else   snprintf(m, sizeof(m), "ЦІЛЬ ЗА %%");
+                                            displayShow(m); ledSet(LED_IDLE); }
+        else if (act == OP_DIS_PROFILE)   { char m[28];
+                                            snprintf(m, sizeof(m), "РОЗРЯД: %s",
+                                                     dischargeProfileText(dischargeCycleProfile()));
+                                            displayShow(m); ledSet(LED_IDLE); }
+        else if (act == OP_DIS_MANUAL_MA) { uint16_t v = dischargeCycleManualMa(); char m[28];
+                                            if (v) snprintf(m, sizeof(m), "СТРУМ %u мА", v);
+                                            else   snprintf(m, sizeof(m), "СТРУМ АВТО");
+                                            displayShow(m); ledSet(LED_IDLE); }
         // Примусове пробудження — параметрів не має взагалі: усі межі задає
         // settings.h, і саме тому режим і безпечний (див. charge.h).
         else if (act == OP_CHARGE_WAKE)   { const char *e = chargeWakeStart();

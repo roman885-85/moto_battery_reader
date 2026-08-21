@@ -598,6 +598,26 @@
                   <span style="opacity:.7">мВ</span>
                 </span></div>
             <div class="note i" id="disRampNote"></div>
+            <div class="row" id="disMaRow" style="margin-top:10px"><span class="k">Струм розряду</span>
+                <span>
+                  <button type="button" class="tgtb" onclick="disSetMa(0)">Авто</button>
+                  <button type="button" class="tgtb" onclick="disSetMa(300)">300</button>
+                  <button type="button" class="tgtb" onclick="disSetMa(500)">500</button>
+                  <button type="button" class="tgtb" onclick="disSetMa(700)">700</button>
+                  <button type="button" class="tgtb" onclick="disSetMa(1000)">1000</button>
+                  <input type="number" id="disMaInp" placeholder="авто" min="0" step="50"
+                         style="border-radius:8px;border:none;padding:6px;width:90px">
+                  <span style="opacity:.7">мА</span>
+                  <button type="button" class="btn btn-info" style="padding:6px 10px"
+                          onclick="disSetMa(+(document.getElementById('disMaInp').value||0))">Задати</button>
+                </span></div>
+            <div class="note i" id="disMaNote"></div>
+            <div class="row" id="disProfRow" style="margin-top:10px"><span class="k">Профіль розряду</span>
+                <span>
+                  <button type="button" class="tgtb" id="disProf0" onclick="disSetProfile(0)">Заводський</button>
+                  <button type="button" class="tgtb" id="disProf1" onclick="disSetProfile(1)">Розумний 0.2C</button>
+                </span></div>
+            <div class="note i" id="disProfNote"></div>
             <!-- Графік УСТАВКИ СТРУМУ за напругою. Перемальовується щоразу, коли
                  змінюють ціль: видно, що 300 мА припадають рівно на неї, і що
                  при вищій цілі відрізок коротший, а нахил крутіший. -->
@@ -654,6 +674,11 @@
                     <div class="dmc"><div class="dmck">потужність, Вт</div><div class="dmcv" id="chgW">—</div></div>
                     <div class="dmc chgonly"><div class="dmck">температура, °C</div><div class="dmcv" id="chgT">—</div></div>
                     <div class="dmc chgonly"><div class="dmck" id="chgIcaK">паливомір ICA</div><div class="dmcv" id="chgIca">—</div></div>
+                    <!-- Однакові з розрядом і пробудженням: фаза профілю й
+                         скільки ще лишилось. Прочерк тут означає «оцінити не
+                         можна» — показати вигадане число гірше. -->
+                    <div class="dmc"><div class="dmck" id="chgPhaseK">фаза</div><div class="dmcv" id="chgPhase">—</div></div>
+                    <div class="dmc"><div class="dmck">лишилось ≈</div><div class="dmcv" id="chgEta">—</div></div>
                     <!-- Три картки нижче живуть ЛИШЕ у пробудженні: у звичайному
                          заряді вони порожні, а їхні сусіди з класом chgonly —
                          навпаки. Джерело в них різне: chgonly читають DS2438,
@@ -692,6 +717,28 @@
             <div class="note i chgonly" id="chgMaNote">Порожньо або «Авто» — струм веде профіль за відсотком заряду.
                 Ручне значення діє й <b>під час</b> заряду. Дозаряд наприкінці воно не скасовує: у зоні
                 дозаряду береться <b>менше</b> з двох, бо добивати майже повний пакет великим струмом не можна.</div>
+            <div class="row chgonly" id="chgMvRow" style="margin-top:10px"><span class="k">Ціль у вольтах</span>
+                <span>
+                  <button type="button" class="tgtb" onclick="chgSetMv(0)">За %</button>
+                  <button type="button" class="tgtb" onclick="chgSetMv(8200)">8.20</button>
+                  <button type="button" class="tgtb" onclick="chgSetMv(8000)">8.00</button>
+                  <button type="button" class="tgtb" onclick="chgSetMv(7800)">7.80</button>
+                  <button type="button" class="tgtb" onclick="chgSetMv(7400)">7.40 (збер.)</button>
+                  <input type="number" id="chgMvInp" placeholder="за %" min="0" step="50"
+                         style="border-radius:8px;border:none;padding:6px;width:90px">
+                  <span style="opacity:.7">мВ</span>
+                  <button type="button" class="btn btn-info" style="padding:6px 10px"
+                          onclick="chgSetMv(+(document.getElementById('chgMvInp').value||0))">Задати</button>
+                </span></div>
+            <div class="note i chgonly" id="chgMvNote">Ціль у відсотках проходить через криву SoC: «85 %» — це
+                стільки, скільки крива вважає за 85 %. Для зберігання (7.40 В = 3.70 В на банку) і для ремонтних
+                сценаріїв потрібні саме вольти. «За %» повертає ціль за відсотком.</div>
+            <div class="row chgonly" id="chgProfRow" style="margin-top:10px"><span class="k">Профіль заряду</span>
+                <span>
+                  <button type="button" class="tgtb" id="chgProf0" onclick="chgSetProfile(0)">Заводський</button>
+                  <button type="button" class="tgtb" id="chgProf1" onclick="chgSetProfile(1)">Розумний CC/CV</button>
+                </span></div>
+            <div class="note i chgonly" id="chgProfNote"></div>
             <input type="password" class="pw" id="pwChg" placeholder="🔑 Пароль адміністратора">
             <div class="btns">
                 <button class="btn btn-ok chgonly" onclick="chgStart()">🔋 ПОЧАТИ ЗАРЯД</button>
@@ -2042,11 +2089,37 @@ async function disPoll(){
     // Залишок часу — з фактичного темпу за весь сеанс. Оцінка груба (наприкінці
     // крива положистіша, та й струм ми навмисне зменшуємо), тож і подається як
     // «≈», але дає зрозуміти, чекати десять хвилин чи дві години.
+    // Оцінку рахує ПРИСТРІЙ (залишок ємності / струм) — там є і паспортна
+    // ємність пакета, і чинний струм. Клієнтський розрахунок за темпом падіння
+    // напруги лишається запасним: він працює й тоді, коли ємність невідома.
     let eta='—';
-    if(run&&d.elapsedS>60&&d.startMv>d.mv){
+    if(d.etaS!==undefined && d.etaS) eta=etaFmt(d.etaS);
+    else if(run&&d.elapsedS>60&&d.startMv>d.mv){
         const rate=(d.startMv-d.mv)/d.elapsedS;                 // мВ/с
         const left=Math.max(0,(d.mv-d.targetMv)/rate);
         eta=left>0?disFmtT(Math.round(left)):'ось-ось';
+    }
+    if(d.manualMa!==undefined){
+        const mi=$('disMaInp');
+        if(mi && document.activeElement!==mi) mi.value = d.manualMa ? d.manualMa : '';
+        disMaPaint(d.manualMa|0);
+        const mn=$('disMaNote');
+        if(mn) mn.innerHTML = (d.manualMa
+            ? ('Зараз <b>ручний</b> струм '+d.manualMa+' мА (межі '+d.manMinMa+'…'+d.manMaxMa+' мА). ')
+            : 'Зараз <b>автоматична</b> уставка. ')
+            + 'Біля самої цілі ручне значення струм не піднімає: малий струм у кінці не «продавлює» '
+            + 'напругу передчасно й дає чесніший вимір ємності.';
+    }
+    if(d.profile!==undefined){
+        const p0=$('disProf0'), p1=$('disProf1');
+        if(p0) p0.classList.toggle('on', !(d.profile|0));
+        if(p1) p1.classList.toggle('on', !!(d.profile|0));
+        const pn=$('disProfNote');
+        if(pn) pn.innerHTML = (d.profile|0)
+            ? ('<b>Розумний 0.2C.</b> Струм — від паспортної ємності пакета ('+(d.ratedMah||0)
+               +' мА·год). 0.2C — стандартна ставка саме для ВИМІРУ ємності: більший струм занижує '
+               +'результат просадкою на внутрішньому опорі, менший розтягує цикл на півдня.')
+            : '<b>Заводський.</b> Лінійка за напругою, однакова для будь-якого пакета.';
     }
     disSet('disEta',eta);
 
@@ -2132,7 +2205,8 @@ async function disStart(){
                 (t/1000).toFixed(2)+' В.\nНавантаження буде увімкнено; резистор нагріється. Не залишайте пристрій без нагляду.\nЗупинити можна кнопкою «ЗУПИНИТИ» або довгим натисканням на пристрої.'))return;
     prog(true,'Запуск розряду...');
     try{
-        const r=await postForm('/api/discharge/start',{password:pw,target:t});
+        const mi=$('disMaInp'); const ma=mi&&mi.value?(+mi.value|0):0;
+        const r=await postForm('/api/discharge/start',{password:pw,target:t,ma:ma});
         toast(r.status==='success'?'✅ Розряд почато':('Помилка: '+r.message),r.status==='success'?'ok':'err');
         await disPoll();
     }catch(e){toast('Помилка: '+e.message,'err')}
@@ -2281,6 +2355,38 @@ async function chgPoll(){
             + 'Ручне значення діє й <b>під час</b> заряду. Дозаряд наприкінці воно не скасовує: '
             + 'у зоні дозаряду береться <b>менше</b> з двох.';
     }
+    // Ручна ЦІЛЬ і ПРОФІЛЬ — так само з пристрою: у вебі, USB і на самому
+    // екрані має бути видно те, що ДІЄ, хто б його не поставив.
+    if(d.manualMv!==undefined){
+        const vi=$('chgMvInp');
+        if(vi && document.activeElement!==vi) vi.value = d.manualMv ? d.manualMv : '';
+        if(vi) vi.max = d.manMaxMv || 8200;
+        chgMvPaint(d.manualMv|0);
+        const vn=$('chgMvNote');
+        if(vn) vn.innerHTML = (d.manualMv
+            ? ('Зараз ціль <b>'+(d.manualMv/1000).toFixed(2)+' В</b> (межі '
+               +(d.manMinMv/1000).toFixed(2)+'…'+(d.manMaxMv/1000).toFixed(2)+' В). ')
+            : 'Зараз ціль <b>за відсотком</b> через криву SoC. ')
+            + 'Для зберігання беруть 7.40 В (3.70 В на банку).';
+    }
+    if(d.profile!==undefined){
+        const p0=$('chgProf0'), p1=$('chgProf1');
+        if(p0) p0.classList.toggle('on', !(d.profile|0));
+        if(p1) p1.classList.toggle('on', !!(d.profile|0));
+        const pn=$('chgProfNote');
+        if(pn) pn.innerHTML = (d.profile|0)
+            ? ('<b>Розумний CC/CV.</b> Струм — від паспортної ємності цього пакета ('
+               +(d.ratedMah||0)+' мА·год): передзаряд 0.1C нижче 3.00 В на банку, CC '
+               +(d.smartCcMa||0)+' мА, потім фаза CV — уставка спадає, і заряд завершується за '
+               +'<b>струмом</b> ('+(d.smartEndMa||0)+' мА), а не за дотиком до цілі. '
+               +'Плюс температурне вікно 0…45 °C і половинний струм нижче 10 °C.')
+            : '<b>Заводський.</b> Струм веде таблиця за відсотком заряду, однакова для будь-якого пакета.';
+    }
+    // Фаза й залишок часу — однаково для заряду, розряду й пробудження.
+    if($('chgPhase')) $('chgPhase').textContent = d.phaseText || '—';
+    if($('chgEta'))   $('chgEta').textContent   = wake
+        ? (d.wakeMaxS!==undefined ? etaFmt(Math.max(0,(d.wakeMaxS|0)-(d.elapsedS|0))) : '—')
+        : etaFmt(d.etaS);
     $('chgLim').textContent=d.pwm?(wake?('стеля '+(d.wakeMa||0)+' мА · зараз '+d.ma+' мА')
                                        :('уставка '+d.setMa+' мА · зараз '+d.ma+' мА'))
                                  :'⚠ ШІМ недоступний';
@@ -2388,6 +2494,85 @@ function chgMaPaint(cur){
         b.classList.toggle('on', !isNaN(v) && v===(cur|0));
     });
 }
+// Ручна ЦІЛЬ у вольтах. 0 повертає ціль за відсотком.
+async function chgSetMv(mv){
+    mv = mv|0; if(mv<0) mv=0;
+    prog(true, mv?('Ціль '+(mv/1000).toFixed(2)+' В...'):'Ціль за відсотком...');
+    try{
+        const r=await postForm('/api/charge/mv',{password:$('pwChg').value,mv:mv});
+        if(r.status==='success'){
+            const got=r.manualMv|0;
+            $('chgMvInp').value = got ? got : '';
+            if(got && r.asked && got!==(r.asked|0))
+                toast('Ціль затиснуто в межі: '+got+' мВ','info');
+            else toast(got?('✅ Ціль '+(got/1000).toFixed(2)+' В'):'✅ Ціль за відсотком','ok');
+            chgMvPaint(got);
+        } else toast('Помилка: '+r.message,'err');
+        await chgPoll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+function chgMvPaint(cur){
+    document.querySelectorAll('#chgMvRow .tgtb').forEach(b=>{
+        const t=b.textContent.trim();
+        const v=(t==='За %')?0:Math.round(parseFloat(t)*1000);
+        b.classList.toggle('on', !isNaN(v) && v===(cur|0));
+    });
+}
+// Профіль заряду: 0 — заводська таблиця, 1 — розумний CC/CV за ємністю пакета.
+async function chgSetProfile(p){
+    prog(true,'Профіль...');
+    try{
+        const r=await postForm('/api/charge/profile',{password:$('pwChg').value,p:p|0});
+        if(r.status==='success') toast('✅ Профіль: '+((r.profile|0)?'розумний CC/CV':'заводський'),'ok');
+        else toast('Помилка: '+r.message,'err');
+        await chgPoll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+// Ручний струм розряду. 0 повертає лінійку за напругою.
+async function disSetMa(ma){
+    ma = ma|0; if(ma<0) ma=0;
+    prog(true, ma?('Струм '+ma+' мА...'):'Автоматичний струм...');
+    try{
+        const r=await postForm('/api/discharge/ma',{password:$('pwDis').value,ma:ma});
+        if(r.status==='success'){
+            const got=r.manualMa|0;
+            $('disMaInp').value = got ? got : '';
+            if(got && r.asked && got!==(r.asked|0))
+                toast('Уставку затиснуто в межі: '+got+' мА','info');
+            else toast(got?('✅ Струм '+got+' мА'):'✅ Автоматична лінійка','ok');
+            disMaPaint(got);
+        } else toast('Помилка: '+r.message,'err');
+        await disPoll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+function disMaPaint(cur){
+    document.querySelectorAll('#disMaRow .tgtb').forEach(b=>{
+        const t=b.textContent.trim();
+        const v=(t==='Авто')?0:parseInt(t,10);
+        b.classList.toggle('on', !isNaN(v) && v===(cur|0));
+    });
+}
+async function disSetProfile(p){
+    prog(true,'Профіль...');
+    try{
+        const r=await postForm('/api/discharge/profile',{password:$('pwDis').value,p:p|0});
+        if(r.status==='success') toast('✅ Профіль: '+((r.profile|0)?'розумний 0.2C':'заводський'),'ok');
+        else toast('Помилка: '+r.message,'err');
+        await disPoll();
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+// «Скільки ще лишилось» у людському вигляді. 0 = оцінити не можна.
+function etaFmt(s){
+    s = s|0;
+    if(!s) return '—';
+    if(s<60) return '<1 хв';
+    if(s<3600) return Math.round(s/60)+' хв';
+    return Math.floor(s/3600)+' год '+Math.round((s%3600)/60)+' хв';
+}
 async function chgStart(){
     const t=chgTargetPct();
     if(!confirm('🔋 Почати заряд до '+t+'%?\n\nСтрум керується за профілем, масштабованим під цю ціль '+
@@ -2396,7 +2581,8 @@ async function chgStart(){
     prog(true,'Запуск заряду...');
     try{
         const mi=$('chgMaInp'); const ma=mi&&mi.value?(+mi.value|0):0;
-        const r=await postForm('/api/charge/start',{password:$('pwChg').value,target:t,ma:ma});
+        const vi=$('chgMvInp'); const mv=vi&&vi.value?(+vi.value|0):0;
+        const r=await postForm('/api/charge/start',{password:$('pwChg').value,target:t,ma:ma,mv:mv});
         toast(r.status==='success'?'✅ Заряд почато':('Помилка: '+r.message),r.status==='success'?'ok':'err');
         await chgPoll();
     }catch(e){toast('Помилка: '+e.message,'err')}

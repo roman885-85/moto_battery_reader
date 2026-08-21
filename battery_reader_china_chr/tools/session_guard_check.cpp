@@ -1229,14 +1229,20 @@ int main() {
           fileCalls("charge.h", "chargeManualClamp"),
                                              "накладання й затиск живуть у charge.h — там, де їх дістає тест");
     // ⚑ Перевіряти просто «chargeApplyManual зустрічається у файлі» замало:
-    //  виклик є ще й на старті заряду, тож прибрати його з РЕГУЛЯТОРА можна
-    //  було б непомітно (перевірено від протилежного — охоронець лишався
-    //  зеленим). Тому шукаємо саме той аргумент, який є лише в регуляторі.
-    check(fileCalls("web_server.h", "chargeManualMa(), g_chg.inTaper)"),
-                                             "регулятор справді бере ручну уставку щоопитування");
-    // ⚑ Уставку треба врахувати ще НА СТАРТІ: інакше стартова шпаруватість
-    //  цілиться в автоматичний струм і перший прохід іде «сходинкою».
-    check(fileCalls("web_server.h", "chargeApplyManual(chargeSetpointMaForPct("),
+    //  виклик є і в регуляторі, і на старті, тож прибрати його з ОДНОГО з двох
+    //  місць можна було б непомітно (перевірено від протилежного — охоронець
+    //  лишався зеленим). Тому шукаємо КОЖНЕ місце окремо, за аргументом, який
+    //  є лише в ньому.
+    //
+    //  Обидва шляхи тепер ідуть через ОДНУ функцію chargeSetpointFor()
+    //  (профіль + ручна поправка), і саме це й треба стерегти: якщо регулятор
+    //  почне брати уставку повз неї, ручний режим і розумний профіль мовчки
+    //  перестануть діяти під час заряду, лишившись правильними в тесті.
+    check(fileCalls("charge.h", "chargeApplyManual(autoMa, g_chgManualMa, *inTaper)"),
+                                             "єдина точка уставки накладає ручне значення");
+    check(fileCalls("web_server.h", "chargeSetpointFor(pct, g_chg.targetPct"),
+                                             "регулятор бере уставку через неї щоопитування");
+    check(fileCalls("web_server.h", "chargeSetpointFor(g_chg.lastPct, targetPct"),
                                              "і на старті теж, а не з другого опитування");
     check(fileCalls("web_server.h", "handleChargeMa") &&
           fileCalls("web_server.h", "/api/charge/ma"),
@@ -1985,6 +1991,81 @@ int main() {
                                              "у списку є пункт виходу до показань");
         check(fileExists("tools/menu_check.cpp"),
                                              "модель меню має власний хостовий тест");
+    }
+
+    printf("\n41) ручні уставки, розумний профіль і залишок часу — ввімкнені в роботу\n");
+    // ⚑ ЩО ЛОВИМО. Уся логіка (CC/CV за ємністю, температурне вікно, ручні
+    //  уставки, оцінка часу) — чисті функції в charge.h/discharge.h, і їх
+    //  ганяє smart_check напряму. Але web_server.h на хості не збирається, тож
+    //  «функція правильна» і «машина її кличе» лишаються різними твердженнями.
+    //  Найдешевший спосіб отримати правильний код, який нічого не робить, —
+    //  забути виклик у циклі заряду.
+    {
+        // Ємність пакета мусить доїжджати до профілю: без неї «частки C»
+        // рахуються від номіналу, тобто розумний режим перестає бути розумним.
+        check(fileCalls("web_server.h", "chargeSetRatedMah") &&
+              fileCalls("web_server.h", "dischargeSetRatedMah"),
+                                             "паспортна ємність пакета доїжджає в обидва профілі");
+        check(fileCalls("web_server.h", "chargeSmartFull"),
+                                             "розумний заряд завершується за СТРУМОМ, а не за дотиком до цілі");
+        check(fileHasText("web_server.h", "dischargeSetpointFor(mv, g_dis.targetMv, 0, false"),
+                                             "розряд бере уставку через профіль уже на старті");
+        check(fileHasText("web_server.h", "dischargeSetpointFor(mv, g_dis.targetMv, t, okV"),
+                                             "…і щоопитування, разом із температурою");
+        check(fileCalls("web_server.h", "chargeManualMvClamp"),
+                                             "ручна ціль у вольтах затискається й на старті заряду");
+        // Поверхні: HTTP, USB і всі три клієнти.
+        for (const char *r : { "/api/charge/mv", "/api/charge/profile",
+                               "/api/discharge/ma", "/api/discharge/profile" })
+            check(fileHasText("web_server.h", r), "маршрут HTTP на місці");
+        check(fileHasText("serial_api.h", "a3.startsWith(\"MV=\")") &&
+              fileHasText("serial_api.h", "a2.startsWith(\"MA=\")"),
+                                             "USB уміє задати і напругу заряду, і струм розряду");
+        check(fileHasText("serial_api.h", "a3 == \"SMART\"") &&
+              fileHasText("serial_api.h", "a2 == \"SMART\""),
+                                             "…і перемкнути профіль обом машинам");
+        check(fileHasText("index.html", "chgSetProfile(1)") &&
+              fileHasText("index.html", "disSetProfile(1)") &&
+              fileHasText("index.html", "async function chgSetMv") &&
+              fileHasText("index.html", "async function disSetMa"),
+                                             "веб має і перемикачі профілю, і обидві ручні уставки");
+        check(fileHasText("client_usb.html", "chgSetProfile(1)") &&
+              fileHasText("client_usb.html", "disSetProfile(1)") &&
+              fileHasText("client_usb.html", "async function chgSetMv") &&
+              fileHasText("client_usb.html", "async function disSetMa"),
+                                             "…те саме в USB-сторінці");
+        // ⚑ Дужка в шаблоні НЕ прикраса: без неї «def charge_set_mv» лишається
+        //  підрядком у «def charge_set_mv_disabled», і перейменований (тобто
+        //  відключений) метод проходив би перевірку. Спіймано звіркою від
+        //  протилежного.
+        check(fileHasText("usb_client/moto_gui.py", "def charge_set_profile(self") &&
+              fileHasText("usb_client/moto_gui.py", "def discharge_set_profile(self") &&
+              fileHasText("usb_client/moto_gui.py", "def charge_set_mv(self") &&
+              fileHasText("usb_client/moto_gui.py", "def discharge_set_ma(self"),
+                                             "…і в exe-клієнті");
+        // Мало оголосити метод — його має хтось викликати.
+        check(fileCalls("usb_client/moto_gui.py", "self.charge_set_mv(") &&
+              fileCalls("usb_client/moto_gui.py", "self.discharge_set_ma(") &&
+              fileCalls("usb_client/moto_gui.py", "self.charge_set_profile(") &&
+              fileCalls("usb_client/moto_gui.py", "self.discharge_set_profile("),
+                                             "…і кнопки exe-клієнта на них справді заведені");
+        // Залишок часу рахує ПРИСТРІЙ і віддає обом машинам.
+        check(fileCalls("web_server.h", "chargeEtaS") && fileCalls("web_server.h", "dischargeEtaS"),
+                                             "оцінку часу рахує пристрій, а не кожен клієнт по-своєму");
+        check(fileHasText("index.html", "etaFmt(") && fileHasText("client_usb.html", "etaFmt(") &&
+              fileHasText("usb_client/moto_gui.py", "_eta_txt("),
+                                             "…і всі три клієнти її показують");
+        // Однотипний вигляд трьох екранів: спільний каркас в обох драйверах.
+        for (const char *f : { "display.h", "display_color.h" }) {
+            check(fileCalls(f, "opMonTime") && fileCalls(f, "opMonRow"),
+                                             "екрани операцій зібрані спільним каркасом");
+            check(fileCalls(f, "drawPageWake"),
+                                             "…і пробудження — окрема сторінка того ж каркаса");
+            check(fileCountText(f, "opMonTime(") >= 4,
+                                             "…залишок часу показують УСІ ТРИ (плюс сам помічник)");
+        }
+        check(fileExists("tools/smart_check.cpp"),
+                                             "логіка профілів має власний хостовий тест");
     }
 
     printf("\n%s (помилок: %d)\n",

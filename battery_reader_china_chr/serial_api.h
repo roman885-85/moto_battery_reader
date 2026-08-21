@@ -713,15 +713,36 @@ static void serialExec(const String &line) {
                                          r += deviceClockNum();
                                          r += ",\"src\":\""; r += deviceClockSrcName();
                                          sResp(r + "\"}"); } }
-    // DISCHARGE [мВ] — почати розряд; DISCHARGE STOP — зупинити; DISCHARGE? — стан.
+    // DISCHARGE [мВ] — почати розряд; DISCHARGE STOP — зупинити; DISCHARGE? — стан;
+    // DISCHARGE MA=<мА> — ручний струм (0 = автомат);
+    // DISCHARGE SMART | DISCHARGE AUTO — профіль (0.2C за ємністю або лінійка).
     else if (cmd == "DISCHARGE"){ String a2 = arg; a2.trim(); a2.toUpperCase();
                                   if (a2 == "STOP") { dischargeStop(DISR_USER); sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); }
                                   else if (a2 == "?" || a2 == "STATUS") sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}");
+                                  // DISCHARGE MA=<мА> — ручний струм; MA=0 повертає автомат.
+                                  else if (a2.startsWith("MA=")) {
+                                      long want = a2.substring(3).toInt();
+                                      if (want < 0) want = 0;
+                                      uint16_t got = dischargeSetManualMa((uint16_t)want);
+                                      String r = "{\"ok\":true,\"manualMa\":"; r += got;
+                                      r += ",\"asked\":"; r += want;
+                                      r += ",\"discharge\":"; r += dischargeJson(); r += "}";
+                                      sResp(r); }
+                                  // DISCHARGE SMART / AUTO — профіль розряду.
+                                  else if (a2 == "SMART" || a2 == "AUTO") {
+                                      uint8_t got = dischargeSetProfile(a2 == "SMART" ? DIS_PROF_SMART
+                                                                                      : DIS_PROF_FACTORY);
+                                      String r = "{\"ok\":true,\"profile\":"; r += got;
+                                      r += ",\"discharge\":"; r += dischargeJson(); r += "}";
+                                      sResp(r); }
                                   else { const char *e = dischargeStart((uint16_t)a2.toInt());
                                          if (e) { String r = "{\"ok\":false,\"err\":\""; r += e; r += "\"}"; sResp(r); }
                                          else sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); } }
     // CHARGE [%] — почати заряд до обраного відсотка (без аргументу -> 100 %);
-    // CHARGE STOP — зупинити; CHARGE ? — стан.
+    // CHARGE STOP — зупинити; CHARGE ? — стан; CHARGE MA=<мА> — ручний струм
+    // (0 = автомат); CHARGE MV=<мВ> — ручна ціль у вольтах (0 = за відсотком);
+    // CHARGE SMART | CHARGE AUTO — профіль (CC/CV за ємністю пакета або
+    // заводська таблиця); CHARGE WAKE — примусове пробудження.
     else if (cmd == "CHARGE")   { String a3 = arg; a3.trim(); a3.toUpperCase();
                                   if (a3 == "STOP") { chargeStop(CHGR_USER); sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}"); }
                                   else if (a3 == "?" || a3 == "STATUS") sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}");
@@ -733,6 +754,23 @@ static void serialExec(const String &line) {
                                       uint16_t got = chargeSetManualMa((uint16_t)want);
                                       String r = "{\"ok\":true,\"manualMa\":"; r += got;
                                       r += ",\"asked\":"; r += want;
+                                      r += ",\"charge\":"; r += chargeJson(); r += "}";
+                                      sResp(r); }
+                                  // CHARGE MV=<мВ> — ручна ЦІЛЬ у вольтах; MV=0 повертає ціль за відсотком.
+                                  else if (a3.startsWith("MV=")) {
+                                      long want = a3.substring(3).toInt();
+                                      if (want < 0) want = 0;
+                                      uint16_t got = chargeSetManualMv((uint16_t)want);
+                                      String r = "{\"ok\":true,\"manualMv\":"; r += got;
+                                      r += ",\"asked\":"; r += want;
+                                      r += ",\"charge\":"; r += chargeJson(); r += "}";
+                                      sResp(r); }
+                                  // CHARGE SMART / AUTO — профіль заряду: розумний CC/CV за
+                                  // паспортною ємністю пакета або заводська таблиця.
+                                  else if (a3 == "SMART" || a3 == "AUTO") {
+                                      uint8_t got = chargeSetProfile(a3 == "SMART" ? CHG_PROF_SMART
+                                                                                   : CHG_PROF_FACTORY);
+                                      String r = "{\"ok\":true,\"profile\":"; r += got;
                                       r += ",\"charge\":"; r += chargeJson(); r += "}";
                                       sResp(r); }
                                   // CHARGE WAKE — примусове пробудження пакета, що не читається.

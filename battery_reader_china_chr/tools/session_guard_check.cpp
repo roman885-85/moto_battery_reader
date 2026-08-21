@@ -2203,8 +2203,22 @@ int main() {
         check(fileCalls("recovery.h", "performDcaFix(&dm)"),
                                              "крок правки лічильника справді щось виконує");
         check(fileCalls("recovery.h", "performEtmFix(&em)") &&
-              fileCalls("web_server.h", "restoreEtmFixPlan(p, &etm, &why)"),
+              fileCalls("web_server.h", "restoreEtmFixPlan(p, &etm, why, sizeof(why))"),
                                              "крок узгодження наробітку теж виконується — і бере вирок зі спільної функції");
+        // ⚑ НУЛЬ — ЗАКОННИЙ РЕЗУЛЬТАТ, А НЕ НЕВДАЧА, І ЦЕ ДВІ РІЗНІ УМОВИ В
+        //  ДВОХ ФАЙЛАХ. Пакет, якому щойно зробили скидання з сьогоднішніми
+        //  датами, має нуль діб віку й нуль діб наробітку за датою — і саме
+        //  він потребує кроку найбільше, бо після станції в моніторі тисячі
+        //  діб. Поки вирок питав `etmCalc <= 0`, а правило — `ageDays > 0`,
+        //  такий пакет діставав відмову й у Майстрі не діставав кроку взагалі.
+        check(fileHasText("restore_plan.h", "if (!p.etmUseDate) {") &&
+              !fileHasText("restore_plan.h", "if (p.etmCalc <= 0) {"),
+                                             "вирок питає «чи порахувалось», а не «чи більше нуля»");
+        check(fileHasText("impres_audit.h", "return ageDays >= 0 && etmDays >"),
+                                             "нульовий вік — це вік, а не «нема з чим порівнювати»");
+        check(fileHasText("mirror_plan.h", "p.haveAge = ageDays >= 0;") &&
+              fileHasText("web_server.h", "long etmD = 0, age = -1;"),
+                                             "…і «невідомо» позначається від'ємним, а не нулем");
         // ⚑ Разом із мітками подій: станція вміє відновити старе число з них.
         check(fileCalls("web_server.h", "impresSetEtm(batteryDump2438, etm)"),
                                              "…і пише наробіток разом із мітками подій");

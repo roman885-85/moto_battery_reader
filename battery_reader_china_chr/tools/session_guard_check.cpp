@@ -2617,6 +2617,33 @@ int main() {
               fileHasText("usb_client/moto_gui.py", "self._chg_set_unavail(") &&
               fileHasText("usb_client/moto_gui.py", "btnChgWake"),
                                                      "і .exe теж");
+
+        // ґ) …і не плашкою ЄДИНОЮ: вікно з «ОК».
+        //    ⚑ ПОЯСНЕННЯ, ЯКЕ ЗНИКАЄ САМЕ, — НЕ ПОЯСНЕННЯ. Ця відмова каже,
+        //    чому зникла ціла група меню; спливаюча підказка живе три секунди,
+        //    і людина лишається з питанням «а що це було?». Тому в неї є «ОК»:
+        //    вона стоїть, доки її не прочитають.
+        check(fileHasText("web_server.h", "\\\"code\\\":\\\"nocharge\\\"") &&
+              fileHasText("serial_api.h", "\\\"code\\\":\\\"nocharge\\\""),
+                                                     "пристрій позначає цю відмову кодом");
+        for (const char *c : { "index.html", "client_usb.html" }) {
+            check(fileHasText(c, "function msgShow(") && fileHasText(c, "function msgClose("),
+                                                     "клієнт має вікно повідомлення");
+            check(fileHasText(c, "id=\"msgOk\"") && fileHasText(c, ">ОК<"),
+                                                     "…і в ньому є кнопка «ОК» унизу");
+            // ⚑ КОДОМ, А НЕ ТЕКСТОМ. Упізнавати відмову за рядком означало б,
+            //  що перше ж переформулювання тихо поверне спливаючу підказку.
+            check(fileHasText(c, "code==='nocharge'"),
+                                                     "…і показує його на відмову, упізнану КОДОМ");
+            // Вихід із клавіатури: вікно, яке закривається лише мишею, —
+            // пастка для того, хто працює з приладом однією рукою.
+            check(fileHasText(c, "if(e.key==='Escape') msgClose();"),
+                                                     "…і закривається не лише мишею");
+        }
+        check(fileHasText("usb_client/moto_gui.py", "def msg_box(self, head, text)") &&
+              fileHasText("usb_client/moto_gui.py", "messagebox.showwarning(head, text)") &&
+              fileHasText("usb_client/moto_gui.py", "res.get(\"code\") == \"nocharge\""),
+                                                     "і .exe теж — рідним вікном системи");
     }
 
     // ── 49. НАРОБІТОК У САМОМУ ПАКЕТІ ВИДНО ОЧИМА ──────────────────────────

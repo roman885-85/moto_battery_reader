@@ -2080,7 +2080,12 @@ inline void chargeModeLoad() {
 //  і «сховати кнопку» не означає «вимкнути функцію».
 inline bool chargeGateClosed() {
     if (chargeAvailable()) return false;
-    String j = "{\"status\":\"error\",\"message\":\"";
+    // ⚑ ОЗНАКА «nocharge» — ЩОБ КЛІЄНТ НЕ ВПІЗНАВАВ ВІДМОВУ ЗА ТЕКСТОМ.
+    //  Цю відмову треба показувати не миготливою плашкою, а вікном із «ОК»:
+    //  вона пояснює, чому зникла ціла група меню, і зникнути сама через три
+    //  секунди не має права. Розрізняти її за рядком означало б, що перша ж
+    //  правка формулювання тихо поверне миготливу плашку.
+    String j = "{\"status\":\"error\",\"code\":\"nocharge\",\"message\":\"";
     j += chargeUnavailText();
     j += "\"}";
     server.send(409, "application/json", j);

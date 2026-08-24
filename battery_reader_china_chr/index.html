@@ -203,6 +203,19 @@
         .t-ok{background:#123a24;color:var(--ok);border:1px solid var(--ok)}
         .t-err{background:#3a1414;color:var(--accent);border:1px solid var(--accent)}
         .t-info{background:#23281a;color:#cdd0a8;border:1px solid var(--info)}
+        /* ⚑ ВІКНО, А НЕ ПЛАШКА. Відмова «ця версія пристрою — без заряду»
+           пояснює, чому зникла ціла група меню. Спливаюча підказка живе три
+           секунди й зникає — і людина лишається з питанням «а що це було?».
+           Тому в цієї відповіді є «ОК»: вона стоїть, доки її не прочитають. */
+        #msgWrap{position:fixed;inset:0;z-index:60;display:none;align-items:center;
+                 justify-content:center;background:rgba(0,0,0,.62);padding:18px}
+        #msgWrap.on{display:flex}
+        #msgBox{background:var(--card);border:1px solid var(--line);border-radius:12px;
+                max-width:520px;width:100%;box-shadow:0 18px 48px rgba(0,0,0,.6)}
+        #msgHead{padding:14px 18px;border-bottom:1px solid var(--line);font-weight:700;font-size:1.05em}
+        #msgBody{padding:16px 18px;line-height:1.5;color:var(--text);white-space:pre-wrap}
+        #msgFoot{padding:12px 18px 16px;text-align:center}
+        #msgOk{min-width:140px}
         #progress{display:none;text-align:center;padding:16px}
         .spin{width:38px;height:38px;border:4px solid var(--line);border-top:4px solid var(--ua-yellow);
               border-radius:50%;margin:0 auto 8px;animation:spin 1s linear infinite}
@@ -300,6 +313,15 @@
 </head>
 <body>
 <div id="toast"></div>
+<!-- Вікно повідомлення з «ОК». Одне на весь інтерфейс: друга копія неминуче
+     розійшлася б із першою — див. msgShow() нижче. -->
+<div id="msgWrap" onclick="msgBackdrop(event)">
+    <div id="msgBox" role="dialog" aria-modal="true" aria-labelledby="msgHead">
+        <div id="msgHead">—</div>
+        <div id="msgBody"></div>
+        <div id="msgFoot"><button class="btn btn-primary" id="msgOk" onclick="msgClose()">ОК</button></div>
+    </div>
+</div>
 <div class="wrap">
     <!-- Аварія живлення +14 В. Показується на БУДЬ-ЯКІЙ вкладці: без блока
          живлення заряд не піде взагалі, і дізнатись про це з вкладки «Заряд»
@@ -1812,7 +1834,14 @@ async function resetBattery(){
 // POST form-urlencoded helper
 async function postForm(url,obj){
     const body=Object.entries(obj).map(([k,v])=>k+'='+encodeURIComponent(v)).join('&');
-    return (await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body})).json();
+    const r=await (await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body})).json();
+    // ⚑ ВІДМОВУ «БЕЗ ЗАРЯДУ» ЛОВИМО ТУТ, А НЕ В КОЖНОГО ВИКЛИКУ. Пристрій
+    //  позначає її кодом (code=nocharge), і кодом же ми її й упізнаємо: за
+    //  текстом — означало б, що перше ж переформулювання тихо поверне
+    //  спливаючу підказку. Місце одне, бо кінцевих точок заряду п'ять, і
+    //  шоста, дописана завтра, мусить поводитись так само без правок.
+    if(r && r.code==='nocharge') msgShow('⛔ Заряд недоступний', r.message||'');
+    return r;
 }
 
 // ============ МАЙСТЕР ВІДНОВЛЕННЯ ============
@@ -2844,13 +2873,51 @@ async function disDismiss(){
     catch(e){ toast('Помилка: '+e.message,'err'); }
 }
 // Плашка «функція недоступна» + вимкнені дії. Порожній текст = усе гаразд.
+//
+//  ⚑ ПЛАШКА ЛИШАЄТЬСЯ, ВІКНО ЇЇ НЕ ЗАМІНЮЄ. У них різні задачі: вікно
+//  відповідає на питання «чому не працює» тоді, коли його ставлять, а плашка
+//  тримає відповідь на видноті потім. Прибрати плашку означало б, що людина,
+//  яка натиснула «ОК» і за хвилину повернулась, знову нічого не розуміє.
+let chgUnavailSeen = '';       // за яку саме причину вікно вже показували
 function chgSetUnavail(why){
     const box=$('chgUnavail');
-    if(box){ box.textContent=why; box.style.display=why?'':'none'; }
+    if(box){
+        box.textContent=why;
+        box.style.display=why?'':'none';
+        // Плашка відкриває те саме вікно: прочитати повний текст можна й потім.
+        box.style.cursor=why?'pointer':'';
+        box.onclick=why?function(){ msgShow('⛔ Заряд недоступний', why); }:null;
+    }
     ['btnChgStart','btnChgStop','btnChgWake'].forEach(function(id){
         const b=$(id); if(b) b.disabled=!!why;
     });
+    // ⚑ ОДИН РАЗ НА ПРИЧИНУ, А НЕ НА КОЖНЕ ОПИТУВАННЯ. Стан заряду
+    //  опитується щосекунди; вікно, прив'язане до самого факту недоступності,
+    //  неможливо було б закрити. Показуємо, коли причина ЗМІНИЛАСЬ, — тобто
+    //  один раз при відкритті сторінки й ще раз, якщо заряд вимкнули на
+    //  приладі просто зараз.
+    if(why!==chgUnavailSeen){
+        chgUnavailSeen=why;
+        if(why) msgShow('⛔ Заряд недоступний', why);
+    }
 }
+
+// Вікно повідомлення з «ОК». Одне на весь інтерфейс.
+function msgShow(head, text){
+    const w=$('msgWrap'); if(!w) return;
+    $('msgHead').textContent=head||'Повідомлення';
+    $('msgBody').textContent=text||'';
+    w.classList.add('on');
+    const ok=$('msgOk'); if(ok) ok.focus();
+}
+function msgClose(){ const w=$('msgWrap'); if(w) w.classList.remove('on'); }
+// Клік повз вікно — теж закриття. Названою функцією, а не умовою в onclick:
+// перевірка клієнтів читає розмітку й імені в такому виразі не бачить.
+function msgBackdrop(e){ if(e && e.target && e.target.id==='msgWrap') msgClose(); }
+// Esc закриває так само, як «ОК»: вікно без виходу з клавіатури — пастка.
+document.addEventListener('keydown', function(e){
+    if(e.key==='Escape') msgClose();
+});
 async function chgStop(){
     prog(true,'Зупинка...');
     try{

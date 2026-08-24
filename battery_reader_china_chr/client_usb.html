@@ -76,6 +76,18 @@ header h1{font-size:1.05em;margin:0;color:var(--gold)}
 .b-warn{background:var(--org);color:#1a1400}
 .b-dng{background:var(--red)}.b-inf{background:#4a5a38}
 .btns{display:flex;gap:8px;flex-wrap:wrap}.btns .btn{flex:1;min-width:130px;width:auto}
+/* ⚑ ВІКНО, А НЕ ПЛАШКА. Відмова «ця версія пристрою — без заряду» пояснює,
+   чому зникла ціла група дій. Рядок стану живе до наступного повідомлення й
+   зникає — тому в цієї відповіді є «ОК»: вона стоїть, доки її не прочитають. */
+#msgWrap{position:fixed;inset:0;z-index:60;display:none;align-items:center;
+         justify-content:center;background:rgba(0,0,0,.62);padding:18px}
+#msgWrap.on{display:flex}
+#msgBox{background:var(--card);border:1px solid var(--line);border-radius:12px;
+        max-width:520px;width:100%;box-shadow:0 18px 48px rgba(0,0,0,.6)}
+#msgHead{padding:14px 18px;border-bottom:1px solid var(--line);font-weight:700}
+#msgBody{padding:16px 18px;line-height:1.5;color:var(--txt);white-space:pre-wrap}
+#msgFoot{padding:12px 18px 16px;text-align:center}
+#msgOk{min-width:140px;width:auto}
 .note{font-size:.82em;border-radius:8px;padding:8px 10px;margin:8px 0;line-height:1.35}
 .note.i{background:#232a17;color:#cdd0a8}.note.w{background:#4a2f10;color:#ffd9a8}
 input,select,textarea{background:#171a10;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:8px}
@@ -220,6 +232,14 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 </style>
 </head>
 <body>
+<!-- Вікно повідомлення з «ОК». Одне на весь інтерфейс — див. msgShow(). -->
+<div id="msgWrap" onclick="msgBackdrop(event)">
+  <div id="msgBox" role="dialog" aria-modal="true" aria-labelledby="msgHead">
+    <div id="msgHead">—</div>
+    <div id="msgBody"></div>
+    <div id="msgFoot"><button class="btn b-pri" id="msgOk" onclick="msgClose()">ОК</button></div>
+  </div>
+</div>
 <header>
   <!-- ⚑ ВІДБИТОК ЗБІРКИ В ШАПЦІ. Перше питання будь-якого розбору — «а чи та
        прошивка взагалі в приладі?». Доти відповідь лежала в /api/fs, куди
@@ -1020,7 +1040,13 @@ function cmd(c,timeout=8000){
   const run=()=>new Promise(resolve=>{
     if(!connected||!writer){resolve({ok:false,err:'не підключено'});return;}
     let done=false;
-    const finish=v=>{ if(!done){done=true;clearTimeout(timer);pending=null;resolve(v);} };
+    // ⚑ ВІДМОВУ «БЕЗ ЗАРЯДУ» ЛОВИМО ТУТ, А НЕ В КОЖНОГО ВИКЛИКУ. Пристрій
+    //  позначає її кодом (code=nocharge), і кодом же ми її й упізнаємо: за
+    //  текстом — означало б, що перше ж переформулювання тихо поверне рядок
+    //  стану замість вікна.
+    const finish=v=>{ if(!done){done=true;clearTimeout(timer);pending=null;
+                                if(v&&v.code==='nocharge') msgShow('⛔ Заряд недоступний', v.err||'');
+                                resolve(v);} };
     const timer=setTimeout(()=>finish({ok:false,err:'таймаут'}),timeout);
     pending=finish;
     const disp=c.startsWith('AUTH ')?'AUTH ***':(c.length>60?c.slice(0,60)+'…':c);
@@ -2337,13 +2363,43 @@ async function disDismiss(){
   if(r&&r.ok)disShow(r.discharge);
 }
 // Плашка «функція недоступна» + вимкнені дії. Порожній текст = усе гаразд.
+//
+//  ⚑ ПЛАШКА ЛИШАЄТЬСЯ, ВІКНО ЇЇ НЕ ЗАМІНЮЄ: вікно відповідає на питання
+//  «чому не працює» тоді, коли його ставлять, а плашка тримає відповідь на
+//  видноті потім.
+var chgUnavailSeen='';         // за яку саме причину вікно вже показували
 function chgSetUnavail(why){
   var box=$('chgUnavail');
-  if(box){ box.textContent=why; box.style.display=why?'':'none'; }
+  if(box){
+    box.textContent=why;
+    box.style.display=why?'':'none';
+    box.style.cursor=why?'pointer':'';
+    box.onclick=why?function(){ msgShow('⛔ Заряд недоступний', why); }:null;
+  }
   ['btnChgStart','btnChgStop','btnChgWake'].forEach(function(id){
     var b=$(id); if(b) b.disabled=!!why;
   });
+  // Один раз на причину, а не на кожне опитування стану.
+  if(why!==chgUnavailSeen){
+    chgUnavailSeen=why;
+    if(why) msgShow('⛔ Заряд недоступний', why);
+  }
 }
+
+// Вікно повідомлення з «ОК». Одне на весь інтерфейс.
+function msgShow(head,text){
+  var w=$('msgWrap'); if(!w)return;
+  $('msgHead').textContent=head||'Повідомлення';
+  $('msgBody').textContent=text||'';
+  w.classList.add('on');
+  var ok=$('msgOk'); if(ok) ok.focus();
+}
+function msgClose(){ var w=$('msgWrap'); if(w) w.classList.remove('on'); }
+// Клік повз вікно — теж закриття. Названою функцією, а не умовою в onclick:
+// перевірка клієнтів читає розмітку й імені в такому виразі не бачить.
+function msgBackdrop(e){ if(e && e.target && e.target.id==='msgWrap') msgClose(); }
+// Esc закриває так само, як «ОК»: вікно без виходу з клавіатури — пастка.
+document.addEventListener('keydown',function(e){ if(e.key==='Escape') msgClose(); });
 async function chgStop(){
   if(!connected){toast('Підключіться');return;}
   const r=await cmd('CHARGE STOP',10000);

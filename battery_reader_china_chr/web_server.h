@@ -11,6 +11,7 @@
 #include "impres_bms.h"        // штатний декодер Motorola (лічильники, знос, дати)
 #include "operations.h"        // єдиний каталог операцій для всіх поверхонь
 #include "restore_plan.h"      // правки еталона під конкретний пакет перед записом
+#include "edit_plan.h"        // ручне редагування всіх значень пакета одним списком
 #include "device_clock.h"     // системна дата пристрою (джерело «сьогодні»)
 #include "impres_audit.h"     // аудит змісту: шифрування й узгодженість даних
 #include "impres_clone.h"     // крайній засіб: відновлення за зразком копії
@@ -4912,6 +4913,129 @@ static String soundFullJson() {
 //  зайве. Рахунок і запис — тим самим кодом (restore_plan.h), щоб два входи не
 //  розійшлися: знос залежить і від шунта, і від паспортної ємності, і власна
 //  копія формули одного дня дала б інший CTS.
+// ═══════════════ РУЧНИЙ РЕДАКТОР: УСІ ЗНАЧЕННЯ ОДНИМ СПИСКОМ ═══════════════
+//  Правила, назви, одиниці й межі — в edit_plan.h. Тут лише транспорт: зібрати
+//  план із прочитаних дампів, віддати його клієнтові й прийняти правки назад.
+//
+//  ⚑ КЛІЄНТ НЕ ЗНАЄ НІ НАЗВ, НІ МЕЖ — ЇХ НАЗИВАЄ ПРИСТРІЙ. Три власні копії
+//  цього списку розійшлися б на першій же правці: у проєкті так уже було з
+//  іменем силового ключа й із причиною недоступності заряду.
+static void editPlanFromChips(EditPlan &p) {
+    editPlanBuild(p, hasDump ? batteryDump : nullptr,
+                     hasDump2438 ? batteryDump2438 : nullptr,
+                     hasSN2433 ? chipSN2433 : nullptr,
+                     deviceClockNum());
+}
+
+static String editPlanJson(const EditPlan &p) {
+    String j = "{\"status\":\"success\",\"have33\":";
+    j += p.have33 ? "true" : "false";
+    j += ",\"have38\":";  j += p.have38 ? "true" : "false";
+    j += ",\"haveKey\":"; j += p.haveKey ? "true" : "false";
+    j += ",\"today\":";   j += deviceClockNum();
+    j += ",\"rated\":";   j += p.ratedEff;
+    j += ",\"fields\":[";
+    for (int i = 0; i < EDF_COUNT; i++) {
+        if (i) j += ",";
+        j += "{\"i\":";      j += i;
+        j += ",\"name\":\""; j += editFieldName(i);
+        j += "\",\"unit\":\"";j += editFieldUnit(i);
+        j += "\",\"type\":"; j += editFieldType(i);
+        j += ",\"chip\":";   j += editFieldChip(i);
+        j += ",\"avail\":";  j += p.f[i].avail ? "true" : "false";
+        j += ",\"cur\":";    j += p.f[i].cur;
+        j += ",\"lo\":";     j += p.f[i].lo;
+        j += ",\"hi\":";     j += p.f[i].hi;
+        j += "}";
+    }
+    j += "]}";
+    return j;
+}
+
+void handleEditGet() {
+    if (!hasDump && !hasDump2438) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Спочатку зчитайте АКБ\"}");
+        return;
+    }
+    EditPlan p;
+    editPlanFromChips(p);
+    server.send(200, "application/json", editPlanJson(p));
+}
+
+void handleEditApply() {
+    if (!requireAdmin()) return;
+    if (!hasDump && !hasDump2438) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Спочатку зчитайте АКБ\"}");
+        return;
+    }
+    EditPlan p;
+    editPlanFromChips(p);
+
+    // Правки приходять як f<номер>=<значення>. Порожнє або відсутнє поле
+    // означає «не чіпати» — саме тому клієнт і не мусить надсилати весь список.
+    for (int i = 0; i < EDF_COUNT; i++) {
+        String key = "f" + String(i);
+        if (!server.hasArg(key)) continue;
+        String v = server.arg(key);
+        v.trim();
+        if (!v.length()) continue;
+        if (!editPlanSet(p, i, v.toInt())) {
+            String m = "{\"status\":\"error\",\"message\":\"";
+            m += editFieldName(i); m += ": "; m += p.err; m += "\"}";
+            server.send(400, "application/json", m);
+            return;
+        }
+    }
+    // ⚑ ЗВІРКА НАБОРУ — ПІСЛЯ ВСІХ ПОЛІВ, А НЕ ПІСЛЯ КОЖНОГО. Людина може
+    //  посунути дату виготовлення й дату запуску одним заходом, і кожна з них
+    //  окремо виглядає безглуздою рівно доти, доки не побачиш другу.
+    char why[128];
+    if (!editPlanConsistent(p, why, sizeof(why))) {
+        String m = "{\"status\":\"error\",\"message\":\"Набір суперечить сам собі: ";
+        m += why; m += "\"}";
+        server.send(400, "application/json", m);
+        return;
+    }
+    if (editPlanCount(p, 0) == 0) {
+        server.send(200, "application/json",
+                    "{\"status\":\"success\",\"applied\":0,\"message\":\"Нічого не змінилось\"}");
+        return;
+    }
+
+    bool w33 = false, w38 = false;
+    int done = editPlanApply(p, hasDump ? batteryDump : nullptr,
+                                hasDump2438 ? batteryDump2438 : nullptr, &w33, &w38);
+    ledSet(LED_WRITE);
+    displayShow("РЕДАГУВАННЯ...");
+    // ⚑ ЯКЩО ЗАПИС НЕ ПРОЙШОВ — ПЕРЕЧИТУЄМО ЧИП, А НЕ ЛИШАЄМО ПРАВКУ В
+    //  ПАМ'ЯТІ. Інакше інтерфейс показував би змінене там, де в чипі старе, і
+    //  наступна правка поїхала б поверх вигаданого стану.
+    bool ok = true;
+    if (w33) ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (w38) ok &= battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (!ok) {
+        bool a = false, b = false;
+        readAllChips(a, b);
+        ledSet(LED_ERROR);
+        server.send(500, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Запис не пройшов — чипи перечитано\"}");
+        return;
+    }
+    if (w33) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+    if (w38) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+    ledSet(LED_OK);
+    displayShow("ЗАПИСАНО");
+
+    EditPlan after;
+    editPlanFromChips(after);
+    String j = "{\"status\":\"success\",\"applied\":"; j += done;
+    j += ",\"plan\":"; j += editPlanJson(after);
+    j += "}";
+    server.send(200, "application/json", j);
+}
+
 void handleSetHealth() {
     if (!requireAdmin()) return;
     if (!hasDump) {
@@ -5455,6 +5579,8 @@ void setupWebServer() {
     server.on("/api/templates", HTTP_GET, handleTemplates);      // список вшитих моделей
     server.on("/api/ops", HTTP_GET, handleOps);                  // каталог операцій (operations.h)
     server.on("/api/sethealth", HTTP_POST, handleSetHealth);     // знос/здоров'я одним рухом
+    server.on("/api/edit", HTTP_GET,  handleEditGet);            // ручний редактор: усі значення
+    server.on("/api/edit", HTTP_POST, handleEditApply);          // …і запис змінених
     server.on("/api/hdrfix", HTTP_POST, handleHeaderComplete);   // добудова заголовка після станції
     server.on("/api/mirror", HTTP_GET, handleMirrorPlan);        // план синхронізації дзеркала
     server.on("/api/mirror/edit", HTTP_POST, handleMirrorEdit);  // правка перед синхронізацією

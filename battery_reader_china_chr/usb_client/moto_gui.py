@@ -1142,13 +1142,18 @@ class App:
         self.tabWiz = ttk.Frame(nb, padding=8); nb.add(self.tabWiz, text="🧙 Майстер")
         self.tabData = ttk.Frame(nb, padding=8); nb.add(self.tabData, text="Дані")
         self.tabFw = ttk.Frame(nb, padding=8); nb.add(self.tabFw, text="🔧 Ремонт")
-        self.tabHex = ttk.Frame(nb, padding=8); nb.add(self.tabHex, text="Редактор")
+        self.tabEdit = ttk.Frame(nb, padding=8); nb.add(self.tabEdit, text="✍️ Редактор")
+        # ⚑ РАНІШЕ ЦЯ ВКЛАДКА ЗВАЛАСЬ «Редактор», І ТЕПЕР ЦЕ БУЛО Б ДВА
+        #  «Редактори» поруч. Вона правит СИРІ БАЙТИ, тож «HEX» називає її
+        #  точніше, ніж загальне слово.
+        self.tabHex = ttk.Frame(nb, padding=8); nb.add(self.tabHex, text="HEX")
         self.tabLog = ttk.Frame(nb, padding=8); nb.add(self.tabLog, text="Журнал")
 
         self._build_overview()
         self._build_wizard()
         self._build_data()
         self._build_fw()
+        self._build_edit()
         self._build_hex()
         self._build_log()
 
@@ -1780,49 +1785,20 @@ class App:
         ttk.Button(b2, text="♻️ Скидання лічильників", command=lambda: self.simple_op("RESET", "Обнулити лічильники DS2438 (ETM/CCA/DCA)?\nНавчену калібровку й ідентичність не чіпає.")).pack(side="left", padx=3)
         ttk.Button(b2, text="🧹 Очистити дані (лишити ID/калібр.)", command=lambda: self.simple_op("CLEAN", "Стерти дані використання, лишивши ID/калібрування?")).pack(side="left", padx=3)
 
-        # Ємність і відсоток — ДВІ окремі операції. Пишуть вони в один і той
-        # самий регістр ICA, але це різні задачі: точний залишок у мА·год
-        # (як його рахує Motorola) і груба оцінка у відсотках.
-        b5 = ttk.LabelFrame(p_val, text="🔋 Ємність — внести залишок у мА·год  ·  пише в DS2438",
+        # ⚑ ОКРЕМІ ЗНАЧЕННЯ ПЕРЕЇХАЛИ У ВКЛАДКУ «✍️ Редактор». Тут у кожного
+        #  з них була своя рамка, свій рядок і своя кнопка — а побачити ВЕСЬ
+        #  стан пакета одразу не було де. Лишилась рівно одна дія: вона не
+        #  «вписує число», а МІРЯЄ напругу й рахує відсоток за нею.
+        b5 = ttk.LabelFrame(p_val, text="⚡ Заряд за напругою  ·  пише в DS2438",
                             padding=8); b5.pack(fill="x", pady=4)
-        ttk.Label(b5, text="Залишок ЗАРЯДУ в паливомірі (регістр ICA), одиниця = 0.4882 мВ·год / шунт\n"
-                           "цього пакета. Це не паспортна ємність (вона в DS2433, 0x008) і не знос.",
+        ttk.Label(b5, text="Прилад бере напругу на клемах, рахує за нею відсоток і кладе його\n"
+                           "в паливомір (регістр ICA). Решта значень — лічильники, дати, наробітки,\n"
+                           "знос, паспортна ємність — на вкладці «✍️ Редактор», одним списком.",
                   foreground="#b9bd86", justify="left").pack(anchor="w")
-        self.eMah = self._row(b5, "Залишок, мА·год:", lambda fr: self._entry(fr, 10, "0"))
-        ttk.Button(b5, text="💾 Записати мА·год", command=self.set_mah).pack(anchor="w", pady=2)
-
-        b5p = ttk.LabelFrame(p_val, text="⚡ Рівень заряду у відсотках  ·  пише в DS2438",
-                             padding=8); b5p.pack(fill="x", pady=4)
-        ttk.Label(b5p, text="Той самий регістр ICA, але у відсотках від паспортної ємності —\n"
-                            "коли точних мА·год немає. Станція згодом уточнить значення сама.",
-                  foreground="#b9bd86", justify="left").pack(anchor="w")
-        self.eChg = self._row(b5p, "Заряд, %:", lambda fr: self._entry(fr, 10, ""))
-        cf = ttk.Frame(b5p); cf.pack(anchor="w", pady=2)
         # Підпис зі шкалою ставить ПРИСТРІЙ (поле scaleTxt у відповіді INFO):
-        # тримати тут власну копію чисел означає рано чи пізно почати брехати —
-        # саме так у діалозі нижче до останнього висіли 7.0/8.4 В.
-        self.btnChgAuto = ttk.Button(cf, text="⚡ За напругою",
-                                     command=self.set_charge_auto)
-        self.btnChgAuto.pack(side="left", padx=2)
-        ttk.Button(cf, text="💾 Записати заряд %", command=self.set_charge_pct).pack(side="left", padx=2)
-
-        # Знос — те число, яке рація й фірмове ПЗ справді показують (поле CTS у
-        # зашифрованому блоці RECOND). Байт заводської таблиці 0x129 — не воно;
-        # він лишився в «Ручному режимі» для аналізу.
-        b5h = ttk.LabelFrame(p_val, text="🩺 Знос / здоров'я  ·  пише в DS2433 (CTS у блоці RECOND)",
-                             padding=8); b5h.pack(fill="x", pady=4)
-        ttk.Label(b5h, text="Після заміни елементів виправляти треба саме це число. Знос залежить і від\n"
-                            "ШУНТА, і від ПАСПОРТНОЇ ЄМНОСТІ: 100 % — це «вся паспортна», тож спершу\n"
-                            "задайте ємність нових банок у «Ремонті». Ключ — з ROM-ID чипа DS2433.",
-                  foreground="#b9bd86", justify="left").pack(anchor="w")
-        self.lblHpNow = ttk.Label(b5h, text="зараз у чипі: —", foreground="#c8b04a")
-        self.lblHpNow.pack(anchor="w", pady=(2, 0))
-        self.eHp = self._row(b5h, "Знос, % (1..100):", lambda fr: self._entry(fr, 10, ""))
-        ttk.Button(b5h, text="💾 Записати знос", command=self.set_health).pack(anchor="w", pady=2)
-
-        b5c = ttk.LabelFrame(p_val, text="Дата першого використання (рація рахує як «час − ETM»)  ·  пише в DS2438", padding=8); b5c.pack(fill="x", pady=4)
-        self.eEtmDate = self._row(b5c, "Дата (YYYY-MM-DD):", lambda fr: self._entry(fr, 12))
-        ttk.Button(b5c, text="📅 Записати дату (ETM)", command=self.set_etm).pack(anchor="w", pady=2)
+        # тримати тут власну копію чисел означає рано чи пізно почати брехати.
+        self.btnChgAuto = ttk.Button(b5, text="⚡ За напругою", command=self.set_charge_auto)
+        self.btnChgAuto.pack(anchor="w", pady=2)
 
         b3 = ttk.LabelFrame(p_id, text="Ідентичність — модель  ·  пише в DS2433", padding=8); b3.pack(fill="x", pady=4)
         self.eModel = self._row(b3, "Модель (3–9, A–Z0–9):", lambda fr: self._entry(fr, 12))
@@ -2035,6 +2011,185 @@ class App:
         self.frSndTest = ttk.Frame(bs); self.frSndTest.pack(fill="x", pady=2)
         ttk.Button(bs, text="↩️ Заводські значення",
                    command=self.sound_reset).pack(anchor="w", pady=(4, 0))
+
+    # ── РУЧНИЙ РЕДАКТОР ЗНАЧЕНЬ ──────────────────────────────────────────
+    #  ⚑ КЛІЄНТ НЕ ЗНАЄ НІ НАЗВ ПОЛІВ, НІ ЇХНІХ МЕЖ. Усе це називає пристрій
+    #  (edit_plan.h) і присилає командою EDIT. Своя копія списку тут означала б,
+    #  що після кожної правки прошивки таблиця показує застарілі назви й пускає
+    #  заборонені числа — а перевірити це було б ніяк.
+    def _build_edit(self):
+        f = self._scroll_area(self.tabEdit)
+        ttk.Label(f, wraplength=760, foreground=MIL["mut"],
+                  text="Показано ВСЕ, з чим працює прилад: лічильники, дати, наробітки, "
+                       "паспортна ємність, знос і паливомір. Порожнє поле означає «не "
+                       "чіпати» — записуються лише змінені рядки.").pack(anchor="w", pady=(0, 4))
+        ttk.Label(f, wraplength=760, foreground=MIL["khaki"],
+                  text="⚠ Це прямий запис у пакет, без планів і без еталона. Прилад не "
+                       "пустить лише неможливі набори (дата в майбутньому, запуск раніший "
+                       "за виготовлення, «вмикали, але не заряджали»).").pack(anchor="w", pady=(0, 6))
+        self.lblEdWarn = ttk.Label(f, wraplength=760, foreground=MIL["khaki"], text="")
+        self.edBox = ttk.LabelFrame(f, text="Значення пакета", padding=8)
+        self.edBox.pack(fill="x")
+        self.lblEdSum = ttk.Label(f, wraplength=760, foreground=MIL["mut"], text="—")
+        self.lblEdSum.pack(anchor="w", pady=6)
+        row = ttk.Frame(f); row.pack(fill="x", pady=4)
+        ttk.Button(row, text="🔄 Перечитати з пакета",
+                   command=self.edit_load).pack(side="left", padx=2)
+        ttk.Button(row, text="↩ Скинути введене",
+                   command=self.edit_clear).pack(side="left", padx=2)
+        ttk.Button(row, text="💾 ЗАПИСАТИ ЗМІНЕНЕ",
+                   command=self.edit_apply).pack(side="left", padx=2)
+        self._edPlan = None
+        self._edVars = {}
+
+    @staticmethod
+    def _ed_date_str(v):
+        """РРРРММДД -> «РРРР-ММ-ДД». Нуль — «події не було», а не дата."""
+        if not v or v <= 0:
+            return ""
+        s = str(int(v))
+        return s[0:4] + "-" + s[4:6] + "-" + s[6:8]
+
+    @staticmethod
+    def _ed_date_num(s):
+        s = (s or "").strip().replace("-", "")
+        return s
+
+    def edit_load(self):
+        if not self.need_conn():
+            return
+        self.cmd("EDIT", 12.0, cb=self._edit_show)
+
+    def _edit_show(self, r):
+        p = (r or {}).get("plan") if isinstance(r, dict) else None
+        for w in list(self.edBox.winfo_children()):
+            w.destroy()
+        self._edVars = {}
+        self._edPlan = p
+        if not p:
+            ttk.Label(self.edBox, foreground=MIL["mut"],
+                      text=(r or {}).get("err") or "Спочатку зчитайте АКБ").grid(row=0, column=0)
+            self.lblEdSum.config(text="—")
+            return
+        # Ключ не визначився — половина таблиці мовчить; сказати про це один
+        # раз краще, ніж лишити людину гадати.
+        if p.get("haveKey"):
+            self.lblEdWarn.pack_forget()
+        else:
+            self.lblEdWarn.config(
+                text="Ключ шифрування цього пакета не визначився — дати, калібрувальні "
+                     "цикли й знос показати нічим. Перечитайте АКБ: ключ береться з ROM DS2433.")
+            self.lblEdWarn.pack(anchor="w", pady=(0, 6))
+        r0 = 0
+        chip = 0
+        for fd in p.get("fields", []):
+            # Заголовок групи при зміні чипа: «що записано в пакеті» й «що бачить
+            # монітор» — різні речі, і плутати їх в одному стовпчику означало б
+            # повторити помилку, з якої почалась історія з поверненням лічильників.
+            if fd.get("chip") != chip:
+                chip = fd.get("chip")
+                ttk.Label(self.edBox, foreground=MIL["khaki"], font=fnt("Segoe UI", 10, "bold"),
+                          text=("DS2433 — памʼять самого пакета" if chip == 33
+                                else "DS2438 — монітор (його рація читає щомиті)")
+                          ).grid(row=r0, column=0, columnspan=3, sticky="w", pady=(8, 2))
+                r0 += 1
+            nm = fd["name"] + ((" (" + fd["unit"] + ")") if fd.get("unit") else "")
+            ttk.Label(self.edBox, text=nm + ":").grid(row=r0, column=0, sticky="w", padx=(0, 8))
+            if not fd.get("avail"):
+                ttk.Label(self.edBox, foreground=MIL["mut"],
+                          text="у цьому пакеті не читається").grid(row=r0, column=1,
+                                                                   columnspan=2, sticky="w")
+                r0 += 1
+                continue
+            cur = fd.get("cur", -1)
+            if fd.get("type") == 1:
+                shown = self._ed_date_str(cur) if cur and cur > 0 else ("не було" if cur == 0 else "—")
+            else:
+                shown = "—" if cur < 0 else str(cur)
+            ttk.Label(self.edBox, text=shown, foreground=MIL["fg"],
+                      font=fnt("Segoe UI", 10, "bold")).grid(row=r0, column=1, sticky="w", padx=(0, 10))
+            var = tk.StringVar()
+            var.trace_add("write", lambda *_a: self._edit_sum())
+            e = ttk.Entry(self.edBox, textvariable=var, width=14)
+            e.grid(row=r0, column=2, sticky="w")
+            hint = ("РРРР-ММ-ДД" if fd.get("type") == 1
+                    else "%d…%d" % (fd.get("lo", 0), fd.get("hi", 0)))
+            ttk.Label(self.edBox, foreground=MIL["mut"], text=hint).grid(row=r0, column=3,
+                                                                        sticky="w", padx=(6, 0))
+            self._edVars[fd["i"]] = var
+            r0 += 1
+        self._edit_sum()
+
+    def _edit_changes(self):
+        """Що саме поїде в пакет: порожні поля й «те саме значення» не рахуються."""
+        out = []
+        if not self._edPlan:
+            return out
+        for fd in self._edPlan.get("fields", []):
+            var = self._edVars.get(fd["i"])
+            if var is None or not fd.get("avail"):
+                continue
+            raw = var.get().strip()
+            if not raw:
+                continue
+            if fd.get("type") == 1:
+                raw = self._ed_date_num(raw)
+            try:
+                v = int(raw)
+            except ValueError:
+                continue
+            if v == fd.get("cur"):
+                continue
+            out.append({"i": fd["i"], "name": fd["name"], "from": fd.get("cur"),
+                        "to": v, "type": fd.get("type", 0)})
+        return out
+
+    def _edit_line(self, x):
+        if x["type"] == 1:
+            frm = self._ed_date_str(x["from"]) if (x["from"] or 0) > 0 else "не було"
+            to = self._ed_date_str(x["to"])
+        else:
+            frm, to = x["from"], x["to"]
+        return "%s: %s → %s" % (x["name"], frm, to)
+
+    def _edit_sum(self):
+        c = self._edit_changes()
+        if not c:
+            self.lblEdSum.config(text="Нічого не змінено — записувати нема чого.")
+            return
+        self.lblEdSum.config(text="Буде записано %d: %s"
+                                  % (len(c), "; ".join(self._edit_line(x) for x in c)))
+
+    def edit_clear(self):
+        for var in self._edVars.values():
+            var.set("")
+        self._edit_sum()
+
+    def edit_apply(self):
+        if not self.need_conn():
+            return
+        c = self._edit_changes()
+        if not c:
+            self.status("Нічого не змінено", False)
+            return
+        if not messagebox.askyesno(
+                "Ручне редагування",
+                "Записати в пакет %d знач.?\n\n%s\n\nЦе прямий запис у чипи, "
+                "без плану й без еталона." % (len(c), "\n".join("• " + self._edit_line(x)
+                                                                 for x in c))):
+            return
+        arg = " ".join("%d=%d" % (x["i"], x["to"]) for x in c)
+        self.cmd("EDIT " + arg, 30.0, cb=self._edit_done)
+
+    def _edit_done(self, r):
+        if r and r.get("ok"):
+            self.status("Записано: %d" % (r.get("applied") or 0), True)
+            # Показуємо ПЕРЕЧИТАНЕ з чипа, а не те, що просили: різниця між
+            # «просив» і «стало» — саме те, заради чого таблиця й існує.
+            self._edit_show(r)
+            self.refresh()
+        else:
+            self.msg_box("Редактор", (r or {}).get("err") or "Запис не пройшов")
 
     def _build_hex(self):
         f = self.tabHex
@@ -2410,8 +2565,6 @@ class App:
             else:
                 self.dEtm.config(text=f"{days // 365} р {days % 365} дн ({etm} с)", foreground="")
                 self.dFirst.config(text=first.isoformat(), foreground="")
-            if hasattr(self, "eEtmDate") and not self.eEtmDate.get():
-                self.eEtmDate.delete(0, "end"); self.eEtmDate.insert(0, first.isoformat())
         self.dI.config(text=(str(d.get("currentMa")) + " мА") if d.get("currentMa") is not None else "—")
         self.dICA.config(text=(f"≈{d.get('icaMah')} мА·год (raw {d.get('ica')})") if d.get("icaMah") is not None else "—")
         self.dCCA.config(text=(f"{d.get('ccaCycles')} ц (≈{d.get('ccaMah')} мА·год)") if d.get("ccaMah") is not None else "—")
@@ -2424,19 +2577,12 @@ class App:
         self.dSerial33.config(text=d.get("serial33") or "—")
         self._render_bms(d.get("bms"))
         b = d.get("bms") or {}
-        # Поточний знос — одразу в картку правки, щоб не звірятись з іншою вкладкою.
-        if getattr(self, "lblHpNow", None) is not None:
-            h = b.get("health") if b.get("haveKey") else None
-            self.lblHpNow.config(text=("зараз у чипі: %d %% (≈%s мА·год)" % (h, b.get("potentialMah")))
-                                 if h is not None else "зараз у чипі: — (ключ не визначено)")
         # Справжня дата з чипа має пріоритет над оцінкою «сьогодні − ETM».
         if b.get("firstUseDate"):
             self.dFirst.config(text=b["firstUseDate"] + " (з чипа)", foreground="")
         self._warn_foreign_2438(b, etm if isinstance(etm, int) else 0)
         if isinstance(cap, int) and cap >= 0:
             self._set_entry(self.eCap, str(cap))
-        if d.get("icaMah") is not None:
-            self._set_entry(self.eMah, str(d.get("icaMah")))
         self._set_text(self.tx33, self._hex_dump(d.get("hex33", "")))
         self._set_text(self.tx38, self._hex_dump(d.get("hex38", "")))
 
@@ -3685,17 +3831,6 @@ class App:
             self.lblRpWarn.pack_forget()
         self.frRp.pack(fill="x", pady=(6, 2))
 
-    def set_mah(self):
-        if not self.need_conn():
-            return
-        try:
-            v = int(self.eMah.get())
-        except ValueError:
-            messagebox.showwarning("мА·год", "Вкажіть число"); return
-        if not messagebox.askyesno("Заряд", f"Записати залишкову ємність {v} мА·год?"):
-            return
-        self.maybe_auth(lambda: self.cmd(f"SETMAH {v}", 15.0, cb=lambda r: self._after_write(r, "✅ Записано")))
-
     def set_charge_auto(self):
         if not self.need_conn():
             return
@@ -3705,18 +3840,6 @@ class App:
             return
         self.maybe_auth(lambda: self.cmd("SETCHG auto", 15.0,
             cb=lambda r: self._after_write(r, f"✅ Заряд {r.get('pct','?')}% (ICA {r.get('ica','?')})")))
-
-    def set_charge_pct(self):
-        if not self.need_conn():
-            return
-        try:
-            v = int(self.eChg.get())
-        except ValueError:
-            messagebox.showwarning("Заряд %", "Вкажіть 0..100"); return
-        if v < 0 or v > 100:
-            messagebox.showwarning("Заряд %", "0..100"); return
-        self.maybe_auth(lambda: self.cmd(f"SETCHG {v}", 15.0,
-            cb=lambda r: self._after_write(r, f"✅ Заряд {v}%")))
 
     def set_cap(self):
         if not self.need_conn():
@@ -4067,41 +4190,6 @@ class App:
         self.maybe_auth(lambda: (self.status("Режим копії..."),
                                  self.cmd("CLONE" + a, 30.0,
                                           cb=lambda r: self._after_write(r, "✅ Відновлено за зразком копії"))))
-
-    def set_health(self):
-        """Знос окремою дією. Рахує ПРИСТРІЙ (той самий restore_plan.h, що й у
-        плані правок): друга формула тут одного дня розійшлася б із прошивкою."""
-        if not self.need_conn():
-            return
-        try:
-            v = int((self.eHp.get() or "").strip())
-        except ValueError:
-            messagebox.showwarning("Знос", "Вкажіть 1..100"); return
-        if not (1 <= v <= 100):
-            messagebox.showwarning("Знос", "Знос має бути 1..100 %"); return
-        if not messagebox.askyesno("Знос", "Записати знос %d %%?\n\n"
-                                           "Пишеться поле CTS у блок RECOND (DS2433)." % v):
-            return
-        self.maybe_auth(lambda: self.cmd("SETHEALTH %d" % v, 20.0,
-            cb=lambda r: self._after_write(r, "✅ Знос %d %%" % v)))
-
-    def set_etm(self):
-        if not self.need_conn():
-            return
-        import datetime
-        try:
-            y, m, dd = [int(x) for x in self.eEtmDate.get().strip().split("-")]
-            target = datetime.date(y, m, dd)
-        except Exception:
-            messagebox.showwarning("Дата", "Формат: YYYY-MM-DD"); return
-        sec = int((datetime.date.today() - target).total_seconds())
-        if sec < 0:
-            messagebox.showwarning("Дата", "Дата в майбутньому"); return
-        if sec > 0xFFFFFFFF:
-            sec = 0xFFFFFFFF
-        if not messagebox.askyesno("Дата", f"Записати дату «{target.isoformat()}» (ETM={sec} с)?\nПеревірте на рації."):
-            return
-        self.maybe_auth(lambda: self.cmd(f"SETETM {sec}", 15.0, cb=lambda r: self._after_write(r, "✅ Дату записано")))
 
     def wipe33(self):
         if not self.need_conn():

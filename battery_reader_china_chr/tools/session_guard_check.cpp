@@ -2711,6 +2711,84 @@ int main() {
                                                      "…а читають з INFO, де він є");
     }
 
+    // ── 51. РУЧНИЙ РЕДАКТОР: ОДИН СПИСОК НА ТРИ ПОВЕРХНІ ───────────────────
+    //  Скарга власника: «виконати в окремій закладці ручне редагування всіх
+    //  змінних… якщо десь вони дублюються в інших вкладках — видалити звідти».
+    //  Логіка перевіряється в edit_plan_check. Тут — те, чого на хості немає:
+    //  що список справді доходить до всіх трьох клієнтів і що старі, вже
+    //  дубльовані картки прибрані. «Функція правильна» і «функцію хтось
+    //  кличе» — різні твердження, і цей проєкт уже горів на другому.
+    printf("\n51) ручний редактор значень ввімкнено в роботу на всіх поверхнях\n");
+    {
+        check(fileCalls("web_server.h", "#include \"edit_plan.h\""),
+                                                     "пристрій підключає спільний список полів");
+        check(fileCalls("web_server.h", "server.on(\"/api/edit\", HTTP_GET,  handleEditGet)") &&
+              fileCalls("web_server.h", "server.on(\"/api/edit\", HTTP_POST, handleEditApply)"),
+                                                     "…і віддає його вебові обома напрямками");
+        check(fileCalls("serial_api.h", "serEdit(arg)"),
+                                                     "…і по USB теж, тією ж командою EDIT");
+        // ⚑ ЗВІРКА НАБОРУ — ПІСЛЯ ВСІХ ПОЛІВ, А НЕ ПІСЛЯ КОЖНОГО. Людина може
+        //  посунути дату виготовлення й дату запуску одним заходом, і кожна з
+        //  них окремо виглядає безглуздою рівно доти, доки не побачиш другу.
+        for (const char *f : { "web_server.h", "serial_api.h" })
+            check(fileCalls(f, "editPlanConsistent(p, why, sizeof(why))"),
+                                                     "…і звіряє НАБІР, а не кожне поле окремо");
+        // Запис не пройшов — чипи перечитуються. Інакше інтерфейс показував би
+        // змінене там, де в чипі старе, і наступна правка поїхала б поверх
+        // вигаданого стану.
+        for (const char *f : { "web_server.h", "serial_api.h" })
+            check(fileCalls(f, "editPlanApply(p, hasDump ? batteryDump : nullptr,"),
+                                                     "…і пише саме через спільний застосовувач");
+
+        // Клієнти: таблиця, підсумок «що поїде», запис, перечитування.
+        for (const char *c : { "index.html", "client_usb.html" }) {
+            check(fileHasText(c, "function edLoad(") && fileHasText(c, "function edRender(") &&
+                  fileHasText(c, "function edApply("),
+                                                     "клієнт має редактор: читання, показ, запис");
+            check(fileHasText(c, "function edChanges(") && fileHasText(c, "function edSum("),
+                                                     "…і каже наперед, що саме поїде в пакет");
+            // ⚑ НАЗВИ Й МЕЖІ — ІЗ ПРИСТРОЮ. Своя копія списку означала б, що
+            //  після правки прошивки таблиця показує застарілі назви й пускає
+            //  заборонені числа, а перевірити це на хості було б ніяк.
+            // ⚑ ПЕРЕВІРЯЄМО ВЖИВАННЯ, А НЕ ЗГАДКУ. Ім'я поля лишається у
+            //  файлі й тоді, коли межі вже підставляють свої: саме на цьому
+            //  вартові в цьому проєкті вже двічі стерегли порожнечу.
+            check(fileHasText(c, "p.fields.forEach") &&
+                  fileHasText(c, "min=\"'+f.lo+'\"") && fileHasText(c, "max=\"'+f.hi+'\"") &&
+                  fileHasText(c, "'+f.lo+'…'+f.hi+'") && fileHasText(c, "f.unit"),
+                                                     "…беручи назви, одиниці й межі з пристрою");
+        }
+        check(fileHasText("usb_client/moto_gui.py", "def _build_edit(self)") &&
+              fileHasText("usb_client/moto_gui.py", "def edit_apply(self)") &&
+              fileHasText("usb_client/moto_gui.py", "self.cmd(\"EDIT \" + arg"),
+                                                     "і .exe теж");
+        check(fileHasText("usb_client/moto_gui.py", "fd.get(\"lo\", 0), fd.get(\"hi\", 0)"),
+                                                     "…і теж бере межі з пристрою");
+
+        // ⚑ ДУБЛІ ПРИБРАНІ, А НЕ ПРОСТО ПРИХОВАНІ. Ціль правки була саме в
+        //  цьому: доти кожне значення мало свою картку в іншій вкладці, і
+        //  побачити ВЕСЬ стан пакета одразу не було де. Лишити старі картки
+        //  означало б дати два різні місця для однієї правки.
+        for (const char *c : { "index.html", "client_usb.html" }) {
+            check(!fileHasText(c, "function setMah(") && !fileHasText(c, "function setEtm(") &&
+                  !fileHasText(c, "function setHealth(") && !fileHasText(c, "function setChargePct("),
+                                                     "старі окремі картки значень прибрані з клієнта");
+        }
+        check(!fileHasText("usb_client/moto_gui.py", "def set_mah(self)") &&
+              !fileHasText("usb_client/moto_gui.py", "def set_health(self)") &&
+              !fileHasText("usb_client/moto_gui.py", "def set_etm(self)") &&
+              !fileHasText("usb_client/moto_gui.py", "def set_charge_pct(self)"),
+                                                     "…і з .exe теж");
+        // «Заряд за напругою» лишається: він не «вписує число», а МІРЯЄ.
+        // Кнопку, а не саму функцію: ім'я лишається у файлі й після того, як
+        //  кнопку прибрали, — і вартовий стеріг би порожнє місце.
+        for (const char *c : { "index.html", "client_usb.html" })
+            check(fileHasText(c, "onclick=\"setChargeAuto()\""),
+                                                     "…а вимір за напругою лишився — він не дубль");
+        check(fileHasText("usb_client/moto_gui.py", "command=self.set_charge_auto"),
+                                                     "…і в .exe теж лишився");
+    }
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

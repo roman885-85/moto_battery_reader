@@ -281,6 +281,71 @@ static void serSetCharge(const String &arg) {
              : "{\"ok\":false,\"err\":\"write failed\"}");
 }
 
+// ── РУЧНИЙ РЕДАКТОР ПО USB ────────────────────────────────────────────────
+//  Той самий план і та сама перевірка, що у вебі (edit_plan.h): назви, межі й
+//  правила узгодженості живуть в одному місці, а поверхонь три.
+//    EDIT            — віддати список полів із поточними значеннями
+//    EDIT 4=123 11=42 — записати вказані поля (номер=значення через пробіл)
+static void serEdit(const String &arg) {
+    if (!hasDump && !hasDump2438) { sResp("{\"ok\":false,\"err\":\"спочатку READ\"}"); return; }
+    EditPlan p;
+    editPlanFromChips(p);
+    String a = arg; a.trim();
+    if (!a.length()) {
+        sResp(String("{\"ok\":true,\"plan\":") + editPlanJson(p) + "}");
+        return;
+    }
+    // Розбираємо «номер=значення», розділені пробілами.
+    int from = 0;
+    while (from < (int)a.length()) {
+        int sp = a.indexOf(' ', from);
+        String tok = (sp < 0) ? a.substring(from) : a.substring(from, sp);
+        from = (sp < 0) ? a.length() : sp + 1;
+        tok.trim();
+        if (!tok.length()) continue;
+        int eq = tok.indexOf('=');
+        if (eq <= 0) { sResp("{\"ok\":false,\"err\":\"очікується номер=значення\"}"); return; }
+        int  idx = tok.substring(0, eq).toInt();
+        long val = tok.substring(eq + 1).toInt();
+        if (!editPlanSet(p, idx, val)) {
+            String r = "{\"ok\":false,\"err\":\"";
+            r += editFieldName(idx); r += ": "; r += p.err; r += "\"}";
+            sResp(r); return;
+        }
+    }
+    char why[128];
+    if (!editPlanConsistent(p, why, sizeof(why))) {
+        String r = "{\"ok\":false,\"err\":\"набір суперечить сам собі: "; r += why; r += "\"}";
+        sResp(r); return;
+    }
+    if (editPlanCount(p, 0) == 0) {
+        sResp(String("{\"ok\":true,\"applied\":0,\"plan\":") + editPlanJson(p) + "}");
+        return;
+    }
+    bool w33 = false, w38 = false;
+    int done = editPlanApply(p, hasDump ? batteryDump : nullptr,
+                                hasDump2438 ? batteryDump2438 : nullptr, &w33, &w38);
+    ledSet(LED_WRITE); displayShow("USB РЕДАКТОР");
+    bool ok = true;
+    if (w33) ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (w38) ok &= battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (!ok) {
+        // Запис не пройшов — перечитуємо чипи, щоб у пам'яті не лишилось
+        // змінене там, де в чипі старе.
+        bool r1 = false, r2 = false; readAllChips(r1, r2);
+        ledSet(LED_ERROR); displayShow("USB ЗБІЙ");
+        sResp("{\"ok\":false,\"err\":\"запис не пройшов — чипи перечитано\"}");
+        return;
+    }
+    if (w33) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+    if (w38) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+    ledSet(LED_OK); displayShow("USB OK");
+    EditPlan after;
+    editPlanFromChips(after);
+    sResp(String("{\"ok\":true,\"applied\":") + done +
+          ",\"plan\":" + editPlanJson(after) + "}");
+}
+
 static void serSetCap(const String &arg) {
     if (!hasDump) { sResp("{\"ok\":false,\"err\":\"read first\"}"); return; }
     int cap = arg.toInt(); if (cap < 0) cap = 0; if (cap > 100) cap = 100;
@@ -532,6 +597,7 @@ static void serialExec(const String &line) {
                                                    if (hasDump2438) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE); }
                                          ledSet(ok ? LED_OK : LED_ERROR); displayShow(ok ? "USB РЕМОНТ OK" : "USB РЕМОНТ ЗБІЙ");
                                          sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"write failed\"}"); } }
+    else if (cmd == "EDIT")       serEdit(arg);      // ручний редактор: список і запис
     else if (cmd == "SETCAP")     serSetCap(arg);
     else if (cmd == "SETMAH")     serSetMah(arg);
     else if (cmd == "SETCHG")     serSetCharge(arg);

@@ -265,6 +265,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
     <div class="tab active" onclick="tab(this,'ov')">📊 Огляд</div>
     <div class="tab tab-wiz" onclick="tab(this,'wz')">🧙 Майстер</div>
     <div class="tab" onclick="tab(this,'dt')">🔬 Дані</div>
+    <div class="tab" onclick="tab(this,'ed')">✍️ Редактор</div>
     <div class="tab" onclick="tab(this,'fw')">🔧 Ремонт</div>
     <div class="tab" onclick="tab(this,'cfg')">⚙️ Налаштування</div>
   </div>
@@ -366,6 +367,29 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
     </div>
     <div class="card"><h2>📋 Дамп DS2438 (64 Б)</h2><div id="h38" style="font-family:monospace;font-size:.75em;white-space:pre;overflow-x:auto">—</div></div>
     <div class="card"><h2>📋 Дамп DS2433 (512 Б)</h2><div id="h33" style="font-family:monospace;font-size:.75em;white-space:pre;overflow-x:auto">—</div></div>
+  </div>
+
+  <!-- РЕДАКТОР: одне місце, де видно ВЕСЬ стан пакета й де кожне значення
+       можна виправити руками. Список полів, назви, одиниці й межі називає
+       ПРИСТРІЙ (edit_plan.h) — своя копія розійшлася б із прошивкою. -->
+  <div class="page" id="ed">
+    <div class="card">
+      <h2>✍️ Ручне редагування значень</h2>
+      <div class="note i">Показано <b>усе</b>, з чим працює прилад: лічильники, дати,
+        наробітки, паспортна ємність, знос і паливомір. Порожнє поле означає
+        «не чіпати» — записуються лише змінені рядки.</div>
+      <div class="note w">⚠️ Це прямий запис у пакет, без планів і без еталона.
+        Прилад не пустить лише <b>неможливі</b> набори (дата в майбутньому,
+        запуск раніший за виготовлення, «вмикали, але не заряджали»).</div>
+      <div id="edWarn" class="note w" style="display:none"></div>
+      <div style="overflow-x:auto"><table class="rpt" id="edTable"></table></div>
+      <div class="note i" id="edSum">—</div>
+      <div class="btns">
+        <button class="btn b-pri" onclick="edLoad()">🔄 Перечитати з пакета</button>
+        <button class="btn b-pri" onclick="edClear()">↩ Скинути введене</button>
+        <button class="btn b-warn" onclick="edApply()">💾 ЗАПИСАТИ ЗМІНЕНЕ</button>
+      </div>
+    </div>
   </div>
 
   <!-- FIRMWARE -->
@@ -683,46 +707,29 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
   <div class="sub" id="fwval">
     <div class="subintro">Окремі поля АКБ. Безпечно для ідентичності — модель, крива й заводська таблиця не чіпаються.</div>
 <div class="card">
-      <h2>🔋 Ємність — внести залишок у мА·год <span class="chipb">пише в DS2438</span></h2>
-      <div class="note i">Окрема операція: записує <b>залишок ємності</b> в паливомір (регістр ICA
-        DS2438) у мА·год — так само, як його рахує Motorola: одиниця ICA = 0.4882 мВ·год / шунт
-        цього пакета. Це залишок заряду, а не паспортна ємність і не знос.</div>
-      <div class="row"><span class="k">мА·год</span><input type="number" id="mahv" min="0" max="6000" value="0" style="width:110px;text-align:center"></div>
-      <button class="btn b-warn" onclick="setMah()">💾 ЗАПИСАТИ мА·год</button>
+      <h2>✍️ Окремі значення переїхали в «Редактор»</h2>
+      <div class="note i">Залишок у мА·год, рівень заряду, наробіток і дати, знос,
+        паспортна ємність, усі лічильники — тепер <b>одним списком</b> на вкладці
+        <b>✍️ Редактор</b>. Доти кожне мало тут свою картку, а побачити ВЕСЬ стан
+        пакета одразу не було де.</div>
     </div>
-<div class="card">
-      <h2>⚡ Рівень заряду у відсотках <span class="chipb">пише в DS2438</span></h2>
-      <div class="note i">Той самий регістр ICA, але у відсотках від паспортної ємності — коли
-        точних мА·год немає. Станція згодом уточнить значення сама.</div>
-      <div class="row"><span class="k">Заряд, % (0..100)</span><input type="number" id="chgv" min="0" max="100" placeholder="авто" style="width:110px;text-align:center"></div>
+    <div class="card">
+      <h2>⚡ Заряд за напругою <span class="chipb">пише в DS2438</span></h2>
+      <div class="note i">Не «вписати число», а <b>виміряти</b>: прилад бере напругу на
+        клемах, рахує за нею відсоток і кладе його в паливомір. Саме тому дія й
+        лишилась окремо від Редактора — вручну тут задавати нічого.</div>
       <button class="btn b-warn" id="btnChgAuto" onclick="setChargeAuto()">⚡ ЗА НАПРУГОЮ</button>
-      <button class="btn b-warn" onclick="setChargePct()">💾 ЗАПИСАТИ ЗАРЯД %</button>
     </div>
-<div class="card">
-      <h2>📅 Дата першого використання <span class="chipb">пише в DS2438</span></h2>
-      <div class="note i">Рація рахує «перше користування» = її час − ETM (наробіток DS2438). Дата не зберігається
-        у батареї, на оригінальність не впливає. Зміна: ETM = (сьогодні − обрана дата).</div>
-      <div class="row"><span class="k">Бажана дата</span><input type="date" id="etmDate"></div>
-      <button class="btn b-warn" onclick="setEtm()">📅 ЗАПИСАТИ ДАТУ (ETM)</button>
+    <div class="card">
+      <h2>🏭 Заводський байт 0x129 <span class="chipb">пише в DS2433</span></h2>
+      <div class="note w">⚠️ Лежить у <b>заводській таблиці моделі</b> — у всіх екземплярів
+        однієї моделі вона побайтово однакова, тому показань рації правка тут
+        <b>не змінить</b>. У Редакторі його немає навмисно. Поточне: <b id="capNow">—</b>.</div>
+      <div class="row"><span class="k">Ємність, %</span>
+        <input type="number" id="capv" min="0" max="100" value="100" style="width:90px"></div>
+      <button class="btn b-warn" onclick="setCap()">💾 ЗАПИСАТИ %</button>
     </div>
-<div class="card">
-      <h2>🩺 Знос/здоров'я <span class="chipb">пише в DS2433</span></h2>
-      <div class="note i">Те число, яке рація й фірмове ПЗ показують як знос: поле <code>CTS</code>
-        у зашифрованому блоці <code>RECOND</code>. Після заміни елементів виправляти треба саме
-        його. Зараз у чипі: <b id="hpNow">—</b>.</div>
-      <div class="row"><span class="k">Знос, % (1..100)</span><input type="number" id="hpv" min="1" max="100" placeholder="напр. 100" style="width:90px;text-align:center"></div>
-      <button class="btn b-ok" onclick="setHealth()">💾 ЗАПИСАТИ ЗНОС</button>
-      <div class="note i">Знос залежить і від <b>шунта</b>, і від <b>паспортної ємності</b>: 100 % —
-        це «вся паспортна». Тому спершу задайте ємність нових банок у «Ремонті». Ключ шифрування —
-        з ROM-ID чипа DS2433, тож правка можлива лише на живому чипі.</div>
-      <details style="margin-top:8px">
-        <summary style="cursor:pointer;opacity:.8">Заводський байт 0x129 (для аналізу)</summary>
-        <div class="note w">⚠️ Однаковий у всіх екземплярів моделі — показань рації правка тут не змінить.</div>
-        <div class="row"><span class="k">Ємність, %</span><input type="number" id="capv" min="0" max="100" value="100" style="width:90px;text-align:center"></div>
-        <button class="btn b-warn" onclick="setCap()">💾 ЗАПИСАТИ %</button>
-      </details>
-    </div>
-<div class="card">
+    <div class="card">
       <h2>🧹 Очистити (крім критичних) <span class="chipb">пише в DS2433 + DS2438</span></h2>
       <div class="note w">⚠️ Стирає все використання/історію/статистику. Зберігає модель/серійний/ID/калібрування.</div>
       <button class="btn b-dng" onclick="op('CLEAN','🧹 Стерти всі дані використання, лишивши ID/калібрування?',15000)">🧹 ОЧИСТИТИ</button>
@@ -946,7 +953,10 @@ function tab(el,id){document.querySelectorAll('.tab').forEach(t=>t.classList.rem
   el.classList.add('active');$(id).classList.add('active');window.scrollTo(0,0);
   // Дату пристрою питаємо при вході на «Налаштування»: вона міняється раз на
   // добу, постійно опитувати немає сенсу.
-  if(id==='cfg') clockLoad();}
+  if(id==='cfg') clockLoad();
+  // Редактор читає ОБИДВА чипи — беремо значення при вході, а не тримаємо
+  // свіжими постійним опитуванням.
+  if(id==='ed') edLoad();}
 // Під-вкладки «Ремонту»: сторінка була на 20 карток в один скрол. Картка
 // «Відновити еталон» показує план правок — при поверненні на неї план треба
 // перечитати, інакше висів би складений під іншу модель.
@@ -1097,7 +1107,6 @@ async function refresh(){
   // PING, де його ніколи не було (його дає INFO), — умова не могла спрацювати
   // жодного разу, і підпис довічно лишався прочерком.
   if(d.swName&&$('swName')) $('swName').textContent=d.swName;
-  if(rmah!==null)$('mahv').value=rmah;
   $('fill').style.width=(pct!==null?pct:0)+'%';
   $('fill').style.background=pct===null?'#555':(pct<20?'#e74c3c':pct<50?'#f39c12':'#2ecc71');
   if(d.voltage!==undefined){$('volt').textContent=d.voltage.toFixed(2)+' В';$('dV').textContent=d.voltage.toFixed(2)+' В';}
@@ -1134,7 +1143,6 @@ async function refresh(){
       $('dEtm').textContent=y+' р '+dd+' дн ('+etm+' с)';
       $('dFirst').textContent=first.toLocaleDateString();
     }
-    if($('etmDate')&&!$('etmDate').value)$('etmDate').value=first.toISOString().slice(0,10);
     // Справжня дата з чипа має пріоритет над оцінкою «сьогодні − ETM».
     if(d.bms&&d.bms.firstUseDate){$('dFirst').textContent=d.bms.firstUseDate+' (з чипа)';$('dFirst').style.color='';}
     warnForeign2438(d, etm);
@@ -1147,13 +1155,6 @@ async function refresh(){
   if(d.rsense!==undefined)$('dRs').textContent=(d.rsense*1000).toFixed(2)+' мОм'+
     (d.rsenseChip?' (з чипа)':' (з налаштувань — у чипі поля немає)');
   renderBms(d.bms);
-  // Поточний знос — одразу в картку правки, щоб не звірятись з іншою вкладкою.
-  if($('hpNow')){
-    const h=(d.bms&&d.bms.haveKey)?d.bms.health:null;
-    $('hpNow').textContent=(h!==null&&h!==undefined)
-      ? (h+' % (≈'+d.bms.potentialMah+' мА·год)') : '— (ключ не визначено)';
-    if($('hpv')&&!$('hpv').value&&h) $('hpv').placeholder='зараз '+h;
-  }
   if(d.hex38)$('h38').textContent=hexDump(d.hex38);
   if(d.hex33)$('h33').textContent=hexDump(d.hex33);
 }
@@ -1167,15 +1168,6 @@ const ETM_AGE_SLACK_D = 180;
 // Знос окремою дією. Рахує ПРИСТРІЙ (той самий restore_plan.h, що й у плані):
 // знос залежить від шунта й паспортної ємності, і друга формула тут одного дня
 // розійшлася б із прошивкою.
-async function setHealth(){
-  if(!connected){toast('Підключіться');return;}
-  const v=$('hpv').value;
-  if(!v||+v<1||+v>100){toast('Знос має бути 1..100 %');return;}
-  if(!confirm('💾 Записати знос '+v+' %?\n\nПишеться поле CTS у блок RECOND (DS2433).'))return;
-  const r=await cmd('SETHEALTH '+v,20000);
-  if(r&&r.ok){toast('Знос '+r.health+' % записано (CTS '+r.cts+')');await refresh();}
-  else toast('Помилка: '+((r&&r.err)||'збій запису'));
-}
 // Дата пристрою: єдине джерело — клієнт, тож показуємо, що пристрій думає,
 // і даємо виправити одним рухом.
 const CLK_SRC={client:'від клієнта (точна)',
@@ -1494,16 +1486,6 @@ async function wipe38(){
   await refresh(); setBusy(false);
 }
 
-async function setMah(){
-  if(!connected){toast('Підключіться');return;}
-  const v=parseInt($('mahv').value); if(isNaN(v)||v<0){toast('Вкажіть мА·год');return;}
-  if(!confirm('Записати залишкову ємність '+v+' мА·год?'))return;
-  await ensureAuth();
-  setBusy(true); toast('Запис мА·год...');
-  const r=await cmd('SETMAH '+v,15000);
-  toast(r.ok?('✅ Записано (ICA='+r.ica+')'):('Помилка: '+(r.err||'')));
-  await refresh(); setBusy(false);
-}
 
 async function setChargeAuto(){
   if(!connected){toast('Підключіться');return;}
@@ -1513,30 +1495,7 @@ async function setChargeAuto(){
   toast(r.ok?('✅ Заряд '+r.pct+'% (ICA='+r.ica+')'):('Помилка: '+(r.err||'')));
   await refresh(); setBusy(false);
 }
-async function setChargePct(){
-  if(!connected){toast('Підключіться');return;}
-  const v=parseInt($('chgv').value); if(isNaN(v)||v<0||v>100){toast('Вкажіть 0..100');return;}
-  await ensureAuth();
-  setBusy(true); toast('Запис заряду...');
-  const r=await cmd('SETCHG '+v,15000);
-  toast(r.ok?('✅ Заряд '+r.pct+'% (ICA='+r.ica+')'):('Помилка: '+(r.err||'')));
-  await refresh(); setBusy(false);
-}
 
-async function setEtm(){
-  if(!connected){toast('Підключіться');return;}
-  const ds=$('etmDate').value; if(!ds){toast('Оберіть дату');return;}
-  const target=new Date(ds+'T00:00:00');
-  let sec=Math.floor((Date.now()-target.getTime())/1000);
-  if(sec<0){toast('Дата в майбутньому');return;}
-  if(sec>0xFFFFFFFF)sec=0xFFFFFFFF;
-  if(!confirm('📅 Записати дату «'+target.toLocaleDateString()+'» (ETM='+sec+' с)? Перевірте на рації.'))return;
-  await ensureAuth();
-  setBusy(true); toast('Запис дати...');
-  const r=await cmd('SETETM '+sec,15000);
-  toast(r.ok?('✅ Дату записано (ETM='+(r.etmSec||sec)+')'):('Помилка: '+(r.err||'')));
-  await refresh(); setBusy(false);
-}
 
 async function setCap(){
   if(!connected){toast('Підключіться');return;}
@@ -1645,6 +1604,105 @@ async function loadTemplates(){
   const rs=$('restModel');
   if(rs&&!rs.dataset.rp){rs.dataset.rp='1';rs.addEventListener('change',()=>rpLoad(false));}
   if(models.length)await rpLoad(false);
+}
+
+// ============ РУЧНИЙ РЕДАКТОР ЗНАЧЕНЬ ============
+//  ⚑ КЛІЄНТ НЕ ЗНАЄ НІ НАЗВ ПОЛІВ, НІ ЇХНІХ МЕЖ. Усе це називає пристрій
+//  (edit_plan.h), і приходить воно командою EDIT. Своя копія списку тут
+//  означала б, що після кожної правки прошивки таблиця показувала б застарілі
+//  назви й пускала б заборонені числа.
+var edPlan = null;
+function edEsc(s){ return String(s).replace(/[&<>"]/g,function(c){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
+function edNumToDate(v){ if(!v||v<=0) return ''; var s=String(v);
+    return s.slice(0,4)+'-'+s.slice(4,6)+'-'+s.slice(6,8); }
+function edDateToNum(s){ return s ? s.replace(/-/g,'') : ''; }
+
+async function edLoad(){
+  if(!connected){ edPlan=null; edRender(null,'Спочатку підключіться'); return; }
+  var r = await cmd('EDIT', 12000);
+  if(!r || !r.ok || !r.plan){ edPlan=null; edRender(null,(r&&r.err)||'Спочатку зчитайте АКБ'); return; }
+  edPlan = r.plan;
+  edRender(r.plan, '');
+}
+
+function edRender(p, err){
+  var t=$('edTable'); if(!t) return;
+  if(!p){ t.innerHTML='<tr><td>'+edEsc(err||'Спочатку зчитайте АКБ')+'</td></tr>';
+          $('edSum').textContent='—'; return; }
+  var h='<tr><th>Що саме</th><th>Зараз</th><th>Записати</th></tr>', chip=0;
+  p.fields.forEach(function(f){
+    // Заголовок групи при зміні чипа: «що записано в самому пакеті» й «що
+    // бачить монітор» — різні речі, і плутати їх в одному стовпчику означало б
+    // повторити помилку, з якої почалась історія з поверненням лічильників.
+    if(f.chip!==chip){ chip=f.chip;
+      h+='<tr><td colspan="3" class="note '+(chip===33?'i':'w')+'" style="margin:0">'
+        +(chip===33?'DS2433 — памʼять самого пакета'
+                   :'DS2438 — монітор (його рація читає щомиті)')+'</td></tr>'; }
+    var nm=edEsc(f.name)+(f.unit?' <span class="k">('+edEsc(f.unit)+')</span>':'');
+    if(!f.avail){ h+='<tr><td>'+nm+'</td><td colspan="2" class="k">у цьому пакеті не читається</td></tr>'; return; }
+    var cur=(f.cur<0)?'—':(f.type===1?(f.cur?edNumToDate(f.cur):'не було'):f.cur);
+    var inp=(f.type===1)
+      ? '<input type="date" id="ed'+f.i+'">'
+      : '<input type="number" id="ed'+f.i+'" min="'+f.lo+'" max="'+f.hi+'" placeholder="'+f.lo+'…'+f.hi+'" style="width:120px">';
+    h+='<tr><td>'+nm+'</td><td><b>'+edEsc(String(cur))+'</b></td><td>'+inp+'</td></tr>';
+  });
+  t.innerHTML=h;
+  edSum();
+  var w=$('edWarn');
+  if(w){ w.style.display=p.haveKey?'none':'';
+         w.innerHTML='Ключ шифрування цього пакета не визначився — дати, калібрувальні '
+                    +'цикли й знос показати нічим. Перечитайте АКБ: ключ береться з ROM DS2433.'; }
+  p.fields.forEach(function(f){ var el=$('ed'+f.i); if(el) el.oninput=edSum; });
+}
+
+function edChanges(){
+  var out=[]; if(!edPlan) return out;
+  edPlan.fields.forEach(function(f){
+    var el=$('ed'+f.i); if(!el||!f.avail) return;
+    var v=(f.type===1)?edDateToNum(el.value):el.value.trim();
+    if(v==='') return;
+    v=+v; if(v===f.cur) return;
+    out.push({i:f.i,name:f.name,from:f.cur,to:v,type:f.type});
+  });
+  return out;
+}
+function edSum(){
+  var c=edChanges(), box=$('edSum'); if(!box) return;
+  if(!c.length){ box.textContent='Нічого не змінено — записувати нема чого.'; return; }
+  box.innerHTML='Буде записано <b>'+c.length+'</b>: '+c.map(function(x){
+    var from=x.type===1?(x.from>0?edNumToDate(x.from):'не було'):x.from;
+    var to=x.type===1?edNumToDate(x.to):x.to;
+    return edEsc(x.name)+' '+edEsc(String(from))+' → <b>'+edEsc(String(to))+'</b>';
+  }).join('; ');
+}
+function edClear(){
+  if(!edPlan) return;
+  edPlan.fields.forEach(function(f){ var el=$('ed'+f.i); if(el) el.value=''; });
+  edSum();
+}
+
+async function edApply(){
+  if(!connected){toast('Підключіться');return;}
+  var c=edChanges();
+  if(!c.length){ toast('Нічого не змінено'); return; }
+  var lines=c.map(function(x){
+    var from=x.type===1?(x.from>0?edNumToDate(x.from):'не було'):x.from;
+    var to=x.type===1?edNumToDate(x.to):x.to;
+    return '• '+x.name+': '+from+' → '+to; }).join('\n');
+  if(!confirm('Записати в пакет '+c.length+' знач.?\n\n'+lines
+     +'\n\nЦе прямий запис у чипи, без плану й без еталона.')) return;
+  await ensureAuth();
+  var arg=c.map(function(x){ return x.i+'='+x.to; }).join(' ');
+  var r=await cmd('EDIT '+arg, 30000);
+  if(r&&r.ok){
+    toast('💾 Записано: '+(r.applied||0));
+    // Показуємо ПЕРЕЧИТАНЕ з чипа, а не те, що просили: різниця між «просив» і
+    // «стало» — саме те, заради чого таблиця й існує.
+    if(r.plan){ edPlan=r.plan; edRender(r.plan,''); }
+    edClear();
+    await refresh();
+  } else msgShow('Редактор', (r&&r.err)||'Запис не пройшов');
 }
 
 // ============ МАЙСТЕР ВІДНОВЛЕННЯ ============

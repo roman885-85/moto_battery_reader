@@ -2244,121 +2244,115 @@ int main() {
                                              "прибрана мертва функція не повернулась");
     }
 
-    // ── 45. КОМБІНАЦІЇ КНОПОК ──────────────────────────────────────────────
+    // ── 45. ПРИХОВАНІ ЖЕСТИ: УТРИМАННЯ ОДНІЄЇ КНОПКИ ───────────────────────
     //  Кнопок три, і всі три зайняті навігацією. Вимикач заряду й повноекранне
-    //  повідомлення живуть на КОМБІНАЦІЯХ — і саме тому їх треба перевіряти:
-    //  комбінація, яку можна набрати випадково, гортаючи меню, гірша за
-    //  відсутність комбінації.
-    printf("\n45) комбінації кнопок: набираються навмисно й не набираються випадково\n");
+    //  повідомлення живуть на УТРИМАННІ — 5 с і 10 с однієї кнопки. Це треба
+    //  перевіряти саме тут: жест, який спрацьовує сам собою під час звичайної
+    //  роботи, гірший за відсутність жесту, а жест, який дорогою виконує
+    //  операцію, гірший за обидва.
+    printf("\n45) утримання кнопки: сходинки не плутаються між собою\n");
     {
-        const uint32_t G = COMBO_GAP_MS;
+        // ⚑ ВІДСТАНІ МІЖ СХОДИНКАМИ. Числа задав власник (5 с і 10 с), але
+        //  перевіряємо не їх, а те, що між ними можна ЗУПИНИТИСЬ: звичайне
+        //  довге натискання мусить закінчитись задовго до вимикача заряду, а
+        //  вимикач — задовго до останньої сходинки.
+        check(COMBO_LONG_MS == 800u, "звичайне довге натискання — 0.8 с");
+        check(COMBO_HOLD_CHARGE_MS == 5000u,  "вимикач заряду — 5 с");
+        check(COMBO_HOLD_FLASH_MS  == 10000u, "остання сходинка — 10 с");
+        check(COMBO_HOLD_CHARGE_MS >= COMBO_LONG_MS + 2000u &&
+              COMBO_HOLD_FLASH_MS  >= COMBO_HOLD_CHARGE_MS + 3000u,
+              "…між сходинками є де відпустити кнопку");
 
-        // Темп задано власником: 0.3 с на натискання з допуском 0.1 с.
-        check(COMBO_TAP_MS == 300u && COMBO_TAP_TOL_MS == 400u,
-              "темп комбінації — 0.3 с на натискання з допуском 0.4 с");
-        check(G == 700u, "…тобто найбільша пауза між сусідніми натисканнями 0.7 с");
+        // Один прохід утримання: подаємо стан кнопки так, як це робить
+        // драйвер — на кожному проході циклу.
+        struct Run {
+            ComboHold h; uint32_t t = 100000;
+            uint8_t press()               { return comboHoldFeed(h, t, true); }
+            uint8_t hold(uint32_t ms)     { t += ms; return comboHoldFeed(h, t, true); }
+            uint8_t release(uint32_t ms)  { t += ms; return comboHoldFeed(h, t, false); }
+        };
+
+        // а) коротке натискання лишається коротким.
         {
-            // І він справді набирається на цьому темпі — а на повільнішому ні.
-            // Числа беремо з тих самих сталих: перевірка, яка тримає власну
-            // копію темпу, лишилась би зеленою після його зміни.
-            ComboState s{}; uint32_t t2 = 1100000; uint8_t last = CMB_PASS;
-            for (int i = 0; i < COMBO_TAPS_CHARGE; i++, t2 += COMBO_TAP_MS)
-                last = comboFeed(s, t2, CK_OK, CK_OK);
-            check(last == CMB_TOGGLE, "на заданому темпі комбінація набирається");
-            ComboState s2{}; t2 = 1200000; last = CMB_PASS;
-            for (int i = 0; i < COMBO_TAPS_CHARGE; i++, t2 += G + 1)
-                last = comboFeed(s2, t2, CK_OK, CK_OK);
-            check(last != CMB_TOGGLE, "…а щойно вийшли за допуск — уже ні");
+            Run r; r.press();
+            check(r.hold(300) == CHOLD_NONE, "поки тримають менше за 0.8 с — тиша");
+            check(r.release(1) == CHOLD_SHORT, "відпустили рано — звичайне коротке");
         }
 
-        // а) чотири швидкі натискання «кнопки зчитування» перемикають заряд,
-        //    а середина ланцюжка звичайної дії НЕ виконує.
+        // б) звичайне довге — і воно вирішується НА ВІДПУСКАННІ.
+        //    ⚑ Це головне в усій сходинці. Якби «довге» спрацьовувало на
+        //    порозі, дорога до вимикача заряду проходила б через уже виконану
+        //    операцію: на 0.8 с зробилось би скидання, і аж потім заряд.
         {
-            ComboState s{};
-            uint32_t t0 = 100000;
-            check(comboFeed(s, t0,           CK_OK, CK_OK) == CMB_PASS,  "перше натискання — звичайне");
-            check(comboFeed(s, t0 + 100,     CK_OK, CK_OK) == CMB_EAT,   "друге ковтається");
-            check(comboFeed(s, t0 + 200,     CK_OK, CK_OK) == CMB_EAT,   "третє ковтається");
-            check(comboFeed(s, t0 + 300,     CK_OK, CK_OK) == CMB_TOGGLE,"четверте перемикає заряд");
-            // ⚑ Найважливіше в усій комбінації: ланцюжок мусить рватись паузою.
-            //    Без цього «чотири натискання OK» означало б «чотири колись»,
-            //    і людина вимкнула б собі заряд, гортаючи меню.
-            ComboState s2{};
-            uint32_t t = 200000;
-            for (int i = 0; i < 3; i++) { comboFeed(s2, t, CK_OK, CK_OK); t += G + 1; }
-            check(comboFeed(s2, t, CK_OK, CK_OK) == CMB_PASS,
-                  "повільні натискання комбінації НЕ складають");
+            Run r; r.press();
+            check(r.hold(COMBO_LONG_MS) == CHOLD_ARM_LONG,
+                  "на 0.8 с кажемо, що буде, — але ще нічого не робимо");
+            check(r.hold(500) == CHOLD_NONE, "…і поки тримають, більше нічого");
+            check(r.release(1) == CHOLD_LONG, "відпустили до 5 с — звичайне довге");
         }
 
-        // б) чужа клавіша всередині ланцюжка теж рве його.
+        // в) 5 секунд — вимикач заряду, і теж на відпусканні.
         {
-            ComboState s{};
-            uint32_t t = 300000;
-            comboFeed(s, t, CK_OK, CK_OK);  t += 100;
-            comboFeed(s, t, CK_OK, CK_OK);  t += 100;
-            comboFeed(s, t, CK_RIGHT, CK_OK); t += 100;     // збились
-            comboFeed(s, t, CK_OK, CK_OK);  t += 100;
-            check(comboFeed(s, t, CK_OK, CK_OK) == CMB_EAT,
-                  "чужа клавіша посеред ланцюжка починає лік заново");
+            Run r; r.press(); r.hold(COMBO_LONG_MS);
+            check(r.hold(COMBO_HOLD_CHARGE_MS - COMBO_LONG_MS) == CHOLD_ARM_CHARGE,
+                  "на 5 с попереджаємо про вимикач заряду");
+            check(r.release(300) == CHOLD_CHARGE, "відпустили — заряд перемкнувся");
         }
 
-        // в) утримання кнопки — не натискання ланцюжка.
+        // г) 10 секунд — остання сходинка, і вона спрацьовує ОДРАЗУ.
+        //    Відпускання після неї заряду вже не чіпає: інакше кожен, хто
+        //    дотримав до кінця, дорогою вимикав би собі заряд.
         {
-            ComboState s{};
-            uint32_t t = 400000;
-            for (int i = 0; i < 3; i++) { comboFeed(s, t, CK_OK, CK_OK); t += 100; }
-            comboBreak(s);                                  // так робить довге натискання
-            check(comboFeed(s, t, CK_OK, CK_OK) == CMB_PASS,
-                  "після утримання ланцюжок починається заново");
+            Run r; r.press(); r.hold(COMBO_LONG_MS);
+            r.hold(COMBO_HOLD_CHARGE_MS - COMBO_LONG_MS);
+            check(r.hold(COMBO_HOLD_FLASH_MS - COMBO_HOLD_CHARGE_MS) == CHOLD_FLASH,
+                  "дотримали до кінця — спрацювало на порозі");
+            check(r.hold(3000) == CHOLD_NONE, "…і рівно один раз, скільки б не тримали");
+            check(r.release(1) == CHOLD_NONE, "…а відпускання заряду вже не чіпає");
         }
 
-        // г) прихована послідовність набирається рівно своїм візерунком.
+        // д) кожна сходинка оголошується РІВНО ОДИН РАЗ за натискання.
+        //    Інакше екран переписував би підказку щопроходу циклу.
         {
-            ComboState s{};
-            uint32_t t = 500000;
-            int fired = 0;
-            for (uint8_t i = 0; i < COMBO_FLASH_LEN; i++, t += 120)
-                if (comboFeed(s, t, COMBO_FLASH_PAT[i], CK_OK) == CMB_FLASH) fired++;
-            check(fired == 1, "візерунок набрано — і рівно один раз");
-
-            // Тією ж послідовністю, але з паузою всередині — не набирається.
-            ComboState s3{};
-            t = 600000; fired = 0;
-            for (uint8_t i = 0; i < COMBO_FLASH_LEN; i++) {
-                if (comboFeed(s3, t, COMBO_FLASH_PAT[i], CK_OK) == CMB_FLASH) fired++;
-                t += (i == 3) ? G + 50 : 120;
+            Run r; r.press();
+            int arms = 0, charges = 0, flashes = 0;
+            for (int i = 0; i < 300; i++) {          // 300 проходів по 50 мс = 15 с
+                uint8_t e = r.hold(50);
+                if (e == CHOLD_ARM_LONG)   arms++;
+                if (e == CHOLD_ARM_CHARGE) charges++;
+                if (e == CHOLD_FLASH)      flashes++;
             }
-            check(fired == 0, "з паузою посеред візерунка нічого не спрацьовує");
-
-            // Зайве повторення першої клавіші на початку НЕ ламає набір: така
-            // послідовність починається з повторів, і скидання «в нуль»
-            // зробило б її ненабиральною після зайвого «‹».
-            ComboState s4{};
-            t = 700000; fired = 0;
-            comboFeed(s4, t, COMBO_FLASH_PAT[0], CK_OK); t += 120;
-            for (uint8_t i = 0; i < COMBO_FLASH_LEN; i++, t += 120)
-                if (comboFeed(s4, t, COMBO_FLASH_PAT[i], CK_OK) == CMB_FLASH) fired++;
-            check(fired == 1, "зайве натискання першої клавіші набір не ламає");
+            check(arms == 1 && charges == 1 && flashes == 1,
+                  "за одне утримання кожна сходинка оголошується один раз");
         }
 
-        // д) і головне: одна комбінація не набирається іншою.
+        // е) скидання забирає натискання цілком — разом із відпусканням.
+        //    Так робить перехід на екран операції, де кнопка належить
+        //    аварійній зупинці: натискання, почате там, не сміє наприкінці
+        //    віддати подію ще й сюди.
         {
-            ComboState s{};
-            uint32_t t = 800000;
-            int toggles = 0;
-            for (uint8_t i = 0; i < COMBO_FLASH_LEN; i++, t += 120)
-                if (comboFeed(s, t, COMBO_FLASH_PAT[i], CK_OK) == CMB_TOGGLE) toggles++;
-            check(toggles == 0, "прихована послідовність не вимикає заряд по дорозі");
-
-            ComboState s2{};
-            t = 900000;
-            int flashes = 0;
-            for (int i = 0; i < COMBO_TAPS_CHARGE; i++, t += 120)
-                if (comboFeed(s2, t, CK_OK, CK_OK) == CMB_FLASH) flashes++;
-            check(flashes == 0, "…а вимикач заряду не показує повідомлення");
+            Run r; r.press(); r.hold(2000);
+            comboHoldReset(r.h);
+            check(r.release(100) == CHOLD_NONE, "після скидання відпускання мовчить");
+            check(r.press() == CHOLD_NONE && r.hold(300) == CHOLD_NONE &&
+                  r.release(1) == CHOLD_SHORT, "…а наступне натискання рахується заново");
         }
 
-        // е) повноекранне повідомлення гасне САМЕ, і рівно один раз.
+        // ж) відпущену кнопку не «дотримують»: пауза між натисканнями не
+        //    складається в жест.
+        {
+            Run r;
+            for (int i = 0; i < 8; i++) {            // вісім разів по 4 с
+                r.press(); r.hold(COMBO_LONG_MS);
+                check(r.hold(3000) == CHOLD_NONE, "неповне утримання нічого не дає");
+                r.release(1);
+                r.t += 200;
+            }
+            check(r.press() == CHOLD_NONE && r.hold(300) == CHOLD_NONE &&
+                  r.release(1) == CHOLD_SHORT, "вісім неповних утримань нічого не накопичили");
+        }
+
+        // з) повноекранне повідомлення гасне САМЕ, і рівно один раз.
         {
             ComboFlash f{};
             uint32_t t = 1000000;
@@ -2443,16 +2437,31 @@ int main() {
     {
         // а) кнопки на ОБОХ драйверах екрана.
         for (const char *d : { "display.h", "display_color.h" }) {
-            check(fileCalls(d, "#include \"combo.h\""),      "драйвер підключає спільні комбінації");
-            check(fileCalls(d, "comboFeed(g_combo, millis(), ck, COMBO_READ_KEY)"),
-                                                             "…і справді питає їх на кожному натисканні");
-            check(fileCalls(d, "displayToggleChargeMode()"), "…комбінація виходить на перемикач");
+            check(fileCalls(d, "#include \"combo.h\""),      "драйвер підключає спільні жести");
+            check(fileCalls(d, "comboHoldFeed(g_hold, millis(), HOLD_BTN_ST.stable == LOW)"),
+                                                             "…і справді питає їх на кожному проході");
+            check(fileCalls(d, "displayToggleChargeMode()"), "…жест виходить на перемикач");
+            // ⚑ КНОПЦІ ЖЕСТІВ ПЕРЕДАЮТЬ holdLongMs, А НЕ BTN_LONG_MS. Це не
+            //  дрібниця й не стиль: із BTN_LONG_MS «довге» спрацювало б на
+            //  0.8 с, тобто дорога до вимикача заряду проходила б через уже
+            //  виконану операцію — скидання, ремонт або очистку.
+            check(fileCalls(d, "pollButtonRaw(btn3Raw(), b3, holdLongMs)") &&
+                  fileCalls(d, "pollButtonRaw(btn2Raw(), b2, holdLongMs)"),
+                                                             "…і «довге» на ній вирішується на відпусканні");
+            check(fileCalls(d, "hev == CHOLD_CHARGE") && fileCalls(d, "hev == CHOLD_FLASH"),
+                                                             "…обидві сходинки доходять до дії");
+            // ⚑ ПІД ЧАС ОПЕРАЦІЇ КНОПКА НАЛЕЖИТЬ АВАРІЙНІЙ ЗУПИНЦІ. Зупинка
+            //  мусить спрацювати на порозі: «відпустіть, і тоді зупиниться» —
+            //  це вже не аварійна зупинка.
+            check(fileCalls(d, "!dischargeScreenActive() && !chargeScreenActive()") &&
+                  fileCalls(d, "comboHoldReset(g_hold)"),
+                                                             "…а на екранах операцій жестів немає взагалі");
             check(fileCalls(d, "chargeSetOffByUser(!chargeOffByUser())"),
                                                              "…який перекидає саме прапорець прошивки");
             check(fileCalls(d, "menuClampSel(g_menuSel)"),
                                                              "…і затискає курсор: список став коротшим");
             check(fileCalls(d, "comboFlashArm(g_flash, millis(), COMBO_FLASH_MS)"),
-                                                             "друга комбінація показує повноекранний напис");
+                                                             "друга сходинка показує повноекранний напис");
             check(fileCalls(d, "comboFlashActive(g_flash, millis())"),
                                                              "…і рендер про нього знає");
             // ⚑ Один опит кнопок на всі гілки. Поки їх було чотири (розряд,

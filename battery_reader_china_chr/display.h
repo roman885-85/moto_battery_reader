@@ -8,7 +8,7 @@
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — для дій «Новий АКБ» у меню
 #include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
 #include "textwrap.h"     // txtFit(): назва пункту меню не лізе на сусідній рядок
-#include "combo.h"        // комбінації кнопок (чиста логіка, спільна з display_color.h)
+#include "combo.h"        // приховані жести (чиста логіка, спільна з display_color.h)
 #include "discharge.h"    // стан керованого розряду для сторінки моніторингу
 #include "charge.h"       // стан керованого заряду для сторінки моніторингу
 
@@ -243,9 +243,9 @@ inline int menuPageToDisplayPage(int mpg) {
 
 static char g_displayStatus[36] = "ЗАПУСК";  // нижня рядок статусу (UTF-8)
 static int  g_displayPage = 0;             // поточна сторінка меню
-// Стан комбінацій кнопок і повноекранного повідомлення: на них дивиться і
+// Стан прихованих жестів і повноекранного повідомлення: на них дивиться і
 // обробник кнопок, і рендер.
-static ComboState g_combo;
+static ComboHold  g_hold;
 static ComboFlash g_flash;
 inline bool displayFlashActive() { return comboFlashActive(g_flash, millis()); }
 static bool g_readRequested = false;       // запит повторного читання після циклу
@@ -1518,15 +1518,32 @@ inline int displayConsumeActionRequest() {
 //  BTN1: коротке — наступна сторінка; довге (0.8с) — повторне читання АКБ.
 //  BTN2: на сторінці «Дії» — коротке = вибір операції, довге (0.8с) = ВИКОНАТИ;
 //        на інших сторінках — коротке = попередня сторінка.
-// Скільки триває «довге» натискання. Одне число на всі гілки.
-#define BTN_LONG_MS 800
+// Скільки триває «довге» натискання. Одне число на всі гілки; саме воно живе
+// в combo.h разом із порогами жестів — усі три є сходинками однієї шкали.
+#define BTN_LONG_MS COMBO_LONG_MS
 
-// ── КОМБІНАЦІЇ КНОПОК (те саме правило, що й на кольоровій панелі) ─────────
+// ── ПРИХОВАНІ ЖЕСТИ (те саме правило, що й на кольоровій панелі) ───────────
 #ifdef MENU_BTN3_PIN
-  #define COMBO_READ_KEY CK_OK
+  #define HOLD_BTN_ST    b3
 #else
-  #define COMBO_READ_KEY CK_RIGHT
+  #define HOLD_BTN_ST    b2
 #endif
+
+// Що зробить довге натискання на поточному екрані; nullptr — нічого, і тоді
+// обіцяти щось було б гірше за мовчання.
+inline const char *holdLongHint() {
+    if (g_displayPage == PAGE_MENU) {
+        uint8_t kind = MI_OP, group = MG_NAV; int code = 0;
+        if (!menuRow(g_menuSel, &kind, &code, &group)) return nullptr;
+        if (kind == MI_PAGE) return nullptr;
+        char nb[OP_NAME_BUF]; const char *n, *a, *b2; uint8_t d, c;
+        opInfo(code, &n, &a, &b2, &d, nb, sizeof(nb), &c);
+        return (d == OPD_SAFE) ? nullptr : "відпустіть = ПУСК";
+    }
+    if (g_displayPage == PAGE_WIZARD)     return "відпустіть = ВИКОНАТИ";
+    if (g_displayPage < NUM_STATUS_PAGES) return "відпустіть = ЗЧИТАТИ";
+    return nullptr;
+}
 
 inline void displayToggleChargeMode() {
     bool off = chargeSetOffByUser(!chargeOffByUser());
@@ -1543,31 +1560,59 @@ inline void displayHandleButton() {
 #endif
 
     // ⚑ ОПИТУЄМО КНОПКИ ОДИН РАЗ НА ВСІ ГІЛКИ — див. пояснення в
-    //  display_color.h: комбінація це ЛАНЦЮЖОК, і зібрати його з чотирьох
-    //  незалежних детекторів (розряд / заряд / помилка живлення / меню)
-    //  неможливо — перехід між сторінками починав би його заново.
+    //  display_color.h: жест — це ТРИВАЛІСТЬ, і виміряти її чотирма
+    //  незалежними детекторами (розряд / заряд / помилка живлення / меню)
+    //  неможливо — перехід між сторінками починав би відлік заново.
+    // Під час операції утримання належить АВАРІЙНІЙ ЗУПИНЦІ — вона мусить
+    // спрацювати на порозі, а не на відпусканні. Тому там жестів немає.
+    const bool holdLive = !dischargeScreenActive() && !chargeScreenActive();
+    const unsigned long holdLongMs = holdLive ? 0 : BTN_LONG_MS;
+
     int e1 = pollButtonRaw(btn1Raw(), b1, BTN_LONG_MS);     // «›» далі
-    int e2 = pollButtonRaw(btn2Raw(), b2, BTN_LONG_MS);     // «‹» назад
-    int e3 = 0;
 #ifdef MENU_BTN3_PIN
-    e3 = pollButtonRaw(btn3Raw(), b3, BTN_LONG_MS);         // «OK»
+    int e2 = pollButtonRaw(btn2Raw(), b2, BTN_LONG_MS);     // «‹» назад
+    int e3 = pollButtonRaw(btn3Raw(), b3, holdLongMs);      // «OK» — на ньому жести
+#else
+    int e2 = pollButtonRaw(btn2Raw(), b2, holdLongMs);      // «‹» — на ньому жести
+    int e3 = 0;
 #endif
 
+    // «Довге» на цій кнопці вирішується НА ВІДПУСКАННІ (тому їй і передано
+    // holdLongMs = 0): інакше дорога до вимикача заряду проходила б через уже
+    // виконану операцію — на 0.8 с скидання, і аж потім, на 5 с, вимикач.
+    uint8_t hev = CHOLD_NONE;
+    if (holdLive) {
+        hev = comboHoldFeed(g_hold, millis(), HOLD_BTN_ST.stable == LOW);
+        int he = (hev == CHOLD_SHORT) ? 1 : (hev == CHOLD_LONG) ? 2 : 0;
+#ifdef MENU_BTN3_PIN
+        e3 = he;
+#else
+        e2 = he;
+#endif
+    } else {
+        comboHoldReset(g_hold);
+    }
+
     if (displayFlashActive()) {
-        if (e1 || e2 || e3) { g_flash.until = 0; comboBreak(g_combo); displayRender(); }
+        if (e1 || e2 || e3 || hev != CHOLD_NONE) { g_flash.until = 0; displayRender(); }
         return;
     }
 
-    if (e1 == 2 || e2 == 2 || e3 == 2) comboBreak(g_combo);
-    uint8_t ck = (e3 == 1) ? CK_OK : (e2 == 1) ? CK_LEFT : (e1 == 1) ? CK_RIGHT : CK_NONE;
-    if (ck != CK_NONE) {
-        switch (comboFeed(g_combo, millis(), ck, COMBO_READ_KEY)) {
-            case CMB_FLASH:  comboFlashArm(g_flash, millis(), COMBO_FLASH_MS);
-                             displayRender(); return;
-            case CMB_TOGGLE: displayToggleChargeMode(); return;
-            case CMB_EAT:    return;
-            default: break;
-        }
+    if (hev == CHOLD_FLASH) {
+        comboFlashArm(g_flash, millis(), COMBO_FLASH_MS);
+        displayRender();
+        return;
+    }
+    if (hev == CHOLD_CHARGE) { displayToggleChargeMode(); return; }
+    if (hev == CHOLD_ARM_CHARGE) {
+        displayShow(chargeOffByUser() ? "відпустіть = ЗАРЯД УВІМК"
+                                      : "відпустіть = ЗАРЯД ВИМК");
+        return;
+    }
+    if (hev == CHOLD_ARM_LONG) {
+        const char *h = holdLongHint();
+        if (h) displayShow(h);
+        return;
     }
 
     // ── РЕЖИМ РОЗРЯДУ ──────────────────────────────────────────────────────

@@ -28,7 +28,7 @@
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — дії «Новий АКБ»
 #include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
 #include "battbar.h"      // коли шкалу батареї треба перемальовувати, а коли ні
-#include "combo.h"        // комбінації кнопок (чиста логіка, спільна з display.h)
+#include "combo.h"        // приховані жести (чиста логіка, спільна з display.h)
 #include "textwrap.h"     // перенос по словах: текст не вилазить за плашку
 #include "discharge.h"    // стан керованого розряду для сторінки моніторингу
 #include "charge.h"       // стан керованого заряду для сторінки моніторингу
@@ -244,9 +244,9 @@ inline uint16_t TC(uint16_t c) { return g_errTint ? redFilter(c) : c; }
 
 static char g_displayStatus[36] = "ЗАПУСК";
 static int  g_displayPage = 0;
-// Стан комбінацій кнопок і повноекранного повідомлення — тут, бо на них
+// Стан прихованих жестів і повноекранного повідомлення — тут, бо на них
 // дивиться і обробник кнопок, і рендер.
-static ComboState g_combo;
+static ComboHold  g_hold;
 static ComboFlash g_flash;
 inline bool displayFlashActive() { return comboFlashActive(g_flash, millis()); }
 static bool g_readRequested = false;
@@ -2221,18 +2221,40 @@ inline void menuActivate(bool longPress) {
 
 // Скільки триває «довге» натискання. Одне число на всі гілки: раніше кожна
 // заводила своє, і сторінка помилки живлення мовчки жила з нулем — тобто без
-// поняття «довге» взагалі.
-#define BTN_LONG_MS 800
+// поняття «довге» взагалі. Саме число живе в combo.h разом із порогами
+// жестів: усі три — сходинки однієї шкали, і перевіряти відстані між ними
+// можна лише там, де вони лежать поруч.
+#define BTN_LONG_MS COMBO_LONG_MS
 
-// ── КОМБІНАЦІЇ КНОПОК ─────────────────────────────────────────────────────
-//  Клавіша, на якій висить вимикач заряду, — та сама, що зчитує пакет: у
-//  складанні з трьома кнопками це «OK» (утримання = зчитати), у складанні з
-//  двома — «›». Правило одне: чотири швидкі КОРОТКІ натискання перемикають.
+// ── ПРИХОВАНІ ЖЕСТИ: УТРИМАННЯ ОДНІЄЇ КНОПКИ ──────────────────────────────
+//  Кнопка та сама, що зчитує пакет: у складанні з трьома кнопками це «OK», у
+//  складанні з двома окремого OK немає — і роль дістається «‹» (вибір і
+//  виконання). Пороги — 5 с (перемкнути заряд) і 10 с; див. combo.h.
 #ifdef MENU_BTN3_PIN
-  #define COMBO_READ_KEY CK_OK
+  #define HOLD_BTN_ST    b3
 #else
-  #define COMBO_READ_KEY CK_RIGHT
+  #define HOLD_BTN_ST    b2
 #endif
+
+// Чи робить довге натискання щось на поточному екрані — і що саме.
+//
+//  ⚑ ПОРОЖНЬО — ТЕЖ ВІДПОВІДЬ. Обіцяти «відпустіть = ПУСК» там, де довге
+//  натискання нічого не виконує (пункт-сторінка, безпечна операція), гірше,
+//  ніж мовчати: людина відпускає, нічого не стається, і наступного разу вона
+//  вже не вірить жодній підказці.
+inline const char *holdLongHint() {
+    if (g_displayPage == PAGE_MENU) {
+        uint8_t kind = MI_OP, group = MG_NAV; int code = 0;
+        if (!menuRow(g_menuSel, &kind, &code, &group)) return nullptr;
+        if (kind == MI_PAGE) return nullptr;          // сторінку відкриває коротке
+        char nb[OP_NAME_BUF]; const char *n, *a, *b2; uint8_t d, c;
+        opInfo(code, &n, &a, &b2, &d, nb, sizeof(nb), &c);
+        return (d == OPD_SAFE) ? nullptr : "відпустіть = ПУСК";
+    }
+    if (g_displayPage == PAGE_WIZARD)      return "відпустіть = ВИКОНАТИ";
+    if (g_displayPage < NUM_STATUS_PAGES)  return "відпустіть = ЗЧИТАТИ";
+    return nullptr;
+}
 
 // Перемкнути «версію без заряду» й показати, що вийшло.
 inline void displayToggleChargeMode() {
@@ -2253,36 +2275,71 @@ inline void displayHandleButton() {
 
     // ⚑ ОПИТУЄМО КНОПКИ ОДИН РАЗ НА ВСІ ГІЛКИ. Раніше кожен режим (розряд,
     //  заряд, помилка живлення, звичайне меню) опитував їх сам, своїм набором
-    //  BtnState. Поки подія просто розгалужувалась, це працювало; але
-    //  комбінація — це ЛАНЦЮЖОК натискань, і зібрати його з чотирьох
-    //  незалежних детекторів неможливо: перейшов між сторінками — і ланцюжок
-    //  почався заново, бо рахував його вже інший детектор.
+    //  BtnState. Поки подія просто розгалужувалась, це працювало; але жест —
+    //  це ТРИВАЛІСТЬ, і виміряти її чотирма незалежними детекторами
+    //  неможливо: перейшов між сторінками — і відлік почався заново, бо
+    //  тримав його вже інший детектор.
+    // ⚑ ПІД ЧАС ОПЕРАЦІЇ УТРИМАННЯ НАЛЕЖИТЬ АВАРІЙНІЙ ЗУПИНЦІ, А НЕ ЖЕСТАМ.
+    //  Зупинка мусить спрацювати НА ПОРОЗІ: «відпустіть, і тоді зупиниться» —
+    //  це вже не аварійна зупинка. Тому на екранах заряду й розряду жестів
+    //  немає взагалі, і кнопка там працює точно так, як працювала.
+    const bool holdLive = !dischargeScreenActive() && !chargeScreenActive();
+    const unsigned long holdLongMs = holdLive ? 0 : BTN_LONG_MS;
+
     int e1 = pollButtonRaw(btn1Raw(), b1, BTN_LONG_MS);     // «›» далі
-    int e2 = pollButtonRaw(btn2Raw(), b2, BTN_LONG_MS);     // «‹» назад
-    int e3 = 0;
 #ifdef MENU_BTN3_PIN
-    e3 = pollButtonRaw(btn3Raw(), b3, BTN_LONG_MS);         // «OK»
+    int e2 = pollButtonRaw(btn2Raw(), b2, BTN_LONG_MS);     // «‹» назад
+    int e3 = pollButtonRaw(btn3Raw(), b3, holdLongMs);      // «OK» — на ньому жести
+#else
+    int e2 = pollButtonRaw(btn2Raw(), b2, holdLongMs);      // «‹» — на ньому жести
+    int e3 = 0;
 #endif
 
+    // ── ЖЕСТИ УТРИМАННЯ ───────────────────────────────────────────────────
+    //  ⚑ «ДОВГЕ» НА ЦІЙ КНОПЦІ ВИРІШУЄТЬСЯ НА ВІДПУСКАННІ. Через те їй і
+    //  передано holdLongMs = 0: pollButtonRaw() робить лише антидребезг, а
+    //  подію «довге» дає детектор нижче. Інакше дорога до вимикача заряду
+    //  проходила б через уже виконану операцію: на 0.8 с зробилось би
+    //  скидання, і аж потім, на 5 с, перемкнувся б заряд.
+    uint8_t hev = CHOLD_NONE;
+    if (holdLive) {
+        hev = comboHoldFeed(g_hold, millis(), HOLD_BTN_ST.stable == LOW);
+        int he = (hev == CHOLD_SHORT) ? 1 : (hev == CHOLD_LONG) ? 2 : 0;
+#ifdef MENU_BTN3_PIN
+        e3 = he;
+#else
+        e2 = he;
+#endif
+    } else {
+        comboHoldReset(g_hold);
+    }
+
     // Поки на екрані повноекранне повідомлення — кнопки лише прибирають його.
+    // Кнопку, якою його щойно викликали, ще тримають: жест уже спрацював і
+    // більше подій не дає, тож повідомлення не зникає само собою під пальцем.
     if (displayFlashActive()) {
-        if (e1 || e2 || e3) { g_flash.until = 0; comboBreak(g_combo); displayRender(); }
+        if (e1 || e2 || e3 || hev != CHOLD_NONE) { g_flash.until = 0; displayRender(); }
         return;
     }
 
-    if (e1 == 2 || e2 == 2 || e3 == 2) comboBreak(g_combo);  // утримання рве ланцюжок
-    uint8_t ck = (e3 == 1) ? CK_OK : (e2 == 1) ? CK_LEFT : (e1 == 1) ? CK_RIGHT : CK_NONE;
-    if (ck != CK_NONE) {
-        switch (comboFeed(g_combo, millis(), ck, COMBO_READ_KEY)) {
-            case CMB_FLASH:
-                comboFlashArm(g_flash, millis(), COMBO_FLASH_MS);
-                displayScreenCleared();
-                displayRender();
-                return;
-            case CMB_TOGGLE: displayToggleChargeMode(); return;
-            case CMB_EAT:    return;
-            default: break;
-        }
+    if (hev == CHOLD_FLASH) {
+        comboFlashArm(g_flash, millis(), COMBO_FLASH_MS);
+        displayScreenCleared();
+        displayRender();
+        return;
+    }
+    if (hev == CHOLD_CHARGE) { displayToggleChargeMode(); return; }
+    if (hev == CHOLD_ARM_CHARGE) {
+        // П'ять секунд, протягом яких нічого не відбувається, читаються як
+        // «не працює». Кажемо, що буде, якщо відпустити зараз.
+        displayShow(chargeOffByUser() ? "відпустіть = ЗАРЯД УВІМК"
+                                      : "відпустіть = ЗАРЯД ВИМК");
+        return;
+    }
+    if (hev == CHOLD_ARM_LONG) {
+        const char *h = holdLongHint();
+        if (h) displayShow(h);
+        return;
     }
 
     // ── РЕЖИМ РОЗРЯДУ ──────────────────────────────────────────────────────

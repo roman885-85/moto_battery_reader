@@ -1071,6 +1071,14 @@ class App:
                 tok, res = self.worker.results.get_nowait()
             except queue.Empty:
                 break
+            # ⚑ ВІДМОВУ «БЕЗ ЗАРЯДУ» ЛОВИМО ТУТ, А НЕ В КОЖНОГО ВИКЛИКУ.
+            #  Пристрій позначає її кодом (code=nocharge), і кодом же ми її й
+            #  упізнаємо: за текстом — означало б, що перше ж переформулювання
+            #  тихо поверне рядок стану замість вікна. Місце одне, бо команд
+            #  заряду п'ять, і шоста, дописана завтра, мусить поводитись так
+            #  само без правок.
+            if isinstance(res, dict) and res.get("code") == "nocharge":
+                self.msg_box("Заряд недоступний", res.get("err") or "")
             cb = self._cb.pop(tok, None)
             if cb:
                 try:
@@ -3114,6 +3122,13 @@ class App:
             return
         self.cmd("DISCHARGE DISMISS", 10.0, cb=self._dis_show)
 
+    # ⚑ ВІКНО, А НЕ РЯДОК СТАНУ. Відмова «ця версія пристрою — без заряду»
+    #  пояснює, чому зникла ціла група дій. Рядок стану живе до наступного
+    #  повідомлення й зникає — і людина лишається з питанням «а що це було?».
+    #  Тому в цієї відповіді є «ОК»: вона стоїть, доки її не прочитають.
+    def msg_box(self, head, text):
+        messagebox.showwarning(head, text)
+
     def _chg_set_unavail(self, why):
         """Показати причину недоступності заряду й вимкнути дії. Порожній
         рядок означає «усе гаразд»."""
@@ -3121,12 +3136,26 @@ class App:
             self.lblChgUnavail.config(text=why)
             if why:
                 self.lblChgUnavail.pack(anchor="w", pady=(2, 0))
+                # Підпис відкриває те саме вікно: прочитати повний текст можна
+                # й потім. Плашка лишається — вікно її не замінює: воно
+                # відповідає на питання тоді, коли його ставлять, а плашка
+                # тримає відповідь на видноті.
+                self.lblChgUnavail.bind(
+                    "<Button-1>", lambda _e, w=why: self.msg_box("Заряд недоступний", w))
             else:
+                self.lblChgUnavail.unbind("<Button-1>")
                 self.lblChgUnavail.pack_forget()
         for name in ("btnChgStart", "btnChgStop", "btnChgWake"):
             b = getattr(self, name, None)
             if b is not None:
                 b.config(state=("disabled" if why else "normal"))
+        # ⚑ ОДИН РАЗ НА ПРИЧИНУ, А НЕ НА КОЖНЕ ОПИТУВАННЯ. Стан заряду
+        #  опитується постійно; вікно, прив'язане до самого факту
+        #  недоступності, неможливо було б закрити.
+        if why != getattr(self, "_chgUnavailSeen", ""):
+            self._chgUnavailSeen = why
+            if why:
+                self.msg_box("Заряд недоступний", why)
 
     def charge_wake(self):
         """Примусове пробудження пакета, який не читається після заміни елементів.

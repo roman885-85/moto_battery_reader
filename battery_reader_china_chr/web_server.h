@@ -4981,6 +4981,9 @@ void handleEditApply() {
         String v = server.arg(key);
         v.trim();
         if (!v.length()) continue;
+        // ⚑ ПОМИЛКУ ВВЕДЕННЯ ВИПРАВЛЯЄ САМ ПЛАН, А НЕ ВІДХИЛЯЄ. Відмова
+        //  лишилась там, де виправляти нема чого: поля з такою назвою немає
+        //  або блок, у якому воно живе, не читається.
         if (!editPlanSet(p, i, v.toInt())) {
             String m = "{\"status\":\"error\",\"message\":\"";
             m += editFieldName(i); m += ": "; m += p.err; m += "\"}";
@@ -4990,17 +4993,23 @@ void handleEditApply() {
     }
     // ⚑ ЗВІРКА НАБОРУ — ПІСЛЯ ВСІХ ПОЛІВ, А НЕ ПІСЛЯ КОЖНОГО. Людина може
     //  посунути дату виготовлення й дату запуску одним заходом, і кожна з них
-    //  окремо виглядає безглуздою рівно доти, доки не побачиш другу.
+    //  окремо виглядає безглуздою рівно доти, доки не побачиш другу. Тут набір
+    //  теж ЛАГОДИТЬСЯ: пізнішу подію підтягуємо до ранішої.
     char why[128];
-    if (!editPlanConsistent(p, why, sizeof(why))) {
-        String m = "{\"status\":\"error\",\"message\":\"Набір суперечить сам собі: ";
+    if (!editPlanRepair(p)) {
+        editPlanConsistent(p, why, sizeof(why));
+        String m = "{\"status\":\"error\",\"message\":\"Набір суперечить сам собі, а полагодити нічим: ";
         m += why; m += "\"}";
         server.send(400, "application/json", m);
         return;
     }
     if (editPlanCount(p, 0) == 0) {
-        server.send(200, "application/json",
-                    "{\"status\":\"success\",\"applied\":0,\"message\":\"Нічого не змінилось\"}");
+        // Могло статись і так: усе, що вписали, виправилось назад у поточне.
+        // Промовчати тут означало б лишити людину з питанням «а чому нічого?».
+        String m = "{\"status\":\"success\",\"applied\":0,\"fix\":\"";
+        m += p.fix;
+        m += "\",\"message\":\"Нічого не змінилось\"}";
+        server.send(200, "application/json", m);
         return;
     }
 
@@ -5031,6 +5040,7 @@ void handleEditApply() {
     EditPlan after;
     editPlanFromChips(after);
     String j = "{\"status\":\"success\",\"applied\":"; j += done;
+    j += ",\"fix\":\""; j += p.fix; j += "\"";
     j += ",\"plan\":"; j += editPlanJson(after);
     j += "}";
     server.send(200, "application/json", j);

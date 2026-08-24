@@ -313,13 +313,18 @@ static void serEdit(const String &arg) {
             sResp(r); return;
         }
     }
+    // Набір теж ЛАГОДИТЬСЯ, а не відхиляється: пізнішу подію підтягуємо до
+    // ранішої. Відмова лишилась там, де чинити нічим.
     char why[128];
-    if (!editPlanConsistent(p, why, sizeof(why))) {
-        String r = "{\"ok\":false,\"err\":\"набір суперечить сам собі: "; r += why; r += "\"}";
+    if (!editPlanRepair(p)) {
+        editPlanConsistent(p, why, sizeof(why));
+        String r = "{\"ok\":false,\"err\":\"набір суперечить сам собі, а полагодити нічим: ";
+        r += why; r += "\"}";
         sResp(r); return;
     }
     if (editPlanCount(p, 0) == 0) {
-        sResp(String("{\"ok\":true,\"applied\":0,\"plan\":") + editPlanJson(p) + "}");
+        sResp(String("{\"ok\":true,\"applied\":0,\"fix\":\"") + p.fix +
+              "\",\"plan\":" + editPlanJson(p) + "}");
         return;
     }
     bool w33 = false, w38 = false;
@@ -343,6 +348,7 @@ static void serEdit(const String &arg) {
     EditPlan after;
     editPlanFromChips(after);
     sResp(String("{\"ok\":true,\"applied\":") + done +
+          ",\"fix\":\"" + p.fix + "\"" +
           ",\"plan\":" + editPlanJson(after) + "}");
 }
 

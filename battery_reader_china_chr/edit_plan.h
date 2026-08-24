@@ -77,7 +77,8 @@ struct EditPlan {
     int   ratedEff;      // паспортна ємність, за якою рахується ICA
     float rsOhm;         // шунт цього пакета
     long  today;         // YYYYMMDD; 0 — годинник не заведено
-    char  err[112];      // причина останньої відмови editPlanSet()
+    char  err[112];      // причина відмови (лише коли виправити нема чого)
+    char  fix[240];      // що саме виправлено — рядок для людини
 };
 
 // ── ІМЕНА Й ОДИНИЦІ — ОДНІ НА ВСІ ТРИ КЛІЄНТИ ─────────────────────────────
@@ -240,32 +241,87 @@ inline void editPlanBuild(EditPlan &p, const uint8_t *d33, const uint8_t *d38,
 //  ⚑ ВІДМОВА НАЗИВАЄ СВОЮ ПРИЧИНУ, І ПРИЧИНИ РІЗНІ. «Не можна» без пояснення
 //  тут найгірше: людина бачить поле, вписує число, нічого не стається — і
 //  вирішує, що редактор не працює. Так уже було з узгодженням наробітку.
+//  ⚑ ПОМИЛКУ ВВЕДЕННЯ ВИПРАВЛЯЄМО, А НЕ ВІДХИЛЯЄМО. Так попросив власник, і
+//  прохання по суті: у кожної помилки тут є ОДНА очевидна правильна відповідь.
+//  Вписали 6000 туди, де стеля 255, — малось на увазі 255; вписали дату
+//  наступного року — малось на увазі «сьогодні»; вписали 45-те число —
+//  малось на увазі останнє число місяця. Відмова змушувала гадати, яке ж
+//  число підійде, і набирати наново; виправлення дає результат одразу.
+//
+//  ⚑ АЛЕ НІКОЛИ МОВЧКИ. Кожна правка записується в p.fix і доїжджає до
+//  людини разом із результатом: «виправлено» без пояснення нічим не краще за
+//  «не можна» — і те, і те лишає людину без розуміння, що ж сталось із її
+//  числом. Тому виправляємо і кажемо, що саме виправили.
+inline void editFixNote(EditPlan &p, int i, long from, long to, const char *why) {
+    size_t n = strlen(p.fix);
+    if (n + 16 >= sizeof(p.fix)) return;          // не влізло — краще обрізати
+    if (n) { snprintf(p.fix + n, sizeof(p.fix) - n, "; "); n = strlen(p.fix); }
+    snprintf(p.fix + n, sizeof(p.fix) - n, "%s: %ld → %ld (%s)",
+             editFieldName(i), from, to, why);
+}
+
+// Скільки діб у місяці — щоб «45-те» стало останнім числом, а не сміттям.
+inline int editDaysInMonth(int y, int m) {
+    static const int d[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    if (m < 1 || m > 12) return 31;
+    if (m == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) return 29;
+    return d[m - 1];
+}
+
 inline bool editPlanSet(EditPlan &p, int i, long v) {
     auto no = [&](const char *m) { snprintf(p.err, sizeof(p.err), "%s", m); return false; };
     p.err[0] = '\0';
+    // Виправити НЕМА ЧОГО, коли писати нікуди: поля з такою назвою немає або
+    // блок, у якому воно живе, не читається. Це не помилка введення.
     if (i < 0 || i >= EDF_COUNT)  return no("такого поля немає");
     if (!p.f[i].avail)            return no("це поле в пакеті не читається — писати нікуди");
     if (v < 0)                    { p.f[i].want = -1; return true; }   // «не чіпати»
 
+    const long asked = v;
     if (editFieldType(i) == EDT_DATE) {
-        // Нуль — законне значення для похідних дат: «події не було».
+        // Нуль — законне значення для похідних дат: «події не було». Для дати
+        // виготовлення це не так: без неї решті нема від чого рахуватись, і
+        // очевидне виправлення — лишити ту, що вже стоїть.
         if (v == 0) {
-            if (i == EDF_MFG) return no("дату виготовлення не можна прибрати");
-            p.f[i].want = 0;
-            return true;
+            if (i != EDF_MFG) { p.f[i].want = 0; return true; }
+            if (p.f[i].cur <= 0) return no("дату виготовлення прибрати не можна, а замінити нема на що");
+            editFixNote(p, i, asked, p.f[i].cur, "дату виготовлення прибрати не можна");
+            v = p.f[i].cur;
+        } else {
+            int y = (int)(v / 10000), m = (int)((v / 100) % 100), d = (int)(v % 100);
+            int y0 = y, m0 = m, d0 = d;
+            if (y < 2005) y = 2005;
+            if (y > 2035) y = 2035;
+            if (m < 1) m = 1;
+            if (m > 12) m = 12;
+            if (d < 1) d = 1;
+            if (d > editDaysInMonth(y, m)) d = editDaysInMonth(y, m);
+            if (y != y0 || m != m0 || d != d0) {
+                long fixed = restoreDateNum(y, m, d);
+                editFixNote(p, i, asked, fixed, "це не схоже на дату");
+                v = fixed;
+            }
+            // Дата в майбутньому: очевидна відповідь — сьогодні. Пакета, який
+            // почав працювати завтра, не буває.
+            if (p.today > 0 && v > p.today) {
+                editFixNote(p, i, v, p.today, "дата в майбутньому");
+                v = p.today;
+            }
         }
-        int y = (int)(v / 10000), m = (int)((v / 100) % 100), d = (int)(v % 100);
-        if (!impresBmsDateSane(y, m, d)) return no("це не схоже на дату");
-        if (p.today > 0 && v > p.today)  return no("дата в майбутньому");
     }
     if (v < p.f[i].lo || v > p.f[i].hi) {
-        char b[112];
-        snprintf(b, sizeof(b), "%ld — поза межами %ld…%ld", v, p.f[i].lo, p.f[i].hi);
-        return no(b);
+        long fixed = (v < p.f[i].lo) ? p.f[i].lo : p.f[i].hi;
+        char why[64];
+        snprintf(why, sizeof(why), "межі поля %ld…%ld", p.f[i].lo, p.f[i].hi);
+        editFixNote(p, i, v, fixed, why);
+        v = fixed;
     }
     p.f[i].want = v;
     return true;
 }
+
+// Скільки правок було виправлено (для клієнта: показувати чи ні).
+inline bool editPlanFixed(const EditPlan &p) { return p.fix[0] != '\0'; }
 
 // Значення, яке буде після застосування плану: задане, а як не задане — поточне.
 inline long editPlanEff(const EditPlan &p, int i) {
@@ -295,6 +351,49 @@ inline bool editPlanConsistent(const EditPlan &p, char *why, size_t whyN) {
                                        "станція вважає такий набір побитим");
     if (use > 0 && chg > 0 && chg < use) return no("останній заряд раніший за перший запуск");
     return true;
+}
+
+// ── ВИПРАВИТИ СУПЕРЕЧЛИВИЙ НАБІР ──────────────────────────────────────────
+//  ⚑ У КОЖНОЇ ТУТЕШНЬОЇ СУПЕРЕЧНОСТІ Є ОДНА ОЧЕВИДНА ПОЧИНКА, І ВОНА
+//  МІНІМАЛЬНА: підтягнути пізнішу подію до ранішої, а не навпаки. Дата
+//  виготовлення — опора всього блока (решта зберігається зміщенням ВІД неї),
+//  тому рухаємо не її, а те, що з нею не сходиться. Так само робить і
+//  impresCryptNormalize() перед записом: «останній заряд не може бути раніший
+//  за перший запуск» — правило одне на весь проєкт, і воно не роздвоюється.
+//
+//  ⚑ ПОЧИНКА ЙДЕ В ЦИКЛ. Одна правка створює наступну: підтягнули запуск до
+//  виготовлення — тепер із запуском не сходиться заряд. Трьох проходів
+//  вистачає з запасом (ланцюжок тут завдовжки два), а верхня межа стоїть, щоб
+//  помилка в правилах не дала вічного циклу замість відповіді.
+inline bool editPlanRepair(EditPlan &p) {
+    auto pull = [&](int idx, long to, const char *why) -> bool {
+        if (!p.f[idx].avail) return false;      // нема куди писати — і чинити нічим
+        editFixNote(p, idx, editPlanEff(p, idx), to, why);
+        p.f[idx].want = to;
+        return true;
+    };
+    for (int pass = 0; pass < 3; pass++) {
+        char why[128];
+        if (editPlanConsistent(p, why, sizeof(why))) return true;
+        long mfg = editPlanEff(p, EDF_MFG);
+        long use = editPlanEff(p, EDF_USE);
+        long chg = editPlanEff(p, EDF_LASTCHG);
+        long rec = editPlanEff(p, EDF_LASTREC);
+        bool did = false;
+        if (mfg > 0) {
+            if (use > 0 && use < mfg) did |= pull(EDF_USE,     mfg, "раніше за виготовлення");
+            if (chg > 0 && chg < mfg) did |= pull(EDF_LASTCHG, mfg, "раніше за виготовлення");
+            if (rec > 0 && rec < mfg) did |= pull(EDF_LASTREC, mfg, "раніше за виготовлення");
+        }
+        // «Вмикали, але жодного разу не заряджали» — найменша правда, яка це
+        // розв'язує: заряджали принаймні в день першого запуску.
+        if (use > 0 && chg == 0)              did |= pull(EDF_LASTCHG, use, "пакет уже вмикали");
+        else if (use > 0 && chg > 0 && chg < use)
+                                              did |= pull(EDF_LASTCHG, use, "раніше за перший запуск");
+        if (!did) return false;               // правило є, а полагодити нічим
+    }
+    char why[128];
+    return editPlanConsistent(p, why, sizeof(why));
 }
 
 // Скільки полів справді буде записано.

@@ -1653,7 +1653,30 @@ function edRender(p, err){
   if(w){ w.style.display=p.haveKey?'none':'';
          w.innerHTML='Ключ шифрування цього пакета не визначився — дати, калібрувальні '
                     +'цикли й знос показати нічим. Перечитайте АКБ: ключ береться з ROM DS2433.'; }
-  p.fields.forEach(function(f){ var el=$('ed'+f.i); if(el) el.oninput=edSum; });
+  // Кожна зміна оновлює підсумок; на ВИХОДІ з поля число ще й виправляється.
+  p.fields.forEach(function(f){ var el=$('ed'+f.i); if(!el) return;
+    el.oninput = edSum;
+    el.onchange = function(){ edFixInput(f, el); }; });
+}
+
+// ⚑ ВИПРАВЛЕННЯ ПРИ ВВЕДЕННІ — ЗА МЕЖАМИ, ЯКІ ДАВ ПРИСТРІЙ, А НЕ ЗА ВЛАСНИМИ
+//  ПРАВИЛАМИ. Клієнт притискає число до lo/hi й дату до «сьогодні» — це ДАНІ
+//  зі списку полів. Складніші правила (13-й місяць, суперечливий набір дат)
+//  лишаються на приладі: копія тут розійшлася б із ним на першій же правці.
+//  Притискаємо на ВИХОДІ з поля, а не на кожному натисканні: інакше в полі з
+//  нижньою межею 1000 перша ж набрана «1» стрибнула б у 1000.
+function edFixInput(f, el){
+  if(!el.value) return;
+  var v=(f.type===1)?+edDateToNum(el.value):+el.value;
+  if(!isFinite(v)) return;
+  var was=v, why='';
+  if(f.type===1 && edPlan && edPlan.today>0 && v>edPlan.today){ v=edPlan.today; why='дата в майбутньому'; }
+  if(v<f.lo){ v=f.lo; why='межі поля '+f.lo+'…'+f.hi; }
+  if(v>f.hi){ v=f.hi; why='межі поля '+f.lo+'…'+f.hi; }
+  if(v===was) return;
+  el.value=(f.type===1)?edNumToDate(v):v;
+  toast('✎ '+f.name+': '+was+' → '+v+' ('+why+')');
+  edSum();
 }
 
 function edChanges(){
@@ -1697,6 +1720,8 @@ async function edApply(){
   var r=await cmd('EDIT '+arg, 30000);
   if(r&&r.ok){
     toast('💾 Записано: '+(r.applied||0));
+    // Прилад міг щось виправити сам — це показуємо вікном, а не рядком стану.
+    if(r.fix) msgShow('✎ Виправлено при записі', r.fix);
     // Показуємо ПЕРЕЧИТАНЕ з чипа, а не те, що просили: різниця між «просив» і
     // «стало» — саме те, заради чого таблиця й існує.
     if(r.plan){ edPlan=r.plan; edRender(r.plan,''); }

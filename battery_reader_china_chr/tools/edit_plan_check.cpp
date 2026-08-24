@@ -229,9 +229,8 @@ int main() {
         if (!p.f[EDF_HEALTH].avail) {
             printf("   —     у цьому пакеті знос не рахується (немає шунта чи ємності)\n");
         } else {
-            check(editPlanSet(p, EDF_HEALTH, 88), "88 % приймається");
-            check(!editPlanSet(p, EDF_HEALTH, 140) && strstr(p.err, "поза межами"),
-                  "…а 140 % — ні, і відмова каже чому");
+            check(editPlanSet(p, EDF_HEALTH, 88) && !editPlanFixed(p),
+                  "88 % приймається як є");
             bool w3 = false, w8 = false;
             editPlanApply(p, b33, b38, &w3, &w8);
             EditPlan q;
@@ -252,9 +251,17 @@ int main() {
         EditPlan p;
         editPlanBuild(p, b33, b38, wrom, 20260824);
         long half = p.f[EDF_ICA].hi / 2;
+        // Перебір притискається до стелі — і саме тому його перевіряємо на
+        // ОКРЕМОМУ плані: інакше він переписав би half і решта розділу міряла б
+        // уже не те, що просили.
+        {
+            EditPlan over;
+            editPlanBuild(over, b33, b38, wrom, 20260824);
+            check(editPlanSet(over, EDF_ICA, over.f[EDF_ICA].hi + 500) &&
+                  over.f[EDF_ICA].want == over.f[EDF_ICA].hi,
+                  "…а більше за паспортну притискається до паспортної");
+        }
         check(editPlanSet(p, EDF_ICA, half), "половина ємності приймається");
-        check(!editPlanSet(p, EDF_ICA, p.f[EDF_ICA].hi + 500),
-              "…а більше за паспортну — ні");
         bool w3 = false, w8 = false;
         editPlanApply(p, b33, b38, &w3, &w8);
         EditPlan q;
@@ -298,79 +305,158 @@ int main() {
         check(q.f[EDF_LASTCHG].cur == chgWas, m);
     }
 
-    printf("\n7) неможливий набір не складається\n");
+    printf("\n7) помилку введення ВИПРАВЛЯЮТЬ, а не відхиляють\n");
     {
         uint8_t b33[DUMP_SIZE], b38[DS2438_MEM_SIZE];
         memcpy(b33, w33, DUMP_SIZE);
         memcpy(b38, w38, DS2438_MEM_SIZE);
         char why[128];
 
-        // а) запуск раніший за виготовлення.
-        //    ⚑ ПЕРЕВІРЯЄМО ЖИВИЙ ШЛЯХ, А НЕ ЗРУЧНИЙ. Задати ЗАПУСК раніше за
-        //    виготовлення межа поля не дає й сама (lo = поточна дата
-        //    виготовлення), тож така спроба до звірки набору просто не
-        //    доходить — і перевірка доводила б порожнечу. Суперечність
-        //    складається інакше: посунути ВИГОТОВЛЕННЯ вперед, лишивши запуск
-        //    на місці. Тут межі поля безсилі: кожне число окремо законне.
+        // а) число поза межами — притискаємо до найближчої межі й КАЖЕМО про це.
         {
             EditPlan p;
             editPlanBuild(p, b33, b38, wrom, 20260824);
-            check(editPlanSet(p, EDF_USE, p.f[EDF_MFG].cur - 10000) == false,
-                  "межа поля сама не пускає запуск раніше за виготовлення");
+            check(editPlanSet(p, EDF_HEALTH, 140) && p.f[EDF_HEALTH].want == 100,
+                  "140 % стає 100 %, а не відмовою");
+            check(editPlanFixed(p) && strstr(p.fix, "межі поля"),
+                  "…і виправлення названо: людина бачить, що сталось із її числом");
             EditPlan p2;
             editPlanBuild(p2, b33, b38, wrom, 20260824);
-            long later = p2.f[EDF_USE].cur + 10000;      // на рік пізніше запуску
-            check(editPlanSet(p2, EDF_MFG, later),
-                  "…а посунути виготовлення вперед поле дозволяє");
-            check(!editPlanConsistent(p2, why, sizeof(why)) &&
-                  strstr(why, "раніший за виготовлення"),
-                  "…і суперечність ловить уже звірка набору, називаючи причину");
+            check(editPlanSet(p2, EDF_HISTCCA, -0 + 99999) && p2.f[EDF_HISTCCA].want == 65535,
+                  "перебір у сирих одиницях теж притискається до стелі");
         }
-        // б) «вмикали, але жодного разу не заряджали» — той самий стан, що
-        //    його ловить аудит (AUD_USE_BEFORE_CHG).
+        // б) сміття замість дати — притискаємо покомпонентно.
+        //    13-й місяць -> 12-й, 45-те число -> останнє в місяці.
         {
             EditPlan p;
             editPlanBuild(p, b33, b38, wrom, 20260824);
-            editPlanSet(p, EDF_USE, p.f[EDF_MFG].cur + 100);
+            check(editPlanSet(p, EDF_MFG, 20251345) && p.f[EDF_MFG].want == 20251231,
+                  "20251345 стає 2025-12-31");
+            check(strstr(p.fix, "не схоже на дату"), "…із поясненням, чому виправили");
+            EditPlan p2;
+            editPlanBuild(p2, b33, b38, wrom, 20260824);
+            // Лютий 2024-го високосний: 30-те стає 29-м, а не 28-м.
+            check(editPlanSet(p2, EDF_MFG, 20240230) && p2.f[EDF_MFG].want == 20240229,
+                  "30 лютого високосного року стає 29-м");
+        }
+        // в) дата в майбутньому — стає сьогоднішньою: пакета, який почав
+        //    працювати завтра, не буває.
+        {
+            EditPlan p;
+            editPlanBuild(p, b33, b38, wrom, 20260824);
+            check(editPlanSet(p, EDF_MFG, 20270101) && p.f[EDF_MFG].want == 20260824,
+                  "дата наступного року стає сьогоднішньою");
+            check(strstr(p.fix, "майбутньому"), "…і причина названа");
+            // Без годинника «сьогодні» невідоме — і виправляти нема від чого.
+            EditPlan p2;
+            editPlanBuild(p2, b33, b38, wrom, 0);
+            check(editPlanSet(p2, EDF_MFG, 20300101) && p2.f[EDF_MFG].want == 20300101,
+                  "без годинника майбутнє не вигадуємо");
+        }
+        // г) дату виготовлення нулем не прибрати — лишаємо ту, що стоїть.
+        {
+            EditPlan p;
+            editPlanBuild(p, b33, b38, wrom, 20260824);
+            long was = p.f[EDF_MFG].cur;
+            check(editPlanSet(p, EDF_MFG, 0) && p.f[EDF_MFG].want == was,
+                  "нуль у даті виготовлення лишає ту, що вже стоїть");
+            check(strstr(p.fix, "прибрати не можна"), "…і каже чому");
+            // А в похідній даті нуль законний: «події не було».
+            EditPlan p2;
+            editPlanBuild(p2, b33, b38, wrom, 20260824);
+            check(editPlanSet(p2, EDF_LASTREC, 0) && p2.f[EDF_LASTREC].want == 0 &&
+                  !editPlanFixed(p2),
+                  "…а «кондиціювання не було» — законний стан, і виправляти нема чого");
+        }
+        // ґ) правильне число не виправляють. Без цього рядка розділ доводив би,
+        //    що виправляється ВСЕ підряд, — а це вже інша поломка.
+        {
+            EditPlan p;
+            editPlanBuild(p, b33, b38, wrom, 20260824);
+            check(editPlanSet(p, EDF_HEALTH, 77) && p.f[EDF_HEALTH].want == 77 &&
+                  !editPlanFixed(p), "нормальне число проходить без правок");
+        }
+        // д) виправити нема чого, коли писати нікуди — це не помилка введення.
+        {
+            EditPlan p;
+            editPlanBuild(p, b33, b38, wrom, 20260824);
+            check(!editPlanSet(p, EDF_COUNT + 5, 1) && strstr(p.err, "такого поля немає"),
+                  "неіснуюче поле — відмова, а не «виправлення»");
+        }
+    }
+
+    printf("\n7б) суперечливий НАБІР теж лагодиться, а не відхиляється\n");
+    {
+        uint8_t b33[DUMP_SIZE], b38[DS2438_MEM_SIZE];
+        memcpy(b33, w33, DUMP_SIZE);
+        memcpy(b38, w38, DS2438_MEM_SIZE);
+        char why[128];
+
+        // ⚑ ПОЧИНКА МІНІМАЛЬНА Й ЗАВЖДИ В ОДИН БІК: пізнішу подію підтягуємо
+        //  до ранішої. Дата виготовлення — опора блока (решта зберігається
+        //  зміщенням ВІД неї), тож рухаємо не її.
+        {
+            EditPlan p;
+            editPlanBuild(p, b33, b38, wrom, 20260824);
+            long later = p.f[EDF_USE].cur + 10000;      // виготовлення пізніше за запуск
+            editPlanSet(p, EDF_MFG, later);
+            check(!editPlanConsistent(p, why, sizeof(why)), "набір справді суперечливий");
+            check(editPlanRepair(p), "…і його полагоджено");
+            check(editPlanConsistent(p, why, sizeof(why)), "…до несуперечливого стану");
+            check(editPlanEff(p, EDF_USE) == later, "запуск підтягнуто до виготовлення");
+            check(editPlanEff(p, EDF_MFG) == later, "…а саме виготовлення лишилось як просили");
+            check(strstr(p.fix, "раніше за виготовлення"), "…і сказано, що саме зсунули");
+        }
+        // «Вмикали, але жодного разу не заряджали» — найменша правда, яка це
+        // розв'язує: заряджали принаймні в день першого запуску.
+        {
+            EditPlan p;
+            editPlanBuild(p, b33, b38, wrom, 20260824);
+            long use = p.f[EDF_MFG].cur + 100;
+            editPlanSet(p, EDF_USE, use);
             editPlanSet(p, EDF_LASTCHG, 0);
-            check(!editPlanConsistent(p, why, sizeof(why)) && strstr(why, "не заряджали"),
-                  "«вмикали, але не заряджали» — відмова");
+            check(editPlanRepair(p) && editPlanEff(p, EDF_LASTCHG) == use,
+                  "«вмикали, але не заряджали» -> заряд у день запуску");
         }
-        // в) останній заряд раніший за перший запуск.
+        // ⚑ ЛАНЦЮЖОК ІЗ ДВОХ ПРОХОДІВ — І ЦЕ НЕ ВИГАДАНИЙ ВИПАДОК. Посуваємо
+        //  виготовлення вперед і водночас кажемо «не заряджали жодного разу».
+        //  Перший прохід підтягне запуск до виготовлення, а заряд — до
+        //  СТАРОГО запуску (числа беруться на початку проходу). Після цього
+        //  заряд знову раніший за виготовлення, і виправляє це лише ДРУГИЙ
+        //  прохід. Одного тут не вистачає — саме тому цикл і стоїть.
         {
             EditPlan p;
             editPlanBuild(p, b33, b38, wrom, 20260824);
-            long mfg = p.f[EDF_MFG].cur;
-            editPlanSet(p, EDF_USE, 20250601);
-            editPlanSet(p, EDF_LASTCHG, 20250301);
-            (void)mfg;
-            check(!editPlanConsistent(p, why, sizeof(why)) && strstr(why, "раніший за перший запуск"),
-                  "заряд раніший за запуск — відмова");
+            long useWas = p.f[EDF_USE].cur;
+            editPlanSet(p, EDF_MFG,     useWas + 10000);   // виготовлення ПІСЛЯ запуску
+            editPlanSet(p, EDF_LASTCHG, 0);                // …і жодного заряду
+            check(editPlanRepair(p) && editPlanConsistent(p, why, sizeof(why)),
+                  "ланцюжок правок сходиться");
+            check(editPlanEff(p, EDF_LASTCHG) == editPlanEff(p, EDF_USE) &&
+                  editPlanEff(p, EDF_USE) == editPlanEff(p, EDF_MFG),
+                  "…усі три дати зійшлись на даті виготовлення");
         }
-        // г) дата в майбутньому.
+        // Простіший випадок: заряд раніший за запуск.
         {
             EditPlan p;
             editPlanBuild(p, b33, b38, wrom, 20260824);
-            // 2027 рік: правдоподібна дата (розбір приймає 2005..2035) —
-            //  і саме тому вона й перевіряє МАЙБУТНЄ, а не «схоже на дату».
-            check(!editPlanSet(p, EDF_MFG, 20270101) && strstr(p.err, "майбутньому"),
-                  "дата в майбутньому не приймається");
+            long m = p.f[EDF_MFG].cur;
+            editPlanSet(p, EDF_USE,     m + 10000);
+            editPlanSet(p, EDF_LASTCHG, m + 5000);
+            check(editPlanRepair(p) && editPlanConsistent(p, why, sizeof(why)),
+                  "заряд раніший за запуск теж лагодиться");
+            check(editPlanEff(p, EDF_LASTCHG) == editPlanEff(p, EDF_USE),
+                  "…заряд підтягнуто до запуску");
         }
-        // ґ) дату виготовлення не можна прибрати нулем, а похідну — можна:
-        //    нуль там означає «події не було», і це законний стан.
+        // Несуперечливий набір починка НЕ чіпає — інакше вона правила б усе
+        // підряд, і жодна перевірка вище нічого б не доводила.
         {
             EditPlan p;
             editPlanBuild(p, b33, b38, wrom, 20260824);
-            check(!editPlanSet(p, EDF_MFG, 0) && strstr(p.err, "не можна прибрати"),
-                  "дату виготовлення нулем не прибрати");
-            check(editPlanSet(p, EDF_LASTREC, 0), "…а «кондиціювання не було» — законний стан");
-        }
-        // д) сміття замість дати.
-        {
-            EditPlan p;
-            editPlanBuild(p, b33, b38, wrom, 20260824);
-            check(!editPlanSet(p, EDF_MFG, 20251345) && strstr(p.err, "не схоже на дату"),
-                  "13-й місяць не приймається");
+            editPlanSet(p, EDF_CYCLES, 12);
+            check(editPlanRepair(p), "нормальний набір проходить");
+            check(!editPlanFixed(p) && editPlanCount(p, 0) == 1,
+                  "…і жодне поле не зсунуто без потреби");
         }
     }
 

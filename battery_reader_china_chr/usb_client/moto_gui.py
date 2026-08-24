@@ -2112,12 +2112,49 @@ class App:
             var.trace_add("write", lambda *_a: self._edit_sum())
             e = ttk.Entry(self.edBox, textvariable=var, width=14)
             e.grid(row=r0, column=2, sticky="w")
+            # На ВИХОДІ з поля число виправляється — див. _edit_fix_input().
+            e.bind("<FocusOut>", lambda _e, fd=fd, v=var: self._edit_fix_input(fd, v))
+            e.bind("<Return>",   lambda _e, fd=fd, v=var: self._edit_fix_input(fd, v))
             hint = ("РРРР-ММ-ДД" if fd.get("type") == 1
                     else "%d…%d" % (fd.get("lo", 0), fd.get("hi", 0)))
             ttk.Label(self.edBox, foreground=MIL["mut"], text=hint).grid(row=r0, column=3,
                                                                         sticky="w", padx=(6, 0))
             self._edVars[fd["i"]] = var
             r0 += 1
+        self._edit_sum()
+
+    # ⚑ ВИПРАВЛЕННЯ ПРИ ВВЕДЕННІ — ЗА МЕЖАМИ, ЯКІ ДАВ ПРИСТРІЙ, А НЕ ЗА
+    #  ВЛАСНИМИ ПРАВИЛАМИ. Притискаємо до lo/hi й до «сьогодні» — це ДАНІ зі
+    #  списку полів. Складніші правила (13-й місяць, суперечливий набір дат)
+    #  лишаються на приладі: копія тут розійшлася б із ним на першій же правці.
+    #
+    #  ⚑ НА ВИХОДІ З ПОЛЯ, А НЕ НА КОЖНОМУ НАТИСКАННІ: у полі з нижньою межею
+    #  1000 перша ж набрана «1» стрибнула б у 1000, і дописати стало б нічим.
+    def _edit_fix_input(self, fd, var):
+        raw = var.get().strip()
+        if not raw:
+            return
+        if fd.get("type") == 1:
+            raw = self._ed_date_num(raw)
+        try:
+            v = int(raw)
+        except ValueError:
+            return
+        was, why = v, ""
+        today = (self._edPlan or {}).get("today") or 0
+        if fd.get("type") == 1 and today > 0 and v > today:
+            v, why = today, "дата в майбутньому"
+        lo, hi = fd.get("lo", 0), fd.get("hi", 0)
+        if v < lo:
+            v, why = lo, "межі поля %d…%d" % (lo, hi)
+        if v > hi:
+            v, why = hi, "межі поля %d…%d" % (lo, hi)
+        if v == was:
+            return
+        var.set(self._ed_date_str(v) if fd.get("type") == 1 else str(v))
+        # Кажемо, що саме сталось: мовчазне виправлення нічим не краще за
+        # мовчазну відмову.
+        self.status("✎ %s: %d → %d (%s)" % (fd["name"], was, v, why))
         self._edit_sum()
 
     def _edit_changes(self):
@@ -2184,6 +2221,10 @@ class App:
     def _edit_done(self, r):
         if r and r.get("ok"):
             self.status("Записано: %d" % (r.get("applied") or 0), True)
+            # Прилад міг щось виправити сам — це показуємо вікном, а не рядком
+            # стану: людина мусить побачити, що лягло в пакет замість її числа.
+            if r.get("fix"):
+                self.msg_box("Виправлено при записі", r["fix"])
             # Показуємо ПЕРЕЧИТАНЕ з чипа, а не те, що просили: різниця між
             # «просив» і «стало» — саме те, заради чого таблиця й існує.
             self._edit_show(r)

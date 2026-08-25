@@ -12,6 +12,7 @@
 #include "operations.h"        // єдиний каталог операцій для всіх поверхонь
 #include "restore_plan.h"      // правки еталона під конкретний пакет перед записом
 #include "edit_plan.h"        // ручне редагування всіх значень пакета одним списком
+#include "snapshot_diff.h"   // знімок «до станції» і побайтова різниця з ним
 #include "device_clock.h"     // системна дата пристрою (джерело «сьогодні»)
 #include "impres_audit.h"     // аудит змісту: шифрування й узгодженість даних
 #include "impres_clone.h"     // крайній засіб: відновлення за зразком копії
@@ -5046,6 +5047,86 @@ void handleEditApply() {
     server.send(200, "application/json", j);
 }
 
+// ═══════════ ЗНІМОК «ДО СТАНЦІЇ» І ПОБАЙТОВА РІЗНИЦЯ З НИМ ════════════════
+//  Чотири рази поспіль розбір «звідки повернулось число» йшов одним шляхом:
+//  власник називає число, ми перебираємо корпус, шукаємо поле. Це коштує днів
+//  і працює лише тоді, коли потрібне поле вже є в чиємусь дампі.
+//
+//  ⚑ ТУТ — ПРЯМЕ ВИМІРЮВАННЯ. Зняли знімок обох чипів ДО станції, зняли після
+//  — і видно, ЯКІ САМЕ БАЙТИ вона змінила. П'яте місце, якщо воно є,
+//  знайдеться за один захід і навіть тоді, коли в корпусі такого дампа немає.
+#define SNAP33_PATH "/snap33.bin"
+#define SNAP38_PATH "/snap38.bin"
+
+static bool snapLoad(const char *path, uint8_t *out, size_t n) {
+    File f = SPIFFS.open(path, "r");
+    if (!f) return false;
+    size_t got = f.read(out, n);
+    f.close();
+    return got == n;
+}
+
+void handleSnapshotSave() {
+    if (!requireAdmin()) return;
+    if (!hasDump && !hasDump2438) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Спочатку зчитайте АКБ\"}");
+        return;
+    }
+    if (hasDump)     saveDump(SNAP33_PATH, batteryDump, DUMP_SIZE);
+    if (hasDump2438) saveDump(SNAP38_PATH, batteryDump2438, DS2438_MEM_SIZE);
+    String j = "{\"status\":\"success\",\"has33\":";
+    j += hasDump ? "true" : "false";
+    j += ",\"has38\":"; j += hasDump2438 ? "true" : "false";
+    j += ",\"message\":\"Знімок знято\"}";
+    server.send(200, "application/json", j);
+}
+
+// Різниця «знімок → те, що в чипах зараз», окремо по кожному чипу.
+static void snapDiffJson(String &j, const char *name, const uint8_t *now, int len,
+                         const char *path, const char *(*nameOf)(int)) {
+    j += "\""; j += name; j += "\":";
+    uint8_t was[DUMP_SIZE];
+    if (len > (int)sizeof(was) || !snapLoad(path, was, (size_t)len)) {
+        j += "{\"have\":false}";
+        return;
+    }
+    SnapDiff d;
+    snapDiffBytes(was, now, len, d, nameOf);
+    j += "{\"have\":true,\"total\":"; j += d.total;
+    j += ",\"truncated\":"; j += d.truncated ? "true" : "false";
+    j += ",\"runs\":[";
+    for (int i = 0; i < d.n; i++) {
+        if (i) j += ",";
+        j += "{\"at\":";    j += d.runs[i].at;
+        j += ",\"len\":";   j += d.runs[i].len;
+        j += ",\"name\":\""; j += nameOf(d.runs[i].at);
+        j += "\",\"was\":\"";
+        for (int k = 0; k < d.runs[i].len; k++) {
+            char b[4]; snprintf(b, sizeof(b), "%02X", was[d.runs[i].at + k]); j += b;
+        }
+        j += "\",\"now\":\"";
+        for (int k = 0; k < d.runs[i].len; k++) {
+            char b[4]; snprintf(b, sizeof(b), "%02X", now[d.runs[i].at + k]); j += b;
+        }
+        j += "\"}";
+    }
+    j += "]}";
+}
+
+void handleSnapshotDiff() {
+    String j = "{\"status\":\"success\",";
+    if (hasDump) snapDiffJson(j, "d33", batteryDump, DUMP_SIZE, SNAP33_PATH, snapName33);
+    else         j += "\"d33\":{\"have\":false}";
+    j += ",";
+    if (hasDump2438) snapDiffJson(j, "d38", batteryDump2438, DS2438_MEM_SIZE, SNAP38_PATH, snapName38);
+    else             j += "\"d38\":{\"have\":false}";
+    j += ",\"snap33\":"; j += SPIFFS.exists(SNAP33_PATH) ? "true" : "false";
+    j += ",\"snap38\":"; j += SPIFFS.exists(SNAP38_PATH) ? "true" : "false";
+    j += "}";
+    server.send(200, "application/json", j);
+}
+
 void handleSetHealth() {
     if (!requireAdmin()) return;
     if (!hasDump) {
@@ -5591,6 +5672,8 @@ void setupWebServer() {
     server.on("/api/sethealth", HTTP_POST, handleSetHealth);     // знос/здоров'я одним рухом
     server.on("/api/edit", HTTP_GET,  handleEditGet);            // ручний редактор: усі значення
     server.on("/api/edit", HTTP_POST, handleEditApply);          // …і запис змінених
+    server.on("/api/snapshot", HTTP_POST, handleSnapshotSave);   // знімок «до станції»
+    server.on("/api/snapshot", HTTP_GET,  handleSnapshotDiff);   // …і побайтова різниця з ним
     server.on("/api/hdrfix", HTTP_POST, handleHeaderComplete);   // добудова заголовка після станції
     server.on("/api/mirror", HTTP_GET, handleMirrorPlan);        // план синхронізації дзеркала
     server.on("/api/mirror/edit", HTTP_POST, handleMirrorEdit);  // правка перед синхронізацією

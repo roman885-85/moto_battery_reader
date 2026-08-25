@@ -517,6 +517,24 @@
         </div>
     </div>
 
+    <!-- ⚑ ЗНІМОК І РІЗНИЦЯ. Чотири рази поспіль розбір «звідки повернулось
+         число» йшов однаково: власник називає число, ми перебираємо корпус,
+         шукаємо поле. Тут — пряме вимірювання: зняли знімок ДО станції, зняли
+         після — і видно, ЯКІ САМЕ байти вона змінила. -->
+    <div class="card">
+        <h2>📸 Знімок і різниця — що саме змінила станція</h2>
+        <div class="note i">Порядок: <b>зчитайте АКБ → «Зняти знімок» → у зарядку →
+            назад → «Зчитати АКБ» → «Порівняти»</b>. Показуються <b>усі</b> змінені
+            байти обох чипів, а не лише ті поля, які ми вже знаємо: поле, про яке
+            нам нічого не відомо, інакше не побачити в принципі.</div>
+        <div id="snState" class="note w" style="display:none"></div>
+        <div class="btns">
+            <button class="btn btn-info" onclick="snapSave()">📸 Зняти знімок</button>
+            <button class="btn btn-ok" onclick="snapDiff()">🔍 Порівняти з знімком</button>
+        </div>
+        <div class="rpwrap"><table class="rpt" id="snTable"></table></div>
+    </div>
+
     <!-- Синхронізації переїхали сюди з «Ремонту»: вони працюють із ТИМИ
          САМИМИ значеннями, що й таблиця вище, і тримати їх у різних вкладках
          означало правити одне й те саме у двох місцях. -->
@@ -1278,7 +1296,7 @@ function showTab(el){
     if(el.dataset.p==='cfg') clockLoad();
     // Редактор читає ОБИДВА чипи й показує поточні значення — їх треба брати
     // при вході, а не тримати свіжими постійним опитуванням.
-    if(el.dataset.p==='edit') edLoad();
+    if(el.dataset.p==='edit'){ edLoad(); snapDiff(); }
     window.scrollTo(0,0);
 }
 // Відкрити під-вкладку за її id — щоб на неї можна було послати кнопкою з
@@ -2021,6 +2039,62 @@ async function edApply(){
         } else toast('Помилка: '+(r.message||'—'),'err');
     }catch(e){ toast('Помилка: '+e.message,'err'); }
     prog(false);
+}
+
+// ============ ЗНІМОК І ПОБАЙТОВА РІЗНИЦЯ ============
+async function snapSave(){
+    if(!confirm('📸 Зняти знімок обох чипів у поточному стані?\n\n'
+        +'Потім поставте пакет у зарядку, дістаньте, зчитайте АКБ і натисніть '
+        +'«Порівняти» — прилад покаже, які саме байти змінила станція.')) return;
+    prog(true,'Знімок...');
+    try{
+        const r = await postForm('/api/snapshot', { password: $('pwEd').value });
+        toast(r.status==='success' ? '📸 Знімок знято' : ('Помилка: '+(r.message||'—')),
+              r.status==='success' ? 'ok' : 'err');
+        if(r.status==='success') await snapDiff();
+    }catch(e){ toast('Помилка: '+e.message,'err'); }
+    prog(false);
+}
+
+async function snapDiff(){
+    const box = $('snTable');
+    try{
+        const r = await (await fetch('/api/snapshot')).json();
+        let h = '', any = false;
+        [['d33','DS2433 — памʼять самого пакета'],
+         ['d38','DS2438 — монітор']].forEach(function(pair){
+            const g = r[pair[0]];
+            if(!g || !g.have) return;
+            any = true;
+            h += '<tr><td colspan="4" class="zone '+(pair[0]==='d33'?'zi':'zd')+'">'
+               + esc(pair[1]) + ' — змінено байтів: <b>'+g.total+'</b>'
+               + (g.truncated ? ' (показано не всі ділянки)' : '') + '</td></tr>';
+            if(!g.runs.length){
+                h += '<tr><td colspan="4">жоден байт не змінився</td></tr>';
+                return;
+            }
+            h += '<tr><th>Зсув</th><th>Що це</th><th>Було</th><th>Стало</th></tr>';
+            g.runs.forEach(function(x){
+                const to = x.at + x.len - 1;
+                const hex = function(v){ return '0x'+v.toString(16).toUpperCase().padStart(2,'0'); };
+                // ⚑ БЕЗ ІМЕНІ — ЦЕ НЕ ПРОГАЛИНА, А ЗНАХІДКА. Саме такий рядок і
+                //  означає «станція пише туди, куди ми не дивимось».
+                const nm = x.name ? esc(x.name)
+                                  : '<b style="color:var(--accent)">невідоме поле</b>';
+                h += '<tr><td>'+hex(x.at)+(x.len>1?('…'+hex(to)):'')+'</td><td>'+nm
+                   + '</td><td><code>'+esc(x.was)+'</code></td><td><code>'+esc(x.now)+'</code></td></tr>';
+            });
+        });
+        box.innerHTML = any ? h
+            : '<tr><td>Знімка ще немає — натисніть «Зняти знімок».</td></tr>';
+        const st = $('snState');
+        if(st){
+            const have = r.snap33 || r.snap38;
+            st.style.display = have ? 'none' : '';
+            st.textContent = 'Знімка ще немає. Зніміть його ДО того, як ставити пакет у зарядку — '
+                           + 'інакше порівнювати не буде з чим.';
+        }
+    }catch(e){ box.innerHTML = '<tr><td>Помилка: '+esc(e.message)+'</td></tr>'; }
 }
 
 // ============ МАЙСТЕР ВІДНОВЛЕННЯ ============

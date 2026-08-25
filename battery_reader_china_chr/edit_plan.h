@@ -54,6 +54,7 @@ enum {
     EDF_RATED,       // паспортна ємність, мА·год            DS2433
     EDF_HEALTH,      // знос, %                              DS2433
     EDF_ETM,         // наробіток монітора, доби             DS2438
+    EDF_STAMPD,      // мітка події в добах (0x32)           DS2438
     EDF_MONCCA,      // лічильник заряду монітора  (сирі)    DS2438
     EDF_MONDCA,      // лічильник розряду монітора (сирі)    DS2438
     EDF_ICA,         // залишок, мА·год                      DS2438
@@ -98,6 +99,7 @@ inline const char *editFieldName(int i) {
         case EDF_RATED:   return "Паспортна ємність";
         case EDF_HEALTH:  return "Знос (здоров'я)";
         case EDF_ETM:     return "Наробіток монітора";
+        case EDF_STAMPD:  return "Мітка останньої події";
         case EDF_MONCCA:  return "Лічильник заряду монітора";
         case EDF_MONDCA:  return "Лічильник розряду монітора";
         case EDF_ICA:     return "Залишок (паливомір ICA)";
@@ -112,7 +114,7 @@ inline const char *editFieldUnit(int i) {
         case EDF_MONCCA:  case EDF_MONDCA:  return "сирих одиниць";
         case EDF_RATED:   case EDF_ICA:     return "мА·год";
         case EDF_HEALTH:  return "%";
-        case EDF_ETM:     return "діб";
+        case EDF_ETM: case EDF_STAMPD: return "діб";
         default:          return "";
     }
 }
@@ -224,6 +226,13 @@ inline void editPlanBuild(EditPlan &p, const uint8_t *d33, const uint8_t *d38,
         p.f[EDF_ETM].avail = true;
         p.f[EDF_ETM].cur   = (long)(impresEtm(d38) / 86400UL);
         p.f[EDF_ETM].lo = 0; p.f[EDF_ETM].hi = (long)(RP_ETM_MAX / 86400UL);
+        // ⚑ ТРЕТЯ МІТКА ПОДІЇ — ПОКАЗУЄМО ЇЇ ОЧИМА. Саме через неї наробіток
+        //  повертався після бездоганного скидання, і доти побачити її можна
+        //  було лише в hex-дампі. Тепер вона в тому самому списку: зняли
+        //  значення до зарядки й після — і видно, звідки взялось число.
+        p.f[EDF_STAMPD].avail = true;
+        p.f[EDF_STAMPD].cur   = impresStampDays(d38);
+        p.f[EDF_STAMPD].lo = 0; p.f[EDF_STAMPD].hi = (long)(RP_ETM_MAX / 86400UL);
         p.f[EDF_MONCCA].avail = true; p.f[EDF_MONCCA].cur = impresCca(d38);
         p.f[EDF_MONCCA].lo = 0; p.f[EDF_MONCCA].hi = 0xFFFF;
         p.f[EDF_MONDCA].avail = true; p.f[EDF_MONDCA].cur = impresDca(d38);
@@ -350,6 +359,17 @@ inline bool editPlanConsistent(const EditPlan &p, char *why, size_t whyN) {
     if (use > 0 && chg == 0) return no("пакет уже вмикали, але жодного разу не заряджали — "
                                        "станція вважає такий набір побитим");
     if (use > 0 && chg > 0 && chg < use) return no("останній заряд раніший за перший запуск");
+    // ⚑ ПОДІЯ НЕ МОГЛА СТАТИСЬ ПІЗНІШЕ, НІЖ ПАКЕТ ПРАЦЮВАВ. Мітка, більша за
+    //  наробіток, — це рівно той стан, який станція «лікує», підтягуючи
+    //  наробіток до мітки. Саме так наробіток і повертався.
+    //
+    //  ⚑ АЛЕ ПИТАЄМО ЛИШЕ ПРО ЗАДАНУ РУКАМИ МІТКУ. Якщо людина просто знизила
+    //  наробіток, мітку підтягне сам запис (impresSetEtm), і скаржитись тут
+    //  означало б вимагати правити поле, яке й так виправиться. Умова, що
+    //  забороняє законну дію, — гірша за її відсутність.
+    if (p.f[EDF_STAMPD].want >= 0 && p.f[EDF_ETM].avail &&
+        p.f[EDF_STAMPD].want > editPlanEff(p, EDF_ETM))
+        return no("мітка події пізніша за наробіток — станція підтягне наробіток до неї");
     return true;
 }
 
@@ -390,6 +410,11 @@ inline bool editPlanRepair(EditPlan &p) {
         if (use > 0 && chg == 0)              did |= pull(EDF_LASTCHG, use, "пакет уже вмикали");
         else if (use > 0 && chg > 0 && chg < use)
                                               did |= pull(EDF_LASTCHG, use, "раніше за перший запуск");
+        // Мітка пізніша за наробіток: опора тут — наробіток, бо саме його
+        // людина й задавала; мітку підтягуємо до нього.
+        if (p.f[EDF_STAMPD].want >= 0 && p.f[EDF_ETM].avail &&
+            p.f[EDF_STAMPD].want > editPlanEff(p, EDF_ETM))
+            did |= pull(EDF_STAMPD, editPlanEff(p, EDF_ETM), "пізніше за наробіток");
         if (!did) return false;               // правило є, а полагодити нічим
     }
     char why[128];
@@ -492,6 +517,17 @@ inline int editPlanApply(EditPlan &p, uint8_t *d33, uint8_t *d38,
         if (want(EDF_ETM)) {
             impresSetEtm(d38, (uint32_t)(p.f[EDF_ETM].want * 86400L));
             did(EDF_ETM, true);
+        }
+        // ⚑ ПІСЛЯ НАРОБІТКУ, А НЕ ДО НЬОГО. impresSetEtm() сама притискає мітку
+        //  до нового наробітку; якби ми писали мітку першою, ця правка тут же
+        //  й затерлась би. Задане людиною значення має бути останнім словом —
+        //  а щоб воно не створило «подію в майбутньому», його ще до запису
+        //  притискає звірка набору.
+        if (want(EDF_STAMPD)) {
+            uint16_t v = (uint16_t)p.f[EDF_STAMPD].want;
+            d38[IMPRES_38_STAMPD_AT]     = (uint8_t)(v & 0xFF);
+            d38[IMPRES_38_STAMPD_AT + 1] = (uint8_t)(v >> 8);
+            did(EDF_STAMPD, true);
         }
         if (want(EDF_MONCCA)) {
             uint16_t v = (uint16_t)p.f[EDF_MONCCA].want;

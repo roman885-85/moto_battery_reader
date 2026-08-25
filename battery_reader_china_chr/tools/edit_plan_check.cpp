@@ -208,9 +208,17 @@ int main() {
             bool intact = true;
             for (int k = 0; k < EDF_COUNT; k++) {
                 if (k == t.f || !p.f[k].avail) continue;
+                // ⚑ МІТКА ПОДІЇ — ЗАКОННИЙ ВИНЯТОК, І ЛИШЕ ДЛЯ НАРОБІТКУ.
+                //  Вона МУСИТЬ піти за ним униз: лишити її більшою означає
+                //  створити «подію в майбутньому», з якої станція й відновлює
+                //  старе число. Перевіряємо це окремо, нижче.
+                if (k == EDF_STAMPD && t.f == EDF_ETM) continue;
                 if (q.f[k].cur != p.f[k].cur) { intact = false; break; }
             }
             check(intact, "…і не зачепила жодного сусіднього значення");
+            if (t.f == EDF_ETM)
+                check(q.f[EDF_STAMPD].cur <= t.v,
+                      "…а мітку події підтягнуло за наробітком, а не лишило в майбутньому");
             // ⚑ ЗАГОЛОВОК DS2433 МУСИТЬ ЛИШИТИСЬ ЦІЛИМ. Паспортна ємність
             //  лежить у байті 0x008, тобто ВСЕРЕДИНІ заголовка: не перерахувати
             //  його суму — це віддати рації пакет, який вона вважає побитим.
@@ -458,6 +466,43 @@ int main() {
             check(!editPlanFixed(p) && editPlanCount(p, 0) == 1,
                   "…і жодне поле не зсунуто без потреби");
         }
+    }
+
+    printf("\n7в) мітка події: та сама пам'ять, з якої наробіток і повертався\n");
+    {
+        uint8_t b33[DUMP_SIZE], b38[DS2438_MEM_SIZE];
+        memcpy(b33, w33, DUMP_SIZE);
+        memcpy(b38, w38, DS2438_MEM_SIZE);
+        EditPlan p;
+        editPlanBuild(p, b33, b38, wrom, 20260824);
+        char m[140];
+        snprintf(m, sizeof(m), "мітка видима в списку: %ld діб", p.f[EDF_STAMPD].cur);
+        check(p.f[EDF_STAMPD].avail && p.f[EDF_STAMPD].cur >= 0, m);
+        check(editFieldChip(EDF_STAMPD) == 38, "…і належить моніторові");
+
+        // Задати мітку ПІЗНІШУ за наробіток не можна — це рівно той стан,
+        // який станція лікує поверненням старого числа. Виправляємо.
+        EditPlan q;
+        editPlanBuild(q, b33, b38, wrom, 20260824);
+        editPlanSet(q, EDF_ETM,    100);
+        editPlanSet(q, EDF_STAMPD, 4545);          // число власника
+        char why[128];
+        check(!editPlanConsistent(q, why, sizeof(why)) && strstr(why, "пізніша за наробіток"),
+              "мітка пізніша за наробіток — суперечність");
+        check(editPlanRepair(q) && editPlanEff(q, EDF_STAMPD) == 100,
+              "…і мітку притиснуто до наробітку");
+
+        // А задана коректно — доїжджає до чипа як є.
+        EditPlan r;
+        editPlanBuild(r, b33, b38, wrom, 20260824);
+        editPlanSet(r, EDF_ETM,    500);
+        editPlanSet(r, EDF_STAMPD, 480);
+        bool w3 = false, w8 = false;
+        editPlanApply(r, b33, b38, &w3, &w8);
+        EditPlan s;
+        editPlanBuild(s, b33, b38, wrom, 20260824);
+        check(s.f[EDF_ETM].cur == 500 && s.f[EDF_STAMPD].cur == 480,
+              "наробіток і мітка записались обидва, і мітка не затерлась");
     }
 
     printf("\n8) «не чіпати» справді не чіпає\n");

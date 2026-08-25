@@ -14,6 +14,12 @@ import sys, os, re, time, json, math, queue, threading, datetime
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from tkinter import font as tkfont
+# ⚑ РІШЕННЯ ПРО СПИСОК МОДЕЛЕЙ ЖИВЕ ОКРЕМО ВІД ВІДЖЕТІВ — щоб його
+#  міг ганяти хостовий тест: tkinter на збірковій машині немає
+#  взагалі, тож усе, написане прямо в обробнику, там не перевіряє
+#  ніхто. Саме через це дефект «порожній список еталонів» і дожив
+#  до скарги власника (подробиці — у шапці moto_models.py).
+from moto_models import templates_from_reply, templates_pick_valid, TPL_NONE_FW
 
 # ===========================================================================
 #  МАСШТАБУВАННЯ ВМІСТУ
@@ -201,6 +207,7 @@ CLONE_SHUNTS = ("— з дампа копії —", "4565 — 45.65 мОм (ро
 def _dnum(v):
     """Дата з плану (число YYYYMMDD) у людський вигляд; 0 -> прочерк."""
     return "%04d-%02d-%02d" % (v // 10000, (v // 100) % 100, v % 100) if v else "—"
+
 
 # Лічильники, які обидва чипи ведуть по-різному. Назви й одиниці тримає
 # КЛІЄНТ: у прошивці кожен рядок тексту — це флеш, а його щойно не вистачило.
@@ -1235,6 +1242,11 @@ class App:
         mr = ttk.Frame(self.wizPlanFrame); mr.pack(anchor="w", pady=2)
         self.wizModelLbl = ttk.Label(mr, text="Модель для відновлення:")
         self.cbWiz = ttk.Combobox(mr, width=16, state="readonly")
+        # ⚑ КНОПКА «ОНОВИТИ СПИСОК» — не зручність, а вихід із глухого кута.
+        #  Список моделей приходить однією командою в мить під'єднання; якщо
+        #  та одна відповідь не дійшла, вибрати ставало нічого, а Майстер усе
+        #  одно вимагав «оберіть модель». Тепер вимогу можна виконати.
+        self.wizTplBtn = ttk.Button(mr, text="🔄", width=3, command=self.load_templates)
         self.wizStepsFrame = ttk.Frame(self.wizPlanFrame); self.wizStepsFrame.pack(fill="x", pady=4)
         self.wizBanner = ttk.Label(self.wizPlanFrame, text="", foreground="#b8860b", wraplength=460, justify="left")
         self.wizNextBtn = ttk.Button(self.wizPlanFrame, text="▶️ Виконати наступний крок", command=self.wiz_next)
@@ -1341,8 +1353,13 @@ class App:
         self.wizProgLbl.config(text="Крок %d з %d • виконано: %d" % (min(prog + 1, total), total, prog))
         if r.get("needModel"):
             self.wizModelLbl.pack(side="left"); self.cbWiz.pack(side="left", padx=6)
+            self.wizTplBtn.pack(side="left")
+            # Саме тут список і потрібен — тут і дозапитуємо, якщо він порожній.
+            # Раніше єдина спроба була в мить під'єднання, і другої не існувало.
+            self.ensure_templates()
         else:
             self.wizModelLbl.pack_forget(); self.cbWiz.pack_forget()
+            self.wizTplBtn.pack_forget()
         for w in self.wizStepsFrame.winfo_children():
             w.destroy()
         for s in r.get("steps", []):
@@ -1385,7 +1402,14 @@ class App:
         model = ""
         if r.get("needModel"):
             model = self.cbWiz.get()
-            if not model:
+            # ⚑ ДВІ РІЗНІ БІДИ — ДВА РІЗНІ ПОВІДОМЛЕННЯ. «Оберіть модель» має
+            #  сенс лише тоді, коли є з чого обирати. Коли список порожній,
+            #  та сама фраза перетворювалась на вимогу, яку неможливо
+            #  виконати, — і людина шукала помилку в собі, а не в тому, що
+            #  список просто не приїхав.
+            if not self._models_ready(self.cbWiz):
+                return
+            if not model or model not in self.cbWiz["values"]:
                 messagebox.showwarning("Модель", "Оберіть модель для відновлення"); return
         # Майстер бере ТІ САМІ правки, що й картка «Відновити еталон»: інакше
         # галочки (наробіток, шунт, ємність) для нього нічого б не значили.
@@ -2506,10 +2530,19 @@ class App:
             self.connected = True
             self.btnConn.config(text="⏏ Відключити")
             self.status("Підключено (" + r.get("port", "") + ")", True)
+            # ⚑ ПОРЯДОК ТУТ — НЕ ОФОРМЛЕННЯ. Робітник виконує чергу СУВОРО
+            #  по черзі, тож те, що стоїть першим, питається в найгучнішу
+            #  мить: ESP щойно перезавантажився від відкриття порту й ще
+            #  досипає стартовий звіт у той самий UART. Донедавна першим
+            #  стояв саме TEMPLATES — і одна не отримана відповідь лишала
+            #  користувача без списку еталонів до кінця сеансу.
+            #  Веб-клієнт цієї біди не мав, бо питає моделі ПІСЛЯ повного
+            #  оновлення (await refresh(); await loadTemplates()). Робимо так
+            #  само: спершу INFO, і лише потім усе інше.
             self.cmd("PING", 3.0, cb=lambda p: (self._fw_stamp(p),
-                                                 self.load_templates(), self.sound_load(),
+                                                 self.refresh(), self.sound_load(),
                                                  self.clock_load(), self.clone_samples_load(),
-                                                 self.refresh()))
+                                                 self.load_templates()))
         else:
             self.status("Помилка порту: " + r.get("err", ""), False)
 
@@ -2772,6 +2805,8 @@ class App:
             mah = int(self.eInitMah.get())
         except ValueError:
             messagebox.showwarning("Ємність", "Вкажіть ціле число мА·год"); return
+        if not self._models_ready(self.cbInit):
+            return
         if not model:
             messagebox.showwarning("Модель", "Оберіть модель-еталон"); return
         if mah <= 0:
@@ -3387,6 +3422,8 @@ class App:
         if not self.need_conn():
             return
         model = self.cbRest.get()
+        if not self._models_ready(self.cbRest):
+            return
         if not model:
             messagebox.showwarning("Модель", "Оберіть модель-еталон"); return
         if verbatim:
@@ -4341,20 +4378,81 @@ class App:
 
     # ---- шаблони / файли -----------------------------------------------
     def load_templates(self, *_):
-        self.cmd("TEMPLATES", 5.0, cb=self._apply_templates)
+        # ⚑ ТАЙМАУТ ЗБІЛЬШЕНО З 5 ДО 12 с — і не «про запас». Цю команду
+        #  клієнт шле в найгучнішу мить: одразу після відкриття порту, коли
+        #  ESP ще досипає стартовий звіт у той самий UART, а перше читання
+        #  1-Wire (сотні мілісекунд на транзакцію) може вже йти. Веб-клієнт
+        #  тієї проблеми не має, бо питає моделі ПІСЛЯ повного оновлення
+        #  (await refresh(); await loadTemplates()), а тут усі п'ять команд
+        #  ішли пачкою й TEMPLATES стояв першим.
+        self._tplBusy = True
+        self.cmd("TEMPLATES", 12.0, cb=self._apply_templates)
+
+    def ensure_templates(self):
+        """Дозапитати список моделей, якщо вибирати досі нема з чого.
+
+        ⚑ ДРУГИЙ ШЛЯХ ДО СПИСКУ — ОБОВ'ЯЗКОВИЙ. Доти TEMPLATES питали рівно
+        один раз, у мить під'єднання; варто було тій одній відповіді не
+        прийти — і моделі не з'являлись уже ніколи, хоч кабель і прошивка
+        справні. Вийти з цього можна було тільки перепідключенням, про яке
+        ніде не сказано.
+        """
+        if not self.connected or getattr(self, "_tplBusy", False):
+            return
+        if templates_pick_valid(self.cbWiz["values"]):
+            return                       # вибирати є з чого — не турбуємо шину
+        self.load_templates()
+
+    def _models_ready(self, cb):
+        """Чи є в цьому списку що обирати. Ні — сказати ЧОМУ й перезапитати.
+
+        ⚑ Одне місце на всі три поверхні (Майстер, «Новий акумулятор»,
+        «Відновити еталон»): три копії цієї умови неминуче розійшлися б, і
+        десь лишилось би «оберіть модель» над порожнім списком.
+        """
+        if templates_pick_valid(cb["values"]):
+            return True
+        # ⚑ ДВІ ПРИЧИНИ — ДВІ РІЗНІ ПОРАДИ, і плутати їх не можна: одну лікує
+        #  повтор запиту, другу — тільки прошивка. Яка саме причина, видно з
+        #  того, який напис зараз лежить у списку.
+        if TPL_NONE_FW in (cb["values"] or ()):
+            messagebox.showwarning(
+                "У прошивці немає шаблонів",
+                "Пристрій відповів, що жодного еталона моделі в прошивці немає — "
+                "тож обирати нема з чого, і повторний запит нічого не змінить.\n\n"
+                "Потрібна збірка прошивки з таблицею шаблонів (templates.h).")
+            return False
+        self.ensure_templates()
+        messagebox.showwarning(
+            "Немає списку моделей",
+            "Список еталонів не завантажився з пристрою, тож обирати нема з чого.\n\n"
+            "Клієнт уже запитав його знову — зачекайте секунду й повторіть. Якщо не "
+            "допомогло, перепідключіться: список приходить командою TEMPLATES "
+            "одразу після під'єднання.")
+        return False
 
     def _apply_templates(self, r):
-        models = r.get("models", []) if r.get("ok") else []
+        self._tplBusy = False
+        # Рішення — у чистій функції нагорі файлу: вікна на збірковій машині
+        # немає, тож перевірити можна тільки те, що від віджетів відокремлене.
+        models, note = templates_from_reply(r, list(self.cbWiz["values"] or ()))
+        pickable = templates_pick_valid(models)
         for cb in (self.cbInit, self.cbRest, self.cbWiz):
             cb["values"] = models
-            if models and not cb.get():
-                cb.current(0)
+            # ⚑ ВИБРАНЕ ЗНАЧЕННЯ МУСИТЬ ЛИШАТИСЬ У СПИСКУ. Combobox цього сам
+            #  не стежить: після затирання списку в полі так і лишався старий
+            #  «PMNN4488A», якого в жодному пункті вже не було — і Майстер
+            #  спокійно відправив би його в запис.
+            if cb.get() not in models:
+                cb.set(models[0] if pickable else "")
+        if note:
+            self.status(note, False)
         # Зміна моделі — інший еталон, отже інші числа донора: план треба
         # перебудувати, інакше галочки описували б попередню модель.
         if not getattr(self, "_rpBound", False):
             self._rpBound = True
             self.cbRest.bind("<<ComboboxSelected>>", lambda _e: self.rp_load(False))
-        if models:
+        if pickable:
             self.rp_load(False)
 
     def save_dump(self, getcmd, size, default):

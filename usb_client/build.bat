@@ -4,6 +4,15 @@ REM  Збірка moto_usb.exe — нативний GUI-клієнт (Tkinter), 
 REM  Потрібен лише Python 3.8+ на машині збірки.
 REM ==========================================================================
 setlocal
+REM  Клієнт складається з ДВОХ файлів: moto_gui.py (вікно) і moto_models.py
+REM  (рішення про список моделей, винесене окремо, щоб його міг ганяти
+REM  хостовий тест). PyInstaller підхоплює другий сам за імпортом — але якщо
+REM  його просто забули скопіювати, збірка мовчки дасть .exe, який падає на
+REM  старті. Тому питаємо ЗАРАЗ.
+if not exist moto_models.py (
+  echo ПОМИЛКА: поруч немає moto_models.py — скопіюйте ВСЮ теку usb_client.
+  exit /b 1
+)
 echo [1/2] Встановлення залежностей (pyserial, pyinstaller)...
 python -m pip install --upgrade pyserial pyinstaller || goto :err
 

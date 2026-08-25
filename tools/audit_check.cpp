@@ -26,6 +26,7 @@
 
 static int fails = 0;
 static void bad(const char *m) { printf("   ЗБІЙ  %s\n", m); fails++; }
+static void check(bool c, const char *m) { if (c) printf("   ок    %s\n", m); else bad(m); }
 static bool load(const char *p, uint8_t *b, size_t n) {
     FILE *f = fopen(p, "rb"); if (!f) return false;
     size_t g = fread(b, 1, n, f); fclose(f); return g == n;
@@ -165,7 +166,7 @@ int main() {
     printf("\n4) увесь корпус дампів (ROM невідомий — судимо лише зі змісту)\n");
     {
         std::vector<std::string> all; collect(all);
-        int nSum = 0, nDate = 0, nUse = 0, n = 0;
+        int nSum = 0, nDate = 0, nUse = 0, nDca = 0, n = 0;
         for (auto &p33 : all) {
             uint8_t a33[DUMP_SIZE];
             if (!load(p33.c_str(), a33, DUMP_SIZE)) continue;
@@ -178,14 +179,270 @@ int main() {
             if (f & AUD_BLOCK_SUM)    { nSum++; printf("      сума: %s\n", p33.c_str() + 6); }
             if (f & AUD_DATE_INSANE)    nDate++;
             if (f & AUD_USE_BEFORE_CHG) nUse++;
+            if (f & AUD_DCA_INSANE)   { nDca++; printf("      DCA:  %s\n", p33.c_str() + 6); }
         }
-        printf("   дампів %d: побитих сум %d, безглуздих дат %d, «запуск без заряду» %d\n",
-               n, nSum, nDate, nUse);
+        printf("   дампів %d: побитих сум %d, безглуздих дат %d, «запуск без заряду» %d, "
+               "побитий DCA %d\n", n, nSum, nDate, nUse, nDca);
         if (n < 40) bad("корпус не зчитався — перевірка нічого не значить");
         // Без ROM ключ підбирається, і на частині дампів він не знаходиться —
         // тоді дати не читаються взагалі. Це не привід валити тест, але й
         // тиші тут бути не може: якщо ЖОДНОЇ знахідки, аудит просто мовчить.
         if (nSum + nDate + nUse == 0) bad("аудит не знайшов нічого на 49 дампах — підозріло");
+        // ⚑ РІВНО ОДИН, І ЦЕ ГОЛОВНЕ. Перевірка «DCA не в рази більший за CCA»
+        //  має ловити побитий регістр монітора — і НЕ чіпати нормальну
+        //  експлуатацію, де DCA законно ходить поруч із CCA. У корпусі такий
+        //  випадок рівно один (20-vymahaie-vidnovlennya/08: CCA 559, DCA 33384,
+        //  тобто «розряджено» у 60 разів більше, ніж заряджено). Якщо стане
+        //  більше — запас порогу з'їли й почались хибні тривоги; якщо менше —
+        //  перевірка перестала ловити те, заради чого написана.
+        if (nDca != 1) bad("побитий DCA має знаходитись рівно в одного дампа корпусу");
+    }
+
+    // ── 5. Невідоме мусить лишатись невідомим ──────────────────────────────
+    //  Два лічильники в BMS читаються без ключа: цикли IMPRES (гістограма) і
+    //  цикли не-IMPRES. Обидва можуть виявитись нечитаними — і тоді обидва
+    //  мусять сказати про це однаково. Раніше перший чесно віддавав −1, а
+    //  другий тихо лишався нулем, тобто видавав «блок побитий» за «жодного
+    //  разу не заряджали простою ЗП» — конкретним, правдоподібним числом.
+    printf("\n5) нечитаний лічильник не має прикидатися нулем\n");
+    {
+        std::vector<std::string> all; collect(all);
+        int nBadNon = 0, nGoodNon = 0, nZeroNon = 0;
+        for (auto &p33 : all) {
+            uint8_t a33[DUMP_SIZE];
+            if (!load(p33.c_str(), a33, DUMP_SIZE)) continue;
+            std::string p38 = p33; size_t q = p38.find("2433");
+            if (q != std::string::npos) p38.replace(q, 4, "2438");
+            uint8_t a38[DS2438_MEM_SIZE];
+            bool has38 = load(p38.c_str(), a38, DS2438_MEM_SIZE);
+            ImpresBms b;
+            if (!impresBmsParse(a33, has38 ? a38 : nullptr, nullptr, 0.0f, &b)) continue;
+            if (b.nonImpresCycles < 0)       nBadNon++;
+            else if (b.nonImpresCycles == 0) nZeroNon++;
+            else                             nGoodNon++;
+        }
+        printf("   не-IMPRES: прочитано %d, рівно нуль %d, НЕ читається %d\n",
+               nGoodNon, nZeroNon, nBadNon);
+        check(nBadNon > 0, "у корпусі є дампи, де лічильник не-IMPRES не читається");
+        check(nGoodNon > 0, "…і є дампи, де він читається — інакше перевірка порожня");
+        // Нуль лишається ЗАКОННИМ показанням: пакет, який ніколи не бачив
+        // простої ЗП. Саме тому «невідомо» й довелось робити окремим станом,
+        // а не позначати нулем.
+        check(nZeroNon > 0, "…і нуль теж трапляється — це законне показання, а не «невідомо»");
+    }
+
+    // ── 6. Автоправка побитого лічильника розряду ──────────────────────────
+    //  ⚑ ЦЕЙ РОЗДІЛ З'ЯВИВСЯ ПІСЛЯ ЗВІРКИ ВІД ПРОТИЛЕЖНОГО. Саму правку —
+    //  головну нову функцію Майстра — не перевіряло ніщо: зламай будь-яку її
+    //  умову, і всі тести лишались зеленими.
+    printf("\n6) правка лічильника розряду: лагодить рівно те, що зламано\n");
+    {
+        std::vector<std::string> all; collect(all);
+        int n = 0, fixed = 0;
+        std::string fixedAt;
+        for (auto &p33 : all) {
+            uint8_t a33[DUMP_SIZE], a38[DS2438_MEM_SIZE];
+            if (!load(p33.c_str(), a33, DUMP_SIZE)) continue;
+            std::string p38 = p33; size_t q = p38.find("2433");
+            if (q != std::string::npos) p38.replace(q, 4, "2438");
+            if (!load(p38.c_str(), a38, DS2438_MEM_SIZE)) continue;
+            n++;
+            uint8_t keep[DS2438_MEM_SIZE]; memcpy(keep, a38, sizeof(keep));
+            uint16_t wrote = 0;
+            if (!impresBmsFixDcaFromHist(a33, a38, &wrote)) {
+                // Відмова мусить бути ПОВНОЮ: жодного зміненого байта.
+                if (memcmp(keep, a38, sizeof(keep)) != 0)
+                    bad("відмовились правити, але щось у моніторі все одно змінили");
+                continue;
+            }
+            fixed++; fixedAt = p33;
+            // Змінитись сміють РІВНО два байти лічильника розряду.
+            for (int i = 0; i < DS2438_MEM_SIZE; i++)
+                if (i != 62 && i != 63 && keep[i] != a38[i])
+                    bad("правка зачепила байт поза лічильником розряду");
+            ImpresBms b; impresBmsParse(a33, a38, nullptr, 0.0f, &b);
+            printf("      %s: DCA -> %u (CCA %u)\n", p33.c_str() + 6, wrote, b.cca);
+            check(impresBmsDcaSane(b.cca, b.dca), "після правки лічильник став правдоподібним");
+        }
+        printf("   пар %d, полагоджено %d\n", n, fixed);
+        check(fixed == 1, "на корпусі правка спрацьовує рівно раз — на тому дампі, де регістр побитий");
+
+        // ── умови відмови, кожна окремо ────────────────────────────────────
+        uint8_t g33[DUMP_SIZE], g38[DS2438_MEM_SIZE];
+        std::string src = fixedAt, s38 = fixedAt;
+        { size_t q = s38.find("2433"); if (q != std::string::npos) s38.replace(q, 4, "2438"); }
+        if (load(src.c_str(), g33, DUMP_SIZE) && load(s38.c_str(), g38, DS2438_MEM_SIZE)) {
+            uint16_t w = 0;
+            // а) лічильник уже справний — правити нема чого.
+            uint8_t t38[DS2438_MEM_SIZE]; memcpy(t38, g38, sizeof(t38));
+            t38[62] = 0x84; t38[63] = 0x01;              // 388, як в історії
+            check(!impresBmsFixDcaFromHist(g33, t38, &w),
+                  "на справному лічильнику правка НЕ спрацьовує");
+            // б) історія попереду монітора — монітор обнулили навмисно.
+            memcpy(t38, g38, sizeof(t38));
+            t38[60] = 0; t38[61] = 0;                     // CCA = 0
+            check(!impresBmsFixDcaFromHist(g33, t38, &w),
+                  "коли монітор обнулено, історію в нього НЕ заливаємо");
+            // в) якір ненадійний: CCA = 0xFFFF (лічильник «залочено»).
+            memcpy(t38, g38, sizeof(t38));
+            t38[60] = 0xFF; t38[61] = 0xFF;
+            check(!impresBmsFixDcaFromHist(g33, t38, &w),
+                  "при переповненому CCA порівнювати нема з чим — відмова");
+            // г) історія стерта в 0xFF.
+            uint8_t b33[DUMP_SIZE]; memcpy(b33, g33, sizeof(b33));
+            uint16_t aNs = impresBmsVector(b33, BMS_V_NONSMART);
+            if (aNs != BMS_INVALID) {
+                for (int i = 3; i <= 6; i++) b33[aNs + i] = 0xFF;
+                memcpy(t38, g38, sizeof(t38));
+                check(!impresBmsFixDcaFromHist(b33, t38, &w),
+                      "на стертій історії правка НЕ спрацьовує");
+            }
+            // д) сама історія неправдоподібна (розряду більше, ніж заряду).
+            memcpy(b33, g33, sizeof(b33));
+            if (aNs != BMS_INVALID) {
+                b33[aNs + 5] = 0xF0; b33[aNs + 6] = 0x00;   // DCA істор. = 61440
+                memcpy(t38, g38, sizeof(t38));
+                check(!impresBmsFixDcaFromHist(b33, t38, &w),
+                      "неправдоподібну історію в монітор не переписуємо");
+            }
+            // е) історія порожня: заряду 0, тобто станція цього пакета ще не
+            //    бачила. Розряд у ній при цьому ненульовий — саме на такому
+            //    поєднанні перевірка «hC == 0» і заробляє: без неї в монітор
+            //    поїхало б число, взяте з історії, якої фактично немає.
+            memcpy(b33, g33, sizeof(b33));
+            if (aNs != BMS_INVALID) {
+                b33[aNs + 3] = 0x00; b33[aNs + 4] = 0x00;   // CCA істор. = 0
+                b33[aNs + 5] = 0x00; b33[aNs + 6] = 0x64;   // DCA істор. = 100
+                memcpy(t38, g38, sizeof(t38));
+                check(!impresBmsFixDcaFromHist(b33, t38, &w),
+                      "з порожньої історії (заряд 0) нічого не переносимо");
+            }
+        } else bad("не зчитався дамп, на якому правка спрацювала");
+    }
+
+    // ── 7. Еталон не сміє принести в пакет наробіток ДОНОРА ────────────────
+    //  Скарга власника: обнулив усе, записав еталон і модель, передернув у
+    //  зарядку — «всі значення повернулись». Скидання тут ні до чого: воно
+    //  відпрацювало (розділ 9 у reset_consistency_check це доводить на корпусі).
+    //  Повертав їх ЕТАЛОН: він несе байт-у-байт вміст донорського DS2433,
+    //  зокрема блок NONSMART із ЙОГО CCA/DCA. Далі станція робила те, що
+    //  робить завжди, — переписувала наробіток із пакета в монітор.
+    printf("\n7) еталон не приносить у пакет наробіток донора\n");
+    {
+        int seenTpl = 0, carried = 0, wrongVal = 0, sumBad = 0, checked = 0;
+        for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++) {
+            const uint8_t *tpl33 = BATTERY_TEMPLATES[t].d33;
+            if (!tpl33) continue;
+            uint16_t tc = 0, td = 0;
+            if (!impresBmsHistCounters(tpl33, &tc, &td)) continue;
+            seenTpl++;
+            if (tc || td) carried++;      // еталон справді несе чужі числа
+
+            // Пакет із ВЛАСНИМ наробітком: після відновлення мусить лишитись
+            // його наробіток, а не донорський.
+            std::vector<std::string> all; collect(all);
+            for (auto &p33 : all) {
+                uint8_t a33[DUMP_SIZE], a38[DS2438_MEM_SIZE];
+                if (!load(p33.c_str(), a33, DUMP_SIZE)) continue;
+                std::string p38 = p33; size_t q = p38.find("2433");
+                if (q != std::string::npos) p38.replace(q, 4, "2438");
+                if (!load(p38.c_str(), a38, DS2438_MEM_SIZE)) continue;
+                uint16_t pc = 0, pd = 0;
+                if (!impresBmsHistCounters(a33, &pc, &pd)) continue;
+                if (pc == tc && pd == td) continue;   // не розрізнити — пропускаємо
+                checked++;
+
+                uint8_t rom2[8]; hexrom("A3427C17010050A6", rom2);
+                RestorePlan pl;
+                restorePlanBuild(pl, BATTERY_TEMPLATES[t].name, tpl33, BATTERY_TEMPLATES[t].d38,
+                                 a33, a38, rom2);
+                // Пишемо ЕТАЛОН, як це робить відновлення, і зверху — правки.
+                uint8_t w[DUMP_SIZE];
+                memcpy_P(w, tpl33, DUMP_SIZE);
+                restorePlanApply(pl, w, nullptr, true);
+
+                uint16_t wc = 0, wd = 0;
+                if (!impresBmsHistCounters(w, &wc, &wd)) { wrongVal++; continue; }
+                if (wc != pc || wd != pd) {
+                    if (wrongVal < 3)
+                        printf("      %s: стало %u/%u, а мало %u/%u (донор %u/%u)\n",
+                               p33.c_str() + 6, wc, wd, pc, pd, tc, td);
+                    wrongVal++;
+                }
+                if (!impresRecordOk(w, impresBmsVector(w, BMS_V_NONSMART))) sumBad++;
+                break;                       // одного пакета на еталон досить
+            }
+        }
+        printf("   еталонів із блоком наробітку: %d, з них несуть ненульові числа: %d\n",
+               seenTpl, carried);
+        printf("   перевірено пар «еталон + чужий пакет»: %d\n", checked);
+        check(seenTpl > 0,  "еталони взагалі мають цей блок");
+        // Без цього рядка перевірка нижче була б порожньою: якби еталони несли
+        // нулі, «донорські числа не пройшли» доводилось би саме собою.
+        check(carried > 0,  "…і принаймні один несе чужий наробіток — є чому не пройти");
+        check(checked > 0,  "є на чому перевірити");
+        check(wrongVal == 0, "після відновлення в пакеті лишається ЙОГО наробіток, а не донорський");
+        check(sumBad == 0,   "…і сума блока при цьому ціла");
+
+        // Чистий чип: узяти нема звідки — мусить лишитись нуль, а не донор.
+        uint8_t blank[DUMP_SIZE]; memset(blank, 0xFF, sizeof(blank));
+        for (int t = 0; t < BATTERY_TEMPLATE_COUNT; t++) {
+            const uint8_t *tpl33 = BATTERY_TEMPLATES[t].d33;
+            uint16_t tc = 0, td = 0;
+            if (!tpl33 || !impresBmsHistCounters(tpl33, &tc, &td) || (!tc && !td)) continue;
+            uint8_t rom2[8]; hexrom("A3427C17010050A6", rom2);
+            RestorePlan pl;
+            restorePlanBuild(pl, BATTERY_TEMPLATES[t].name, tpl33, BATTERY_TEMPLATES[t].d38,
+                             blank, nullptr, rom2);
+            uint8_t w[DUMP_SIZE]; memcpy_P(w, tpl33, DUMP_SIZE);
+            restorePlanApply(pl, w, nullptr, true);
+            uint16_t wc = 0, wd = 0;
+            impresBmsHistCounters(w, &wc, &wd);
+            check(wc == 0 && wd == 0,
+                  "на чистому чипі наробіток донора не лишається — там нуль");
+            break;
+        }
+    }
+
+    // ── 8. ПАКЕТ ІЗ СЬОГОДНІШНЬОЮ ДАТОЮ — ЦЕ ВІК НУЛЬ, А НЕ «НЕВІДОМО» ─────
+    //  Під час ремонту дати ставлять поточні — власник так і робив: «даты
+    //  текущие, счетчики в ноль». Після цього вік пакета рівно нуль діб, а в
+    //  моніторі після станції лежать тисячі. Це найгрубіше розходження, яке
+    //  взагалі буває, — і саме його аудит не бачив: умова `ageDays > 0`
+    //  записувала такий пакет у «нема з чим порівнювати». Три клієнти при
+    //  цьому рахують те саме правило без тієї умови й попередження показують,
+    //  тож виходило «прилад скаржиться, а Майстер кроку не пропонує».
+    printf("\n8) вік нуль діб (дати щойно виставили) — не привід мовчати\n");
+    {
+        std::vector<std::string> all; collect(all);
+        int seen = 0, flagged = 0;
+        for (auto &p33 : all) {
+            uint8_t a33[DUMP_SIZE];
+            if (!load(p33.c_str(), a33, DUMP_SIZE)) continue;
+            std::string p38 = p33; size_t q = p38.find("2433");
+            if (q != std::string::npos) p38.replace(q, 4, "2438");
+            uint8_t a38[DS2438_MEM_SIZE];
+            if (!load(p38.c_str(), a38, DS2438_MEM_SIZE)) continue;
+            ImpresBms b;
+            if (!impresBmsParse(a33, a38, nullptr, 0.0f, &b) || !b.ok) continue;
+            // ROM-ів чипів у корпусі немає, а без ключа аудит до дат не
+            // доходить узагалі. Ключ підбираємо зі змісту й складаємо ROM,
+            // який його дає: аудит бере key1/key2 саме з rom[1] і rom[6].
+            if (impresBmsFindKey(a33, a38, &b) != 1) continue;
+            uint8_t rom8[8] = { 0x23, b.key1, 0, 0, 0, 0, b.key2, 0 };
+            if (!impresBmsDateSane(b.mfgY, b.mfgM, b.mfgD)) continue;
+            long etmD = (long)(impresEtm(a38) / 86400UL);
+            if (etmD <= AUD_ETM_SLACK_D) continue;      // допуск — не звинувачення
+            seen++;
+            // «Сьогодні» = дата виготовлення, тобто пакетові рівно нуль діб.
+            if (impresAudit(a33, a38, rom8, b.mfgY, b.mfgM, b.mfgD) & AUD_ETM_FOREIGN)
+                flagged++;
+        }
+        printf("   пар із наробітком понад допуск: %d, помічено при віці 0: %d\n", seen, flagged);
+        // ⚑ БЕЗ ЦЬОГО РЯДКА ПЕРЕВІРКА НІЧОГО НЕ ДОВОДИТЬ: якщо жодна пара не
+        //  підійшла, «flagged == seen» справджується на порожнечі.
+        if (seen == 0) bad("у корпусі не знайшлось жодної придатної пари — перевірка порожня");
+        if (flagged != seen) bad("пакет із нульовим віком і тисячами діб у моніторі лишився непоміченим");
     }
 
     printf("\n%s (помилок: %d)\n", fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

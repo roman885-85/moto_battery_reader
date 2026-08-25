@@ -31,9 +31,38 @@ struct FakeDS2433State {
 };
 inline FakeDS2433State g_ds2433;
 
+// ── МОДЕЛЬ DS2438 (лише для тестів запису; вмикається FAKE_ONEWIRE_DS2438) ──
+//  ⚑ ГОЛОВНЕ, ЩО ВОНА ВІДТВОРЮЄ, — «ЖИВІ» РЕГІСТРИ НАКОПИЧУВАЧА.
+//  ICA (стор. 1) і CCA/DCA (стор. 7) — це не пам'ять, а регістри лічильника
+//  заряду. Поки в статусі стоїть біт IAD, чіп оновлює їх сам приблизно кожні
+//  27 мс і затирає щойно записане — даташит DS2438 прямо застерігає писати їх
+//  при увімкненому вимірі струму. Саме через це власник скидав лічильники, а
+//  в чипі лишалися старі числа, і зарядна станція потім повертала їх у DS2433.
+struct FakeDS2438State {
+    uint8_t  rom[8] = {0xA6, 0xA4, 0x1C, 0x0B, 0x01, 0x00, 0x50, 0xCF};
+    uint8_t  mem[64] = {0};
+    bool     present = false;      // модель вмикається тестом явно
+    bool     liveRegs = true;      // чи відтворювати затирання лічильників
+    uint8_t  liveIca = 0;          // що чіп «вважає своїм» просто зараз
+    uint16_t liveCca = 0, liveDca = 0;
+    int      copies = 0, clobbers = 0;
+};
+inline FakeDS2438State g_ds2438;
+
 class OneWire {
 public:
+    // ⚑ Як у СПРАВЖНІЙ бібліотеці: OneWire::begin() (його кличе конструктор)
+    // виконує pinMode(pin, INPUT). На ESP32 це ЗНІМАЄ внутрішню підтяжку —
+    // саме та пастка, через яку шина без зовнішнього резистора замовкає.
+    // Модель мусить її відтворювати, інакше тест доводив би не те.
+    //
+    // Заголовок спільний для кількох тестів, і не в кожного є pinMode(): модель
+    // вмикається лише там, де пін справді моделюється.
+#ifdef FAKE_ONEWIRE_TOUCHES_PIN
+    explicit OneWire(int pin) { pinMode(pin, 0x01 /* INPUT */); }
+#else
     explicit OneWire(int) {}
+#endif
 
     // 1 = хтось відповів на шині (presence pulse), 0 = нікого/чіп просів.
     uint8_t reset() {
@@ -50,18 +79,21 @@ public:
             return 0;
         return 1;
     }
-    void reset_search() { _searchDone = false; }
+    void reset_search() { _searchDone = 0; }
     bool search(uint8_t *rom) {
-        if (_searchDone) return false;
-        memcpy(rom, g_ds2433.rom, 8);
-        _searchDone = true;
-        return true;
+        if (_searchDone == 0) { memcpy(rom, g_ds2433.rom, 8); _searchDone = 1; return true; }
+        if (_searchDone == 1 && g_ds2438.present) {
+            memcpy(rom, g_ds2438.rom, 8); _searchDone = 2; return true;
+        }
+        return false;
     }
     void select(const uint8_t *rom) {
         _selected = (memcmp(rom, g_ds2433.rom, 8) == 0);
-        _cmd = 0; _haveTA1 = false;
+        _sel38    = g_ds2438.present && (memcmp(rom, g_ds2438.rom, 8) == 0);
+        _cmd = 0; _haveTA1 = false; _page = 0; _sp = 0;
     }
     void write(uint8_t b, int /*power*/ = 0) {
+        if (_sel38) { write38(b); return; }
         if (!_selected) return;
         if (_cmd == 0) { _cmd = b; return; }
         if (_cmd == 0xF0) {                    // Read Memory: TA1, TA2
@@ -73,6 +105,7 @@ public:
         // читального тесту не потрібні — тут лише читання DS2433.
     }
     uint8_t read() {
+        if (_sel38) return read38();
         if (!_selected || _cmd != 0xF0 || _addr >= sizeof(g_ds2433.mem)) return 0xFF;
         uint8_t v = g_ds2433.mem[_addr];
         if (_corruptThisTxn) v ^= (uint8_t)(0x55 + g_ds2433.resetCount);
@@ -102,7 +135,63 @@ public:
     }
 
 private:
-    bool     _selected = false, _haveTA1 = false, _searchDone = false, _corruptThisTxn = false;
-    uint8_t  _cmd = 0, _ta1 = 0;
+    // ── DS2438: Write/Copy/Recall/Read Scratchpad по сторінках ──────────────
+    void write38(uint8_t b) {
+        if (_cmd == 0) { _cmd = b; _sp = 0; return; }
+        if (_cmd == 0x4E) {                       // Write Scratchpad: page, дані
+            if (_sp == 0) { _page = b; _sp = 1; return; }
+            if (_sp - 1 < 8) _scratch[_sp - 1] = b;
+            _sp++;
+            return;
+        }
+        if (_cmd == 0x48) {                       // Copy Scratchpad: page
+            _page = b;
+            if (_page < 8) {
+                memcpy(g_ds2438.mem + _page * 8, _scratch, 8);
+                g_ds2438.copies++;
+                // ⚑ ОСЬ ТА САМА ПАСТКА. Поки IAD (біт 0 статусу) увімкнений,
+                //  чіп сам оновлює ICA/CCA/DCA — і записане щойно зникає.
+                bool iad = (g_ds2438.mem[0] & 0x01) != 0;
+                if (g_ds2438.liveRegs && iad) {
+                    if (_page == 1 && g_ds2438.mem[0x0C] != g_ds2438.liveIca) {
+                        g_ds2438.mem[0x0C] = g_ds2438.liveIca; g_ds2438.clobbers++;
+                    }
+                    if (_page == 7) {
+                        uint16_t cca = (uint16_t)g_ds2438.mem[0x3C] | ((uint16_t)g_ds2438.mem[0x3D] << 8);
+                        uint16_t dca = (uint16_t)g_ds2438.mem[0x3E] | ((uint16_t)g_ds2438.mem[0x3F] << 8);
+                        if (cca != g_ds2438.liveCca || dca != g_ds2438.liveDca) {
+                            g_ds2438.mem[0x3C] = (uint8_t)(g_ds2438.liveCca & 0xFF);
+                            g_ds2438.mem[0x3D] = (uint8_t)(g_ds2438.liveCca >> 8);
+                            g_ds2438.mem[0x3E] = (uint8_t)(g_ds2438.liveDca & 0xFF);
+                            g_ds2438.mem[0x3F] = (uint8_t)(g_ds2438.liveDca >> 8);
+                            g_ds2438.clobbers++;
+                        }
+                    }
+                }
+                // Успішний запис лічильників стає новою «думкою чипа».
+                if (_page == 1) g_ds2438.liveIca = g_ds2438.mem[0x0C];
+                if (_page == 7) {
+                    g_ds2438.liveCca = (uint16_t)g_ds2438.mem[0x3C] | ((uint16_t)g_ds2438.mem[0x3D] << 8);
+                    g_ds2438.liveDca = (uint16_t)g_ds2438.mem[0x3E] | ((uint16_t)g_ds2438.mem[0x3F] << 8);
+                }
+            }
+            _cmd = 0;
+            return;
+        }
+        if (_cmd == 0xB8 || _cmd == 0xBE) { _page = b; _sp = 0; return; }  // Recall / Read
+    }
+    uint8_t read38() {
+        if (_cmd != 0xBE || _page >= 8) return 0xFF;
+        uint8_t buf[9];
+        memcpy(buf, g_ds2438.mem + _page * 8, 8);
+        buf[8] = crc8(buf, 8);
+        uint8_t v = (_sp < 9) ? buf[_sp] : 0xFF;
+        _sp++;
+        return v;
+    }
+
+    bool     _selected = false, _sel38 = false, _haveTA1 = false, _corruptThisTxn = false;
+    int      _searchDone = 0;
+    uint8_t  _cmd = 0, _ta1 = 0, _page = 0, _sp = 0, _scratch[8] = {0};
     uint16_t _addr = 0;
 };

@@ -105,6 +105,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include "soc.h"   // таблична крива заряду за напругою (2S)
 
 #define IMPRES_33_SIZE        512
 #define IMPRES_38_SIZE        64
@@ -225,14 +226,16 @@ inline bool impresHasCopyright(const uint8_t *d33) {
     }
     return printable >= IMPRES_COPYRIGHT_MIN_ASCII;
 }
-// Сума запису COPYRIGHT правильна? Для моделей без нього — вважаємо, що так:
-// відсутність запису не є пошкодженням (4409A, APLI4810C його штатно не мають).
+// Чи в порядку запис COPYRIGHT. Його відсутність — теж порядок: моделі 4409A
+// й APLI4810C штатно його не мають, і рація такі пакети приймає.
 inline bool impresCopyrightOk(const uint8_t *d33) {
     return !impresHasCopyright(d33) || impresRecordOk(d33, IMPRES_COPYRIGHT);
 }
 // Перерахувати суму запису COPYRIGHT. Повертає true, якщо щось виправлено.
+// Питання «чи все гаразд» ставить предикат вище — двома копіями однієї умови
+// цей проєкт уже горів.
 inline bool impresFixCopyright(uint8_t *d33) {
-    if (!impresHasCopyright(d33) || impresRecordOk(d33, IMPRES_COPYRIGHT)) return false;
+    if (impresCopyrightOk(d33)) return false;
     impresFixRecord(d33, IMPRES_COPYRIGHT, IMPRES_COPYRIGHT_LEN);
     return true;
 }
@@ -366,27 +369,151 @@ inline int impresEraseUsageLog(uint8_t *d33) {
 }
 
 // ---------------------------------------------------------------- DS2438
+#define IMPRES_38_ETM_AT     0x08   // наробіток, 4 байти LE, секунди
+// ⚑ ДВІ МІТКИ ПОДІЙ — В ОДИНИЦЯХ НАРОБІТКУ. Сторінка 2 монітора (0x10..0x17)
+//  містить два 32-бітні числа, і це не дані користувача: на 51 дампі корпусу з
+//  ненульовим ETM обидва числа лежать НЕ ВИЩЕ за ETM, а перше — у межах секунд
+//  від нього. Тобто це «коли востаннє щось сталося», відлічене тим самим
+//  лічильником наробітку.
+//
+//  ⚑ І САМЕ ЧЕРЕЗ НИХ ОБНУЛЕНИЙ НАРОБІТОК ПОВЕРТАВСЯ. Ми роками зануляли ETM,
+//  не чіпаючи мітки, — і лишали монітор у неможливому стані «подія сталася в
+//  майбутньому». Зарядна станція такий стан лікує очевидним чином: підтягує
+//  наробіток до мітки. Доказ лежить у самому корпусі:
+//
+//      dumps/13-dozaryadka-na-stantsii/01_2438: ETM 234 c, мітка2 79 773 064
+//      те саме після станції        /02_2438: ETM 79 773 372  — тобто мітка + 5 хв
+//
+//  Власник бачив це як «виставляю дату, ставлю в зарядку — і вона прописує
+//  наробіток 17 років». Числа різні, механізм той самий.
+#define IMPRES_38_STAMP1_AT  0x10   // остання подія, в одиницях ETM
+#define IMPRES_38_STAMP2_AT  0x14   // попередня
+
+// ⚑ І ТРЕТЯ МІТКА — ТА САМА ПОДІЯ, АЛЕ В ДОБАХ. Два байти за 0x32. Знайдена
+//  так само, як і дві перші, — перебором по корпусу: на 62 дампах із
+//  ненульовим ETM це число дорівнює МІТЦІ2, поділеній на 86400, у 46 випадках
+//  точно, у 51 — з різницею не більше доби, медіана різниці нуль. Сусідні
+//  0x34..0x37 і 0x3A..0x3B такої відповідності НЕ дають жодній величині
+//  (медіана різниці — тисячі), тож їх не чіпаємо: писати в поле, призначення
+//  якого не встановлене, — це той самий ризик, від якого ми лікуємо пакет.
+//
+//  ⚑ САМЕ ЧЕРЕЗ НЕЇ НАРОБІТОК ПОВЕРТАВСЯ ПІСЛЯ ПОВНОГО СКИДАННЯ. Ми зануляли
+//  ETM і обидві 32-бітні мітки — і лишали цю. Доказ у корпусі, і він
+//  однозначний:
+//
+//      dumps/19-stantsiya-dobudova/01_2438: ETM 0, мітка1 0, мітка2 0, CCA 0
+//                                           — і 0x32 = 4015 діб
+//
+//  Тобто скидання зроблене бездоганно за всім, що ми знали, а пам'ять про
+//  наробіток лишилась. Власник побачив це так: «при чистому DS2433 обнулив
+//  лічильник наробітку монітора, вставив у зарядку — стало 4545».
+#define IMPRES_38_STAMPD_AT  0x32   // та сама подія, у ДОБАХ (2 байти LE)
+
+inline uint32_t impres38U32(const uint8_t *d38, int at) {
+    return (uint32_t)d38[at] | ((uint32_t)d38[at + 1] << 8) |
+           ((uint32_t)d38[at + 2] << 16) | ((uint32_t)d38[at + 3] << 24);
+}
+inline void impres38PutU32(uint8_t *d38, int at, uint32_t v) {
+    d38[at]     = (uint8_t)(v & 0xFF);
+    d38[at + 1] = (uint8_t)((v >> 8) & 0xFF);
+    d38[at + 2] = (uint8_t)((v >> 16) & 0xFF);
+    d38[at + 3] = (uint8_t)((v >> 24) & 0xFF);
+}
 inline uint32_t impresEtm(const uint8_t *d38) {          // секунди напрацювання
-    return (uint32_t)d38[8] | ((uint32_t)d38[9] << 8) |
-           ((uint32_t)d38[10] << 16) | ((uint32_t)d38[11] << 24);
+    return impres38U32(d38, IMPRES_38_ETM_AT);
+}
+
+// ЄДИНИЙ спосіб записати наробіток. Разом із ним підтягуються мітки подій:
+// лишити мітку більшою за наробіток означає створити той самий неможливий
+// стан, який станція «лікує» поверненням старого числа.
+inline void impresSetEtm(uint8_t *d38, uint32_t sec) {
+    impres38PutU32(d38, IMPRES_38_ETM_AT, sec);
+    if (impres38U32(d38, IMPRES_38_STAMP1_AT) > sec) impres38PutU32(d38, IMPRES_38_STAMP1_AT, sec);
+    if (impres38U32(d38, IMPRES_38_STAMP2_AT) > sec) impres38PutU32(d38, IMPRES_38_STAMP2_AT, sec);
+    // Третя мітка міряється в ДОБАХ — тож і порівнюємо в добах. Лишити її
+    // більшою за наробіток означає створити той самий неможливий стан
+    // «подія в майбутньому», який станція лікує поверненням старого числа.
+    uint32_t days = sec / 86400UL;
+    uint16_t had  = (uint16_t)d38[IMPRES_38_STAMPD_AT] |
+                    ((uint16_t)d38[IMPRES_38_STAMPD_AT + 1] << 8);
+    if (had > days) {
+        uint16_t v = (days > 0xFFFFUL) ? 0xFFFF : (uint16_t)days;
+        d38[IMPRES_38_STAMPD_AT]     = (uint8_t)(v & 0xFF);
+        d38[IMPRES_38_STAMPD_AT + 1] = (uint8_t)(v >> 8);
+    }
+}
+
+// Прочитати третю мітку (доби) — читачам і тестам, щоб не рахувати зсув руками.
+inline uint16_t impresStampDays(const uint8_t *d38) {
+    return (uint16_t)d38[IMPRES_38_STAMPD_AT] |
+           ((uint16_t)d38[IMPRES_38_STAMPD_AT + 1] << 8);
 }
 inline uint16_t impresCca(const uint8_t *d38) { return (uint16_t)d38[60] | ((uint16_t)d38[61] << 8); }
 inline uint16_t impresDca(const uint8_t *d38) { return (uint16_t)d38[62] | ((uint16_t)d38[63] << 8); }
 inline uint16_t impresVoltageMv(const uint8_t *d38) {
     return (uint16_t)(((uint16_t)d38[3] | ((uint16_t)d38[4] << 8)) * 10);
 }
+// ── ДЗЕРКАЛО ІДЕНТИЧНОСТІ: ОДНІ Й ТІ САМІ 26 БАЙТІВ У ДВОХ ЧИПАХ ──────────
+//  DS2433[0x01..0x1A] і DS2438[0x18..0x31] несуть ОДНЕ І ТЕ САМЕ. Це не
+//  надлишковість «про всяк випадок»: саме завдяки їй пакет зі стертим DS2433
+//  ще можна впізнати, а зарядна станція WPLN4226A вміє відновити заголовок,
+//  переписавши ці байти назад із монітора.
+//
+//  ⚑ ЗСУВИ — ОДНИМ ІМЕНЕМ, А НЕ ЧИСЛАМИ В ЦИКЛАХ. До цього «1 +» і «24 +»
+//  стояли літералами щонайменше в п'яти місцях (тут, у sync, у двох клієнтських
+//  обробниках і в режимі копії). Такі числа не помічають при правці й
+//  розходяться поодинці.
+#define IMPRES_MIRROR_D33_AT  0x01   // де дзеркало лежить у DS2433
+#define IMPRES_MIRROR_D38_AT  0x18   // …і де воно ж у DS2438
+#define IMPRES_MIRROR_LEN     26
+
 inline bool impresMirrorOk(const uint8_t *d33, const uint8_t *d38) {
-    for (int i = 0; i < 26; i++) if (d33[1 + i] != d38[24 + i]) return false;
+    for (int i = 0; i < IMPRES_MIRROR_LEN; i++)
+        if (d33[IMPRES_MIRROR_D33_AT + i] != d38[IMPRES_MIRROR_D38_AT + i]) return false;
     return true;
 }
 // Чи придатне дзеркало як ДЖЕРЕЛО (не суцільні 0x00/0xFF).
 inline bool impresMirrorUsable(const uint8_t *d38) {
     bool z = true, f = true;
-    for (int i = 24; i < 50; i++) { if (d38[i]) z = false; if (d38[i] != 0xFF) f = false; }
+    for (int i = 0; i < IMPRES_MIRROR_LEN; i++) {
+        uint8_t b = d38[IMPRES_MIRROR_D38_AT + i];
+        if (b) z = false;
+        if (b != 0xFF) f = false;
+    }
     return !z && !f;
 }
+
+// ── «СТАНЦІЯ ПОЧАЛА ДОБУДОВУ, АЛЕ НЕ ЗАКІНЧИЛА» ───────────────────────────
+//  Одномісний зарядний WPLN4226A, побачивши стертий DS2433, сам вписує туди
+//  дзеркало заголовка з DS2438 (26 байт), але контрольну суму не виправляє й
+//  на цьому спиняється: профілю, запису моделі й блоків BMS не з'являється.
+//
+//  ⚑ ТРИ УМОВИ, І КОЖНА ПОТРІБНА.
+//   • сума заголовка хибна — інакше нема чого добудовувати;
+//   • дзеркало вже на місці й сходиться — це і є слід станції;
+//   • РЕШТА ЧИПА ЩЕ ПОРОЖНЯ. Ось цієї умови бракувало, і саме вона несе всю
+//     вагу: у СПРАВНОГО пакета дзеркало теж сходиться (на те воно й
+//     дзеркало), тож пакет, який просто втратив байт суми, отримував діагноз
+//     «станція почала добудову» і пораду добудувати давно побудоване.
+//     Спіймано на 20-vymahaie-vidnovlennya/03 — 269 непорожніх байтів після
+//     0x020 проти рівно 0 у справжньому випадку (19-stantsiya-dobudova).
+//
+//  ⚑ ЖИВЕ ТУТ, А НЕ В recovery.h, НАВМИСНО. recovery.h на хості не
+//  збирається, тож тест тримав ДОСЛІВНУ КОПІЮ цього правила — і копія
+//  пережила виправлення оригіналу, лишившись зеленою. Тепер правило одне.
+inline bool impresChargerPartial(const uint8_t *d33, const uint8_t *d38, bool has38) {
+    if (!d33 || !has38 || !d38) return false;
+    bool blank = true;
+    for (int i = 0; i < IMPRES_HDR_END; i++)
+        if (d33[i] != 0xFF) { blank = false; break; }
+    if (blank || impresHeaderOk(d33)) return false;
+    for (int i = IMPRES_HDR_END; i < IMPRES_33_SIZE; i++)
+        if (d33[i] != 0xFF) return false;          // чіп уже побудований
+    return impresMirrorUsable(d38) && impresMirrorOk(d33, d38);
+}
 inline void impresSyncMirror(uint8_t *d33, const uint8_t *d38) {
-    for (int i = 0; i < 26; i++) d33[1 + i] = d38[24 + i];
+    for (int i = 0; i < IMPRES_MIRROR_LEN; i++)
+        d33[IMPRES_MIRROR_D33_AT + i] = d38[IMPRES_MIRROR_D38_AT + i];
     impresFixHeader(d33);
 }
 
@@ -404,7 +531,13 @@ inline void impresSyncMirror(uint8_t *d33, const uint8_t *d38) {
 inline void impresResetMonitor(uint8_t *d38, const uint8_t *d33, uint8_t ica) {
     d38[0x00] = 0x0F;                       // IAD+CA+EE+AD, зарезервовані біти = 0
     d38[0x07] = 0x40;                       // поріг
-    d38[0x08] = d38[0x09] = d38[0x0A] = d38[0x0B] = 0x00;   // ETM -> 0
+    // ⚑ Разом із наробітком обнуляються ВСІ ТРИ МІТКИ ПОДІЙ (див. impresSetEtm):
+    //  дві 32-бітні в секундах і третя, у добах, за 0x32. Доти вони лишались
+    //  від старого життя пакета, і станція відновлювала з них наробіток — саме
+    //  це видно в dumps/13 (у нас 234 c, після станції 923 доби) і, вже для
+    //  третьої мітки, в dumps/19: ETM 0, обидві 32-бітні мітки 0, CCA 0 — і
+    //  4015 діб у 0x32, які пережили бездоганне скидання.
+    impresSetEtm(d38, 0);
     d38[0x0C] = ica;                        // паливомір
     d38[0x0F] = 0xFC;                       // стале у всіх справних АКБ
     d38[0x3C] = d38[0x3D] = 0x00;           // CCA -> 0
@@ -496,31 +629,24 @@ inline int impresRatedMahFor(const uint8_t *d33, const char *model) {
     return m ? m : impresRatedMah(model);
 }
 
-// Заряд, % за напругою (межі — BATTERY_EMPTY_MV/BATTERY_FULL_MV у settings.h,
-// уточнені власником на реальних пакетах)
-// на реальних пакетах:
-// показання паливоміра після ремонту не відповідають реальному стану, а ЗП
-// потім сама їх уточнить.
-#ifndef IMPRES_EMPTY_MV
-  #define IMPRES_EMPTY_MV 6350
-#endif
-#ifndef IMPRES_FULL_MV
-  #define IMPRES_FULL_MV  8250
-#endif
-inline int impresPercentFromMv(int mv) {
-    long p = ((long)mv - IMPRES_EMPTY_MV) * 100 / (IMPRES_FULL_MV - IMPRES_EMPTY_MV);
-    if (p < 0) p = 0;
-    if (p > 100) p = 100;
-    return (int)p;
-}
+// ── ЗАРЯД У ВІДСОТКАХ ЗА НАПРУГОЮ ────────────────────────────────────────
+//  ⚑ ТУТ БУЛА ЛІНІЙКА, І ЦЕ БУЛА ПОМИЛКА. Відсоток рахувався прямою між
+//  «порожньо» і «повно»:
+//
+//      p = (mv - 6350) * 100 / (8250 - 6350)
+//
+//  Для літію пряма не годиться: крива напруги спокою — полога сходинка з
+//  довгим плато посередині. На 7.00 В лінійка казала 34 %, тоді як у пакета
+//  лишалось близько 8 %. Помилка була найбільша саме там, де вона найдорожча.
+//
+//  Тепер обидві функції — тонкі обгортки над табличною кривою 2S (soc.h).
+//  Власної арифметики тут більше немає навмисно: два джерела однієї шкали
+//  розійшлись би, і половина поверхонь показувала б інше число.
+inline int impresPercentFromMv(int mv) { return socPctFromMv(mv); }
+
 // Обернена функція — потрібна для вибору ЦІЛІ заряду відсотком (керований
-// заряд через DC/DC, charge.h): відсоток -> напруга. Та сама лінійна шкала,
-// просто в інший бік.
-inline int impresMvFromPercent(int pct) {
-    if (pct < 0) pct = 0;
-    if (pct > 100) pct = 100;
-    return IMPRES_EMPTY_MV + (int)((long)pct * (IMPRES_FULL_MV - IMPRES_EMPTY_MV) / 100);
-}
+// заряд, charge.h): відсоток -> напруга. Та сама крива, просто в інший бік.
+inline int impresMvFromPercent(int pct) { return socMvFromPct(pct); }
 // ICA, що відповідає заданому відсотку. Шкала АПАРАТНА (див. блок нижче), тож
 // 100 % — це не 255, а стільки одиниць, скільки важить повний пакет:
 // ratedMah * Rsense / 0.4882. Без відомого шунта лишається стара шкала 0..255.
@@ -572,13 +698,7 @@ inline uint8_t impresIcaFromMahRs(long mah, int ratedMah, float rsOhm) {
     if (ica < 0)   ica = 0;
     return (uint8_t)ica;
 }
-// Сумісні обгортки без шунта — лише для місць, де DS2438 недоступний.
-inline int impresIcaToMah(uint8_t ica, int ratedMah) {
-    return impresIcaToMahRs(ica, ratedMah, 0.0f);
-}
-inline uint8_t impresIcaFromMah(long mah, int ratedMah) {
-    return impresIcaFromMahRs(mah, ratedMah, 0.0f);
-}
+// Відсоток → апаратні одиниці. Без шунта падає на паспортну шкалу.
 inline uint8_t impresIcaFromPercentRs(int pct, int ratedMah, float rsOhm) {
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;

@@ -37,12 +37,19 @@
 //                          зберігається в SPIFFS і потрібна для наробітку
 //   DISCHARGE [мВ]       -> почати керований розряд (типово до 7200 мВ)
 //   DISCHARGE STOP       -> зупинити розряд;  DISCHARGE ? -> стан розряду
-//   CHARGE [%]           -> почати керований заряд (DC/DC) до обраного відсотка
+//   CHARGE [%]           -> почати керований заряд (ШІМ на ключ) до обраного відсотка
 //                           (типово 100, мінімум CHARGE_TARGET_PCT_MIN)
 //   CHARGE STOP          -> зупинити заряд;  CHARGE ? -> стан заряду
+//   CHARGE WAKE          -> примусове ПРОБУДЖЕННЯ пакета, що не читається
+//                           (після заміни елементів): коротко тримає на клемах
+//                           напругу зарядника, доки контролер не відпустить
+//                           пакет. Межі — у settings.h, блок «ПРИМУСОВЕ
+//                           ПРОБУДЖЕННЯ»; зупиняється тим самим CHARGE STOP
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
 //   HDRFIX               -> добудувати заголовок DS2433 із дзеркала DS2438
 //                          (коли зарядна станція сама почала, але не завершила)
+//   CHARGE MA=<мА>       -> ручна уставка струму заряду (0 = автомат)
+//   MIRROR [APPLY|TAKE=|BYTE=|RATED=|TODAY=] -> синхронізація дзеркала 2438 -> 2433
 //   SAMPLES              -> вбудовані зразки моніторів копій (для CLONE)
 //   CLONE <hex128> [RATED=] [RSENSE=] [MODEL=] [MFG=] [USE=] [HEALTH=] [ID33=1]
 //                  [ZERO=0] [RECHECK=0]
@@ -75,12 +82,30 @@
 #include "web_server.h"   // dump-буфери, readAllChips/performReset/repairDumps,
                           // hexToBytes/fixHeaderChecksum/mirrorOk/headerChecksumOk
 
-static String g_serIn;         // накопичувач вхідного рядка
+#include "bt_link.h"      // той самий протокол по Bluetooth SPP
+
+// ── ТРАНСПОРТ ──────────────────────────────────────────────────────────────
+//  Протокол один, а каналів два: USB і Bluetooth. Обидва — Stream, тож усе,
+//  що нижче, працює через покажчик і не знає, куди саме пише.
+//
+//  ⚑ ВІДПОВІДЬ ІДЕ ТУДИ, ЗВІДКИ ПРИЙШЛА КОМАНДА. Це не дрібниця: якби sResp()
+//  завжди писав у Serial, клієнт по Bluetooth не бачив би ЖОДНОЇ відповіді, а
+//  чужі відповіді сипались би в USB-консоль. g_serOut перемикається на час
+//  виконання команди й повертається назад.
+//
+//  ⚑ І БУФЕРИ ВХОДУ ОКРЕМІ. Один спільний накопичувач означав би, що дві
+//  команди, які прийшли одночасно різними каналами, склеяться в одну — рідко,
+//  недетерміновано й дуже неприємно для пошуку.
+static Stream *g_serOut   = &Serial;   // куди відповідати ЗАРАЗ
+static bool    g_serViaBt = false;     // чи прийшла поточна команда по радіо
+
+static String g_serIn;         // накопичувач USB
+static String g_serInBt;       // накопичувач Bluetooth — окремий, див. вище
 static bool   g_serAuthed = false;  // чи авторизований клієнт (AUTH <пароль>)
 
 static void sResp(const String &json) {
-    Serial.print("#R#");
-    Serial.println(json);
+    g_serOut->print("#R#");
+    g_serOut->println(json);
 }
 
 static String serHex(const uint8_t *d, int n) {
@@ -159,6 +184,16 @@ static String serBuildInfo() {
         j += ",\"emptyMv\":" + String(BATTERY_EMPTY_MV);
         j += ",\"fullMv\":"  + String(BATTERY_FULL_MV);
         j += ",\"scaleTxt\":\"" BATTERY_SCALE_TXT "\"";
+        // ⚑ Ім'я СИЛОВОЇ ЧАСТИНИ теж віддає ПРИСТРІЙ, і разом із ним — увесь
+        //  її опис. Клієнти тримали і назву, і абзац про залізо рядками в
+        //  себе; після заміни ключа на польовий усі троє називали чуже, а з
+        //  появою другої топології (готова плата DC/DC на TL494) той абзац
+        //  став би просто неправдою: там немає ні дроселя, ні шунта, ні
+        //  подільника. Тепер обидва рядки одні — з settings.h.
+        //  Це той самий USB-канал, тож поля мусять збігатися з JSON у
+        //  web_server.h: клієнт один і той самий, а джерело буває різне.
+        j += ",\"swName\":\"" CHARGE_STAGE_NAME "\"";
+        j += ",\"chgHwTxt\":\"" CHARGE_STAGE_TXT "\"";
         j += ",\"serial\":\"" + serial + "\"";
         if (hasSN2433) {
             char b[3]; String s33 = "";
@@ -250,6 +285,77 @@ static void serSetCharge(const String &arg) {
     ledSet(ok ? LED_OK : LED_ERROR); displayShow(ok ? "ЗАРЯД OK" : "ЗАРЯД ЗБІЙ");
     sResp(ok ? (String("{\"ok\":true,\"pct\":") + pct + ",\"ica\":" + batteryDump2438[12] + "}")
              : "{\"ok\":false,\"err\":\"write failed\"}");
+}
+
+// ── РУЧНИЙ РЕДАКТОР ПО USB ────────────────────────────────────────────────
+//  Той самий план і та сама перевірка, що у вебі (edit_plan.h): назви, межі й
+//  правила узгодженості живуть в одному місці, а поверхонь три.
+//    EDIT            — віддати список полів із поточними значеннями
+//    EDIT 4=123 11=42 — записати вказані поля (номер=значення через пробіл)
+static void serEdit(const String &arg) {
+    if (!hasDump && !hasDump2438) { sResp("{\"ok\":false,\"err\":\"спочатку READ\"}"); return; }
+    EditPlan p;
+    editPlanFromChips(p);
+    String a = arg; a.trim();
+    if (!a.length()) {
+        sResp(String("{\"ok\":true,\"plan\":") + editPlanJson(p) + "}");
+        return;
+    }
+    // Розбираємо «номер=значення», розділені пробілами.
+    int from = 0;
+    while (from < (int)a.length()) {
+        int sp = a.indexOf(' ', from);
+        String tok = (sp < 0) ? a.substring(from) : a.substring(from, sp);
+        from = (sp < 0) ? a.length() : sp + 1;
+        tok.trim();
+        if (!tok.length()) continue;
+        int eq = tok.indexOf('=');
+        if (eq <= 0) { sResp("{\"ok\":false,\"err\":\"очікується номер=значення\"}"); return; }
+        int  idx = tok.substring(0, eq).toInt();
+        long val = tok.substring(eq + 1).toInt();
+        if (!editPlanSet(p, idx, val)) {
+            String r = "{\"ok\":false,\"err\":\"";
+            r += editFieldName(idx); r += ": "; r += p.err; r += "\"}";
+            sResp(r); return;
+        }
+    }
+    // Набір теж ЛАГОДИТЬСЯ, а не відхиляється: пізнішу подію підтягуємо до
+    // ранішої. Відмова лишилась там, де чинити нічим.
+    char why[128];
+    if (!editPlanRepair(p)) {
+        editPlanConsistent(p, why, sizeof(why));
+        String r = "{\"ok\":false,\"err\":\"набір суперечить сам собі, а полагодити нічим: ";
+        r += why; r += "\"}";
+        sResp(r); return;
+    }
+    if (editPlanCount(p, 0) == 0) {
+        sResp(String("{\"ok\":true,\"applied\":0,\"fix\":\"") + p.fix +
+              "\",\"plan\":" + editPlanJson(p) + "}");
+        return;
+    }
+    bool w33 = false, w38 = false;
+    int done = editPlanApply(p, hasDump ? batteryDump : nullptr,
+                                hasDump2438 ? batteryDump2438 : nullptr, &w33, &w38);
+    ledSet(LED_WRITE); displayShow("USB РЕДАКТОР");
+    bool ok = true;
+    if (w33) ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (w38) ok &= battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (!ok) {
+        // Запис не пройшов — перечитуємо чипи, щоб у пам'яті не лишилось
+        // змінене там, де в чипі старе.
+        bool r1 = false, r2 = false; readAllChips(r1, r2);
+        ledSet(LED_ERROR); displayShow("USB ЗБІЙ");
+        sResp("{\"ok\":false,\"err\":\"запис не пройшов — чипи перечитано\"}");
+        return;
+    }
+    if (w33) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+    if (w38) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+    ledSet(LED_OK); displayShow("USB OK");
+    EditPlan after;
+    editPlanFromChips(after);
+    sResp(String("{\"ok\":true,\"applied\":") + done +
+          ",\"fix\":\"" + p.fix + "\"" +
+          ",\"plan\":" + editPlanJson(after) + "}");
 }
 
 static void serSetCap(const String &arg) {
@@ -459,6 +565,16 @@ static void serialExec(const String &line) {
     // AUTH лише звіряє пароль і виставляє прапорець для індикатора у клієнті;
     // команди запису НЕ блокуються його відсутністю — інакше без пароля запис не
     // відбувався б зовсім. Мережевий веб-інтерфейс, навпаки, вимагає пароль.
+    // ⚑ ПО РАДІО ПРАВИЛА ІНШІ. По USB перепусткою є сам кабель, тож усе
+    //  відкрито. По Bluetooth у радіусі дії опиняється будь-хто, а серед
+    //  команд є WIPE33 і WRITE33 — повне стирання пам'яті пакета. Тому читання
+    //  вільне, а зміна чогось — лише після AUTH (правило в bt_link.h, щоб його
+    //  міг перевірити хостовий тест).
+    if (!serCmdAllowed(cmd.c_str(), g_serViaBt, g_serAuthed)) {
+        sResp("{\"ok\":false,\"err\":\"по Bluetooth ця команда потребує AUTH <пароль>\",\"needAuth\":true}");
+        return;
+    }
+
     if (cmd == "AUTH") {
         g_serAuthed = (arg == ADMIN_PASSWORD);
         sResp(g_serAuthed ? "{\"ok\":true,\"authed\":true}"
@@ -466,7 +582,13 @@ static void serialExec(const String &line) {
         return;
     }
 
-    if (cmd == "PING")            sResp(String("{\"ok\":true,\"dev\":\"MotoBatteryReader\",\"ver\":3,\"needAuth\":false,\"authed\":") + (g_serAuthed ? "true" : "false") + "}");
+    // ⚑ ВІДБИТОК ЗБІРКИ ЙДЕ ВЖЕ В РУКОСТИСКАННІ. Перше питання будь-якого
+    //  розбору — «а чи та прошивка взагалі в приладі?», і доти жоден клієнт
+    //  не міг на нього відповісти: дата збірки лежала тільки в /api/fs, куди
+    //  ніхто не заглядає, а USB-клієнти туди й не ходять. PING — єдина
+    //  команда, яку виконують ГАРАНТОВАНО й до всього іншого, тож відповідь
+    //  видно ще до читання пакета. Дату й час підставляє компілятор.
+    if (cmd == "PING")            sResp(String("{\"ok\":true,\"dev\":\"MotoBatteryReader\",\"ver\":3,\"build\":\"" __DATE__ " " __TIME__ "\",\"needAuth\":false,\"authed\":") + (g_serAuthed ? "true" : "false") + "}");
     else if (cmd == "READ")     { bool a, b; readAllChips(a, b);
                                   sResp(String("{\"ok\":") + ((a || b) ? "true" : "false") +
                                         ",\"ds2433\":" + (a ? "true" : "false") +
@@ -487,6 +609,7 @@ static void serialExec(const String &line) {
                                                    if (hasDump2438) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE); }
                                          ledSet(ok ? LED_OK : LED_ERROR); displayShow(ok ? "USB РЕМОНТ OK" : "USB РЕМОНТ ЗБІЙ");
                                          sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"write failed\"}"); } }
+    else if (cmd == "EDIT")       serEdit(arg);      // ручний редактор: список і запис
     else if (cmd == "SETCAP")     serSetCap(arg);
     else if (cmd == "SETMAH")     serSetMah(arg);
     else if (cmd == "SETCHG")     serSetCharge(arg);
@@ -674,21 +797,199 @@ static void serialExec(const String &line) {
                                          r += deviceClockNum();
                                          r += ",\"src\":\""; r += deviceClockSrcName();
                                          sResp(r + "\"}"); } }
-    // DISCHARGE [мВ] — почати розряд; DISCHARGE STOP — зупинити; DISCHARGE? — стан.
+    // DISCHARGE [мВ] — почати розряд; DISCHARGE STOP — зупинити; DISCHARGE? — стан;
+    // DISCHARGE MA=<мА> — ручний струм (0 = автомат);
+    // DISCHARGE SMART | DISCHARGE AUTO — профіль (0.2C за ємністю або лінійка).
     else if (cmd == "DISCHARGE"){ String a2 = arg; a2.trim(); a2.toUpperCase();
                                   if (a2 == "STOP") { dischargeStop(DISR_USER); sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); }
                                   else if (a2 == "?" || a2 == "STATUS") sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}");
+                                  // DISCHARGE DISMISS — прибрати підсумок завершеного розряду.
+                                  else if (a2 == "DISMISS") { dischargeDismiss();
+                                      sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); }
+                                  // DISCHARGE MA=<мА> — ручний струм; MA=0 повертає автомат.
+                                  else if (a2.startsWith("MA=")) {
+                                      long want = a2.substring(3).toInt();
+                                      if (want < 0) want = 0;
+                                      uint16_t got = dischargeSetManualMa((uint16_t)want);
+                                      String r = "{\"ok\":true,\"manualMa\":"; r += got;
+                                      r += ",\"asked\":"; r += want;
+                                      r += ",\"discharge\":"; r += dischargeJson(); r += "}";
+                                      sResp(r); }
+                                  // DISCHARGE SMART / AUTO — профіль розряду.
+                                  else if (a2 == "SMART" || a2 == "AUTO") {
+                                      uint8_t got = dischargeSetProfile(a2 == "SMART" ? DIS_PROF_SMART
+                                                                                      : DIS_PROF_FACTORY);
+                                      String r = "{\"ok\":true,\"profile\":"; r += got;
+                                      r += ",\"discharge\":"; r += dischargeJson(); r += "}";
+                                      sResp(r); }
                                   else { const char *e = dischargeStart((uint16_t)a2.toInt());
                                          if (e) { String r = "{\"ok\":false,\"err\":\""; r += e; r += "\"}"; sResp(r); }
                                          else sResp(String("{\"ok\":true,\"discharge\":") + dischargeJson() + "}"); } }
     // CHARGE [%] — почати заряд до обраного відсотка (без аргументу -> 100 %);
-    // CHARGE STOP — зупинити; CHARGE ? — стан.
+    // CHARGE STOP — зупинити; CHARGE ? — стан; CHARGE MA=<мА> — ручний струм
+    // (0 = автомат); CHARGE MV=<мВ> — ручна ціль у вольтах (0 = за відсотком);
+    // CHARGE SMART | CHARGE AUTO — профіль (CC/CV за ємністю пакета або
+    // заводська таблиця); CHARGE WAKE — примусове пробудження.
     else if (cmd == "CHARGE")   { String a3 = arg; a3.trim(); a3.toUpperCase();
                                   if (a3 == "STOP") { chargeStop(CHGR_USER); sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}"); }
                                   else if (a3 == "?" || a3 == "STATUS") sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}");
+                                  // CHARGE DISMISS — прибрати підсумок завершеної операції.
+                                  // Перед гейтом «версії без заряду» навмисно: саме вимикач
+                                  // і створює підсумок, зупиняючи заряд, що йшов.
+                                  else if (a3 == "DISMISS") { chargeDismiss();
+                                      sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}"); }
+                                  // Версія пристрою без заряду: усе, крім «покажи стан» і
+                                  // «зупинись», відхиляємо однією й тією ж причиною з прошивки.
+                                  // Стан НЕ відхиляємо навмисно — саме з нього клієнт і
+                                  // дізнається, чому кнопки сірі.
+                                  // Ознака «nocharge» — та сама, що у вебі: клієнт
+                                  // показує цю відмову вікном із «ОК», і впізнавати
+                                  // її за текстом не мусить.
+                                  else if (!chargeAvailable()) {
+                                      String r = "{\"ok\":false,\"code\":\"nocharge\",\"err\":\"";
+                                      r += chargeUnavailText();
+                                      r += "\",\"charge\":"; r += chargeJson(); r += "}"; sResp(r); }
+                                  // CHARGE MA=<мА> — ручна уставка струму; MA=0 повертає автомат.
+                                  // Діє і під час заряду: струм саме тоді й підбирають.
+                                  else if (a3.startsWith("MA=")) {
+                                      long want = a3.substring(3).toInt();
+                                      if (want < 0) want = 0;
+                                      uint16_t got = chargeSetManualMa((uint16_t)want);
+                                      String r = "{\"ok\":true,\"manualMa\":"; r += got;
+                                      r += ",\"asked\":"; r += want;
+                                      r += ",\"charge\":"; r += chargeJson(); r += "}";
+                                      sResp(r); }
+                                  // CHARGE MV=<мВ> — ручна ЦІЛЬ у вольтах; MV=0 повертає ціль за відсотком.
+                                  else if (a3.startsWith("MV=")) {
+                                      long want = a3.substring(3).toInt();
+                                      if (want < 0) want = 0;
+                                      uint16_t got = chargeSetManualMv((uint16_t)want);
+                                      String r = "{\"ok\":true,\"manualMv\":"; r += got;
+                                      r += ",\"asked\":"; r += want;
+                                      r += ",\"charge\":"; r += chargeJson(); r += "}";
+                                      sResp(r); }
+                                  // CHARGE SMART / AUTO — профіль заряду: розумний CC/CV за
+                                  // паспортною ємністю пакета або заводська таблиця.
+                                  else if (a3 == "SMART" || a3 == "AUTO") {
+                                      uint8_t got = chargeSetProfile(a3 == "SMART" ? CHG_PROF_SMART
+                                                                                   : CHG_PROF_FACTORY);
+                                      String r = "{\"ok\":true,\"profile\":"; r += got;
+                                      r += ",\"charge\":"; r += chargeJson(); r += "}";
+                                      sResp(r); }
+                                  // CHARGE WAKE — примусове пробудження пакета, що не читається.
+                                  // Слово, а не число: режим працює без контролю температури,
+                                  // і випадково набрати його не можна.
+                                  else if (a3 == "WAKE") {
+                                      const char *e = chargeWakeStart();
+                                      if (e) { String r = "{\"ok\":false,\"err\":\""; r += e; r += "\"}"; sResp(r); }
+                                      else sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}"); }
                                   else { const char *e = chargeStart((uint8_t)a3.toInt());
                                          if (e) { String r = "{\"ok\":false,\"err\":\""; r += e; r += "\"}"; sResp(r); }
                                          else sResp(String("{\"ok\":true,\"charge\":") + chargeJson() + "}"); } }
+    // MIRROR                      -> план синхронізації дзеркала (нічого не пише)
+    // MIRROR TAKE=ALL|NONE         -> правка перед синхронізацією
+    // MIRROR BYTE=<0..25> ON=0|1   -> те саме, по одному байту
+    // MIRROR RATED=<мА·год>        -> вписати паспортну ємність руками (0 — скасувати)
+    // MIRROR VAL=<0..2> ON=0|1     -> значеннєвий рядок (0 ETM, 1 CCA, 2 DCA)
+    // MIRROR VSET=<0..2> V=<число> -> вписати число руками (доби або цикли; -1 — скасувати)
+    // MIRROR APPLY                 -> записати те, що показано в плані
+    // TODAY=РРРРММДД можна додати до будь-якої з форм — так само, як до плану
+    // відновлення. Без дати не порахувати вік пакета, а без віку не сказати,
+    // чи монітор узагалі від нього (див. mirrorPlanFactsRefresh).
+    else if (cmd == "MIRROR")   { String a4 = arg; a4.trim(); a4.toUpperCase();
+                                  { // дату виймаємо ПЕРШОЮ: вона потрібна вже під час побудови плану
+                                      int tp = a4.indexOf("TODAY=");
+                                      if (tp >= 0) {
+                                          int te = a4.indexOf(' ', tp);
+                                          String tv = (te < 0) ? a4.substring(tp + 6) : a4.substring(tp + 6, te);
+                                          long had = deviceClockNum();
+                                          mirrorPlanClock(tv.toInt());
+                                          if (g_mirPlanReady && had != deviceClockNum())
+                                              mirrorPlanFactsRefresh();   // план не чіпаємо: галочки людські
+                                          a4 = a4.substring(0, tp) + ((te < 0) ? String("") : a4.substring(te + 1));
+                                          a4.trim();
+                                      } }
+                                  if (!hasDump) { sResp("{\"ok\":false,\"err\":\"спочатку READ\"}"); }
+                                  else {
+                                      if (!g_mirPlanReady) mirrorPlanRefresh();
+                                      if (a4 == "APPLY") {
+                                          ledSet(LED_WRITE); displayShow("USB СИНХР 2433");
+                                          int n = mirrorPlanApply(g_mirPlan, batteryDump);
+                                          // лічильники циклів — теж у DS2433
+                                          int nCyc = mirrorPlanApply33Vals(g_mirPlan, batteryDump);
+                                          bool w = battery.writeBattery(batteryDump, DUMP_SIZE);
+                                          if (w) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+                                          // Значеннєві рядки живуть у ДРУГОМУ чипі — пишемо і його.
+                                          int n38 = 0;
+                                          if (w && hasDump2438) {
+                                              n38 = mirrorPlanApply38(g_mirPlan, batteryDump2438);
+                                              if (n38) {
+                                                  displayShow("USB СИНХР 2438");
+                                                  w = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+                                                  if (w) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+                                              }
+                                          }
+                                          ledSet(w ? LED_OK : LED_ERROR);
+                                          displayShow(w ? "USB СИНХР OK" : "USB СИНХР ЗБІЙ");
+                                          mirrorPlanRefresh();
+                                          String r = "{\"ok\":"; r += w ? "true" : "false";
+                                          r += ",\"changed\":"; r += n;
+                                          r += ",\"changedCyc\":"; r += nCyc;
+                                          r += ",\"changed38\":"; r += n38;
+                                          r += ",\"plan\":"; r += mirrorPlanJson(); r += "}";
+                                          sResp(r);
+                                      } else {
+                                          // Розбір ключів у тому ж стилі, що й у CLONE/WIZSTEP.
+                                          String tail = a4;
+                                          while (tail.length()) {
+                                              int q = tail.indexOf(' ');
+                                              String tok = (q < 0) ? tail : tail.substring(0, q);
+                                              tail = (q < 0) ? String("") : tail.substring(q + 1);
+                                              tail.trim();
+                                              if      (tok.startsWith("TAKE="))
+                                                  mirrorPlanTakeAll(g_mirPlan, tok.substring(5) == "ALL");
+                                              else if (tok.startsWith("RATED="))
+                                                  mirrorPlanSetRated(g_mirPlan, tok.substring(6).toInt());
+                                              else if (tok.startsWith("BYTE=")) {
+                                                  int idx = tok.substring(5).toInt();
+                                                  // ON= може йти наступним токеном; типово вмикаємо.
+                                                  bool on = true;
+                                                  if (tail.startsWith("ON=")) {
+                                                      on = (tail.substring(3, 4) == "1");
+                                                      int q2 = tail.indexOf(' ');
+                                                      tail = (q2 < 0) ? String("") : tail.substring(q2 + 1);
+                                                      tail.trim();
+                                                  }
+                                                  mirrorPlanTakeOne(g_mirPlan, idx, on);
+                                              }
+                                              // Значеннєві рядки — тим самим розбором: VAL= бере
+                                              // наступний ON=, VSET= — наступний V=.
+                                              else if (tok.startsWith("VAL=")) {
+                                                  int idx = tok.substring(4).toInt();
+                                                  bool on = true;
+                                                  if (tail.startsWith("ON=")) {
+                                                      on = (tail.substring(3, 4) == "1");
+                                                      int q2 = tail.indexOf(' ');
+                                                      tail = (q2 < 0) ? String("") : tail.substring(q2 + 1);
+                                                      tail.trim();
+                                                  }
+                                                  mirrorValTake(g_mirPlan, idx, on);
+                                              }
+                                              else if (tok.startsWith("VSET=")) {
+                                                  int idx = tok.substring(5).toInt();
+                                                  long v = -1;
+                                                  if (tail.startsWith("V=")) {
+                                                      int q2 = tail.indexOf(' ');
+                                                      v = ((q2 < 0) ? tail.substring(2) : tail.substring(2, q2)).toInt();
+                                                      tail = (q2 < 0) ? String("") : tail.substring(q2 + 1);
+                                                      tail.trim();
+                                                  }
+                                                  mirrorValSetUser(g_mirPlan, idx, v);
+                                              }
+                                          }
+                                          sResp(mirrorPlanJson());
+                                      }
+                                  } }
     else if (cmd == "WIZARD")   { sResp(wizStart()); }
     // WIZSTEP <idx> [MODEL] [FIXES=…] [RATED=…] [RSENSE=…|RSMODEL=…] [MFG=…] [HEALTH=…] [USE=…] [CAL=…] [CYC=…] [NONIMP=…] [TODAY=…] [ETMSRC=USE|PACK]
     else if (cmd == "WIZSTEP")  { int s2 = arg.indexOf(' ');
@@ -710,21 +1011,38 @@ static void serialExec(const String &line) {
     else if (cmd == "RECAL")    { String a = arg; a.trim(); a.toUpperCase();
                                   bool ok = performRecalPrepare(a == "DEEP");
                                   sResp(ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"read first / write failed\"}"); }
-    else if (cmd == "REBOOT")   { displayShow("ПЕРЕЗАВАНТАЖЕННЯ"); sResp("{\"ok\":true}"); Serial.flush(); delay(200); ESP.restart(); }
+    else if (cmd == "REBOOT")   { displayShow("ПЕРЕЗАВАНТАЖЕННЯ"); sResp("{\"ok\":true}");
+                                  g_serOut->flush(); Serial.flush(); delay(200); ESP.restart(); }
     else                          sResp(String("{\"ok\":false,\"err\":\"unknown cmd '") + cmd + "'\"}");
 }
 
 // Викликати в loop(): накопичує рядок і виконує команду по \n.
-inline void serialTask() {
-    while (Serial.available()) {
-        char c = (char)Serial.read();
+// Один прохід по каналу: добрати символи, і на кінці рядка виконати команду,
+// перемкнувши відповідь на ЦЕЙ канал.
+static void serialPump(Stream &io, String &buf, bool viaBt) {
+    while (io.available()) {
+        char c = (char)io.read();
         if (c == '\n' || c == '\r') {
-            if (g_serIn.length()) { serialExec(g_serIn); g_serIn = ""; }
+            if (buf.length()) {
+                Stream *prevOut = g_serOut; bool prevBt = g_serViaBt;
+                g_serOut = &io; g_serViaBt = viaBt;
+                serialExec(buf);
+                g_serOut = prevOut; g_serViaBt = prevBt;
+                buf = "";
+            }
         } else {
-            g_serIn += c;
-            if (g_serIn.length() > 4200) g_serIn = "";   // захист от переповнення
+            buf += c;
+            if (buf.length() > 4200) buf = "";   // захист от переповнення
         }
     }
+}
+
+inline void serialTask() {
+    serialPump(Serial, g_serIn, false);
+#ifdef BT_ENABLED
+    // Поки ніхто не під'єднаний, читати нема чого — і питати теж не варто.
+    if (btUp() && SerialBT.hasClient()) serialPump(SerialBT, g_serInBt, true);
+#endif
 }
 
 #endif

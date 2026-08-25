@@ -266,10 +266,18 @@ inline bool chargeOffByUser() { return g_chgOffByUser; }
 // chargeAvailable(): це різні причини відмови, і людині треба сказати саме ту,
 // яку вона може усунути.
 inline bool chargeHardware() {
-#if defined(CHARGE_PWM_PIN) && defined(CHARGE_ISENSE_PIN) && defined(CHARGE_VSENSE_PIN)
+#if CHARGE_IS_TL494
+  #if defined(CHARGE_TL_EN_PIN) && defined(CHARGE_TL_CTRL_PIN)
     return true;
-#else
+  #else
     return false;
+  #endif
+#else
+  #if defined(CHARGE_PWM_PIN) && defined(CHARGE_ISENSE_PIN) && defined(CHARGE_VSENSE_PIN)
+    return true;
+  #else
+    return false;
+  #endif
 #endif
 }
 
@@ -285,8 +293,13 @@ inline bool chargeAvailable() { return chargeHardware() && !chargeOffByUser(); }
 //  першою причиною, хоча друга з'явилась.
 inline const char *chargeUnavailText() {
     if (!chargeHardware())
+#if CHARGE_IS_TL494
+        return "Заряд не налаштовано: задайте CHARGE_TL_EN_PIN і CHARGE_TL_CTRL_PIN "
+               "у settings.h";
+#else
         return "Заряд не налаштовано: задайте CHARGE_PWM_PIN, CHARGE_ISENSE_PIN "
                "і CHARGE_VSENSE_PIN у settings.h";
+#endif
     if (chargeOffByUser())
         return "Ця версія пристрою — без заряду: силової частини немає, функцію "
                "вимкнено на самому приладі";
@@ -302,10 +315,21 @@ inline uint8_t chargeConsumeDirty() { uint8_t d = g_chgDirty; g_chgDirty = 0; re
 static bool g_chgPwmOk = false;
 inline bool chargePwmOk() { return g_chgPwmOk; }
 
-// Повна шкала шпаруватості й робоча стеля (ключ ніколи не відкривається
-// повністю — див. CHARGE_DUTY_MAX_PCT у settings.h і пояснення там).
-#define CHARGE_DUTY_FULL ((uint16_t)((1u << CHARGE_PWM_BITS) - 1u))
-#define CHARGE_DUTY_MAX  ((uint16_t)((uint32_t)CHARGE_DUTY_FULL * CHARGE_DUTY_MAX_PCT / 100u))
+// Повна шкала шпаруватості й робоча стеля.
+//
+//  ⚑ ОДИНИЦЯ ШКАЛИ ЗАЛЕЖИТЬ ВІД ТОПОЛОГІЇ, А ВЕСЬ КОД ВИЩЕ — НІ. У власного
+//  понижувача це відліки ШІМ, і ключ ніколи не відкривається повністю (див.
+//  CHARGE_DUTY_MAX_PCT). У готової плати TL494 керують не шпаруватістю, а
+//  ВИХІДНОЮ НАПРУГОЮ — тож там один «відлік» це один мілівольт виходу, а
+//  стеля — верх калібрувальної таблиці. Обмежувати її ще й відсотком не
+//  можна: 85 % від 8600 мВ це 7310 мВ, тобто пакет просто не зарядився б.
+#if CHARGE_IS_TL494
+  #define CHARGE_DUTY_FULL ((uint16_t)(CHARGE_CAL_OUT_MAX))
+  #define CHARGE_DUTY_MAX  ((uint16_t)(CHARGE_CAL_OUT_MAX))
+#else
+  #define CHARGE_DUTY_FULL ((uint16_t)((1u << CHARGE_PWM_BITS) - 1u))
+  #define CHARGE_DUTY_MAX  ((uint16_t)((uint32_t)CHARGE_DUTY_FULL * CHARGE_DUTY_MAX_PCT / 100u))
+#endif
 
 // Шпаруватість у відсотках — для показу на екрані й у JSON.
 inline uint8_t chargeDutyPct() {
@@ -352,13 +376,75 @@ inline void chargeResetDutyCap() { g_chgDutyCap = CHARGE_DUTY_MAX; }
 // два, і другий не зайвий: g_chgDutyCap — величина сеансу (її опускає
 // пробудження), CHARGE_DUTY_MAX — заводська межа ключа, і вона мусить діяти
 // навіть якщо стелю сеансу хтось зіпсує.
+#if CHARGE_IS_TL494
+// Кусочно-лінійна інтерполяція за калібрувальною таблицею: цільова ВИХІДНА
+// напруга (мВ) -> напруга керування на CHARGE_TL_CTRL_PIN (мВ, після RC).
+// Поза таблицею НЕ екстраполюємо, а затискаємо до крайньої точки: за межами
+// виміряного ми не знаємо кривої, і вигадана точка тут означала б струм, якого
+// ніхто не міряв.
+inline uint16_t chargeCtrlMvForOutputMv(uint16_t outMv) {
+    static const uint16_t calCtrl[] = CHARGE_CAL_CTRL_MV;
+    static const uint16_t calOut[]  = CHARGE_CAL_OUT_MV;
+    const int n = CHARGE_CAL_POINTS;
+    if (outMv <= calOut[0])     return calCtrl[0];
+    if (outMv >= calOut[n - 1]) return calCtrl[n - 1];
+    for (int i = 1; i < n; i++) {
+        if (outMv <= calOut[i]) {
+            uint16_t o0 = calOut[i - 1],  o1 = calOut[i];
+            uint16_t c0 = calCtrl[i - 1], c1 = calCtrl[i];
+            return (uint16_t)(c0 + (uint32_t)(c1 - c0) * (outMv - o0) / (o1 - o0));
+        }
+    }
+    return calCtrl[n - 1];   // недосяжно: діапазон покрито циклом вище
+}
+
+// Enable силового каскаду. LOW = безпечно (виходу немає).
+inline void chargeTlEnable(bool on) {
+#ifdef CHARGE_TL_EN_PIN
+    digitalWrite(CHARGE_TL_EN_PIN, on ? HIGH : LOW);
+#else
+    (void)on;
+#endif
+}
+#endif  // CHARGE_IS_TL494
+
+// Встановити «шпаруватість» — одиниця залежить від топології (див. коментар
+// біля CHARGE_DUTY_FULL). 0 — виходу немає, і це єдиний безпечний стан.
+//
+// ⚑ УСЯ РОБОТА З ВИХОДОМ — ТІЛЬКИ ЧЕРЕЗ ЦЮ ФУНКЦІЮ: жодних ledcWrite повз неї,
+// інакше LEDC і GPIO почнуть боротись за пін і керування тихо зникне.
+//
+// ⚑ Затиск — тут, у найнижчій точці, а не в регуляторі: стеля мусить діяти на
+// БУДЬ-ЯКИЙ шлях, включно з майбутнім кодом, який про неї не знатиме. Затисків
+// два, і другий не зайвий: g_chgDutyCap — величина сеансу (її опускає
+// пробудження), CHARGE_DUTY_MAX — заводська межа, і вона мусить діяти
+// навіть якщо стелю сеансу хтось зіпсує.
 inline void chargeSetDuty(uint16_t duty) {
-#ifdef CHARGE_PWM_PIN
     if (duty > g_chgDutyCap)   duty = g_chgDutyCap;
     if (duty > CHARGE_DUTY_MAX) duty = CHARGE_DUTY_MAX;
-    if (g_chgPwmOk) ledcWrite(CHARGE_PWM_PIN, duty);
-#else
+#if CHARGE_IS_TL494
+  #ifdef CHARGE_TL_CTRL_PIN
+    // Тут duty — це вже МІЛІВОЛЬТИ бажаного виходу; перекладаємо їх у напругу
+    // керування таблицею й лише потім у відліки ШІМ.
+    if (g_chgPwmOk) {
+        uint16_t ctrlMv  = chargeCtrlMvForOutputMv(duty);
+        uint32_t maxRaw  = (1u << CHARGE_TL_PWM_BITS) - 1u;
+        uint32_t raw     = (uint32_t)ctrlMv * maxRaw / 3300u;
+        if (raw > maxRaw) raw = maxRaw;
+        ledcWrite(CHARGE_TL_CTRL_PIN, raw);
+    }
+    // Нуль означає «виходу немає» — знімаємо й enable, а не лише уставку:
+    // уставка 0 мВ на цій платі все одно лишає невеликий вихід.
+    chargeTlEnable(duty > 0);
+  #else
     (void)duty;
+  #endif
+#else
+  #ifdef CHARGE_PWM_PIN
+    if (g_chgPwmOk) ledcWrite(CHARGE_PWM_PIN, duty);
+  #else
+    (void)duty;
+  #endif
 #endif
 }
 
@@ -551,10 +637,15 @@ inline uint16_t chargeSupplyMv() {
 // Перечитати живлення й перекласифікувати. Викликається і з chargeTask()
 // (кожне опитування), і з головного циклу в спокої (рідко).
 inline uint8_t chargePsuPoll() {
-#ifdef CHARGE_PSU_PIN
-    // Версія без заряду: піна ніхто не підключав, і будь-який відлік із нього —
-    // наводка. Не міряємо взагалі; читачі й так отримають PSU_UNKNOWN.
+    // ⚑ ГЕЙТ — ПЕРЕД #ifdef, А НЕ ВСЕРЕДИНІ. Довго стояв усередині, і це був
+    //  той самий дефект «одне поле, два питання», що вже тричі ловився в цьому
+    //  проєкті: усі інші читачі (chargePsuState/Mv/Fault) відповідали
+    //  PSU_UNKNOWN, а ця функція — сирим g_psuState. Розбіжність жила лише
+    //  там, де подільника немає взагалі: у версії з закоментованим
+    //  CHARGE_PSU_PIN і на платі TL494. Тобто саме там, де про живлення й
+    //  сказати нічого. Одна відповідь на всіх, і вона тут.
     if (!chargePsuSensed()) return PSU_UNKNOWN;
+#ifdef CHARGE_PSU_PIN
     g_psuMv    = chargePsuReadMv();
     g_psuState = chargePsuClassify(g_psuMv, g_psuState);
     // Живлення повернулось у норму — забуваємо підтвердження. Інакше та сама
@@ -579,8 +670,17 @@ inline uint8_t chargePsuPoll() {
 // Функція лишається — але як ВЕРХНЯ МЕЖА стартової оцінки (вище неї
 // перетворювач переходить у неперервний режим, де струм росте значно
 // швидше), а не як стартова точка.
+//
+// ⚑ НА ПЛАТІ TL494 ЦЕ ПЕРЕСТАЄ БУТИ ОЦІНКОЮ Й СТАЄ ТОТОЖНІСТЮ: там шкала
+//  регулятора вже виміряна в мілівольтах виходу, тож «яке число дасть таку
+//  напругу» — це саме число і є. Ані живлення, ані шпаруватість у відповідь
+//  не входять: за криву керування відповідає калібрувальна таблиця нижче.
 inline uint16_t chargeDutyForMv(uint16_t mv) {
+#if CHARGE_IS_TL494
+    uint32_t d = mv;
+#else
     uint32_t d = (uint32_t)mv * CHARGE_DUTY_FULL / chargeSupplyMv();
+#endif
     if (d > CHARGE_DUTY_MAX) d = CHARGE_DUTY_MAX;
     return (uint16_t)d;
 }
@@ -588,13 +688,25 @@ inline uint16_t chargeDutyForMv(uint16_t mv) {
 // Струм на межі неперервного режиму (ΔI/2) для заданої напруги пакета, мА.
 // Нижче нього перетворювач працює в ПЕРЕРИВЧАСТОМУ режимі, і залежність
 // струму від шпаруватості там квадратична, а не лінійна.
+//
+// ⚑ НА ПЛАТІ TL494 ТАКОЇ МЕЖІ НЕМАЄ ВЗАГАЛІ, і нуль тут — не «не змогли
+//  порахувати», а правильна відповідь. Переривчастий режим — це властивість
+//  ВІДКРИТОГО контуру з дроселем, яким керуємо ми; у готової плати дросель
+//  свій, контур замкнений усередині мікросхеми, і назовні вона поводиться як
+//  джерело напруги на всьому діапазоні. Питання «нижче якого струму
+//  залежність стає квадратичною» тут просто не ставиться.
 inline uint16_t chargeBoundaryMa(uint16_t packMv) {
+#if CHARGE_IS_TL494
+    (void)packMv;
+    return 0;
+#else
     uint16_t supplyMv = chargeSupplyMv();
     if (packMv >= supplyMv) return 0;
     // ΔI = (Uживл − Uпак) × D × T / L, при D = Uпак/Uживл.
     float vi = supplyMv / 1000.0f, vp = packMv / 1000.0f;
     float dI = (vi - vp) * (vp / vi) / ((CHARGE_L_UH / 1000000.0f) * (float)CHARGE_PWM_FREQ);
     return (uint16_t)(dI * 500.0f + 0.5f);      // ΔI/2, у мА
+#endif
 }
 
 // ── СТАРТОВА ШПАРУВАТІСТЬ: та, що дає ПОТРІБНИЙ струм, а не «нуль» ────────
@@ -615,7 +727,20 @@ inline uint16_t chargeBoundaryMa(uint16_t packMv) {
 //  а не змушувати контур повзти півгодини. Саме тому крок регулятора
 //  пропорційний похибці (див. chargeNextDuty): помилка моделі закривається за
 //  кілька опитувань, а не за сотні.
+//
+//  ⚑ НА ПЛАТІ TL494 СТАРТ ЗАВЖДИ З НУЛЯ — і це не спрощення, а вимога.
+//  Оцінювати там нічого: залежність «уставка -> струм» залежить від
+//  внутрішнього опору пакета, якого ми не знаємо, а сама плата — джерело
+//  НАПРУГИ, тож промах на 200 мВ це промах на ампери струму. Тримати такий
+//  промах доки прийде наступний вимір (а він приходить по 1-Wire, раз на
+//  секунду) не можна. Тому вихід піднімається з нуля кроком CHARGE_TL_STEP_MV:
+//  повільно, зате жодного разу не «наосліп». Ціна — кілька секунд розгону, і
+//  вона тут прийнятна, бо весь заряд триває години.
 inline uint16_t chargeStartDuty(uint16_t packMv, uint16_t setMa) {
+#if CHARGE_IS_TL494
+    (void)packMv; (void)setMa;
+    return 0;
+#else
     uint16_t supplyMv = chargeSupplyMv();
     if (packMv >= supplyMv || setMa == 0) return 0;
     float vi = supplyMv / 1000.0f, vp = packMv / 1000.0f;
@@ -636,6 +761,7 @@ inline uint16_t chargeStartDuty(uint16_t packMv, uint16_t setMa) {
     uint32_t duty = (uint32_t)(d * CHARGE_DUTY_FULL);
     if (duty > CHARGE_DUTY_MAX) duty = CHARGE_DUTY_MAX;
     return (uint16_t)duty;
+#endif
 }
 
 // Напруга пакета, мВ — з подільника на плюсовій клемі.
@@ -643,8 +769,45 @@ inline uint16_t chargeStartDuty(uint16_t packMv, uint16_t setMa) {
 // Напруга тут згладжена дроселем, але ПІД СТРУМОМ до неї додається падіння на
 // дротах і внутрішньому опорі пакета, тож для чесного значення ключ коротко
 // закривають (CHARGE_VSENSE_SETTLE_MS у chargeTask()).
+#if CHARGE_IS_TL494
+// ── ВИМІР НА ПЛАТІ TL494: ЙОГО РОБИТЬ ПАКЕТ, А НЕ МИ ─────────────────────
+//  Свого шунта й подільника в цієї плати немає — і не треба: той самий
+//  струмовимірювальний резистор DS2438 стоїть УСЕРЕДИНІ пакета послідовно з
+//  банками, тож і струм, і напругу видно в його регістрах. Хто читає
+//  DS2438 (це робить той самий код, що й для розряду), той і кладе сюди
+//  свіжі числа; charge.h навмисно не знає про дампи й 1-Wire.
+//
+//  ⚑ ЗВІДСИ Ж І ПОВІЛЬНИЙ РЕГУЛЯТОР. Читання по 1-Wire — це десятки
+//  мілісекунд і не частіше разу на секунду; швидкий контур, як у власного
+//  понижувача, тут неможливий фізично, і саме тому крок уставки малий.
+static uint16_t g_tlMv = 0;
+static int16_t  g_tlMa = 0;
+#endif
+
+// Покласти свіже показання пакета (мВ, мА зі знаком). Для власного понижувача
+// це порожня дія: він міряє сам, своїм шунтом і своїм подільником.
+//
+// ⚑ ТУТ БУВ ЩЕ Й ПРАПОРЕЦЬ «ПОКАЗАННЯ СВІЖЕ» — і його прибрано навмисно.
+//  Питати про свіжість було ніде: єдиний, хто читає ці числа, читає їх у
+//  тому ж проході, де сам їх і поклав (chargeTaskTl у web_server.h), тож
+//  відповідь завжди була б «так». Перевірка, яка не може відповісти «ні», —
+//  це не запобіжник, а його імітація; у цьому проєкті такі вже двічі
+//  доживали до релізу, вважаючись працюючими. Замість неї діє правило,
+//  яке НЕ можна обійти мовчки: у chargeTaskTl() невдале читання ОДРАЗУ
+//  опускає вихід у нуль і зводить чинний струм у нуль — тобто застаріле
+//  число просто не встигає ні на що вплинути.
+inline void chargeFeedPackReading(uint16_t mv, int16_t ma) {
+#if CHARGE_IS_TL494
+    g_tlMv = mv; g_tlMa = ma;
+#else
+    (void)mv; (void)ma;
+#endif
+}
+
 inline uint16_t chargePackMv() {
-#ifdef CHARGE_VSENSE_PIN
+#if CHARGE_IS_TL494
+    return g_tlMv;
+#elif defined(CHARGE_VSENSE_PIN)
     uint32_t node = chargeAdcMv(CHARGE_VSENSE_PIN);        // напруга у вузлі подільника
     // Назад через подільник: U = Uвузла * (Rверх + Rниз) / Rниз.
     return (uint16_t)(node * (CHARGE_VSENSE_R_TOP + CHARGE_VSENSE_R_BOT) / CHARGE_VSENSE_R_BOT);
@@ -666,7 +829,16 @@ inline uint16_t chargePackMv() {
 // стрибнути), а як ознаку поломки: обрив чи насичення дроселя, пробитий ключ
 // або замкнений діод прибирають індуктивність із кола, і тоді пік злітає.
 inline uint16_t chargeMeasureMa(uint16_t *peakMaOut) {
-#ifdef CHARGE_ISENSE_PIN
+#if CHARGE_IS_TL494
+    // ⚑ ПІКУ ТУТ НЕМАЄ, І ВИГАДУВАТИ ЙОГО НЕ МОЖНА. DS2438 віддає СЕРЕДНІЙ
+    //  струм за своє вікно інтегрування; миттєвого відліку в ньому не існує.
+    //  Повернути середній «за пік» означало б збрехати аварійній відсічці —
+    //  вона перестала б спрацьовувати саме тоді, коли потрібна. Тому пік
+    //  чесно нульовий, а захист від кидка на цій платі забезпечує сам
+    //  перетворювач, а не прошивка.
+    if (peakMaOut) *peakMaOut = 0;
+    return (uint16_t)(g_tlMa > 0 ? g_tlMa : 0);   // від'ємне = розряд, для заряду це нуль
+#elif defined(CHARGE_ISENSE_PIN)
     uint32_t sum = 0, peakMv = 0;
     for (int i = 0; i < CHARGE_ADC_SAMPLES; i++) {
         uint32_t mv = chargeAdcMv(CHARGE_ISENSE_PIN);
@@ -1094,13 +1266,18 @@ inline uint8_t chargeCycleTarget() {
 // Наступна шпаруватість: МАЛЕНЬКИЙ крок у бік уставки за РЕАЛЬНИМ виміряним
 // СЕРЕДНІМ струмом.
 //
-// ⚑ Тут навмисно НЕМАЄ abs(): у попередній схемі струм брався з DS2438, де
-// знак залежить від напрямку, і його доводилось випрямляти. Тепер струм міряє
-// НАШ шунт, увімкнений так, що заряд дає додатний спад, і нуль означає рівно
-// «струму немає». Випрямляти тут було б шкідливо: від'ємний відлік — це або
-// шум навколо нуля, або те, що пакет РОЗРЯДЖАЄТЬСЯ, і в обох випадках правильна
-// реакція одна — вважати струм заряду нульовим і піднімати шпаруватість, а не
-// вдавати, ніби уставка вже досягнута.
+// ⚑ Тут навмисно НЕМАЄ abs(), і це правило спільне для ОБОХ топологій, хоч
+// прийшли вони до нього різними шляхами. У понижувача струм міряє НАШ шунт,
+// увімкнений так, що заряд дає додатний спад. У плати TL494 струм приходить із
+// DS2438, де знак означає НАПРЯМОК, — і випрямляє його не ця функція, а
+// chargeMeasureMa(), яка від'ємне показання віддає нулем (див. коментар там).
+// В обох випадках у регулятор потрапляє однакова величина: «скільки струму
+// тече В пакет», і нуль означає рівно «струму немає».
+//
+// Випрямляти тут було б шкідливо: від'ємний відлік — це або шум навколо нуля,
+// або те, що пакет РОЗРЯДЖАЄТЬСЯ, і в обох випадках правильна реакція одна —
+// вважати струм заряду нульовим і піднімати уставку, а не вдавати, ніби
+// потрібний струм уже досягнутий.
 inline uint16_t chargeNextDuty(uint16_t duty, int32_t measuredMa, uint16_t setMa) {
     if (measuredMa < 0) measuredMa = 0;
     int32_t err = (int32_t)setMa - measuredMa;
@@ -1127,8 +1304,49 @@ inline uint16_t chargeNextDuty(uint16_t duty, int32_t measuredMa, uint16_t setMa
 // гарантовано був закритий після подачі живлення чи скидання. LOW тут —
 // справді безпечний стан: NPN закритий, база PNP підтягнута до емітера, ключ
 // закритий (див. схему в settings.h).
+//
+// ⚑ НА ПЛАТІ TL494 ПОРЯДОК ДІЙ ТУТ ВАЖЛИВІШИЙ, НІЖ У ПОНИЖУВАЧА, і ось чому:
+//  плата дає повний прохід входу на вихід (~14 В) БЕЗ жодного керування —
+//  саме enable і є єдиним запобіжником. Тому enable опускається в LOW
+//  ЗВИЧАЙНИМ digitalWrite ще до будь-якої роботи з LEDC: якщо прикріплення
+//  ШІМ провалиться, пакет усе одно лишиться від'єднаним від 14 В.
 inline void chargeInit() {
-#ifdef CHARGE_PWM_PIN
+#if CHARGE_IS_TL494
+    // 1) НАЙПЕРШЕ — enable у безпечний стан. До LEDC, до Serial, до всього.
+    pinMode(CHARGE_TL_EN_PIN, OUTPUT);
+    digitalWrite(CHARGE_TL_EN_PIN, LOW);
+    // 2) Аналогова уставка: ШІМ + RC на платі.
+    pinMode(CHARGE_TL_CTRL_PIN, OUTPUT);
+    digitalWrite(CHARGE_TL_CTRL_PIN, LOW);
+    g_chgPwmOk = ledcAttachChannel(CHARGE_TL_CTRL_PIN, CHARGE_TL_PWM_FREQ,
+                                   CHARGE_TL_PWM_BITS, CHARGE_LEDC_CH);
+    Serial.printf("CHARGE: TL494 en=%d ctrl=%d LEDC ch=%d (таймер %d) freq=%d "
+                  "bits=%d attach=%s%s\n",
+                  (int)CHARGE_TL_EN_PIN, (int)CHARGE_TL_CTRL_PIN,
+                  (int)CHARGE_LEDC_CH, (int)CHARGE_LEDC_CH / 2,
+                  (int)CHARGE_TL_PWM_FREQ, (int)CHARGE_TL_PWM_BITS,
+                  g_chgPwmOk ? "OK" : "FAIL",
+                  g_chgPwmOk ? "" : " — найімовірніше ТАЙМЕР уже зайнятий іншим "
+                  "каналом з іншою частотою (канали діляться таймерами попарно: "
+                  "0-1, 2-3, 4-5, 6-7). Оберіть CHARGE_LEDC_CH з іншої пари");
+    // 3) І лише тепер — штатний шлях: уставка в нуль, enable знову знято.
+    //  Кличемо саме chargeSetDuty(0), а не пишемо в пін руками: інакше
+    //  з'явився б другий шлях до заліза, який не знає про стелі.
+    chargeSetDuty(0);
+    Serial.printf("CHARGE: шкала регулятора — МІЛІВОЛЬТИ виходу, 0..%d мВ, крок "
+                  "%d мВ; калібрування %d точок (%d..%d мВ керування)\n",
+                  (int)CHARGE_CAL_OUT_MAX, (int)CHARGE_TL_STEP_MV,
+                  (int)CHARGE_CAL_POINTS,
+                  (int)chargeCtrlMvForOutputMv(0),
+                  (int)chargeCtrlMvForOutputMv(CHARGE_CAL_OUT_MAX));
+    // ⚑ ЧОГО НА ЦІЙ ПЛАТІ НЕМАЄ — друкуємо ЯВНО. Мовчання тут читалося б як
+    //  «все на місці»: людина шукала б у журналі рядок про живлення, не
+    //  знаходила й вирішувала, що прошивка збоїть.
+    Serial.println("CHARGE: власного шунта й подільника немає — струм і напругу "
+                   "бере DS2438 усередині пакета. Тому недоступні: контроль "
+                   "+14 В, відсічка за піком струму, свідок насичення клеми та "
+                   "примусове пробудження (усі вони вимагають ВЛАСНОГО виміру).");
+#elif defined(CHARGE_PWM_PIN)
     pinMode(CHARGE_PWM_PIN, OUTPUT);
     digitalWrite(CHARGE_PWM_PIN, LOW);   // безпечний стан — миттєво, до LEDC
     g_chgPwmOk = ledcAttachChannel(CHARGE_PWM_PIN, CHARGE_PWM_FREQ,
@@ -1501,9 +1719,21 @@ inline bool chargeNoDriveTrip(uint16_t duty, int32_t avgMa, uint16_t setMa,
 // Стеля шпаруватості для пробудження: та, за якої ідеальний понижувач дає
 // CHARGE_WAKE_MV. Живлення приймаємо параметром, а не беремо з глобальної
 // змінної, щоб цю арифметику можна було ганяти на хості для будь-якого блока.
+//
+// ⚑ НА ПЛАТІ TL494 САМ РЕЖИМ ЗАБОРОНЕНО (chargeWakeRefuse -> WAKENO_TOPO), і
+//  ця функція там ніколи не кличеться. Але формулу однаково зведено до
+//  правильної для тієї шкали: НЕВИКОРИСТОВУВАНЕ ЧИСЛО, ЯКЕ ПРИ ЦЬОМУ ЩЕ Й
+//  НЕПРАВИЛЬНЕ, — це заряджена пастка. Досить комусь колись зняти заборону,
+//  і стеля напруги мовчки виявилась би не тією (8000 × 8600 / 14000 ≈ 4914
+//  «мВ виходу» замість 8000). На цій шкалі відповідь тривіальна: стеля
+//  напруги — це і є напруга.
 inline uint16_t chargeWakeDutyCapFor(uint16_t supplyMv) {
     if (!supplyMv) return 0;
+#if CHARGE_IS_TL494
+    uint32_t d = (uint32_t)CHARGE_WAKE_MV;
+#else
     uint32_t d = (uint32_t)CHARGE_WAKE_MV * CHARGE_DUTY_FULL / supplyMv;
+#endif
     if (d > CHARGE_DUTY_MAX) d = CHARGE_DUTY_MAX;
     return (uint16_t)d;
 }
@@ -1685,6 +1915,7 @@ enum {
     WAKENO_RAIL,    // на ЗАКРИТОМУ ключі клема в стелі — ключ пробитий
     WAKENO_LEAK,    // на ЗАКРИТОМУ ключі шунт бачить струм — ключ пробитий
     WAKENO_FULL,    // на клемі вже є напруга, не нижча за напругу пробудження
+    WAKENO_TOPO,    // на цьому залізі режим неможливий фізично (див. нижче)
 };
 
 // ⚑ WAKENO_READS — ГОЛОВНА З УСІХ, але умова в ній ПОДВІЙНА, а раніше стояла
@@ -1702,6 +1933,24 @@ enum {
 //  пробудження — тобто чи читається пакет І чи жива клема.
 inline uint8_t chargeWakeRefuse(bool available, bool pwmOk, bool busy, uint8_t psu,
                                 bool chipReads, uint16_t mv, uint16_t idleMa) {
+    // ⚑ ПЕРШИМ — ПИТАННЯ ПРО ЗАЛІЗО, і воно тут не «ще одна причина», а
+    //  єдина, яку взагалі не можна обійти. Пробудження — це подача напруги на
+    //  пакет, який МОВЧИТЬ: температури немає, ємності немає, стану немає.
+    //  Усе, що стоїть між цим режимом і зіпсованим пакетом, — ВЛАСНІ виміри:
+    //    • струм на закритому ключі (WAKENO_LEAK) — ознака пробитого ключа;
+    //    • напруга на закритому ключі (WAKENO_RAIL) — друга така ознака;
+    //    • струм під час розгону (CHARGE_WAKE_MA_ABORT) — аварійна відсічка.
+    //  На платі TL494 своїх вимірів немає ЖОДНОГО: і струм, і напруга
+    //  приходять із DS2438 всередині пакета, тобто саме звідти, звідки під
+    //  час пробудження не приходить нічого. Тож усі три запобіжники стали б
+    //  не «менш точними», а СЛІПИМИ — вони завжди повертали б «усе гаразд».
+    //  Режим без запобіжників — це просто 14 В на невідомий пакет, і чесна
+    //  відповідь тут одна: на цьому залізі його немає.
+#if CHARGE_IS_TL494
+    (void)available; (void)pwmOk; (void)busy; (void)psu;
+    (void)chipReads; (void)mv; (void)idleMa;
+    return WAKENO_TOPO;
+#else
     if (!available)  return WAKENO_NA;
     if (!pwmOk)      return WAKENO_PWM;
     if (busy)        return WAKENO_BUSY;
@@ -1725,6 +1974,7 @@ inline uint8_t chargeWakeRefuse(bool available, bool pwmOk, bool busy, uint8_t p
     //  (розділ 22а тесту): поки воно тримається, тримається й це міркування.
     if (mv >= (uint16_t)CHARGE_WAKE_MV) return WAKENO_FULL;
     return WAKENO_OK;
+#endif
 }
 
 // Рядок «на що дивимось» для екрана пробудження. Пара «широкий/вузький» — та
@@ -1763,6 +2013,14 @@ inline const char *chargeWakeRefuseText(uint8_t r) {
                                   "спершу перевірте силову частину";
         case WAKENO_LEAK:  return "На закритому ключі шунт бачить струм — перевірте "
                                   "ключ (можливо, пробитий MOSFET)";
+        case WAKENO_TOPO:  return "Це залізо не має власного вимірювання: струм і "
+                                  "напругу воно бере з DS2438 усередині пакета — тобто "
+                                  "саме звідти, звідки заблокований пакет нічого не "
+                                  "віддає. Пробудження подає напругу НАОСЛІП, і "
+                                  "єдине, що робить його безпечним, — власний шунт "
+                                  "із власним подільником. Без них режим не "
+                                  "«менш точний», а зовсім без запобіжників, тому "
+                                  "його тут немає";
         case WAKENO_FULL:  return "На клемі вже є напруга не нижча за напругу "
                                   "пробудження — контролер не заблокований, і "
                                   "показувати йому «сигнал зарядника» немає сенсу. "

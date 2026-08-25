@@ -11,14 +11,23 @@
 #include "impres_bms.h"        // штатний декодер Motorola (лічильники, знос, дати)
 #include "operations.h"        // єдиний каталог операцій для всіх поверхонь
 #include "restore_plan.h"      // правки еталона під конкретний пакет перед записом
+#include "edit_plan.h"        // ручне редагування всіх значень пакета одним списком
+#include "snapshot_diff.h"   // знімок «до станції» і побайтова різниця з ним
 #include "device_clock.h"     // системна дата пристрою (джерело «сьогодні»)
 #include "impres_audit.h"     // аудит змісту: шифрування й узгодженість даних
 #include "impres_clone.h"     // крайній засіб: відновлення за зразком копії
+#include "mirror_plan.h"      // синхронізація дзеркала DS2438 -> DS2433 з правкою
 #include "discharge.h"         // керований розряд навантаженням (MOSFET)
-#include "charge.h"            // керований заряд через DC/DC (готова плата на TL494)
+#include "charge.h"            // керований заряд понижувачем на власному ключі (PNP B772M)
 #include "leds.h"
 #include "display.h"
 #include "templates.h"
+#include "page_index.h"    // веб-сторінка, вшита в прошивку (tools/mk_page_header.py)
+
+// ⚑ Визначене у скетчі НИЖЧЕ за цей include, тож потрібне оголошення.
+//  Без нього збірка падає на «resetReasonText was not declared» — і причина
+//  була б неочевидна: функція ж «є», просто ще не видима в цій точці.
+const char *resetReasonText(esp_reset_reason_t r);
 
 extern WebServer server;
 extern BatteryReader battery;
@@ -108,7 +117,6 @@ static bool mirrorSourceValid(const uint8_t *d38) {
 // запис виконувався БЕЗ пароля (діра в безпеці). Тепер пароль ОБОВ'ЯЗКОВИЙ:
 // має бути присутній І збігатися. Усі веб-обробники запису викликають
 // requireAdmin() першим рядком.
-static bool adminOk() { return true; }
 // Пароль адміністратора ВИМКНЕНО: пристрій працює без нього (фізичний доступ до
 // АКБ/пристрою вже є дозволом). requireAdmin() лишено як no-op, щоб не чіпати
 // десятки місць виклику; воно завжди дозволяє.
@@ -127,14 +135,223 @@ void handleLogo() {
 }
 
 // обробник головної сторінки
+//
+//  ⚑ СПЕРШУ СТИСНУТА КОПІЯ. Сторінка виросла до чверті мегабайта, і кожне її
+//  відкриття — це стільки ж по радіо. Причому відкривається вона не лише
+//  руками: наш captive-portal (DNS «усі домени -> 192.168.4.1» + редирект)
+//  змушує телефон САМ показати її одразу після під'єднання до точки доступу.
+//  gzip зменшує передачу утричі й нічого не змінює для браузера —
+//  розпаковування вбудоване в HTTP.
+//
+//  ⚑ ВІДДАЄМО САМЕ server.streamFile(), А НЕ СВОЇМ ЦИКЛОМ. Тут була спроба
+//  слати сторінку шматками (щоб годувати сторожа) — і вона коштувала білого
+//  екрана. Причина в тому, чого не видно з боку виклику: _streamFileCore()
+//  наприкінці РОЗБИРАЄ за собою стан — setContentLength(CONTENT_LENGTH_NOT_SET).
+//  Свій цикл цього не робив, тож після першої ж сторінки _contentLength
+//  лишався рівним її розміру, і КОЖНА наступна відповідь (усі /api/*) ішла з
+//  чужим Content-Length у заголовку. Браузер чекав на дані, яких не буде, —
+//  сторінка лишалась порожньою. Той самий streamFile ще й сам додає
+//  Content-Encoding: gzip, коли ім'я файла закінчується на «.gz», — тому
+//  вручну цей заголовок ставити НЕ МОЖНА: два однакові заголовки браузер
+//  читає як подвійне стиснення.
+//
+//  Годування сторожа лишилось до й після передачі: 89 КБ по радіо — це частка
+//  секунди, а поріг Task WDT під час заряду — 10 с (wdt.h).
+// ⚑ ЧОМУ ВШИТУ СТОРІНКУ НЕ МОЖНА ВІДДАВАТИ ОДНИМ send_P.
+//  У ядрі ESP32 великий буфер і файл ідуть РІЗНИМИ шляхами:
+//
+//    NetworkClient::write(buf, size)  — один цикл select/send на всю передачу;
+//        запас повторів (WIFI_CLIENT_MAX_WRITE_RETRY = 10) ділиться на неї
+//        цілком, і на слабкому каналі 90 КБ його вичерпують. Функція повертає,
+//        СКІЛЬКИ встигла, а send_P цього не перевіряє — браузер отримує
+//        обрізане тіло при чесному Content-Length і показує порожню сторінку;
+//    NetworkClient::write(Stream&)    — ріже на шматки по 1360 Б, і КОЖЕН
+//        шматок дістає повний запас повторів. Саме цим шляхом завжди йшли
+//        файли зі SPIFFS — тому вони й доїжджали.
+//
+//  Спостереження власника це й показало: /lite (1.7 КБ) відкривається, а
+//  сторінка на 90 КБ — ні. Тому загортаємо масив у Stream і віддаємо його тим
+//  самим streamFile(), що й файл: ім'я з «.gz» ядро само перетворює на
+//  заголовок Content-Encoding.
+class PgmPageStream : public Stream {
+  public:
+    PgmPageStream(const uint8_t *p, size_t n) : _p(p), _n(n), _i(0) {}
+    size_t size() const { return _n; }
+    String name() const { return String("/index.html.gz"); }   // ← звідси й gzip
+    int available() override { return (int)(_n - _i); }
+    int read() override     { return (_i < _n) ? _p[_i++] : -1; }
+    int peek() override     { return (_i < _n) ? _p[_i] : -1; }
+    size_t write(uint8_t) override { return 0; }               // тільки читання
+    size_t readBytes(char *buf, size_t len) override {
+        size_t left = _n - _i;
+        if (len > left) len = left;
+        memcpy(buf, _p + _i, len);
+        _i += len;
+        return len;
+    }
+  private:
+    const uint8_t *_p;
+    size_t _n, _i;
+};
+
 void handleRoot() {
-    File file = SPIFFS.open("/index.html", "r");
-    if (!file) {
-        server.send(404, "text/plain", "File not found");
+    // 1) Файл у SPIFFS — якщо його туди свідомо поклали. Це шлях для розробки:
+    //    правити сторінку, не перепрошиваючи 1.3 МБ. Що саме лежить у файловій
+    //    системі, видно через /api/fs.
+    File file = SPIFFS.open("/index.html.gz", "r");
+    if (!file || !file.size()) file = SPIFFS.open("/index.html", "r");
+    // ⚑ І РОЗМІР ТЕЖ. Порожній (або нульовий) файл у файловій системі не сміє
+    //  перекривати вшиту сторінку: це рівно той білий екран, від якого ми
+    //  тікали, лише з іншого боку.
+    if (file && file.size()) {
+        wdtFeed();
+        server.streamFile(file, "text/html");   // .gz -> Content-Encoding додасть сам
+        file.close();
+        wdtFeed();
         return;
     }
-    server.streamFile(file, "text/html");
-    file.close();
+    // 2) Інакше — ВШИТА копія. Вона є завжди, і саме вона працює одразу після
+    //    прошивки: заливати щось окремо не треба.
+    //    Ідемо тим самим streamFile(), що й файл, — див. пояснення вище.
+    wdtFeed();
+    PgmPageStream page(PAGE_INDEX_GZ, PAGE_INDEX_GZ_LEN);
+    server.streamFile(page, "text/html");
+    wdtFeed();
+}
+
+// ⚑ ПЕРЕВІРКА «ВЕЛИКИЙ ОБСЯГ БЕЗ СТИСНЕННЯ».
+//  Коли мала сторінка відкривається, а велика ні, змінних рівно дві: РОЗМІР і
+//  СТИСНЕННЯ. Розділити їх можна лише дослідом, і ось він: цей потік віддає
+//  скільки завгодно звичайного тексту, без gzip і без жодного байта у флеші.
+//  Якщо він проходить, а сторінка ні — винне стиснення; якщо не проходить і
+//  він — винен розмір.
+class FillStream : public Stream {
+  public:
+    explicit FillStream(size_t n) : _n(n), _i(0) {}
+    size_t size() const { return _n; }
+    String name() const { return String("/bigtest.txt"); }
+    int available() override { return (int)(_n - _i); }
+    int read() override { return (_i < _n) ? (int)_byteAt(_i++) : -1; }
+    int peek() override { return (_i < _n) ? (int)_byteAt(_i) : -1; }
+    size_t write(uint8_t) override { return 0; }
+    size_t readBytes(char *buf, size_t len) override {
+        size_t left = _n - _i;
+        if (len > left) len = left;
+        for (size_t k = 0; k < len; k++) buf[k] = (char)_byteAt(_i + k);
+        _i += len;
+        return len;
+    }
+  private:
+    // Рядки по 64 символи: у потоці видно, де саме він обірвався.
+    static uint8_t _byteAt(size_t i) { return (i % 64 == 63) ? '\n' : (uint8_t)('0' + (i / 64) % 10); }
+    size_t _n, _i;
+};
+
+void handleBigTest() {
+    long n = server.hasArg("n") ? server.arg("n").toInt() : 120000;
+    if (n < 1000)   n = 1000;
+    if (n > 400000) n = 400000;
+    wdtFeed();
+    FillStream f((size_t)n);
+    server.streamFile(f, "text/plain");
+    wdtFeed();
+}
+
+// GET /lite — АВАРІЙНА СТОРІНКА НА КІЛЬКА КІЛОБАЙТ.
+//
+//  ⚑ Навіщо вона. Основна сторінка — це 90 КБ по радіо, і коли вона не
+//  доходить, у браузері порожньо: сказати, ЩО саме не спрацювало, нема кому.
+//  А маленька сторінка доходить майже завжди — і сама показує відбиток
+//  збірки, стан файлової системи й головні показники. Тобто відповідає на
+//  «чи та прошивка», «чи працює сервер» і «чи бачить пристрій АКБ» одразу, без
+//  послідовного порту. Заразом нею можна користуватись, поки велика не їде.
+//
+//  Тримається в коді рядком, а не файлом: у неї одне завдання — бути там, де
+//  все інше вже не працює.
+static const char PAGE_LITE[] PROGMEM =
+"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+"<title>Moto battery — lite</title>"
+"<style>body{font:14px system-ui;margin:12px;background:#12160f;color:#cfd6c4}"
+"b{color:#e8eddc}button{font:14px system-ui;padding:8px 14px;margin:4px 4px 4px 0;"
+"border:0;border-radius:8px;background:#3c5a2a;color:#fff}pre{white-space:pre-wrap;"
+"background:#1b2116;padding:8px;border-radius:8px;overflow-x:auto}a{color:#9fd07a}</style>"
+"<h2>Легка сторінка</h2>"
+"<p>Основна: <a href=/>/</a> &middot; дані: <a href=/api/info>/api/info</a> &middot; "
+"файли: <a href=/api/fs>/api/fs</a></p>"
+"<button onclick=\"go('/api/read')\">Зчитати АКБ</button>"
+"<button onclick=\"load()\">Оновити</button>"
+"<button onclick=\"probe('/')\">Перевірити основну</button>"
+"<button onclick=\"probe('/bigtest')\">Перевірити великий обсяг</button>"
+"<pre id=o>завантаження…</pre>"
+"<script>"
+"async function j(u){const r=await fetch(u);return await r.json();}"
+"async function load(){const o=document.getElementById('o');try{"
+"const f=await j('/api/fs');let t='збірка: '+(f.build||'—')"
+"+'\\nсторінка в прошивці: '+(f.page?f.page.embedded:'—')+' Б'"
+"+(f.gzCrcOk===false?' ⚠ БЛОК ПОБИТИЙ':'')"
+"+(f.page&&f.page.override?' (перекрита файлом зі SPIFFS)':'')"
+"+'\\nSPIFFS: '+f.used+' з '+f.total+' Б, файлів '+f.files.length;"
+"try{const d=await j('/api/info');t+='\\n\\nмодель: '+(d.model||'—')+'\\nзаряд: '+(d.capacity!=null?d.capacity+' %':'—')"
+"+'\\nоригінал: '+(d.genuine?'так':'ні')+(d.authReason?(' ('+d.authReason+')'):'');}"
+"catch(e){t+='\\n\\n/api/info: '+e.message;}"
+"o.textContent=t;}catch(e){o.textContent='помилка: '+e.message;}}"
+"async function go(u){const o=document.getElementById('o');o.textContent='…';"
+"try{await j(u);}catch(e){}load();}"
+// ⚑ Дослід, який відповідає замість здогадів: скільки байтів РЕАЛЬНО дійшло
+//  проти того, що обіцяв заголовок. Для стиснутої відповіді content-length —
+//  це стиснутий розмір, а blob.size — розпакований; обидва числа корисні.
+"async function probe(u){const o=document.getElementById('o');o.textContent='перевіряю '+u+' …';"
+"const t=Date.now();try{const r=await fetch(u,{cache:'no-store'});"
+"const cl=r.headers.get('content-length'),ce=r.headers.get('content-encoding');"
+"const b=await r.blob();"
+"o.textContent=u+': HTTP '+r.status+'\\nобіцяно (content-length): '+(cl||'—')"
+"+'\\nотримано насправді: '+b.size+' Б'+'\\nкодування: '+(ce||'без стиснення')"
+"+'\\nчас: '+(Date.now()-t)+' мс';"
+"}catch(e){o.textContent=u+': ПОМИЛКА — '+e.message+'\\nчас: '+(Date.now()-t)+' мс';}}"
+"load();"
+"</script>";
+
+void handleLite() {
+    server.send_P(200, "text/html", PAGE_LITE, strlen_P(PAGE_LITE));
+}
+
+// GET /api/fs — що насправді лежить у SPIFFS.
+//  Дрібниця, але саме її бракувало, коли сторінка не відкривалась: без
+//  послідовного порту не було як побачити, чи доїхала тека data/ у пристрій.
+void handleFsList() {
+    // ⚑ ВІДБИТОК ЗБІРКИ — ПЕРШИМ. Без нього неможливо відповісти на найперше
+    //  питання будь-якого розбору: а чи та прошивка взагалі в пристрої? Дата
+    //  й час компіляції підставляє компілятор, тож збігтися випадково вони не
+    //  можуть. Поруч — звідки береться сторінка й скільки її.
+    String j = "{\"build\":\"" __DATE__ " " __TIME__ "\"";
+    // ⚑ САМОПЕРЕВІРКА ВШИТОЇ СТОРІНКИ. Рахуємо CRC32 масиву прямо у флеші й
+    //  порівнюємо з числом, яке поклав генератор. Якщо сторінка не
+    //  відкривається, це одразу розділяє два зовсім різні випадки: «блок у
+    //  флеші побитий» і «блок цілий, але не доїжджає по мережі».
+    uint32_t c = 0xFFFFFFFFu;
+    for (size_t i = 0; i < PAGE_INDEX_GZ_LEN; i++) {
+        c ^= pgm_read_byte(PAGE_INDEX_GZ + i);
+        for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320u & (-(int32_t)(c & 1)));
+    }
+    c ^= 0xFFFFFFFFu;
+    j += ",\"gzCrcOk\":"; j += (c == PAGE_INDEX_GZ_CRC) ? "true" : "false";
+    j += ",\"page\":{\"embedded\":"; j += (uint32_t)PAGE_INDEX_GZ_LEN;
+    j += ",\"override\":";
+    j += (SPIFFS.exists("/index.html.gz") || SPIFFS.exists("/index.html")) ? "true" : "false";
+    j += "}";
+    j += ",\"total\":";      j += (uint32_t)SPIFFS.totalBytes();
+    j += ",\"used\":";        j += (uint32_t)SPIFFS.usedBytes();
+    j += ",\"files\":[";
+    File dir = SPIFFS.open("/");
+    bool first = true;
+    for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+        if (!first) j += ",";
+        first = false;
+        j += "{\"name\":\""; j += f.name();
+        j += "\",\"size\":";  j += (uint32_t)f.size(); j += "}";
+    }
+    j += "]}";
+    server.send(200, "application/json", j);
 }
 
 // Читання обох мікросхем (DS2433 + DS2438) з збереженням в SPIFFS і на дисплей.
@@ -188,8 +405,32 @@ bool readAllChips(bool &ok2433, bool &ok2438) {
     }
 
     char st[40];
-    if (ok2433 || ok2438) snprintf(st, sizeof(st), "ЧИТ 2433:%s 2438:%s", ok2433 ? "OK" : "-", ok2438 ? "OK" : "-");
-    else                  snprintf(st, sizeof(st), "ПОМИЛКА: нема чіпа");
+    if (ok2433 || ok2438) {
+        snprintf(st, sizeof(st), "ЧИТ 2433:%s 2438:%s", ok2433 ? "OK" : "-", ok2438 ? "OK" : "-");
+    } else {
+        // ⚑ «Нема чіпа» — це ВИСНОВОК ПРО ПАКЕТ, і робити його, не перевіривши
+        // власну обв'язку, не можна: коротке на землю в лінії enable/підтяжки
+        // дає рівно ту саму картину. Перевіряємо лінію й називаємо винного.
+        // ⚑ «Нема чіпа» — це висновок ПРО ПАКЕТ, і робити його, не перевіривши
+        // власну обв'язку, не можна: відсутня підтяжка, коротке на землю чи
+        // відсутня спільна земля дають рівно ту саму картину. Спершу питаємо
+        // залізо, і лише якщо воно справне — звинувачуємо пакет.
+        uint8_t enl = battery.enableLineCheck();
+        uint8_t bus = battery.busLineCheck();
+        if (bus == BatteryReader::BUS_NO_EXT_PULLUP) {
+            snprintf(st, sizeof(st), "ПОМИЛКА: нема підтяжки 4.7к");
+        } else if (bus == BatteryReader::BUS_NO_PULLUP) {
+            snprintf(st, sizeof(st), "ПОМИЛКА: лінія даних (GPIO%d)", (int)DS_PIN);
+        } else if (enl != BatteryReader::ENL_OK) {
+            snprintf(st, sizeof(st), "ПОМИЛКА: enable (GPIO%d)", (int)PULLUP_PIN);
+        } else {
+            snprintf(st, sizeof(st), "ПОМИЛКА: нема чіпа");
+        }
+        if (enl != BatteryReader::ENL_OK)
+            Serial.printf("ЧИТАННЯ: %s\n", BatteryReader::enableLineText(enl));
+        if (bus != BatteryReader::BUS_OK)
+            Serial.printf("ЧИТАННЯ: %s\n", BatteryReader::busLineText(bus));
+    }
     displayShow(st);
 
     ledSet((ok2433 || ok2438) ? LED_OK : LED_ERROR);
@@ -280,6 +521,267 @@ void handleUploadDump2438() {
         Serial.println("DS2438 upload aborted!");
     }
 }
+
+#ifdef DISPLAY_SPLASH_SPIFFS
+#ifdef DISPLAY_SPLASH_JPEG
+#include <TJpg_Decoder.h>   // приймальник сам питає розміри JPEG (getFsJpgSize),
+                            // тож залежність його власна, а не успадкована
+#endif
+#include "splash.h"   // явно, а не транзитом через display.h: приймальник
+                      // мусить розбирати заголовок ТИМ САМИМ кодом, що й
+                      // дисплей, і залежати тут від чужого include не варто
+// ── ЗАВАНТАЖЕННЯ КОЛЬОРОВОЇ ЗАСТАВКИ У SPIFFS ─────────────────────────────
+//  Формат і перевірка — у splash.h (той самий код, що читає її дисплей і
+//  ганяє хостовий тест). Тут — приймання й запис.
+static bool     g_splashUpOpen = false;
+static uint32_t g_splashUpBytes = 0;
+static bool     g_splashUpOverflow = false;
+
+void handleUploadSplash() {
+    static File up;
+    HTTPUpload &u = server.upload();
+
+    if (u.status == UPLOAD_FILE_START) {
+        Serial.printf("\n=== Splash upload started: %s ===\n", u.filename.c_str());
+        if (up) { up.close(); delay(20); }
+        // ⚑ ПИШЕМО У ТИМЧАСОВИЙ ФАЙЛ, а не одразу в бойовий. Приймання може
+        //  обірватись посеред передачі, і затерти робочу заставку недописаним
+        //  шматком означало б зламати те, що працювало, — при спробі, яка
+        //  навіть не дійшла до кінця. Перейменуємо лише після перевірки.
+        if (SPIFFS.exists(DISPLAY_SPLASH_PATH ".tmp")) SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+        up = SPIFFS.open(DISPLAY_SPLASH_PATH ".tmp", "w");
+        g_splashUpOpen = (bool)up;
+        g_splashUpBytes = 0;
+        g_splashUpOverflow = false;
+        if (!up) Serial.println("Splash: не вдалося створити тимчасовий файл");
+
+    } else if (u.status == UPLOAD_FILE_WRITE) {
+        // Стелю перевіряємо НА ХОДУ, а не наприкінці: інакше надто великий
+        // файл спершу заповнив би SPIFFS (витіснивши index.html), і лише
+        // потім був би відхилений.
+        if (up && !g_splashUpOverflow) {
+            if (g_splashUpBytes + u.currentSize > (uint32_t)DISPLAY_SPLASH_MAX_BYTES) {
+                // (стеля сирого формату; для JPEG діє менша — перевіряється
+                //  після приймання, коли вже відомий тип файла)
+                g_splashUpOverflow = true;
+                up.close(); up = File();
+                SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+                Serial.println("Splash: файл більший за стелю — приймання припинено");
+            } else {
+                up.write(u.buf, u.currentSize);
+                g_splashUpBytes += u.currentSize;
+            }
+        }
+
+    } else if (u.status == UPLOAD_FILE_END) {
+        if (up) { up.flush(); up.close(); delay(30); }
+        Serial.printf("Splash upload finished (%lu bytes)\n", (unsigned long)g_splashUpBytes);
+
+    } else if (u.status == UPLOAD_FILE_ABORTED) {
+        if (up) up.close();
+        SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+        Serial.println("Splash upload aborted!");
+    }
+}
+
+void handleUploadSplashDone() {
+    if (g_splashUpOverflow) {
+        char m[160];
+        snprintf(m, sizeof(m),
+                 "{\"status\":\"error\",\"message\":\"Файл більший за стелю %lu байтів\"}",
+                 (unsigned long)DISPLAY_SPLASH_MAX_BYTES);
+        server.send(400, "application/json", m);
+        return;
+    }
+    if (!SPIFFS.exists(DISPLAY_SPLASH_PATH ".tmp")) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Файл не прийнято\"}");
+        return;
+    }
+
+    // Перевіряємо ТИМЧАСОВИЙ файл тим самим розбором, що й дисплей. Один код
+    // на приймання й на показ — інакше рано чи пізно приймальник почне
+    // пропускати те, чого дисплей не покаже.
+    File f = SPIFFS.open(DISPLAY_SPLASH_PATH ".tmp", "r");
+    uint8_t hdr[SPLASH_HDR_BYTES];
+    size_t  nHdr = f ? f.read(hdr, sizeof(hdr)) : 0;
+    size_t  sz   = f ? f.size() : 0;
+    uint16_t w = 0, h = 0;
+    // ⚑ ТИП — ЗА МАГІЄЮ, а не за розширенням чи полем форми: розширення
+    //  бреше, перші байти — ні.
+    int kind = splashSniff(hdr, nHdr);
+    if (f) f.close();
+
+#ifdef DISPLAY_SPLASH_JPEG
+    if (kind == SPLASH_KIND_JPEG) {
+        // Для JPEG діє власна, менша стеля: сенс формату — саме економія
+        // місця, і файл на сотні кілобайтів означає або фотографію в повній
+        // роздільності, або взагалі не те, що мали на увазі.
+        if (sz > (size_t)DISPLAY_SPLASH_JPG_MAX_BYTES) {
+            SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+            char m[180];
+            snprintf(m, sizeof(m),
+                     "{\"status\":\"error\",\"message\":\"JPEG більший за %lu КБ — стисніть сильніше\"}",
+                     (unsigned long)DISPLAY_SPLASH_JPG_MAX_BYTES / 1024UL);
+            server.send(400, "application/json", m);
+            return;
+        }
+        // Розміри питаємо в декодера, не декодуючи кадр цілком. Це ще й
+        // перевірка «а чи це справді JPEG»: магія збігтись може випадково,
+        // а розібрати заголовок сміття декодер не зможе.
+        uint16_t jw = 0, jh = 0;
+        if (TJpgDec.getFsJpgSize(&jw, &jh, DISPLAY_SPLASH_PATH ".tmp", SPIFFS) != JDR_OK) {
+            SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+            server.send(400, "application/json",
+                        "{\"status\":\"error\",\"message\":\"Файл починається як JPEG, але декодер його не розібрав\"}");
+            return;
+        }
+        // ⚑ ЗАВЕЛИКЕ НЕ ВІДХИЛЯЄМО — пристрій зменшить сам, кратно 2, зі
+        //  збереженням пропорцій (splashJpegScaleFor у splash.h). Відмова
+        //  лишається тільки там, де не рятує навіть /8.
+        uint8_t sc = splashJpegScaleFor(jw, jh, TFT_W, TFT_H);
+        if (!sc) {
+            SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+            char m[240];
+            snprintf(m, sizeof(m),
+                     "{\"status\":\"error\",\"message\":\"JPEG %ux%u більший за екран %dx%d понад увосьмеро — "
+                     "зменшити кратно 2 вже не вийде. Зменште зображення заздалегідь\"}",
+                     jw, jh, (int)TFT_W, (int)TFT_H);
+            server.send(400, "application/json", m);
+            return;
+        }
+        // Приймаємо. Інший формат прибираємо: два файли поруч означали б, що
+        // «поточна заставка» — питання порядку перевірок, а не вибору людини.
+        if (SPIFFS.exists(DISPLAY_SPLASH_JPG_PATH)) SPIFFS.remove(DISPLAY_SPLASH_JPG_PATH);
+        if (!SPIFFS.rename(DISPLAY_SPLASH_PATH ".tmp", DISPLAY_SPLASH_JPG_PATH)) {
+            SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+            server.send(500, "application/json",
+                        "{\"status\":\"error\",\"message\":\"Не вдалося зберегти у SPIFFS\"}");
+            return;
+        }
+        if (SPIFFS.exists(DISPLAY_SPLASH_PATH)) SPIFFS.remove(DISPLAY_SPLASH_PATH);
+        uint16_t dw = splashScaled(jw, sc), dh = splashScaled(jh, sc);
+        Serial.printf("Splash JPEG збережено: %ux%u, %u байтів%s\n", jw, jh, (unsigned)sz,
+                      sc == 1 ? "" : " (буде зменшено при показі)");
+        char m[300];
+        snprintf(m, sizeof(m),
+                 "{\"status\":\"success\",\"kind\":\"jpeg\",\"w\":%u,\"h\":%u,\"scale\":%u,\"bytes\":%u,"
+                 "\"message\":\"JPEG %ux%u збережено%s — буде видно при наступному запуску\"}",
+                 dw, dh, sc, (unsigned)sz, jw, jh,
+                 sc == 1 ? "" : " і буде зменшено до розміру екрана (пропорції збережено)");
+        server.send(200, "application/json", m);
+        return;
+    }
+#else
+    if (kind == SPLASH_KIND_JPEG) {
+        SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Ця прошивка зібрана без підтримки JPEG "
+                    "(DISPLAY_SPLASH_JPEG). Надішліть підготовлений .bin\"}");
+        return;
+    }
+#endif
+
+    int rc = splashParse(hdr, nHdr, sz, TFT_W, TFT_H, &w, &h);
+    if (rc != SPLASH_OK) {
+        SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+        char m[220];
+        snprintf(m, sizeof(m),
+                 "{\"status\":\"error\",\"message\":\"%s (екран %dx%d)\"}",
+                 splashErrText(rc), (int)TFT_W, (int)TFT_H);
+        Serial.printf("Splash ВІДХИЛЕНО: %s (%u байтів)\n", splashErrText(rc), (unsigned)sz);
+        server.send(400, "application/json", m);
+        return;
+    }
+
+    // Аж тепер підміняємо бойовий файл — і прибираємо інший формат, щоб
+    // «поточна заставка» не залежала від порядку перевірок при показі.
+    if (SPIFFS.exists(DISPLAY_SPLASH_PATH)) SPIFFS.remove(DISPLAY_SPLASH_PATH);
+#ifdef DISPLAY_SPLASH_JPEG
+    if (SPIFFS.exists(DISPLAY_SPLASH_JPG_PATH)) SPIFFS.remove(DISPLAY_SPLASH_JPG_PATH);
+#endif
+    if (!SPIFFS.rename(DISPLAY_SPLASH_PATH ".tmp", DISPLAY_SPLASH_PATH)) {
+        SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+        server.send(500, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Не вдалося зберегти у SPIFFS\"}");
+        return;
+    }
+
+    Serial.printf("Splash збережено: %ux%u, %u байтів\n", w, h, (unsigned)sz);
+    char m[200];
+    snprintf(m, sizeof(m),
+             "{\"status\":\"success\",\"w\":%u,\"h\":%u,\"bytes\":%u,"
+             "\"message\":\"Заставку збережено — буде видно при наступному запуску\"}",
+             w, h, (unsigned)sz);
+    server.send(200, "application/json", m);
+}
+
+// Стан заставки: чи є файл, які розміри, скільки місця лишилось.
+void handleSplashInfo() {
+    uint16_t w = 0, h = 0; size_t sz = 0; int rc = SPLASH_ERR_SHORT;
+    const char *kind = "none";
+    bool present = false;
+#ifdef DISPLAY_SPLASH_JPEG
+    if (SPIFFS.exists(DISPLAY_SPLASH_JPG_PATH)) {
+        present = true; kind = "jpeg";
+        File jf = SPIFFS.open(DISPLAY_SPLASH_JPG_PATH, "r");
+        if (jf) { sz = jf.size(); jf.close(); }
+        uint16_t jw = 0, jh = 0;
+        uint8_t sc = 0;
+        if (TJpgDec.getFsJpgSize(&jw, &jh, DISPLAY_SPLASH_JPG_PATH, SPIFFS) == JDR_OK &&
+            (sc = splashJpegScaleFor(jw, jh, TFT_W, TFT_H)) != 0) {
+            w = splashScaled(jw, sc); h = splashScaled(jh, sc); rc = SPLASH_OK;
+        } else rc = SPLASH_ERR_MAGIC;
+    } else
+#endif
+    if (SPIFFS.exists(DISPLAY_SPLASH_PATH)) {
+        present = true; kind = "raw";
+        File f = SPIFFS.open(DISPLAY_SPLASH_PATH, "r");
+        if (f) {
+            uint8_t hdr[SPLASH_HDR_BYTES];
+            size_t n = f.read(hdr, sizeof(hdr));
+            sz = f.size();
+            rc = splashParse(hdr, n, sz, TFT_W, TFT_H, &w, &h);
+            f.close();
+        }
+    }
+    size_t total = SPIFFS.totalBytes(), used = SPIFFS.usedBytes();
+#ifdef DISPLAY_SPLASH_JPEG
+    const bool jpegOk = true;
+    const unsigned long jpgMax = (unsigned long)DISPLAY_SPLASH_JPG_MAX_BYTES;
+#else
+    const bool jpegOk = false;
+    const unsigned long jpgMax = 0;
+#endif
+    char j[420];
+    snprintf(j, sizeof(j),
+             "{\"present\":%s,\"ok\":%s,\"kind\":\"%s\",\"jpeg\":%s,"
+             "\"w\":%u,\"h\":%u,\"bytes\":%u,"
+             "\"panelW\":%d,\"panelH\":%d,\"maxBytes\":%lu,\"jpgMaxBytes\":%lu,"
+             "\"fsFree\":%lu,\"err\":\"%s\"}",
+             present ? "true" : "false",
+             rc == SPLASH_OK ? "true" : "false",
+             kind, jpegOk ? "true" : "false",
+             w, h, (unsigned)sz, (int)TFT_W, (int)TFT_H,
+             (unsigned long)DISPLAY_SPLASH_MAX_BYTES, jpgMax,
+             (unsigned long)(total > used ? total - used : 0),
+             rc == SPLASH_OK ? "" : splashErrText(rc));
+    server.send(200, "application/json", j);
+}
+
+// Прибрати завантажену заставку — повернутись до типової.
+void handleSplashDelete() {
+    bool had = SPIFFS.exists(DISPLAY_SPLASH_PATH);
+    if (had) SPIFFS.remove(DISPLAY_SPLASH_PATH);
+#ifdef DISPLAY_SPLASH_JPEG
+    if (SPIFFS.exists(DISPLAY_SPLASH_JPG_PATH)) { SPIFFS.remove(DISPLAY_SPLASH_JPG_PATH); had = true; }
+#endif
+    SPIFFS.remove(DISPLAY_SPLASH_PATH ".tmp");
+    server.send(200, "application/json",
+                had ? "{\"status\":\"success\",\"message\":\"Заставку прибрано — буде типова\"}"
+                    : "{\"status\":\"success\",\"message\":\"Завантаженої заставки не було\"}");
+}
+#endif  // DISPLAY_SPLASH_SPIFFS
 
 // обробник запиту /upload2438 (fn): надсилає відповідь після приймання файлу.
 void handleUploadDone2438() {
@@ -431,6 +933,14 @@ void handleDumpInfo2438() {
     json += ",\"emptyMv\":" + String(BATTERY_EMPTY_MV);
     json += ",\"fullMv\":"  + String(BATTERY_FULL_MV);
     json += ",\"scaleTxt\":\"" BATTERY_SCALE_TXT "\"";
+    // ⚑ Ім'я силової частини теж віддає ПРИСТРІЙ. Клієнти тримали його
+    //  рядком у себе («PNP B772M»), і після заміни на P-MOSFET усі троє
+    //  почали називати чуже залізо. Тепер назва одна — з settings.h.
+    //  А з появою другої топології туди ж переїхав і ВЕСЬ опис: на платі
+    //  TL494 в клієнтському абзаці про дросель і шунт неправдою є кожне
+    //  слово, тож писати його в клієнті стало неможливо в принципі.
+    json += ",\"swName\":\"" CHARGE_STAGE_NAME "\"";
+    json += ",\"chgHwTxt\":\"" CHARGE_STAGE_TXT "\"";
     // ETM (DS2438[8..11], сек наробітку). Рація показує «дату першого користування»
     // як (свій поточний час − ETM) — перевірено діффом до/після калібрування.
     uint32_t etm = ((uint32_t)batteryDump2438[11] << 24) | ((uint32_t)batteryDump2438[10] << 16) |
@@ -450,6 +960,20 @@ void handleDumpInfo2438() {
         json += ",\"bms\":{\"kit\":\"" + String(bms.kit) + "\"";
         json += ",\"cycles\":" + String(bms.cycles);
         json += ",\"nonImpresCycles\":" + String(bms.nonImpresCycles);
+        // ⚑ НАРОБІТОК, ЗАПИСАНИЙ У САМОМУ ПАКЕТІ. Ці два числа лежать у DS2433
+        //  (блок NONSMART, зсуви +3 і +5) у тих самих сирих одиницях, що й
+        //  монітор, — і саме звідти зарядна станція відновлює лічильники
+        //  DS2438 після кожного сеансу. Доти їх не було видно НІДЕ, і питання
+        //  «чому після скидання цикли повернулись» доводилось з'ясовувати за
+        //  hex-дампом. Тепер видно очима: після скидання тут мусять бути нулі,
+        //  а якщо після зарядки знову з'явились числа — станція взяла їх тут.
+        {
+            uint16_t hC = 0, hD = 0;
+            if (impresBmsHistCounters(batteryDump, &hC, &hD)) {
+                json += ",\"histCca\":" + String(hC);
+                json += ",\"histDca\":" + String(hD);
+            }
+        }
         json += ",\"haveKey\":" + String(bms.haveKey ? 1 : 0);
         json += ",\"keyGuessed\":" + String(bms.keyGuessed ? 1 : 0);
         if (bms.haveKey) {
@@ -460,9 +984,25 @@ void handleDumpInfo2438() {
             json += ",\"calCycles\":" + String(bms.calCycles);
             json += ",\"reverts\":" + String(bms.reverts);
             json += ",\"topOffCycles\":" + String(bms.topOffCycles);
+            // ⚑ НЕПРАВДОПОДІБНУ ДАТУ НЕ ВІДДАЄМО ЯК ДАТУ. Блок DATE
+            //  розшифровується ключем із ROM, і коли він побитий (або чип
+            //  прошито чужим інструментом), звідти виходить, приміром,
+            //  «2072-14-22» — місяць 14, день 22. Показати таке значенням
+            //  означає видати сміття за факт: людина побачить дату й почне з
+            //  неї міркувати. Клієнту йде окремий прапорець, а сама дата — ні.
+            bool mfgOk = impresBmsDateSane(bms.mfgY, bms.mfgM, bms.mfgD);
+            json += ",\"mfgDateOk\":" + String(mfgOk ? 1 : 0);
             char d[12];
-            snprintf(d, sizeof(d), "%04d-%02d-%02d", bms.mfgY, bms.mfgM, bms.mfgD);
-            json += ",\"mfgDate\":\"" + String(d) + "\"";
+            if (mfgOk) {
+                snprintf(d, sizeof(d), "%04d-%02d-%02d", bms.mfgY, bms.mfgM, bms.mfgD);
+                json += ",\"mfgDate\":\"" + String(d) + "\"";
+            }
+            // ⚑ І ДРУГА ПОЛОВИНА ТІЄЇ Ж БІДИ. Дата першого користування
+            //  рахується ВІД дати виготовлення, тож при побитій даті вона
+            //  просто не рахується. Клієнт показував тоді «пакет ще не
+            //  вмикався» — а це зовсім інше твердження, і хибне: пакет із
+            //  1421 циклом вмикали, і не раз. Розрізняємо явно.
+            json += ",\"firstUseKnown\":" + String(bms.useY ? 1 : 0);
             if (bms.useY) {
                 snprintf(d, sizeof(d), "%04d-%02d-%02d", bms.useY, bms.useM, bms.useD);
                 json += ",\"firstUseDate\":\"" + String(d) + "\"";
@@ -748,12 +1288,60 @@ void handleDumpInfo() {
 // (напр. 0x09B7=2487 ≈ мА·год), а не лічильники (у відкаліброваного дампа з
 // CCA=2310 там було 6, тобто це не CCA). Обнуління ламало калібрування —
 // рація казала «невідома», а зарядка бачила «заряджений» і не заряджала.
-void resetBatteryData() {
+//
+// ⚑ І ГОЛОВНЕ — СКИДАННЯ ТЕПЕР УЗГОДЖЕНЕ МІЖ ДВОМА ЧИПАМИ.
+//  Скарга власника: «повністю робочий акумулятор після обнулення лічильників,
+//  напрацювання, вироблення перестає бачитись як оригінальний». Причина була
+//  саме тут. Ми обнуляли лічильники ЛИШЕ в DS2438, а DS2433 лишався як був —
+//  із датою першого користування, з гістограмою на сотні циклів, із
+//  лічильником калібрувань. Пакет після цього розповідав про себе дві
+//  несумісні речі одночасно:
+//
+//      DS2433: «мене вмикали тоді-то, я пройшов 1097 циклів»
+//      DS2438: «я не пропрацював жодної секунди й не прийняв жодного мА·год»
+//
+//  Такого пакета не буває. У корпусі dumps/ з 52 цілих фірмових ETM дорівнює
+//  нулю рівно у ДВОХ — обидва з 08-nova-batareya, тобто саме з того випадку,
+//  коли рація сказала «невідомий акумулятор»; у решти 50 напрацювання — сотні
+//  мільйонів секунд. Провал 08 списували на чужий навчений хвіст, і це теж
+//  правда, але дефекту там два, і другий — оцей.
+//
+//  Тепер обнуляємо ОБИДВА боки або жоден: історію в DS2433 скидає
+//  impresHistoryZero() під ключем ЦЬОГО чипа (impres_crypt.h), зберігаючи дату
+//  виготовлення — вона справжня й одна-єдина, затирати її нема за що.
+//
+//  ⚠️ Без ROM-ID чипа зашифровану історію переписати нічим. Тоді не чіпаємо
+//  НІЧОГО: пакет із просто старими лічильниками нікому не шкодить, а пакет із
+//  розсинхронізованими чипами рація відкидає. Повертає false — викликач мусить
+//  сказати про це користувачеві, а не вдавати успіх.
+bool resetBatteryData() {
+    // Спершу з'ясовуємо, чи зможемо привести до ладу DS2433: якщо ні, монітор
+    // теж лишається недоторканим. Порядок саме такий, щоб не було стану
+    // «монітор уже обнулили, а на DS2433 не вистачило ключа».
+    bool can33 = hasDump && hasSN2433;
+    if (hasDump && !can33) {
+        Serial.println("RESET: ROM-ID DS2433 невідомий — історію в DS2433 переписати "
+                       "нічим. Лічильники НЕ чіпаємо: обнулений монітор проти повного "
+                       "історії DS2433 — це стан, який рація читає як «невідомий АКБ».");
+        return false;
+    }
+    // Відмова тут означає, що гістограму циклів обнулити не вдалось (блок не
+    // тієї довжини). Монітор у такому разі теж не чіпаємо — інакше вийде та
+    // сама суперечність, лише з іншого боку.
+    if (can33 && !impresHistoryZero(batteryDump, chipSN2433)) {
+        Serial.println("RESET: історію в DS2433 обнулити не вдалось (блок гістограми "
+                       "не тієї довжини). Монітор НЕ чіпаємо — розсинхронізований "
+                       "пакет гірший за пакет зі старими лічильниками.");
+        return false;
+    }
     if (hasDump2438) {
-        for (int i = 8; i <= 11; i++) batteryDump2438[i] = 0; // ETM (таймер)
+        // ETM разом із мітками подій: без них станція повертає старий
+        // наробіток із мітки (доказ — dumps/13, див. impresSetEtm).
+        impresSetEtm(batteryDump2438, 0);
         batteryDump2438[60] = batteryDump2438[61] = 0;         // CCA
         batteryDump2438[62] = batteryDump2438[63] = 0;         // DCA
     }
+    return true;
     // ⚠️ Раніше тут «ставили здоров'я 100%»: у першому записі довжини 0x17
     // байту +21 присвоювали 0x64 і перераховували суму. Це було двічі хибно.
     // По-перше, запис шукали як «тег 0x17 + 0x00», хоча перший байт — довжина.
@@ -766,13 +1354,124 @@ void resetBatteryData() {
 
 // Ядро скидання: редагує дампи, пише в обидві мікросхеми, зберігає. Без HTTP —
 // викликається і з веб-обробника, і з меню на дисплеї (по кнопкам).
+// ── ПОЛАГОДИТИ ПОБИТИЙ ЛІЧИЛЬНИК РОЗРЯДУ МОНІТОРА ─────────────────────────
+//  Уся арифметика й усі умови — в impres_bms.h (їх ганяє хостовий тест); тут
+//  лишається те, чого на хості немає: сам чіп і запис у нього.
+//
+//  ⚑ ПИШЕМО РІВНО ДВА БАЙТИ ЗМІСТУ. Скидання лічильників (performReset)
+//  обнуляє ETM, CCA, DCA й паливомір — на пакеті з 191 законним циклом заряду
+//  це втрата історії заради однієї зіпсованої комірки. Тут правиться саме та
+//  комірка, решта монітора лишається як була.
+// План правок складає функція, визначена нижче: оголошуємо наперед, щоб не
+// тягти сюди весь її блок — крок Майстра живе поруч із рештою правок пакета.
+static bool buildRestorePlanFor(const char *model, RestorePlan &p, bool refresh);
+
+// ── УЗГОДИТИ НАРОБІТОК МОНІТОРА З ДАТОЮ, ЗАПИСАНОЮ В ПАКЕТІ ───────────────
+//  Вирок і арифметика — у restore_plan.h (їх ганяє хостовий тест); тут лише
+//  те, чого на хості немає: буфери, чип і запис у нього.
+//
+//  ⚑ РАЗОМ ІЗ МІТКАМИ ПОДІЙ. Наробіток лежить не лише в самому лічильнику: у
+//  сторінці 2 монітора є мітки «відключення» й «кінець заряду», і станція
+//  вміє відновити старе число з них. Тому пишемо через impresSetEtm(), який
+//  знає про всі три місця, а не в один регістр.
+bool performEtmFix(String *note) {
+    auto say = [&](const char *m) { if (note) *note = m; };
+    if (!hasDump2438) { say("Немає читання монітора DS2438"); return false; }
+    if (!hasDump)     { say("Потрібен DS2433: дата першого запуску записана в ньому"); return false; }
+    char model[16] = "";
+    if (!impresModelName(batteryDump, model, sizeof(model))) {
+        say("Модель пакета не читається — плану не скласти"); return false;
+    }
+    RestorePlan p;
+    if (!buildRestorePlanFor(model, p, false)) {
+        say("Для цієї моделі немає вшитого еталона — плану не скласти"); return false;
+    }
+    restorePlanSetEtmSource(p, true);          // рахувати з дати першого запуску
+    uint32_t etm = 0; char why[176] = "";
+    if (!restoreEtmFixPlan(p, &etm, why, sizeof(why))) {
+        // Мовчазна відмова тут була б найгіршою: натиснув крок, нічого не
+        // сталось, і незрозуміло — полагодилось чи ні. Текст уже несе числа,
+        // з яких складено вирок, тож розбір не потребує другого заходу.
+        say(why[0] ? why : "Узгоджувати наробіток нема з чим");
+        Serial.printf("=== ETM fix SKIPPED: %s ===\n", why);
+        return false;
+    }
+    uint32_t before = impresEtm(batteryDump2438);
+    ledSet(LED_WRITE);
+    displayShow("ПРАВКА ETM...");
+    Serial.printf("\n=== ETM fix: %lu -> %lu c (з дати першого запуску) ===\n",
+                  (unsigned long)before, (unsigned long)etm);
+    impresSetEtm(batteryDump2438, etm);
+    if (!battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE)) {
+        // Дамп у пам'яті вже змінено, а чіп — ні. Повертаємо як було, інакше
+        // інтерфейс показував би узгоджене там, де запис не пройшов.
+        impresSetEtm(batteryDump2438, before);
+        say("Запис у монітор не пройшов — значення повернуто як було");
+        ledSet(LED_ERROR);
+        return false;
+    }
+    saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+    char m[80];
+    snprintf(m, sizeof(m), "Наробіток узгоджено: %lu -> %lu діб",
+             (unsigned long)(before / 86400UL), (unsigned long)(etm / 86400UL));
+    say(m);
+    displayShow("ETM OK");
+    ledSet(LED_OK);
+    return true;
+}
+
+bool performDcaFix(String *note) {
+    auto say = [&](const char *m) { if (note) *note = m; };
+    if (!hasDump2438) { say("Немає читання монітора DS2438"); return false; }
+    if (!hasDump)     { say("Потрібен DS2433: значення береться з історії пакета"); return false; }
+
+    uint16_t before = (uint16_t)batteryDump2438[62] | ((uint16_t)batteryDump2438[63] << 8);
+    uint16_t wrote  = 0;
+    if (!impresBmsFixDcaFromHist(batteryDump, batteryDump2438, &wrote)) {
+        // Мовчазна відмова тут була б найгіршою: користувач натиснув крок,
+        // нічого не сталося, і незрозуміло — полагодилось чи ні.
+        say("Немає надійного джерела: історія пакета порожня, неправдоподібна "
+            "або попереду монітора (монітор обнулили навмисно). Нічого не записано");
+        Serial.println("=== DCA fix SKIPPED: історія пакета непридатна як джерело ===");
+        return false;
+    }
+
+    ledSet(LED_WRITE);
+    displayShow("ПРАВКА DCA...");
+    Serial.printf("\n=== DCA fix: монітор %u -> %u (з історії DS2433) ===\n", before, wrote);
+    if (!battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE)) {
+        // Дамп у пам'яті вже змінено, а чіп — ні. Повертаємо як було, інакше
+        // інтерфейс показував би полагоджене там, де запис не пройшов.
+        batteryDump2438[62] = (uint8_t)(before & 0xFF);
+        batteryDump2438[63] = (uint8_t)(before >> 8);
+        displayShow("ПОМИЛКА DCA");
+        ledSet(LED_ERROR);
+        say("Запис у DS2438 не пройшов — лічильник лишився як був");
+        return false;
+    }
+    saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+    displayShow("DCA OK");
+    ledSet(LED_OK);
+    if (note) *note = String("Лічильник розряду виправлено: ") + before + " -> " + wrote +
+                      " (з історії пакета). Решту лічильників не чіпали";
+    return true;
+}
+
 bool performReset() {
     if (!hasDump && !hasDump2438) { displayShow("СПОЧАТКУ ЧИТАЙ"); return false; }
 
     Serial.println("\n=== Battery reset (recalibration) ===");
     ledSet(LED_WRITE);
     displayShow("СКИДАННЯ...");
-    resetBatteryData();
+    // Відмова тут — НЕ дрібниця, яку можна проковтнути: скидання без ключа
+    // лишило б чипи розсинхронізованими, а це рівно те, через що пакет
+    // перестає впізнаватись. Краще нічого не записати й сказати чому.
+    if (!resetBatteryData()) {
+        displayShow("НЕМА ROM 2433");
+        ledSet(LED_ERROR);
+        Serial.println("=== Reset ABORTED: ROM-ID DS2433 невідомий ===\n");
+        return false;
+    }
 
     bool ok = true;
     if (hasDump)     ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
@@ -801,9 +1500,11 @@ bool performReset() {
 // (86 00 6C 00 56 00 …), а не «статистику». Її обнуління ламало АКБ (рація
 // «невідома»). Тепер очистка = безпечне скидання лічильників, без правки
 // калібрувальних записів.
-void factoryCleanData() {
-    resetBatteryData();                 // CCA/DCA/ETM у DS2438 + ємність 0x17 -> 100%
+bool factoryCleanData() {
+    // Лічильники в ОБОХ чипах або в жодному (див. resetBatteryData).
+    bool ok = resetBatteryData();
     if (hasDump) fixHeaderChecksum(batteryDump);
+    return ok;
 }
 
 // Стерти НАВЧЕНИЙ калібрувальний хвіст DS2433 (0x18A..0x1FF) — донорські/старі
@@ -887,7 +1588,14 @@ bool performFactoryClean() {
     if (!hasDump && !hasDump2438) { displayShow("СПОЧАТКУ ЧИТАЙ"); return false; }
     Serial.println("\n=== Factory clean (keep identity) ===");
     ledSet(LED_WRITE); displayShow("ОЧИСТКА...");
-    factoryCleanData();
+    // Те саме, що й у скиданні: без ключа DS2433 узгодженої очистки не вийде,
+    // а неузгоджена — це і є «пакет перестав впізнаватись».
+    if (!factoryCleanData()) {
+        displayShow("НЕМА ROM 2433");
+        ledSet(LED_ERROR);
+        Serial.println("=== Clean ABORTED: ROM-ID DS2433 невідомий ===\n");
+        return false;
+    }
     bool ok = true;
     if (hasDump)     ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
     if (hasDump2438) ok &= battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
@@ -1005,7 +1713,19 @@ inline bool performRecalPrepare() { return performRecalPrepare(false); }
 // операцію просто посеред циклу вимірювання.
 static void dischargeSettle(unsigned long ms) {
     unsigned long t0 = millis();
-    while (millis() - t0 < ms) { ledTask(); dischargeWatchdogFeed(); delay(1); }
+    // ⚑ ГОДУЄМО ОБИДВА СТОРОЖІ. Функцію кличе не лише розряд: chargeTask()
+    //  бере її ж на витримку перед виміром напруги. dischargeWatchdogFeed()
+    //  мовчки нічого не робить, коли розряд не йде, — тобто під час ЗАРЯДУ ця
+    //  пауза лишалась негодованою. Зараз вона коротка (10 мс) і до порога
+    //  сторожа не дотягує, але це збіг обставин, а не властивість коду:
+    //  варто комусь підняти CHARGE_VSENSE_SETTLE_MS — і пристрій почав би
+    //  перезавантажуватись саме на вимірі, тобто в найменш очікуваному місці.
+    while (millis() - t0 < ms) {
+        ledTask();
+        dischargeWatchdogFeed();
+        chargeWatchdogFeed();
+        delay(1);
+    }
 }
 
 // Зняти показання монітора під навантаженням. true — читання вдалось.
@@ -1068,6 +1788,8 @@ const char *dischargeStart(uint16_t targetMv) {
     battery.holdEnable(true);
     // Шунт саме цього пакета — від нього залежить і струм, і облік мА·год.
     g_dis.rsense = impresBmsRsense(batteryDump2438);
+    // Те саме, що в заряді: розумний профіль веде струм у частках C.
+    dischargeSetRatedMah((uint16_t)(hasDump ? impresRatedFromDump(batteryDump) : 0));
     dischargeWatchdog(true);            // сторож — лише на час розряду
 
     // Початкова шпаруватість — З РОЗРАХУНКУ, не 100 %. Інакше перші 5 секунд
@@ -1075,7 +1797,11 @@ const char *dischargeStart(uint16_t targetMv) {
     // від чого ми йдемо. Оцінка піка за законом Ома завищена, тож розрахована
     // шпаруватість свідомо занижена — стартуємо м'якше, ніж треба, а перший
     // вимір це виправить.
-    g_dis.setMa   = dischargeSetpointMa(mv, g_dis.targetMv);
+    // Уставку бере ОДНА функція — профіль (заводський/розумний) плюс ручна
+    // поправка. На старті температури ще немає (її дає перше опитування), тож
+    // tempFresh=false: розумний профіль поводиться як за нормальної
+    // температури, а вікно перевіриться першим же проходом.
+    g_dis.setMa   = dischargeSetpointFor(mv, g_dis.targetMv, 0, false, &g_dis.phase);
     g_dis.peakMa  = (uint16_t)dischargeExpectedMa(mv);
     g_dis.dutyPct = dischargeDutyFor(g_dis.peakMa, g_dis.setMa);
     loadDuty(g_dis.dutyPct);
@@ -1181,7 +1907,7 @@ inline void dischargeTask() {
     if (peak < (uint16_t)(est / 4)) peak = (uint16_t)est;
 
     g_dis.peakMa  = peak;
-    g_dis.setMa   = dischargeSetpointMa(mv, g_dis.targetMv);
+    g_dis.setMa   = dischargeSetpointFor(mv, g_dis.targetMv, t, okV, &g_dis.phase);
     g_dis.dutyPct = dischargeDutyFor(peak, g_dis.setMa);
     loadDuty(g_dis.dutyPct);
 
@@ -1203,12 +1929,19 @@ inline void dischargeTask() {
     // під знятим навантаженням струм ~0, а температуру беремо з того ж кроку.)
     (void)ma; (void)tLoaded;
     int sag = (int)mv - (int)mvLoaded;
+    // Слід у чорний ящик і тренд пам'яті — так само, як у заряду (postmortem.h).
+    pmStep(PM_STEP_REPORT);
+    pmNote(PM_MODE_DISCHARGE, g_dis.polls, g_dis.dutyPct, g_dis.lastMa, mv);
+
     Serial.printf("discharge: %u mV (sag %d mV), avg %d mA (peak %u, set %u, duty %u%%), "
-                  "%.1f W, %.1f C, %lu mAh (DCA %lu), ICA %u, %lus\n",
+                  "%.1f W, %.1f C, %lu mAh (DCA %lu), ICA %u, %lus, "
+                  "купа %lu/%lu, стек %lu\n",
                   mv, sag, g_dis.lastMa, g_dis.peakMa, g_dis.setMa, g_dis.dutyPct,
                   dischargeWattsX10(mv, g_dis.lastMa) / 10.0f, t / 10.0f,
                   (unsigned long)dischargeMah(), (unsigned long)dischargeDcaMah(),
-                  g_dis.lastIca, (unsigned long)g_dis.elapsedS);
+                  g_dis.lastIca, (unsigned long)g_dis.elapsedS,
+                  (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap(),
+                  (unsigned long)uxTaskGetStackHighWaterMark(NULL));
     dischargeMarkDirty(1);                 // нові показання -> оновити екран
 
     if (mv <= DISCHARGE_HARD_MIN_MV) {
@@ -1226,7 +1959,23 @@ inline void dischargeTask() {
 
 // Стан розряду у JSON — для веб-моніторингу й USB-клієнта.
 static String dischargeJson() {
-    String j = "{\"available\":" + String(dischargeAvailable() ? "true" : "false");
+    // ⚑ ОДНА ВИДІЛЕНА ДІЛЯНКА ЗАМІСТЬ СОТЕНЬ ПЕРЕВИДІЛЕНЬ. Цей відповідач
+    //  кличеться КОЖНУ СЕКУНДУ, поки клієнт дивиться на заряд/розряд, а нижче
+    //  йдуть десятки `j += ...`. Рядок Arduino росте блоками по 16 байтів, тож
+    //  без reserve() кожна відповідь — це десятки realloc (malloc+memcpy+free)
+    //  плюс тимчасовий String на КОЖНЕ число.
+    //
+    //  Само по собі це не помилка, але за години заряду виходять СОТНІ ТИСЯЧ
+    //  розподілів різного розміру — а це фрагментація купи. Вільної пам'яті
+    //  начебто вистачає, а суцільного шматка під буфер Wi-Fi/TCP уже немає, і
+    //  черговий розподіл падає. Виглядає це як «під час заряду пристрій
+    //  періодично перезавантажується» — тобто рівно як скарга.
+    //
+    //  reserve() робить із цього ОДИН розподіл. Розмір узято з запасом над
+    //  реальною довжиною відповіді; якщо не влізе, String просто дорощується
+    //  як і раніше, тобто гірше не стане.
+    String j; j.reserve(1024);
+    j = "{\"available\":" + String(dischargeAvailable() ? "true" : "false");
     j += ",\"state\":\"" + String(g_dis.state == DIS_RUN ? "run"
                                : g_dis.state == DIS_DONE ? "done"
                                : g_dis.state == DIS_ABORT ? "abort" : "idle") + "\"";
@@ -1255,6 +2004,20 @@ static String dischargeJson() {
     j += ",\"bandLoMa\":" + String((uint32_t)g_dis.setMa * DISCHARGE_BAND_LO_PCT / 100u);
     j += ",\"bandHiMa\":" + String((uint32_t)g_dis.setMa * DISCHARGE_BAND_HI_PCT / 100u);
     j += ",\"pwm\":"      + String(dischargePwmOk() ? "true" : "false");
+    // ── профіль, ручний струм, залишок часу ──────────────────────────────
+    j += ",\"profile\":"  + String(dischargeProfile());
+    j += ",\"profileText\":\""; j += dischargeProfileText(dischargeProfile()); j += "\"";
+    j += ",\"phase\":"    + String(g_dis.phase);
+    j += ",\"phaseText\":\"";   j += dischargePhaseText(g_dis.phase); j += "\"";
+    j += ",\"manualMa\":" + String(dischargeManualMa());
+    j += ",\"manMinMa\":" + String((unsigned)DISCHARGE_MANUAL_MA_MIN);
+    j += ",\"manMaxMa\":" + String((unsigned)DISCHARGE_MANUAL_MA_MAX);
+    j += ",\"ratedMah\":" + String(dischargeRatedMah());
+    j += ",\"etaS\":"     + String((unsigned long)dischargeEtaS(
+                                  impresPercentFromMv(g_dis.lastMv),
+                                  impresPercentFromMv(g_dis.targetMv),
+                                  dischargeRatedMah(),
+                                  (uint16_t)(g_dis.lastMa < 0 ? -g_dis.lastMa : g_dis.lastMa)));
     // Межі лінійки струму — щоб інтерфейси описували її, а не зашивали числа.
     j += ",\"rampHiMv\":" + String(DISCHARGE_RAMP_HI_MV);
     j += ",\"maHi\":"     + String(DISCHARGE_MA_HI);
@@ -1272,21 +2035,86 @@ static String dischargeJson() {
 //  розрядом — на початку того файлу).
 // ===========================================================================
 
+// ===========================================================================
+//  ВЕРСІЯ ПРИСТРОЮ БЕЗ ЗАРЯДУ — зберігається між увімкненнями
+// ===========================================================================
+//  Це властивість ЗАЛІЗА, а не налаштування настрою: у цьому екземплярі
+//  силової частини немає й не з'явиться. Гасити її щоразу після ввімкнення
+//  чотирма натисканнями означало б, що пристрій при кожному старті кілька
+//  секунд скаржиться на блок живлення, якого в ньому не передбачено.
+//
+//  Файл окремий від /sound.cfg навмисно: звук — смак, а це — комплектація.
+//  Один рядок «ключ=значення», щоб можна було прочитати очима.
+#define DEVICE_CFG_PATH "/device.cfg"
+
+inline bool chargeModeSave() {
+    File f = SPIFFS.open(DEVICE_CFG_PATH, "w");
+    if (!f) { Serial.println("DEVICE: cannot write " DEVICE_CFG_PATH); return false; }
+    f.printf("v1 chgoff=%d\n", chargeOffByUser() ? 1 : 0);
+    f.close();
+    Serial.printf("DEVICE: заряд %s (збережено)\n", chargeOffByUser() ? "ВИМКНЕНО" : "увімкнено");
+    return true;
+}
+
+// Відсутній або побитий файл — не помилка: заряд лишається увімкненим, тобто
+// пристрій поводиться як повна комплектація. Це правильний бік замовчування:
+// зайвий вимикач у меню нікому не шкодить, а мовчазно вимкнений заряд на
+// повній платі виглядав би як поломка.
+inline void chargeModeLoad() {
+    if (!SPIFFS.exists(DEVICE_CFG_PATH)) return;
+    File f = SPIFFS.open(DEVICE_CFG_PATH, "r");
+    if (!f) return;
+    String line = f.readStringUntil('\n');
+    f.close();
+    int off = 0;
+    if (sscanf(line.c_str(), "v1 chgoff=%d", &off) != 1) {
+        Serial.println("DEVICE: bad cfg, заряд лишається увімкненим");
+        return;
+    }
+    if (off) {
+        chargeSetOffByUser(true);
+        chargeConsumeModeSave();     // це читання, а не правка — писати назад нічого
+        Serial.println("DEVICE: ця збірка без заряду (з " DEVICE_CFG_PATH ")");
+    }
+}
+
+// Одні двері для всіх кінцевих точок заряду. Повертає true, якщо запит уже
+// відхилено й відповідь надіслано.
+//
+//  ⚑ ЧОМУ ГЕЙТ ПОТРІБЕН, ХОЧ МЕНЮ Й СХОВАНЕ. Меню — лише один зі входів.
+//  Веб, USB-клієнт і збережений сценарій Майстра шлють КОД операції напряму,
+//  і «сховати кнопку» не означає «вимкнути функцію».
+inline bool chargeGateClosed() {
+    if (chargeAvailable()) return false;
+    // ⚑ ОЗНАКА «nocharge» — ЩОБ КЛІЄНТ НЕ ВПІЗНАВАВ ВІДМОВУ ЗА ТЕКСТОМ.
+    //  Цю відмову треба показувати не миготливою плашкою, а вікном із «ОК»:
+    //  вона пояснює, чому зникла ціла група меню, і зникнути сама через три
+    //  секунди не має права. Розрізняти її за рядком означало б, що перша ж
+    //  правка формулювання тихо поверне миготливу плашку.
+    String j = "{\"status\":\"error\",\"code\":\"nocharge\",\"message\":\"";
+    j += chargeUnavailText();
+    j += "\"}";
+    server.send(409, "application/json", j);
+    return true;
+}
+
 // Старт заряду до обраного ВІДСОТКА (0 -> типово 100 %, повний заряд).
 // Повертає nullptr при успіху, інакше — текст причини відмови.
 const char *chargeStart(uint8_t targetPct) {
-    if (!chargeAvailable()) return "Заряд не налаштовано: задайте CHARGE_PIN і CHARGE_CTRL_PIN у settings.h";
+    if (!chargeAvailable()) return chargeUnavailText();
     if (chargeRunning())    return "Заряд уже виконується";
     if (dischargeRunning()) return "Спочатку зупиніть розряд";
-    // На відміну від розряду (де відмова ШІМ безпечно відкочується на
-    // digitalWrite — ключ повністю відкритий, струм лише ЗРОСТАЄ понад
-    // задане), тут відкочуватись нема куди: без ШІМ керуюча напруга на
-    // CHARGE_CTRL_PIN лишається в НЕКАЛІБРОВАНІЙ ділянці (нижче нижньої
-    // точки таблиці, 1.76 В), а поведінка готової TL494-плати там
-    // невідома. enable, який реально відкриває каскад, працює НЕЗАЛЕЖНО
-    // від ШІМ — тому «мовчазний» провал ledcAttachChannel() інакше
-    // призводив би до заряду з непідконтрольною вихідною напругою.
-    if (!chargePwmOk())     return "Керування недоступне: каналу LEDC не знайшлося — заряд заборонено, перевірте CHARGE_LEDC_CH у settings.h";
+    // Без ШІМ заряд заборонено взагалі. На відміну від розряду (де відмова
+    // ШІМ безпечно відкочується на digitalWrite: ключ відкритий повністю,
+    // струм лише ЗРОСТАЄ понад задане, але резистор його жорстко обмежує),
+    // тут відкочуватись нема куди: обмежувача струму в схемі немає, і
+    // «постійно відкритий» ключ означав би (Uживл − Uпакета)/R_шунт —
+    // десяток ампер через шунт і банки.
+    if (!chargePwmOk())     return "Керування недоступне: ШІМ не прикріпився. "
+                                   "Найімовірніше CHARGE_LEDC_CH ділить ТАЙМЕР з "
+                                   "іншим каналом (вони йдуть попарно: 0-1, 2-3, "
+                                   "4-5, 6-7), а частоти різні. Дивіться рядок "
+                                   "CHARGE: у журналі — там номер таймера";
 
     if (!targetPct) targetPct = 100;
     if (targetPct < CHARGE_TARGET_PCT_MIN) targetPct = CHARGE_TARGET_PCT_MIN;
@@ -1296,43 +2124,240 @@ const char *chargeStart(uint8_t targetPct) {
     // targetPct прийшов ззовні (клієнт міг надіслати щось дивне).
     uint16_t targetMv = (uint16_t)impresMvFromPercent(targetPct);
     if (targetMv > CHARGE_TARGET_MV) targetMv = CHARGE_TARGET_MV;
+    // ⚑ РУЧНА ЦІЛЬ У ВОЛЬТАХ ПЕРЕБИВАЄ ВІДСОТОК. Відсоток проходить через
+    //  криву SoC, тобто «85 %» — це стільки, скільки крива вважає за 85 %.
+    //  Для зберігання (7.4 В) і для ремонтних сценаріїв потрібні саме вольти.
+    //  Затиск уже зроблено в chargeSetManualMv(), але повторюємо його й тут:
+    //  значення могло прийти з інших часів, а стеля тут одна для всіх шляхів.
+    if (chargeManualMv()) {
+        targetMv = chargeManualMvClamp(chargeManualMv());
+        if (targetMv > CHARGE_TARGET_MV) targetMv = CHARGE_TARGET_MV;
+    }
+    // ⚑ ПІСЛЯ ЗАТИСКУ ЦІЛЬ У ВІДСОТКАХ ТРЕБА ПЕРЕРАХУВАТИ — інакше профіль
+    //  струму масштабується під ціль, якої не буде.
+    //
+    //  Раніше цього не було видно, бо шкала була лінійна й 100 % збігались із
+    //  CHARGE_TARGET_MV. З правильною кривою 2S 100 % — це 8.40 В, а
+    //  заряджаємо ми до 8.20 В, тобто до 90 %. Якби targetPct лишився 100,
+    //  поріг дозаряду рахувався б як 90 % від 100 = 90 % — а це РІВНО та
+    //  напруга, на якій заряд і закінчується. Дозаряд малим струмом просто
+    //  зник би: пакет добивався б повним струмом до самого кінця.
+    //
+    //  Тепер targetPct = відсоток тієї напруги, на якій ми справді зупинимось,
+    //  і всі точки перегину профілю (10/50/80/дозаряд) стискаються під неї.
+    targetPct = (uint8_t)impresPercentFromMv(targetMv);
+    if (targetPct < CHARGE_TARGET_PCT_MIN) targetPct = CHARGE_TARGET_PCT_MIN;
     uint16_t hardMaxMv = (uint16_t)(targetMv + CHARGE_HARD_MAX_HEADROOM_MV);
 
-    uint16_t mv; int16_t ma, t;
-    if (!dischargeSample(&mv, &ma, &t)) {   // те саме читання DS2438, напрямок ролі не грає
-        chargeOff();
-        return "DS2438 не читається — заряд наосліп заборонено";
+    // ⚑ ENABLE — НАЙПЕРШИМ, І ЛИШЕ ПОТІМ УСЕ ІНШЕ.
+    //  Пакет IMPRES під'єднує свої клеми до зовнішнього кола не сам по собі, а
+    //  за сигналом enable. Поки він не піднятий, на клемі немає напруги
+    //  ПАКЕТА — там або нічого, або напруга нашого ж живлення через ключ. Отже
+    //  будь-який вимір, зроблений до enable, стосується не пакета, а
+    //  розімкненого кола: саме так і виходить те «9.9 В» (стеля подільника),
+    //  через яке заряд оголошував хибну перенапругу.
+    //
+    //  Раніше enable піднімався в самому КІНЦІ chargeStart() — уже після того,
+    //  як зміряно напругу, струм і температуру, і навіть після chargeSetDuty(),
+    //  тобто струм подавався РАНІШЕ за під'єднання пакета. Коментар поруч при
+    //  цьому стверджував «ще ДО подачі струму»; насправді порядок був
+    //  зворотний.
+    //
+    //  CHARGE_ENABLE_LEAD_MS — пауза на те, щоб пакет справді замкнув клеми й
+    //  напруга встоялась. Без неї перший же вимір потрапляв би у перехідний
+    //  процес.
+    battery.holdEnable(true);
+    delay(CHARGE_ENABLE_LEAD_MS);
+
+    //  Далі — усе, що може відмовити. Тіло винесене в лямбду НЕ для краси: у
+    //  нього сім різних виходів «не можна почати», і при кожному enable треба
+    //  зняти назад. Сім однакових рядків перед сімома return — це шість шансів
+    //  забути один і лишити пакет під'єднаним після невдалого старту.
+    const char *startErr = [&]() -> const char * {
+
+    // ⚑ ДВА РІЗНІ ДЖЕРЕЛА, КОЖНЕ ЗА СВОЇМ ПРИЗНАЧЕННЯМ.
+    //  • НАПРУГА — з нашого подільника (chargePackMv). Вона й керує зупинкою за
+    //    ціллю, тож мусить бути тим самим числом, яке далі щосекунди міряє
+    //    chargeTask(): міряти старт монітором, а хід — подільником означало б
+    //    порівнювати різні шкали й ловити стрибок на першому ж опитуванні.
+    //  • ТЕМПЕРАТУРА — з DS2438: свого датчика в пристрою немає, а без контролю
+    //    нагріву заряд заборонено. Ключ зараз закритий, тож 1-Wire читається
+    //    без зсуву землі (див. коментар про шунт у мінусовому проводі).
+    chargeOff();                        // гарантовано закритий ключ на час вимірів
+    // Стеля шпаруватості — заводська. Її міг опустити попередній сеанс
+    // пробудження; лишити її опущеною означало б заряджати крізь чужу межу й
+    // спинитись за «ключ не тягне» на штатному струмі.
+    chargeResetDutyCap();
+
+    // ⚑ ЖИВЛЕННЯ — ПЕРШИМ, ще до всіх інших перевірок. Без нього решта вимірів
+    //  не має сенсу: заряд «іде» зі шпаруватістю в стелю й нульовим струмом, і
+    //  виглядає це як несправність пакета, а не як забутий блок живлення.
+    //  Міряємо саме зараз, на закритому ключі, — під струмом на шині живлення
+    //  є просадка, і поріг довелося б розмазувати.
+    //  ⚑ ⚠️ ПРО «PSU_UNKNOWN» У ЦІЙ УМОВІ. Це не поблажка, а єдина чесна
+    //  відповідь там, де подільника немає: на платі TL494 його немає ніколи, у
+    //  збірці понижувача — доки CHARGE_PSU_PIN закоментований. Пропускати старт
+    //  при «не знаю» правильно саме тому, що інакше нова перевірка блокувала б
+    //  функцію, яка до неї працювала.
+    uint8_t psu = chargePsuPoll();
+    if (psu != PSU_OK && psu != PSU_UNKNOWN) {
+#ifdef CHARGE_PSU_PIN
+        ledSet(LED_FAULT);
+        // ⚑ ПОВІДОМЛЕННЯ МУСИТЬ ВЕСТИ ДО ВИХОДУ, а не лише називати біду.
+        //  Контроль живлення — НОВИЙ вузол (подільник 68к/10к на GPIO39), і
+        //  поки його фізично не зібрано, пін висить, читається ~0 В, і заряд
+        //  відхиляється з «немає живлення» — тобто щойно додана перевірка
+        //  блокує функцію, яка до неї працювала. Розрізнити «давача немає» і
+        //  «живлення немає» вимірюванням НЕМОЖЛИВО: GPIO34..39 не мають
+        //  внутрішніх підтяжок, тож розгойдати вільний пін і побачити різницю
+        //  ніяк. Тому виходом мусить бути текст: називаємо виміряне число й
+        //  прямо кажемо, що робити, якщо подільника ще немає.
+        static char msg[190];
+        snprintf(msg, sizeof(msg),
+                 "%s. Виміряно %u.%02u В на GPIO%d (треба %d.%d…%d.%d). "
+                 "Якщо подільник живлення ще НЕ ЗІБРАНО — закоментуйте "
+                 "CHARGE_PSU_PIN у settings.h, і заряд працюватиме як раніше.",
+                 chargePsuText(psu), chargePsuMv() / 1000, (chargePsuMv() % 1000) / 10,
+                 (int)CHARGE_PSU_PIN,
+                 CHARGE_PSU_MIN_MV / 1000, (CHARGE_PSU_MIN_MV % 1000) / 100,
+                 CHARGE_PSU_MAX_MV / 1000, (CHARGE_PSU_MAX_MV % 1000) / 100);
+        Serial.printf("=== Charge NOSTART: %s ===\n", msg);
+        return msg;
+#else
+        // Без подільника сюди не потрапити: chargePsuPoll() віддає PSU_UNKNOWN,
+        // а він умову не проходить. Гілка існує лише для того, щоб текст вище
+        // не посилався на пін, якого в цій збірці немає.
+        return "Живлення поза допуском";
+#endif
     }
+
+#if CHARGE_IS_TL494
+    // ── ПЛАТА TL494: ОБИДВА ЧИСЛА З ОДНОГО ЧИТАННЯ ───────────────────────
+    //  Свого подільника й шунта тут немає, тож «два різні джерела» вище
+    //  зводяться до одного: DS2438 усередині пакета дає і напругу, і струм, і
+    //  температуру за одну транзакцію. Порядок від цього не міняється —
+    //  спершу переконатись, що монітор говорить, і лише потім щось вирішувати.
+    uint16_t mv = 0; int16_t ma = 0, t = 0;
+    if (!dischargeSample(&mv, &ma, &t)) {
+        chargeOff();
+        return "DS2438 не читається — заряд наосліп заборонено (без температури "
+               "пакет можна перегріти). Спершу домогтися читання: сторінка "
+               "стану скаже, чого бракує — підтяжки 4.7к, лінії даних чи enable";
+    }
+    // Показання одразу віддаємо в спільний шар: далі і старт, і опитування
+    // читають напругу через ті самі chargePackMv()/chargeMeasureMa(), що й на
+    // понижувачі. Двох шляхів до одного числа не заводимо.
+    chargeFeedPackReading(mv, ma);
+    uint16_t maIdle = 0;         // шунта немає — «струм на закритому ключі» не питання
+    uint16_t dummyMv = mv;       // на цій платі клема й монітор — це одне й те саме
+#else
+    uint16_t mv = chargePackMv();
+    uint16_t mvPeak; uint16_t maIdle = chargeMeasureMa(&mvPeak);
+
+    uint16_t dummyMv; int16_t ma, t;
+    if (!dischargeSample(&dummyMv, &ma, &t)) {   // те саме читання DS2438: потрібна ТЕМПЕРАТУРА
+        chargeOff();
+        return "DS2438 не читається — заряд наосліп заборонено (без температури "
+               "пакет можна перегріти). Спершу домогтися читання: сторінка "
+               "стану скаже, чого бракує — підтяжки 4.7к, лінії даних чи enable";
+    }
+#endif
+    // Правдоподібність власного вимірювального кола: заряджати, не бачачи
+    // напруги, не можна.
+    //
+    // ⚑ АЛЕ ПРИЧИН У НУЛЯ ДВІ, І ДРУГА — НЕ ПОЛОМКА. Сюди ми доходимо вже
+    //  ПІСЛЯ dischargeSample(), тобто монітор напевно відповів. Отже пакет на
+    //  місці, 1-Wire цілий, enable піднято — а на клемі нуль. Найімовірніше це
+    //  спрацював захист самого пакета: він розмикає СИЛОВИЙ ключ, а DS2438
+    //  сидить до нього й говорить далі. Відрізнити це вимірюванням від обриву
+    //  лінії CHARGE_VSENSE_PIN неможливо — картина однакова, — але дія в обох
+    //  випадках та сама й безпечна: подати обмежений струмом і енергією
+    //  імпульс і подивитись, чи з'явиться напруга. Це й робить пробудження.
+    //  Тому тут не «перевірте пін», а конкретні числа й шлях далі.
+    if (!chargeRailAlive(mv)) {
+#if CHARGE_IS_TL494
+        // ⚑ ТУТ ЦЕ ІНШЕ ПИТАННЯ, І ВІДПОВІДЬ НА НЬОГО ІНША. На понижувачі
+        //  нижче цього порога опинявся НАШ подільник, тобто мовчала КЛЕМА, а
+        //  монітор при цьому говорив — і різниця між двома числами й була
+        //  діагнозом. На цій платі число одне: його дає сам монітор. Отже
+        //  низька напруга тут означає не «клеми розімкнуті», а те, що пакет
+        //  справді порожній до небезпечного. Радити пробудження було б
+        //  подвійною неправдою: воно і не по адресі, і на цьому залізі його
+        //  немає взагалі.
+        static char msg[220];
+        snprintf(msg, sizeof(msg),
+                 "Монітор усередині пакета показує %u мВ — це нижче за половину "
+                 "порожнього (%d мВ). Такий пакет заряджати звичайним струмом "
+                 "небезпечно: спершу з'ясуйте, чи не глибокий це розряд і чи "
+                 "цілі банки.",
+                 mv, (int)(BATTERY_EMPTY_MV / 2));
+        Serial.printf("=== Charge NOSTART: монітор %u мВ — глибокий розряд ===\n", mv);
+        return msg;
+#else
+        static char msg[260];
+        snprintf(msg, sizeof(msg),
+                 "На клемі %u мВ, а монітор УСЕРЕДИНІ пакета бачить %u мВ. Пакет "
+                 "живий, але його клеми розімкнуті — найімовірніше спрацював "
+                 "захист. Заряджати наосліп не можна; запустіть ПРОБУДЖЕННЯ — "
+                 "воно обмеженим імпульсом просить захист відпустити клеми, а "
+                 "якщо не відпустить, скаже про це прямо. Друга можлива причина "
+                 "тієї ж картини — обірвана лінія CHARGE_VSENSE_PIN.",
+                 mv, dummyMv);
+        Serial.printf("=== Charge NOSTART: клема %u мВ, чип %u мВ — захист пакета "
+                      "або обрив VSENSE ===\n", mv, dummyMv);
+        return msg;
+#endif
+    }
+    if (maIdle > CHARGE_DEADBAND_MA)
+        return "На закритому ключі шунт бачить струм — перевірте ключ (можливо, пробитий MOSFET)";
     if (mv >= targetMv)                 return "Пакет уже заряджений до обраної цілі";
     if (mv >= hardMaxMv)                return "Напруга вже вище аварійної межі — заряд не почато";
     if (t >= CHARGE_MAX_TEMP_C * 10)    return "Пакет гарячий — дайте охолонути";
 
     memset(&g_chg, 0, sizeof(g_chg));
     g_chg.state    = CHG_RUN;
+    g_chg.mode     = CHG_MODE_CHARGE;    // явно, хоч memset і дав би те саме
     g_chg.reason   = CHGR_NONE;
     g_chg.startMv  = g_chg.lastMv = mv;
     g_chg.targetMv  = targetMv;
     g_chg.targetPct = targetPct;
-    g_chg.lastMa   = ma;
+    g_chg.lastMa   = 0;              // ключ ще закритий — струму немає
     g_chg.lastTempC10 = t;
     g_chg.startMs  = g_chg.lastPollMs = millis();
     g_chg.startCca = g_chg.lastCca = impresCca(batteryDump2438);
     g_chg.startIca = g_chg.lastIca = batteryDump2438[12];
     g_chg.lastPct  = (uint8_t)impresPercentFromMv(mv);
-    g_chg.rsense   = impresBmsRsense(batteryDump2438);
+    g_chg.rsense   = impresBmsRsense(batteryDump2438);   // шунт ПАКЕТА — лише для CCA
+    // Паспортна ємність САМОГО пакета — з чипа. Розумний профіль рахує від неї
+    // струм у частках C; 0 (чипа не читали) означає «беремо номінал».
+    chargeSetRatedMah((uint16_t)(hasDump ? impresRatedFromDump(batteryDump) : 0));
+#if CHARGE_IS_BUCK
+    (void)ma;                        // струм DS2438 тут не потрібен: міряємо своїм шунтом
+#endif                               // на платі TL494 він, навпаки, ЄДИНИЙ — його вже згодовано
 
-    // ⚑ SOFT-START: цільова вихідна напруга ЗАВЖДИ з нуля, жодних початкових
-    // оцінок «на око» (детальніше — коментар на початку charge.h). Регулятор
-    // сам виведе її на потрібний рівень протягом кількох секунд. Порядок
-    // важливий: спершу керування в позицію «0 В», ПОТІМ enable силового
-    // каскаду — щоб у момент увімкнення каскад уже «бачив» безпечну уставку,
-    // а не випадкове значення з попереднього стану ШІМ.
-    g_chg.setMa = chargeSetpointMaForPct(g_chg.lastPct, targetPct);
-    g_chg.outMv = 0;
-    chargeSetOutputMv(0);
-    chargeEnable(true);
+    // ⚑ СТАРТ ІЗ РОЗРАХОВАНОЇ ТОЧКИ НУЛЬОВОГО СТРУМУ, а не з нуля.
+    //  Шлях від нуля до робочої точки — сотні відліків ШІМ, тобто хвилини
+    //  повзання. chargeStartDuty() цілиться одразу в ПОТРІБНИЙ струм (уставку
+    //  профілю), рахуючи по тій гілці, у якій перетворювач зараз працює:
+    //  переривчастій (струм ~D²) чи неперервній (струм ~D).
+    //  Оцінка спирається на приблизні L і R — і це нормально: далі все веде
+    //  замкнутий контур за реальним струмом, а крок регулятора пропорційний
+    //  похибці, тож промах моделі закривається за кілька опитувань.
+    // ⚑ Ручну уставку враховуємо ВЖЕ НА СТАРТІ, а не з другого опитування.
+    //  Інакше chargeStartDuty() цілився б у автоматичний струм, і перший
+    //  прохід ішов би з чужою шпаруватістю — рівно та «сходинка» на початку,
+    //  задля усунення якої розрахунок стартової точки й робився.
+    //  inTaper на старті ще false, тож тут це просто «ручне замість профілю».
+    // Уставку бере ОДНА функція — профіль (заводський/розумний) плюс ручна
+    // поправка. На старті температури ще немає (перший вимір буде на першому
+    // опитуванні), тож tempFresh=false.
+    g_chg.inTaper = false;
+    g_chg.setMa = chargeSetpointFor(g_chg.lastPct, targetPct, mv, targetMv,
+                                    0, false, &g_chg.inTaper, &g_chg.phase);
+    g_chg.duty  = chargeStartDuty(mv, g_chg.setMa);
+    chargeSetDuty(g_chg.duty);
 
-    battery.holdEnable(true);        // enable пакета — так само, як і розряд, ще ДО подачі струму
+    // enable вже піднято на самому початку chargeStart() — до всіх вимірів.
     chargeWatchdog(true);
 
     ledSet(g_chg.lastPct >= CHARGE_LED_TAPER_PCT ? LED_CHARGE_TAPER : LED_CHARGE);
@@ -1340,14 +2365,445 @@ const char *chargeStart(uint8_t targetPct) {
     // він перекриє сторінку заряду (докладніше — коментар там).
     dischargeDismiss();                    // не діє, якщо розряд справді йде
     chargeMarkDirty(2);
-    Serial.printf("\n=== Charge started: %u mV (%u%%) -> ціль %u mV (%u%%), setpoint %u mA%s ===\n",
-                  mv, g_chg.lastPct, targetMv, targetPct, g_chg.setMa, chargePwmOk() ? "" : ", PWM UNAVAILABLE");
+#if CHARGE_IS_TL494
+    // ⚑ ПІДПИС ОДИНИЦЬ — ЧЕСНИЙ. Друкувати «duty 0 з 8600 (стеля 85 %)» тут
+    //  означало б назвати мілівольти відліками ШІМ і приписати платі відсоток,
+    //  якого в неї немає.
+    Serial.printf("\n=== Charge started: %u mV (%u%%) -> ціль %u mV (%u%%), setpoint %u mA, "
+                  "старт з %u мВ виходу (стеля %u мВ, крок %d мВ)%s ===\n",
+                  mv, g_chg.lastPct, targetMv, targetPct, g_chg.setMa,
+                  g_chg.duty, (unsigned)CHARGE_DUTY_MAX, (int)CHARGE_TL_STEP_MV,
+                  chargePwmOk() ? "" : ", PWM UNAVAILABLE");
+#else
+    Serial.printf("\n=== Charge started: %u mV (%u%%) -> ціль %u mV (%u%%), setpoint %u mA, "
+                  "старт duty %u з %u (стеля %u = %d%%)%s ===\n",
+                  mv, g_chg.lastPct, targetMv, targetPct, g_chg.setMa,
+                  g_chg.duty, (unsigned)CHARGE_DUTY_FULL,
+                  (unsigned)CHARGE_DUTY_MAX,
+                  (int)CHARGE_DUTY_MAX_PCT, chargePwmOk() ? "" : ", PWM UNAVAILABLE");
+#endif
     return nullptr;
+    }();
+
+    //  Єдине місце, де знімається enable після невдалого старту. Ключ гасимо
+    //  теж: частина виходів трапляється вже після chargeOff(), частина — ні.
+    if (startErr) {
+        chargeOff();
+        battery.holdEnable(false);
+    }
+    return startErr;
+}
+
+// ===========================================================================
+//  ПРИМУСОВЕ ПРОБУДЖЕННЯ — старт і опитування.
+//  Уся арифметика й усі рішення — у charge.h (їх ганяє хостовий тест); тут
+//  лишається те, чого на хості немає: сам пакет, 1-Wire і АЦП.
+// ===========================================================================
+
+// Старт пробудження. Повертає nullptr при успіху, інакше — текст відмови.
+const char *chargeWakeStart() {
+    // ⚑ ENABLE — НАЙПЕРШИМ, як і в chargeStart(), і тут це навіть важливіше:
+    //  без нього пакет не під'єднає клеми до кола, і ми не побачимо ні його
+    //  напруги, ні його монітора — тобто самі ж собі створимо ту картину
+    //  «пакет мовчить», заради якої режим і запускається.
+    battery.holdEnable(true);
+    delay(CHARGE_ENABLE_LEAD_MS);
+
+    const char *startErr = [&]() -> const char * {
+    chargeOff();                       // усі виміри — на закритому ключі
+    chargeResetDutyCap();              // рахуємо від заводської стелі
+
+    uint8_t psu = chargePsuPoll();
+    // Чи читається пакет. Це не «додаткова перевірка», а ГОЛОВНА умова режиму:
+    // відповідає монітор — значить є температура, значить є штатний заряд.
+    uint16_t chipMv = 0; int16_t chipMa = 0, chipT = 0;
+    bool chipReads = dischargeSample(&chipMv, &chipMa, &chipT);
+
+    uint16_t mv = chargePackMv();
+    uint16_t peak = 0, idleMa = chargeMeasureMa(&peak);
+
+    uint8_t no = chargeWakeRefuse(chargeAvailable(), chargePwmOk(),
+                                  chargeRunning() || dischargeRunning(),
+                                  psu, chipReads, mv, idleMa);
+    if (no != WAKENO_OK) {
+        if (no == WAKENO_PSU || no == WAKENO_RAIL || no == WAKENO_LEAK) ledSet(LED_FAULT);
+        Serial.printf("=== Wake NOSTART (%u): клема %u мВ, струм %u мА, живлення %u мВ, "
+                      "монітор %s ===\n",
+                      no, mv, idleMa, chargePsuMv(), chipReads ? "відповідає" : "мовчить");
+        return chargeWakeRefuseText(no);
+    }
+    // Мета сеансу — за станом НА СТАРТІ й більше не переглядається.
+    uint8_t goal = chargeWakeGoal(chipReads);
+
+    memset(&g_chg, 0, sizeof(g_chg));
+    g_chg.state     = CHG_RUN;
+    g_chg.mode      = CHG_MODE_WAKE;
+    g_chg.reason    = CHGR_NONE;
+    g_chg.startMv   = g_chg.lastMv = mv;
+    // Ціль сеансу — напруга пробудження. Те саме поле, що й у штатного заряду:
+    // на нього спираються і показ, і межа hardMaxMv у клієнтах.
+    g_chg.targetMv  = CHARGE_WAKE_MV;
+    g_chg.targetPct = (uint8_t)impresPercentFromMv(CHARGE_WAKE_MV);
+    g_chg.setMa     = CHARGE_WAKE_MA;
+    g_chg.startMs   = g_chg.lastPollMs = g_chg.wakeProbeMs = millis();
+    g_chg.lastPct   = (uint8_t)impresPercentFromMv(mv);
+    g_chg.wakeGoal  = goal;
+    // У меті RAIL монітор говорить — отже температура є з першої ж миті, і
+    // вирок мусить її бачити ще до першої проби.
+    if (goal == WAKE_GOAL_RAIL) { g_chg.chipMv = chipMv; g_chg.lastTempC10 = chipT; }
+
+    // ⚑ І ОСЬ ВОНА, ЄДИНА РІЧ, ЩО ТРИМАЄ ВЕСЬ РЕЖИМ: стеля шпаруватості.
+    //  Вона ж стеля напруги на клемах. Ставиться ДО першого ж підняття
+    //  шпаруватості й діє в chargeSetDuty(), тобто на будь-якому шляху.
+    chargeSetDutyCap(chargeWakeDutyCap());
+    g_chg.duty = 0;                    // з нуля: розганяємось кроками, не стрибком
+    chargeSetDuty(0);
+    chargeWatchdog(true);
+
+    ledSet(LED_CHARGE_TAPER);          // «малий струм» — той самий сигнал, що й дозаряд
+    dischargeDismiss();
+    chargeMarkDirty(2);
+    Serial.printf("\n=== Wake started (%s): клема %u мВ -> тримаємо %u мВ (стеля duty %u з %u, "
+                  "живлення %u мВ), струм до %u мА, межі: %u с / %u мА·год ===\n",
+                  goal == WAKE_GOAL_RAIL
+                      ? "монітор говорить, чекаємо напругу на клемі"
+                      : "монітор мовчить, чекаємо його відповідь",
+                  mv, (unsigned)CHARGE_WAKE_MV, chargeDutyCap(), (unsigned)CHARGE_DUTY_FULL,
+                  chargeSupplyMv(), (unsigned)CHARGE_WAKE_MA,
+                  (unsigned)CHARGE_WAKE_MAX_S, (unsigned)CHARGE_WAKE_MAH_MAX);
+    return nullptr;
+    }();
+
+    if (startErr) {
+        chargeOff();
+        battery.holdEnable(false);
+    }
+    return startErr;
+}
+
+// Опитування пробудження. Кличеться з chargeTask(), коли режим саме цей.
+inline void chargeWakeTask() {
+    unsigned long now = millis();
+    chargeWatchdogFeed();
+    if (now - g_chg.lastPollMs < CHARGE_WAKE_POLL_MS) return;
+
+    unsigned long dtMs = now - g_chg.lastPollMs;
+    g_chg.lastPollMs = now;
+    // ⚑ ПОРІГ ЗАВИСАННЯ ТУТ СВІЙ, І ЦЕ ІСТОТНО. Штатні 5 с — це п'ять кроків
+    //  секундного заряду, але ДВІСТІ кроків пробудження. Дозволити ключу стояти
+    //  без нагляду двісті кроків означало б скасувати ту саму дрібність кроку,
+    //  заради якої вона й обрана.
+    if (dtMs > CHARGE_WAKE_STALL_MS) {
+        chargeStop(CHGR_STALL);
+        Serial.printf("=== Wake ABORT: main loop stalled for %lu ms (межа %lu) ===\n",
+                      dtMs, (unsigned long)CHARGE_WAKE_STALL_MS);
+        return;
+    }
+    g_chg.elapsedS = (now - g_chg.startMs) / 1000UL;
+    // Інтеграл ємності — на струмі, що діяв ЩОЙНО минулий інтервал. Він же
+    // друга, незалежна від часу межа сеансу, тож рахується із залишком: на
+    // кроці 25 мс просте ділення на 3600 з'їдало б доданок цілком (див.
+    // chargeAccumMah у charge.h).
+    chargeAccumMah(&g_chg.mahX1000, &g_chg.mahRem, g_chg.lastMa, dtMs);
+
+    // ── струм під чинною шпаруватістю; піковий запобіжник — той самий ──────
+    uint16_t peakMa = 0;
+    uint16_t avgMa  = chargeMeasureMa(&peakMa);
+    if (peakMa > CHARGE_PEAK_MA_MAX) {
+        g_chg.peakMa = peakMa;
+        chargeStop(CHGR_PEAK);
+        // ⚑ У ПРОБУДЖЕННІ ЦЕЙ ПІК МАЄ ДРУГЕ, ЙМОВІРНІШЕ ПОЯСНЕННЯ. У штатному
+        //  заряді стрибок струму означає поломку (обрив дроселя, пробитий
+        //  ключ). Тут — найімовірніше УСПІХ: контролер щойно замкнув ключ, і на
+        //  місці розімкненого кола раптом з'явились розряджені банки. Струм при
+        //  цьому виходить (Uпробудження − Uбанок)/R_кола, і з біполярним ключем
+        //  (у нього немає RDS(on), тобто опір контуру менший) він законно
+        //  перевищує відсічку. Відсічка зробила своє — закрила ключ; лишилось
+        //  не збрехати користувачеві про причину.
+        Serial.printf("=== Wake ABORT: peak %u mA > %u mA. Найімовірніше пакет САМЕ ОЖИВ "
+                      "і замкнув свій ключ — перевірте, чи він тепер читається; "
+                      "якщо ні, дивіться дросель, ключ і контакти ===\n",
+                      peakMa, (unsigned)CHARGE_PEAK_MA_MAX);
+        return;
+    }
+
+    // ── проба: закритий ключ, напруга, і спроба докликатись монітора ───────
+    //  Рідко (CHARGE_WAKE_PROBE_S) і саме тому, що вона ЗНІМАЄ напругу з клем:
+    //  1-Wire читається лише на закритому ключі (шунт у мінусовому проводі), а
+    //  контролеру, якого ми будимо, потрібна саме безперервна напруга.
+    bool     probe   = (now - g_chg.wakeProbeMs) >= (unsigned long)CHARGE_WAKE_PROBE_S * 1000UL;
+    bool     mvFresh = false, chipOk = false, tempFresh = false;
+    uint16_t mv      = g_chg.lastMv;
+    int16_t  tempC10 = g_chg.lastTempC10;
+    if (probe) {
+        uint16_t save = g_chg.duty;
+        chargeSetDuty(0);
+        dischargeSettle(CHARGE_VSENSE_SETTLE_MS);
+        mv = chargePackMv();
+        mvFresh = true;
+        uint16_t cmv = 0; int16_t cma = 0, ct = 0;
+        chipOk = dischargeSample(&cmv, &cma, &ct);
+        if (chipOk) { g_chg.chipMv = cmv; g_chg.lastTempC10 = ct;
+                      tempC10 = ct; tempFresh = true; }
+        g_chg.wakeProbeMs = now;
+        if (g_chg.wakeProbes < 255) g_chg.wakeProbes++;
+        chargeSetDuty(save);           // назад під напругу, поки вирішуємо
+    }
+
+    // ── живлення — тією ж відсічкою, що й у штатного заряду ────────────────
+    uint8_t psu = chargePsuPoll();
+    if (chargePsuTrip(psu, &g_chg.badPsuPolls)) {
+        chargeStop(CHGR_PSU);
+        ledSet(LED_FAULT);
+        Serial.printf("=== Wake ABORT: %s (%u мВ) ===\n", chargePsuText(psu), chargePsuMv());
+        return;
+    }
+
+    // ── вирок ─────────────────────────────────────────────────────────────
+    ChargeWakeIn in;
+    in.chipOk   = chipOk;
+    in.avgMa    = avgMa;
+    in.mvFresh  = mvFresh;
+    in.mv       = mv;
+    in.elapsedS = g_chg.elapsedS;
+    in.mah      = chargeMah();
+    in.goal     = g_chg.wakeGoal;
+    in.tempFresh= tempFresh;
+    in.tempC10  = tempC10;
+    uint8_t v = chargeWakeVerdict(in);
+
+    g_chg.lastMa  = (int16_t)avgMa;
+    g_chg.peakMa  = peakMa;
+    if (mvFresh) g_chg.lastMv = mv;
+    g_chg.polls++;
+
+    if (v != WAKEV_GO) {
+        uint8_t reason = chargeWakeReason(v, g_chg.wakeGoal);
+        chargeStop(reason);
+        // LED_FAULT — сигнал «залізо несправне», і вішати його на кожну невдачу
+        // не можна: «монітор так і не відповів» або «вичерпано ємність» — це не
+        // поломка пристрою, а результат досліду. chargeStop() уже поставив
+        // LED_OK/LED_ERROR за суттю; підвищуємо лише там, де справді підозра на
+        // залізо.
+        if (v == WAKEV_OVERI || v == WAKEV_OVERV) ledSet(LED_FAULT);
+        if (v == WAKEV_WOKE)
+            Serial.printf("=== Wake DONE: монітор відповів (%u мВ, %.1f C) за %lus і %lu "
+                          "мА·год, проб %u. Пакет живий — читайте його й запускайте "
+                          "звичайний заряд ===\n",
+                          g_chg.chipMv, g_chg.lastTempC10 / 10.0f,
+                          (unsigned long)g_chg.elapsedS, (unsigned long)chargeMah(),
+                          g_chg.wakeProbes);
+        else if (v == WAKEV_RAIL)
+            Serial.printf("=== Wake DONE: захист відпустив клеми — на клемі %u мВ "
+                          "(усередині %u мВ, %.1f C) за %lus і %lu мА·год, проб %u. "
+                          "Запускайте звичайний заряд ===\n",
+                          mv, g_chg.chipMv, g_chg.lastTempC10 / 10.0f,
+                          (unsigned long)g_chg.elapsedS, (unsigned long)chargeMah(),
+                          g_chg.wakeProbes);
+        else
+            Serial.printf("=== Wake STOP (%u): %s. Клема %u мВ, струм %u мА, %lus, "
+                          "%lu мА·год, проб %u ===\n",
+                          v, chargeReasonText(reason), mv, avgMa,
+                          (unsigned long)g_chg.elapsedS, (unsigned long)chargeMah(),
+                          g_chg.wakeProbes);
+        return;
+    }
+
+    // ── крок регулятора НАПРУГИ ───────────────────────────────────────────
+    //  Стелю перераховуємо щопроходу: вона залежить від ВИМІРЯНОГО живлення, а
+    //  воно просідає під струмом і плаває від блока до блока. Порахувати її раз
+    //  на старті означало б тримати не ту напругу, щойно живлення зрушить.
+    chargeSetDutyCap(chargeWakeDutyCap());
+    g_chg.duty = chargeWakeNextDuty(g_chg.duty, (int32_t)avgMa, chargeDutyCap());
+    chargeSetDuty(g_chg.duty);
+
+    pmNote(PM_MODE_WAKE, g_chg.polls, g_chg.duty, g_chg.lastMa, mv);
+    // Журнал рідкий: на 100-мілісекундному кроці рядок щопроходу забив би
+    // консоль. Пишемо там, де щось справді сталося, — на пробі.
+    if (probe)
+        Serial.printf("wake: клема %u mV, %u mA (пік %u, стеля %u), duty %u/%u (межа %u), "
+                      "%lus, %lu mAh, проба %u — монітор мовчить\n",
+                      mv, avgMa, peakMa, (unsigned)CHARGE_WAKE_MA,
+                      g_chg.duty, (unsigned)CHARGE_DUTY_FULL, chargeDutyCap(),
+                      (unsigned long)g_chg.elapsedS, (unsigned long)chargeMah(),
+                      g_chg.wakeProbes);
+    chargeMarkDirty(1);
 }
 
 // Викликати часто з loop(). Реальна робота — раз на CHARGE_POLL_MS.
+#if CHARGE_IS_TL494
+// ═══ ОПИТУВАННЯ ЗАРЯДУ НА ПЛАТІ TL494 ════════════════════════════════════
+//  ⚑ ЧОМУ ЦЕ ОКРЕМА ФУНКЦІЯ, А НЕ ГІЛКИ ВСЕРЕДИНІ chargeTask(). Штатний
+//  прохід понижувача складається з п'яти кроків, і ЧОТИРИ з них тут не
+//  існують фізично: вимір струму власним шунтом, коротке закриття ключа заради
+//  чесної напруги, опитування +14 В і свідок насичення клеми. Розставити по
+//  них вісім #if означало б залишити функцію, яку неможливо прочитати цілком
+//  для жодної з двох плат — а саме такий код у цьому проєкті вже двічі ховав
+//  дефекти. Спільне (межі, відсічки, завершення, журнал) лишається спільним:
+//  його рахують ті самі функції з charge.h, які ганяє хостовий тест.
+//
+//  ЩО ТУТ НАСПРАВДІ ВІДБУВАЄТЬСЯ. Одне читання DS2438 дає ОДРАЗУ напругу,
+//  струм і температуру — той самий вимір, яким користується розряд. Тому:
+//    • читаємо КОЖНЕ опитування, а не раз на CHARGE_TEMP_EVERY_N: тут це не
+//      «додаткова» транзакція заради температури, а єдине джерело зворотного
+//      зв'язку, без якого регулятор сліпий;
+//    • ключ НЕ закриваємо: падіння на дротах вимір не спотворює, бо міряє його
+//      сам пакет — усередині, за своїми клемами;
+//    • темп задає 1-Wire: сотні мілісекунд на транзакцію. Саме тому крок
+//      регулятора тут фіксований і маленький (CHARGE_TL_STEP_MV).
+inline void chargeTaskTl() {
+    unsigned long now = millis();
+
+    if ((now - g_chg.startMs) / 60000UL >= (unsigned long)CHARGE_MAX_MIN) {
+        chargeStop(CHGR_TIMEOUT);
+        Serial.println("=== Charge ABORT: timeout ===");
+        return;
+    }
+    chargeWatchdogFeed();
+    if (now - g_chg.lastPollMs < CHARGE_POLL_MS) return;
+
+    unsigned long dtMs = now - g_chg.lastPollMs;
+    g_chg.lastPollMs = now;
+
+    // Сторож (програмна половина) — той самий принцип і той самий поріг, що й
+    // у понижувача: довга затримка = вихід побув під напругою без нагляду.
+    if (dtMs > CHARGE_STALL_MS) {
+        chargeStop(CHGR_STALL);
+        Serial.printf("=== Charge ABORT: main loop stalled for %lu ms ===\n", dtMs);
+        return;
+    }
+    g_chg.elapsedS = (now - g_chg.startMs) / 1000UL;
+
+    // Інтеграл ємності за інтервал, що ЩОЙНО минув — на чинному (до цього
+    // опитування) струмі, а не на щойно виміряному.
+    g_chg.mahX1000 += ((uint32_t)(g_chg.lastMa < 0 ? -g_chg.lastMa : g_chg.lastMa) * dtMs) / 3600UL;
+
+    // ── крок 1: ЄДИНЕ ЧИТАННЯ — напруга, струм і температура ──────────────
+    pmStep(PM_STEP_DS2438);
+    uint16_t mv = 0; int16_t ma = 0, t = 0;
+    if (!dischargeSample(&mv, &ma, &t)) {
+        // ⚑ ТУТ МОВЧАННЯ МОНІТОРА — ЦЕ ВТРАТА ЗВОРОТНОГО ЗВ'ЯЗКУ, А НЕ ЛИШЕ
+        //  ВТРАТА ТЕМПЕРАТУРИ. На понижувачі регулятор пережив би кілька
+        //  німих проходів, ведучи струм за власним шунтом; тут вести його
+        //  нічим. Тому уставку ОДРАЗУ опускаємо в нуль (виходу немає) і лише
+        //  потім рахуємо витримку: якщо шина оживе, розгін почнеться заново з
+        //  soft-start, а не з чужої напруги.
+        chargeSetDuty(0);
+        g_chg.duty = 0;
+        // ⚑ І ЧИННИЙ СТРУМ — ТЕЖ У НУЛЬ. Інтеграл ємності на наступному
+        //  проході множиться саме на нього (рядок вище: mahX1000 += lastMa ×
+        //  dt), а виходу вже немає. Лишити старе число означало б домальовувати
+        //  мА·год, яких пакет не отримував, — і то саме тоді, коли шина
+        //  мовчить і перевірити нічим.
+        g_chg.lastMa = 0;
+        if (++g_chg.readFails >= CHARGE_MAX_READ_FAILS) {
+            chargeStop(CHGR_NOREAD);
+            Serial.println("=== Charge ABORT: DS2438 unreadable ===");
+        }
+        return;
+    }
+    g_chg.readFails = 0;
+    g_chg.polls++;
+    chargeFeedPackReading(mv, ma);
+    g_chg.lastCca = impresCca(batteryDump2438);
+    g_chg.lastIca = batteryDump2438[12];
+    // На цій платі клема й монітор — це одне й те саме число. Записуємо його
+    // й у chipMv теж: клієнти й екрани показують саме його, і порожнє поле
+    // читалось би як «монітор мовчить».
+    g_chg.chipMv = mv;
+
+    // ── крок 2: уставка й регулятор ───────────────────────────────────────
+    pmStep(PM_STEP_REGULATOR);
+    int pct = impresPercentFromMv(mv);
+    g_chg.lastPct = (uint8_t)pct;
+    // Струм беремо через спільний шар (він же випрямляє від'ємне показання в
+    // нуль), а не з ma напряму: інакше з'явився б другий шлях до того самого
+    // числа — з іншим правилом про знак.
+    uint16_t avgMa = chargeMeasureMa(nullptr);
+    g_chg.setMa = chargeSetpointFor(pct, g_chg.targetPct, mv, g_chg.targetMv,
+                                    t, true, &g_chg.inTaper, &g_chg.phase);
+    g_chg.duty  = chargeNextDuty(g_chg.duty, (int32_t)avgMa, g_chg.setMa);
+    chargeSetDuty(g_chg.duty);
+
+    // ── «ВИХІД У СТЕЛІ, А СТРУМУ НЕМАЄ» ───────────────────────────────────
+    //  Та сама відсічка, що й у понижувача, і рахує вона те саме: регулятор
+    //  уперся у верх шкали, а пакет струму не бере. Причини тут інші (не
+    //  ключ, а плата, контакти або сам пакет), тож інша й підказка — але
+    //  чекати шість годин до відсічки за часом однаково не можна.
+    if (chargeNoDriveTrip(g_chg.duty, (int32_t)avgMa, g_chg.setMa, &g_chg.lowDrivePolls)) {
+        chargeStop(CHGR_NODRIVE);
+        ledSet(LED_FAULT);
+        Serial.printf("=== Charge ABORT: уставка вже %u мВ (стеля %u), а струм лише "
+                      "%u мА з %u мА. Перевірте: живлення плати TL494, enable "
+                      "(GPIO%d), напругу керування (GPIO%d) і контакт клем ===\n",
+                      g_chg.duty, (unsigned)CHARGE_DUTY_MAX, avgMa, g_chg.setMa,
+                      (int)CHARGE_TL_EN_PIN, (int)CHARGE_TL_CTRL_PIN);
+        return;
+    }
+
+    g_chg.lastMv = mv;
+    g_chg.lastMa = (int16_t)avgMa;
+    g_chg.peakMa = 0;                // вершини пульсацій тут не міряє ніхто
+    g_chg.lastTempC10 = t;
+
+    pmStep(PM_STEP_REPORT);
+    pmNote(PM_MODE_CHARGE, g_chg.polls, g_chg.duty, g_chg.lastMa, mv);
+    Serial.printf("charge: %u mV (%d%%), %d mA (set %u, вихід %u мВ зі %u), "
+                  "%.1f W, %.1f C, %lu mAh (CCA %lu), ICA %u, %lus, "
+                  "купа %lu/%lu, стек %lu\n",
+                  mv, pct, g_chg.lastMa, g_chg.setMa,
+                  g_chg.duty, (unsigned)CHARGE_DUTY_MAX,
+                  chargeWattsX10(mv, g_chg.lastMa) / 10.0f, t / 10.0f,
+                  (unsigned long)chargeMah(), (unsigned long)chargeCcaMah(),
+                  g_chg.lastIca, (unsigned long)g_chg.elapsedS,
+                  (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap(),
+                  (unsigned long)uxTaskGetStackHighWaterMark(NULL));
+    chargeMarkDirty(1);
+    ledSet(g_chg.inTaper ? LED_CHARGE_TAPER : LED_CHARGE);
+
+    // ── крок 3: ЗАВЕРШЕННЯ Й АВАРІЇ ───────────────────────────────────────
+    //  Той самий набір і той самий порядок, що й у понижувача, за вирахуванням
+    //  двох перевірок, яким тут нема на чому стояти: «пакета немає» й «пакет
+    //  закрився сам» читались через насичення НАШОГО подільника. Пакет, що
+    //  від'єднався, видно інакше — DS2438 перестає читатись, і це вже
+    //  оброблено вище (CHGR_NOREAD).
+    if (mv >= (uint32_t)g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV) {
+        chargeStop(CHGR_HARD_MAX);
+        Serial.printf("=== Charge ABORT: above hard maximum (%u мВ >= %u мВ) ===\n",
+                      mv, (unsigned)(g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV));
+    } else if (t >= CHARGE_MAX_TEMP_C * 10) {
+        chargeStop(CHGR_TEMP);
+        Serial.println("=== Charge ABORT: overheat ===");
+    } else if (chargeProfile() == CHG_PROF_SMART) {
+        // Розумний профіль завершується за СТРУМОМ (докладніше — коментар у
+        // штатному chargeTask()).
+        ChargeSmartOut so; so.phase = g_chg.phase; so.setMa = g_chg.setMa;
+        uint16_t endMa = chargeSmartEndMa(chargeRatedMah());
+        if (chargeSmartFull(so, (int32_t)g_chg.lastMa, endMa, &g_chg.fullPolls)) {
+            chargeStop(CHGR_TARGET);
+            Serial.printf("=== Charge DONE (CC/CV): струм %d мА впав до порога %u мА "
+                          "на %u мВ (ціль %u). %lu mAh за %lus ===\n",
+                          g_chg.lastMa, endMa, mv, g_chg.targetMv,
+                          (unsigned long)chargeMah(), (unsigned long)g_chg.elapsedS);
+        }
+    } else if (mv >= g_chg.targetMv) {
+        chargeStop(CHGR_TARGET);
+        Serial.printf("=== Charge DONE: %lu mAh in %lus ===\n",
+                      (unsigned long)chargeMah(), (unsigned long)g_chg.elapsedS);
+    }
+}
+#endif  // CHARGE_IS_TL494
+
 inline void chargeTask() {
     if (g_chg.state != CHG_RUN) return;
+    // Пробудження — окрема машина з іншим кроком, іншим регульованим значенням
+    // і іншими межами. Штатний шлях нижче лишається незмінним до байта.
+    if (g_chg.mode == CHG_MODE_WAKE) { chargeWakeTask(); return; }
+    // Плата TL494 — так само окрема машина, і з тієї ж причини: інші джерела
+    // вимірів, інший темп, інший набір відсічок (див. chargeTaskTl() вище).
+#if CHARGE_IS_TL494
+    chargeTaskTl();
+#else
     unsigned long now = millis();
 
     if ((now - g_chg.startMs) / 60000UL >= (unsigned long)CHARGE_MAX_MIN) {
@@ -1374,58 +2830,417 @@ inline void chargeTask() {
     // опитування) струмі, а не на щойно виміряному.
     g_chg.mahX1000 += ((uint32_t)(g_chg.lastMa < 0 ? -g_chg.lastMa : g_chg.lastMa) * dtMs) / 3600UL;
 
-    // Один вимір під ЧИННОЮ шпаруватістю — на відміну від розряду, тут не
-    // потрібне окреме «зняття піка» (див. charge.h): струм читаємо просто на
-    // тому режимі, в якому перетворювач зараз і працює.
-    uint16_t mv = 0; int16_t ma = 0, t = 0;
-    bool ok = dischargeSample(&mv, &ma, &t);
-    if (!ok) {
-        if (++g_chg.readFails >= CHARGE_MAX_READ_FAILS) {
-            chargeStop(CHGR_NOREAD);
-            Serial.println("=== Charge ABORT: DS2438 unreadable ===");
+    // ── крок 1: СТРУМ під ЧИННОЮ шпаруватістю ────────────────────────────
+    //  Серія відліків через кілька повних періодів ШІМ: середнє — це реальний
+    //  середній струм у пакет, найбільший відлік — пік. Пік потрібен окремо:
+    //  дроселя в схемі немає, тож у момент відкриття ключа струм обмежують лише
+    //  різниця напруг і опір кола, і саме він вирішує долю шунта.
+    pmStep(PM_STEP_ISENSE);
+    uint16_t peakMa = 0;
+    uint16_t avgMa  = chargeMeasureMa(&peakMa);
+
+    // ⚑ ПІКОВА ВІДСІЧКА — ПЕРЕД усім іншим. Це єдиний запобіжник, який мусить
+    // спрацювати В ТОМУ Ж проході, де помічений: середній струм може лишатись
+    // у нормі, поки пік уже палить шунт.
+    if (peakMa > CHARGE_PEAK_MA_MAX) {
+        g_chg.peakMa = peakMa;
+        chargeStop(CHGR_PEAK);
+        Serial.printf("=== Charge ABORT: peak %u mA > %u mA (шунт %d мОм) ===\n",
+                      peakMa, (unsigned)CHARGE_PEAK_MA_MAX, (int)CHARGE_SHUNT_MOHM);
+        return;
+    }
+
+    // ── крок 2: НАПРУГА на коротко закритому ключі ────────────────────────
+    //  Напруга на клемі й так згладжена дроселем, але ПІД СТРУМОМ до неї
+    //  додається падіння на дротах і внутрішньому опорі пакета. Закриваємо
+    //  ключ на CHARGE_VSENSE_SETTLE_MS: струм дроселя стікає через діод за
+    //  мікросекунди, омічна просадка зникає, і вимір лишається ОДНАКОВИМ від
+    //  початку до кінця заряду.
+    pmStep(PM_STEP_VSENSE);
+    uint16_t saveDuty = g_chg.duty;
+    chargeSetDuty(0);
+    dischargeSettle(CHARGE_VSENSE_SETTLE_MS);   // той самий неблокуючий сон, що й у розряду
+    uint16_t mv = chargePackMv();
+
+    // ⚑ КЛЕМА В СТЕЛІ — КЛЮЧ БІЛЬШЕ НЕ ВІДКРИВАЄМО ЦЬОГО ПРОХОДУ.
+    //  Стеля означає розімкнене коло: пакет або від'єднався, або закрив себе
+    //  сам. Гнати струм у невідомість, поки з'ясовується причина, немає жодної
+    //  потреби — навантаження там усе одно немає. Важливіше інше: регулятор,
+    //  побачивши нульовий струм, почав би ПІДНІМАТИ шпаруватість, і поки
+    //  триває витримка на з'ясування, ключ виходив би на стелю. Тому вимір
+    //  робимо, а привід до ключа лишаємо знятим — рішення ухвалить кінець
+    //  цього ж проходу.
+    bool satMv = chargeSenseSaturated(mv);
+    if (satMv) saveDuty = 0;
+
+    // ── крок 2а: ЖИВЛЕННЯ — тут же, на закритому ключі ────────────────────
+    //  Разом із напругою пакета й з тієї ж причини: під струмом на шині
+    //  живлення є просадка від власного опору блока й проводів, і порівнювати
+    //  її з порогом означало б ловити не блок живлення, а кидки струму.
+    //  Одиничний вихід за межі не зупиняє заряд — потрібно CHARGE_PSU_BAD_POLLS
+    //  поспіль. Пропадання ж живлення видно одразу й безпомилково.
+    pmStep(PM_STEP_PSU);
+    uint8_t psu = chargePsuPoll();
+    if (chargePsuTrip(psu, &g_chg.badPsuPolls)) {
+        chargeStop(CHGR_PSU);
+        ledSet(LED_FAULT);
+        Serial.printf("=== Charge ABORT: %s (%u мВ, допуск %d..%d мВ) ===\n",
+                      chargePsuText(psu), chargePsuMv(),
+                      (int)CHARGE_PSU_MIN_MV, (int)CHARGE_PSU_MAX_MV);
+        return;                      // ключ уже закритий — chargeStop() гасить його першим
+    }
+
+    // ── крок 2б: ТЕМПЕРАТУРА з DS2438 — РІДКО (CHARGE_TEMP_EVERY_N) ───────
+    //  Транзакція 1-Wire коштує сотні мілісекунд, і весь цей час ключ мусить
+    //  лишатись закритим (шунт у мінусовому проводі зсуває опорну землю
+    //  чипа). Читати щосекунди означало б віддавати п'яту частину часу заряду
+    //  й щоразу перезапускати струм дроселя з нуля. Температура міняється
+    //  хвилинами, тож раз на CHARGE_TEMP_EVERY_N опитувань вистачає навіть
+    //  для аварійної відсічки.
+    // ⚑ НАЙПІДОЗРІЛІШИЙ ЕТАП. Саме тут іде повний пошук шини й читання 64
+    //  байтів по 1-Wire — найдовша й найскладніша операція опитування, до того
+    //  ж на шині, яка на цій платі читається нестабільно. Позначка стоїть ДО
+    //  умови, щоб було видно навіть той прохід, де читання не виконувалось.
+    pmStep(PM_STEP_DS2438);
+    // ⚑ У КІНЦІ ЗАРЯДУ — КОЖНЕ ОПИТУВАННЯ, А НЕ РАЗ НА ДЕСЯТЬ.
+    //  Рідке читання коштувало нам саме того випадку, задля якого монітор і
+    //  потрібен. Пакет розмикає власний захист за секунди; при читанні раз на
+    //  CHARGE_TEMP_EVERY_N опитувань свідчення зсередини на цей момент могло
+    //  бути дев'ятисекундної давнини — тобто взяте ще до події. Щойно клема
+    //  підійшла на CHARGE_CHIP_WATCH_MV до цілі (або вже стоїть у стелі),
+    //  переходимо на щосекундне читання: тут воно і найточніше, і вирішальне.
+    //  Ціна — сотні мілісекунд на транзакцію — платиться лише в останні
+    //  хвилини сеансу, а не всі шість годин.
+    bool nearEnd = satMv ||
+                   ((uint32_t)mv + CHARGE_CHIP_WATCH_MV >= (uint32_t)g_chg.targetMv);
+    bool tempRead = ((g_chg.polls % CHARGE_TEMP_EVERY_N) == 0) || nearEnd;
+    bool chipFresh = false;      // монітор відповів САМЕ цього проходу
+    int16_t t = g_chg.lastTempC10;
+    if (tempRead) {
+        // ⚑ Напругу з монітора БІЛЬШЕ НЕ ВИКИДАЄМО. Раніше вона йшла в змінну
+        //  на ім'я dummy — а це був єдиний у прошивці незалежний вимір напруги
+        //  пакета, зроблений ІЗСЕРЕДИНИ пакета. Саме його бракувало, щоб
+        //  розрізнити «банки перезаряджені» й «на клемі живлення, бо пакета
+        //  немає»: зовнішній подільник у другому випадку бреше, а чип — ні.
+        uint16_t chipMv = 0; int16_t maChip = 0;
+        if (dischargeSample(&chipMv, &maChip, &t)) {
+            g_chg.readFails = 0;
+            chipFresh     = true;
+            g_chg.chipMv  = chipMv;
+            g_chg.lastCca = impresCca(batteryDump2438);
+            g_chg.lastIca = batteryDump2438[12];
+        } else if (satMv) {
+            // ⚑ ПОКИ КЛЕМА В СТЕЛІ, МОВЧАННЯ МОНІТОРА — ЦЕ СВІДЧЕННЯ, А НЕ ЗБІЙ.
+            //  Вихід звідси по CHGR_NOREAD («монітор не читається») був би
+            //  правильною відповіддю на неправильне питання. Коли клема стоїть
+            //  у стелі, ми з'ясовуємо не справність шини, а долю пакета — і
+            //  мовчання монітора тут не перешкода діагнозу, а сам діагноз:
+            //  пакета в колі немає. Тому не зупиняємось і не виходимо, а
+            //  доносимо цей факт до класифікації наприкінці проходу, де він
+            //  разом із витримкою CHARGE_NOPACK_POLLS дасть CHGR_NOPACK.
+            //  Лічильник невдач не чіпаємо: він міряє здоров'я шини, а шина
+            //  при вийнятому пакеті мовчить законно.
+        } else {
+            chargeSetDuty(saveDuty);            // ключ назад, перш ніж вирішувати долю
+            if (++g_chg.readFails >= CHARGE_MAX_READ_FAILS) {
+                chargeStop(CHGR_NOREAD);
+                Serial.println("=== Charge ABORT: DS2438 unreadable ===");
+            }
+            return;
+        }
+    }
+
+    // Ключ НЕГАЙНО назад у робочу шпаруватість — закритим його не лишаємо ні на
+    // мить довше, ніж триває вимір (інакше заряд просто не йшов би).
+    chargeSetDuty(saveDuty);
+    g_chg.polls++;
+
+    // ── крок 3: перерахунок уставки і шпаруватості ────────────────────────
+    pmStep(PM_STEP_REGULATOR);
+    int pct = impresPercentFromMv(mv);
+    if (satMv) {
+        // ⚑ РЕГУЛЯТОР ПРИ РОЗІМКНЕНОМУ КОЛІ МОВЧИТЬ. Він працює за зворотним
+        //  зв'язком по струму, а струму в розімкненому колі немає й бути не
+        //  може: підняття шпаруватості нічого не виправить, зате виведе ключ
+        //  на стелю за лічені проходи. Так само не чіпаємо відсоток і уставку —
+        //  вони рахуються з напруги на клемі, а клема зараз не показує напругу
+        //  пакета, і записати 100 % за відліком 4095 означало б збрехати ще й
+        //  на екрані. Останні достовірні значення лишаються як були; долю
+        //  сеансу вирішить класифікація наприкінці цього ж проходу.
+        g_chg.duty = 0;
+        chargeSetDuty(0);
+        pct = g_chg.lastPct;
+    } else {
+        g_chg.lastPct = (uint8_t)pct;
+        // Гістерезис: інакше уставка брязкає 1000 <-> 100 мА на межі (див. charge.h).
+        // Ручна уставка (якщо задана) накладається ПОВЕРХ профілю, але дозаряду
+        // не скасовує — у зоні дозаряду береться менше з двох (див. charge.h).
+        g_chg.setMa   = chargeSetpointFor(pct, g_chg.targetPct, mv, g_chg.targetMv,
+                                          t, chipFresh, &g_chg.inTaper, &g_chg.phase);
+        g_chg.duty    = chargeNextDuty(g_chg.duty, (int32_t)avgMa, g_chg.setMa);
+        chargeSetDuty(g_chg.duty);
+    }
+
+    // ── «КЛЮЧ НЕ ТЯГНЕ»: стеля шпаруватості без струму ────────────────────
+    //  Дзеркало пікової відсічки й з тією ж метою — врятувати силовий ключ.
+    //  Регулятор на брак струму відповідає підняттям шпаруватості, тобто
+    //  ЗБІЛЬШУЄ час, який транзистор проводить під навантаженням; якщо причина
+    //  браку — недостатній струм бази (ключ поза насиченням), це рівно те, що
+    //  його й палить. Тому вихід на стелю разом із недобором струму — привід
+    //  зупинитись, а не чекати шість годин до відсічки за часом.
+    //  Лічильник скидається на першому ж нормальному опитуванні: рахуємо
+    //  СТАЛИЙ стан, а не окремий провал під час стрибка уставки.
+    if (chargeNoDriveTrip(g_chg.duty, (int32_t)avgMa, g_chg.setMa, &g_chg.lowDrivePolls)) {
+        chargeStop(CHGR_NODRIVE);
+        ledSet(LED_FAULT);
+        // Підказка залежить від типу ключа: у біполярного винен струм бази,
+        // у польового — напруга на затворі. Однакова порада для двох різних
+        // приладів відправила б шукати не туди.
+#if CHARGE_SW_IS_MOS
+        Serial.printf("=== Charge ABORT: стеля duty %u, а струм лише %u мА з %u мА. "
+                      "Ключ %s: перевірте напругу на затворі (дільник %d/%d Ом дає "
+                      "|VGS| %d мВ при порозі %d), базу керуючого NPN (%d Ом), "
+                      "дросель і контакти ===\n",
+                      (unsigned)CHARGE_DUTY_MAX, avgMa, g_chg.setMa, CHARGE_SW_NAME,
+                      (int)CHARGE_BASE_DRIVE_ASBUILT_OHM, (int)CHARGE_BASE_PULLUP_OHM,
+                      (int)CHARGE_MOS_VGS_ON_ASBUILT_MV, (int)CHARGE_MOS_VGSTH_MAX_MV,
+                      (int)CHARGE_NPN_BASE_ASBUILT_OHM);
+#else
+        Serial.printf("=== Charge ABORT: стеля duty %u, а струм лише %u мА з %u мА. "
+                      "Перевірте струм бази ключа (база PNP %d Ом, база NPN %d Ом), "
+                      "дросель і контакти ===\n",
+                      (unsigned)CHARGE_DUTY_MAX, avgMa, g_chg.setMa,
+                      (int)CHARGE_BASE_DRIVE_ASBUILT_OHM, (int)CHARGE_NPN_BASE_ASBUILT_OHM);
+#endif
+        return;
+    }
+
+    g_chg.lastMv = mv;
+    g_chg.lastMa = (int16_t)avgMa;   // СЕРЕДНІЙ струм із НАШОГО шунта, додатний = заряджаємо
+    g_chg.peakMa = peakMa;
+    g_chg.lastTempC10 = t;           // з останнього читання монітора (див. крок 2б)
+
+    // «чип N mV» — напруга з DS2438 усередині пакета. Друкуємо поруч із
+    // виміром на клемі САМЕ для звірки: поки числа поряд, коло ціле; коли
+    // клема пішла в стелю, а чип лишився на 8 В — пакета в колі немає.
+    // ⚑ СЛІД У ЧОРНИЙ ЯЩИК — раз на опитування. Переживає скидання, і саме він
+    //  перетворює «періодично перезавантажується» на конкретні обставини
+    //  (postmortem.h).
+    pmStep(PM_STEP_REPORT);
+    pmNote(PM_MODE_CHARGE, g_chg.polls, g_chg.duty, g_chg.lastMa, mv);
+
+    // Купа й запас стека — В КОЖНОМУ рядку журналу, а не лише при старті.
+    //  Разові числа нічого не кажуть; потрібен ТРЕНД. Фрагментація й витік
+    //  видно саме як повільне сповзання за годину роботи, а переповнення
+    //  стека — як запас, що тане до сотень байтів.
+    Serial.printf("charge: %u mV (чип %u mV) (%d%%), %d mA (пік %u, set %u, duty %u/%u = %u%%), "
+                  "%.1f W, %.1f C%s, %lu mAh (CCA %lu), ICA %u, %lus, "
+                  "купа %lu/%lu, стек %lu\n",
+                  mv, g_chg.chipMv, pct, g_chg.lastMa, g_chg.peakMa, g_chg.setMa,
+                  g_chg.duty, (unsigned)CHARGE_DUTY_FULL, chargeDutyPct(),
+                  chargeWattsX10(mv, g_chg.lastMa) / 10.0f, t / 10.0f,
+                  tempRead ? "" : "~",
+                  (unsigned long)chargeMah(), (unsigned long)chargeCcaMah(),
+                  g_chg.lastIca, (unsigned long)g_chg.elapsedS,
+                  (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap(),
+                  (unsigned long)uxTaskGetStackHighWaterMark(NULL));
+    chargeMarkDirty(1);
+    // Індикатор — за ТИМ САМИМ станом, що й струм. Власне порівняння з порогом
+    // брязкало б разом із відсотком, і світлодіод стрибав би між двома режимами
+    // щосекунди — а кожен такий перехід ще й відчіплює/чіпляє ШІМ підсвітки.
+    ledSet(g_chg.inTaper ? LED_CHARGE_TAPER : LED_CHARGE);
+
+    // ⚑ «ПАКЕТ ВІД'ЄДНАНО» ПЕРЕВІРЯЄМО ПЕРШИМ — ДО ПЕРЕНАПРУГИ.
+    //  Порядок тут вирішує, що побачить користувач. Показання, що вперлось у
+    //  стелю АЦП, формально «вище аварійної межі», тож стара послідовність
+    //  віддавала цей випадок перенапрузі — і на екрані з'являлось «напруга
+    //  9.9 В, аварійна зупинка, перенапруга». Обидві половини повідомлення
+    //  були неправдою: 9.9 В — це підпис відліку 4095 (див. chargeSenseSaturated()
+    //  у charge.h), а перенапруги не було взагалі. Правильний діагноз —
+    //  на клемі стоїть живлення, тобто пакета в колі немає.
+    //
+    //  ⚑ І ВІДПОВІДЕЙ НА «КЛЕМА В СТЕЛІ» ЧОТИРИ, А НЕ ОДНА.
+    //  Спостереження власника: дійшовши до 8.2 В, пакет розмикає власний
+    //  захист — і клема йде в стелю точно так само, як від загубленого
+    //  контакту. Єдиний діагноз «пакета немає» на всі випадки перетворював
+    //  штатне завершення заряду на аварію. Розрізняє їх монітор усередині
+    //  пакета: він від силового ключа пакета не залежить (див. chargeSatVerdict()
+    //  у charge.h). Свідчення накопичуються за весь епізод, а не за останній
+    //  прохід: одна невдала транзакція 1-Wire не сміє перетворити «повний» на
+    //  «немає».
+    chargeSatWitness(mv, chipFresh, g_chg.chipMv,
+                     &g_chg.noPackPolls, &g_chg.satChipOk, &g_chg.satChipMv);
+    if (chargeSatTripped(g_chg.noPackPolls)) {
+        uint8_t v = chargeSatVerdict(g_chg.satChipOk, g_chg.satChipMv, g_chg.targetMv);
+        switch (v) {
+            case SATV_FULL:
+                chargeStop(CHGR_PACKFULL);
+                Serial.printf("=== Charge DONE: пакет закрився власним захистом на %u мВ "
+                              "(ціль %u мВ, допуск %d мВ) — заряд завершено. "
+                              "%lu mAh за %lus ===\n",
+                              g_chg.satChipMv, g_chg.targetMv, (int)CHARGE_PACKFULL_TOL_MV,
+                              (unsigned long)chargeMah(), (unsigned long)g_chg.elapsedS);
+                break;
+            case SATV_OVER:
+                chargeStop(CHGR_HARD_MAX);
+                ledSet(LED_FAULT);
+                Serial.printf("=== Charge ABORT: монітор пакета показує %u мВ — вище "
+                              "аварійної межі %u мВ. Це вимір ЗСЕРЕДИНИ пакета, "
+                              "справжня перенапруга ===\n",
+                              g_chg.satChipMv,
+                              (unsigned)(g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV));
+                break;
+            case SATV_OPEN:
+                chargeStop(CHGR_PACKOPEN);
+                ledSet(LED_FAULT);
+                Serial.printf("=== Charge ABORT: пакет розімкнув власний захист на %u мВ, "
+                              "а це на %u мВ нижче цілі %u мВ. За напругою він не повний, "
+                              "тож причина інша: розбіг банок, температура або струм. "
+                              "Пакет потребує перевірки ===\n",
+                              g_chg.satChipMv,
+                              (unsigned)(g_chg.targetMv - g_chg.satChipMv), g_chg.targetMv);
+                break;
+            default:
+                chargeStop(CHGR_NOPACK);
+                ledSet(LED_FAULT);
+                Serial.printf("=== Charge ABORT: на клемі %u мВ — це стеля подільника (%d мВ), "
+                              "а не напруга пакета, і монітор пакета мовчить. Пакета в колі "
+                              "немає: перевірте контакт клем і резистор 4.7 кОм між enable "
+                              "(GPIO%d) і +3.3 В ===\n",
+                              mv, (int)CHARGE_VSENSE_SAT_MV, (int)PULLUP_PIN);
+                break;
         }
         return;
     }
-    g_chg.readFails = 0;
-    g_chg.polls++;
 
-    int pct = impresPercentFromMv(mv);
-    g_chg.lastPct = (uint8_t)pct;
-    g_chg.setMa   = chargeSetpointMaForPct(pct, g_chg.targetPct);
-    g_chg.outMv   = chargeNextOutMv(g_chg.outMv, ma, g_chg.setMa);
-    chargeSetOutputMv(g_chg.outMv);
-
-    g_chg.lastMv = mv;
-    g_chg.lastMa = ma;               // додатний = заряджаємо (те саме DS2438[5..6], що й розряд)
-    g_chg.lastTempC10 = t;
-    g_chg.lastCca = impresCca(batteryDump2438);
-    g_chg.lastIca = batteryDump2438[12];
-
-    Serial.printf("charge: %u mV (%d%%), %d mA (set %u, out %u mV), %.1f W, %.1f C, "
-                  "%lu mAh (CCA %lu), ICA %u, %lus\n",
-                  mv, pct, g_chg.lastMa, g_chg.setMa, g_chg.outMv,
-                  chargeWattsX10(mv, g_chg.lastMa) / 10.0f, t / 10.0f,
-                  (unsigned long)chargeMah(), (unsigned long)chargeCcaMah(),
-                  g_chg.lastIca, (unsigned long)g_chg.elapsedS);
-    chargeMarkDirty(1);
-    ledSet(pct >= CHARGE_LED_TAPER_PCT ? LED_CHARGE_TAPER : LED_CHARGE);
+    // ⚑ ВІДЛІК У СТЕЛІ НЕ ГОДИТЬСЯ ДЛЯ ЖОДНОГО ПОРІВНЯННЯ З НАПРУГОЮ.
+    //  Саме тут ховалась причина «спрацювала перенапруга»: перевірка «пакета
+    //  немає» стоїть першою, але вона з ВИТРИМКОЮ у CHARGE_NOPACK_POLLS, а
+    //  аварійна межа спрацьовувала з ПЕРШОГО ж відліку. Тож на першому
+    //  насиченому проході керування спокійно проходило повз неї просто вниз —
+    //  і 9900 мВ, «формально вище межі», давало CHGR_HARD_MAX ще до того, як
+    //  витримка встигала набратись. Порядок перевірок цього не рятує; рятує
+    //  лише те, що насичений відлік узагалі не подається на порівняння з
+    //  напругою — він не є виміром напруги.
+    if (satMv) return;
 
     if (mv >= (uint32_t)g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV) {
         chargeStop(CHGR_HARD_MAX);
-        Serial.println("=== Charge ABORT: above hard maximum ===");
+        Serial.printf("=== Charge ABORT: above hard maximum (%u мВ >= %u мВ; "
+                      "монітор DS2438 %u мВ) ===\n",
+                      mv, (unsigned)(g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV),
+                      g_chg.chipMv);
     } else if (t >= CHARGE_MAX_TEMP_C * 10) {
         chargeStop(CHGR_TEMP);
         Serial.println("=== Charge ABORT: overheat ===");
+    } else if (chargeProfile() == CHG_PROF_SMART) {
+        // ⚑ РОЗУМНИЙ ПРОФІЛЬ ЗАВЕРШУЄТЬСЯ ЗА СТРУМОМ, А НЕ ЗА НАПРУГОЮ.
+        //  Це не послаблення, а різниця між двома різними зарядами. Дотик до
+        //  цільової напруги — це ПОЧАТОК фази CV, а не її кінець: саме в ній
+        //  пакет добирає останні відсотки, поки струм спадає сам. Зупинка на
+        //  дотику (правило заводського профілю) обірвала б CV на самому
+        //  початку — тобто розумний режим давав би МЕНШЕ ємності, ніж
+        //  звичайний, роблячи при цьому вигляд, що він розумніший.
+        //
+        //  Що при цьому НЕ змінилось: аварійна стеля (ціль + headroom),
+        //  перегрів, «пакет закрився сам» і «пакета немає» — усі перевірки
+        //  вище лишились тими самими й стоять РАНІШЕ за цю гілку. Заряд у CV
+        //  не піднімає напругу над ціллю в принципі: що ближче до неї, то
+        //  менша уставка струму.
+        ChargeSmartOut so; so.phase = g_chg.phase; so.setMa = g_chg.setMa;
+        uint16_t endMa = chargeSmartEndMa(chargeRatedMah());
+        if (chargeSmartFull(so, (int32_t)g_chg.lastMa, endMa, &g_chg.fullPolls)) {
+            chargeStop(CHGR_TARGET);
+            Serial.printf("=== Charge DONE (CC/CV): струм %d мА впав до порога %u мА "
+                          "на %u мВ (ціль %u, ємність пакета %u мА·год). "
+                          "%lu mAh за %lus ===\n",
+                          g_chg.lastMa, endMa, mv, g_chg.targetMv,
+                          chargeRatedMah(),
+                          (unsigned long)chargeMah(), (unsigned long)g_chg.elapsedS);
+        }
     } else if (mv >= g_chg.targetMv) {
         chargeStop(CHGR_TARGET);
         Serial.printf("=== Charge DONE: %lu mAh in %lus ===\n",
                       (unsigned long)chargeMah(), (unsigned long)g_chg.elapsedS);
+    } else if (chipFresh && g_chg.chipMv >= g_chg.targetMv) {
+        // ⚑ ДРУГИЙ, НЕЗАЛЕЖНИЙ КРИТЕРІЙ ЗАВЕРШЕННЯ — ЗА МОНІТОРОМ ПАКЕТА.
+        //  Перегони, які ми програвали. Пакет вимикає себе за власним виміром,
+        //  а ми зупинялись за своїм — через подільник із його похибкою і через
+        //  дроти з їхнім падінням. Досить було нам занизити на пів відсотка,
+        //  щоб пакет щоразу встигав першим, і штатне завершення заряду
+        //  приходило до нас у вигляді розімкненого кола.
+        //  Монітор міряє ті самі банки, що й захист пакета, тож ця перевірка
+        //  зупиняє заряд ДО того, як захисту буде що робити. Помилитись вона
+        //  може лише в безпечний бік: зупинити зарано, а не запізно.
+        //  chipFresh обов'язковий — g_chg.chipMv поза цією умовою може бути
+        //  показом кількох опитувань давнини (див. CHARGE_TEMP_EVERY_N).
+        chargeStop(CHGR_TARGET);
+        Serial.printf("=== Charge DONE: монітор пакета %u мВ >= ціль %u мВ "
+                      "(на клемі %u мВ). %lu mAh за %lus ===\n",
+                      g_chg.chipMv, g_chg.targetMv, mv,
+                      (unsigned long)chargeMah(), (unsigned long)g_chg.elapsedS);
+    }
+#endif  // CHARGE_IS_TL494 / буку — тіло вище
+}
+
+// ── КОНТРОЛЬ ЖИВЛЕННЯ У СПОКОЇ ─────────────────────────────────────────────
+//  Під час заряду живлення міряє chargeTask() — на закритому ключі, разом із
+//  напругою пакета. Але саме в спокої несправність і треба помітити: інакше
+//  користувач дізнається про забутий блок живлення лише з відмови старту.
+//
+//  ⚑ Світлодіод чіпаємо ОБЕРЕЖНО. LED_FAULT — постійний сигнал, і виставляти
+//  його поверх заряду/розряду/читання не можна: це стерло б індикацію процесу,
+//  який саме йде. Тому вмикаємо його тільки із «спокійних» режимів, а знімаємо
+//  тільки якщо він і зараз наш.
+inline void chargePsuIdleTask() {
+    if (!chargePsuSensed()) return;
+    if (chargeRunning()) return;              // під час заряду цим займається chargeTask()
+
+    static unsigned long lastMs = 0;
+    unsigned long now = millis();
+    if (lastMs && (now - lastMs) < CHARGE_PSU_IDLE_MS) return;
+    lastMs = now;
+
+    uint8_t before = chargePsuState();
+    uint8_t after  = chargePsuPoll();
+    if (after != before) chargeMarkDirty(2);  // стан живлення показує й екран
+
+    bool fault = chargePsuFault();
+    LedMode m = ledMode();
+    if (fault) {
+        // Не перебиваємо індикацію процесу, що саме йде.
+        if (m == LED_IDLE || m == LED_BOOT) ledSet(LED_FAULT);
+    } else if (m == LED_FAULT) {
+        ledSet(LED_IDLE);                     // несправність зникла — повертаємось у спокій
     }
 }
 
 // Стан заряду у JSON — для веб-моніторингу й USB-клієнта.
 static String chargeJson() {
-    String j = "{\"available\":" + String(chargeAvailable() ? "true" : "false");
+    // ⚑ ОДНА ВИДІЛЕНА ДІЛЯНКА ЗАМІСТЬ СОТЕНЬ ПЕРЕВИДІЛЕНЬ. Цей відповідач
+    //  кличеться КОЖНУ СЕКУНДУ, поки клієнт дивиться на заряд/розряд, а нижче
+    //  йдуть десятки `j += ...`. Рядок Arduino росте блоками по 16 байтів, тож
+    //  без reserve() кожна відповідь — це десятки realloc (malloc+memcpy+free)
+    //  плюс тимчасовий String на КОЖНЕ число.
+    //
+    //  Само по собі це не помилка, але за години заряду виходять СОТНІ ТИСЯЧ
+    //  розподілів різного розміру — а це фрагментація купи. Вільної пам'яті
+    //  начебто вистачає, а суцільного шматка під буфер Wi-Fi/TCP уже немає, і
+    //  черговий розподіл падає. Виглядає це як «під час заряду пристрій
+    //  періодично перезавантажується» — тобто рівно як скарга.
+    //
+    //  reserve() робить із цього ОДИН розподіл. Розмір узято з запасом над
+    //  реальною довжиною відповіді; якщо не влізе, String просто дорощується
+    //  як і раніше, тобто гірше не стане.
+    String j; j.reserve(1536);
+    j = "{\"available\":" + String(chargeAvailable() ? "true" : "false");
+    // ЧОМУ заряду немає — окремо від самого факту. Причин дві, і вони вимагають
+    // різних дій: «не налаштовано» правлять у settings.h і перепрошивають, а
+    // «версія без заряду» вмикається назад на самому пристрої. Текст один на
+    // всі три клієнти й приходить із прошивки — три власні копії цієї пари
+    // розійшлися б на першій же правці.
+    j += ",\"chargeOff\":" + String(chargeOffByUser() ? "true" : "false");
+    j += ",\"availWhy\":\""; j += chargeUnavailText(); j += "\"";
     j += ",\"state\":\"" + String(g_chg.state == CHG_RUN ? "run"
                                : g_chg.state == CHG_DONE ? "done"
                                : g_chg.state == CHG_ABORT ? "abort" : "idle") + "\"";
@@ -1450,10 +3265,114 @@ static String chargeJson() {
     j += ",\"elapsedS\":" + String((unsigned long)g_chg.elapsedS);
     j += ",\"polls\":"    + String(g_chg.polls);
     j += ",\"setMa\":"    + String(g_chg.setMa);
-    j += ",\"outMv\":"    + String(g_chg.outMv);
-    j += ",\"outMaxMv\":" + String(CHARGE_CAL_OUT_MAX);
+    // Ручна уставка: 0 — автомат. Разом із межами, щоб клієнт не тримав власну
+    // копію діапазону (вона розійшлася б із settings.h на першій же правці).
+    j += ",\"manualMa\":" + String(chargeManualMa());
+    j += ",\"manMinMa\":" + String((unsigned)CHARGE_MANUAL_MA_MIN);
+    j += ",\"manMaxMa\":" + String((unsigned)CHARGE_MANUAL_MA_MAX);
+    // Керування тепер — шпаруватість ключа, а не «цільова напруга DC/DC».
+    // Клієнти показують duty/dutyMax у відліках і dutyPct у відсотках.
+    j += ",\"duty\":"     + String(g_chg.duty);
+    j += ",\"dutyMax\":"  + String((unsigned)CHARGE_DUTY_MAX);
+    j += ",\"dutyFull\":" + String((unsigned)CHARGE_DUTY_FULL);
+    j += ",\"dutyPct\":"  + String(chargeDutyPct());
+    // Вершина пульсацій і межа — запобіжник від «дросель випав із кола».
+    j += ",\"peakMa\":"   + String(g_chg.peakMa);
+    j += ",\"peakMaxMa\":"+ String((unsigned)CHARGE_PEAK_MA_MAX);
+    // Мертва зона регулятора — щоб коридор уставки в клієнтах малювався за
+    // ЧИСЛОМ ПРИСТРОЮ, а не за здогадкою. Розряд віддає свій коридор готовим
+    // (bandLoMa/bandHiMa); у заряду він симетричний, тож досить самої зони.
+    j += ",\"deadbandMa\":"+ String((unsigned)CHARGE_DEADBAND_MA);
+    // ── ПРИМУСОВЕ ПРОБУДЖЕННЯ ──────────────────────────────────────────────
+    //  Іде в тому ж об'єкті, що й заряд, бо це той самий ключ і та сама машина.
+    //  Клієнт розрізняє режими за "wake": показувати відсотки, дозаряд і
+    //  профіль струму під час пробудження безглуздо — там нічого з цього немає.
+    //  Межі йдуть поруч зі станом, щоб клієнт не тримав власної копії чисел із
+    //  settings.h (така копія розійшлась би на першій же правці).
+    j += ",\"wake\":"     + String(chargeWakeShown() ? "true" : "false");
+    // ⚑ ДРУГЕ ПОЛЕ, І ЦЕ НЕ ДУБЛЬ. «wake» відповідає на питання «яким показати
+    //  ПІДСУМОК» — і лишається правдою після зупинки, інакше результат
+    //  пробудження читався б під заголовком «ЗАРЯД». Але клієнти ховали по
+    //  ньому ще й УСТАВКИ разом із кнопкою «ПОЧАТИ ЗАРЯД» — а це вже інше
+    //  питання: «чи зайняте залізо». Виходило, що після пробудження кнопка
+    //  старту заряду зникала назавжди: підсумок висить, отже wake=true, отже
+    //  кнопки немає, а прибрати підсумок із веба не було чим. Одне поле на два
+    //  різні питання — і є та помилка.
+    j += ",\"wakeRun\":"  + String(chargeWaking() ? "true" : "false");
+    j += ",\"wakeMv\":"   + String((unsigned)CHARGE_WAKE_MV);
+    j += ",\"wakeMa\":"   + String((unsigned)CHARGE_WAKE_MA);
+    j += ",\"wakeMaxS\":" + String((unsigned)CHARGE_WAKE_MAX_S);
+    j += ",\"wakeMahMax\":" + String((unsigned)CHARGE_WAKE_MAH_MAX);
+    j += ",\"wakeProbes\":" + String(g_chg.wakeProbes);
+    // Чого чекає сеанс. Клієнти підписують рядок проб за цим полем: у меті
+    // RAIL монітор говорить із самого початку, і напис «монітор мовчить» був
+    // би неправдою — причому саме там, куди людина й дивиться.
+    j += ",\"wakeGoal\":" + String((unsigned)g_chg.wakeGoal);
+    j += ",\"wakeGoalText\":\"" + String(chargeWakeGoalText(g_chg.wakeGoal, g_chg.reason)) + "\"";
+    j += ",\"dutyCap\":"  + String(chargeDutyCap());
+    j += ",\"shuntMohm\":"+ String((unsigned)CHARGE_SHUNT_MOHM);
     j += ",\"pwm\":"      + String(chargePwmOk() ? "true" : "false");
     j += ",\"hardMaxMv\":"+ String((unsigned)g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV);
+    // ── ЖИВЛЕННЯ +14 В ─────────────────────────────────────────────────────
+    //  Йде в тому ж об'єкті, що й заряд, і оновлюється НЕЗАЛЕЖНО від того, чи
+    //  заряд узагалі запускали: несправний блок треба показати на екрані до
+    //  того, як користувач натисне кнопку, а не після невдалого старту.
+    // ── ОСТАННЄ СКИДАННЯ ───────────────────────────────────────────────────
+    //  Причина й обставини — прямо в статусі заряду, бо саме тут користувач і
+    //  дивиться, коли пристрій «періодично перезавантажується». Читати консоль
+    //  він не зобов'язаний, а без цих чисел скарга лишається здогадкою.
+    j += ",\"rstReason\":" + String(g_pmResetReason);
+    j += ",\"rstText\":\"" + String(resetReasonText((esp_reset_reason_t)g_pmResetReason)) + "\"";
+    j += ",\"rstAbnormal\":" + String(pmIsAbnormal(g_pmResetReason) ? "true" : "false");
+    j += ",\"pmValid\":" + String(g_pmPrevOk ? "true" : "false");
+    if (g_pmPrevOk) {
+        j += ",\"pmMode\":\"" + String(pmModeName(g_pmPrev.mode)) + "\"";
+        j += ",\"pmStep\":\"" + String(pmStepName(g_pmPrev.step)) + "\"";
+        j += ",\"pmSec\":"   + String((unsigned long)(g_pmPrev.ms / 1000));
+        j += ",\"pmPolls\":" + String(g_pmPrev.polls);
+        j += ",\"pmDuty\":"  + String(g_pmPrev.duty);
+        j += ",\"pmMa\":"    + String(g_pmPrev.ma);
+        j += ",\"pmMv\":"    + String(g_pmPrev.mv);
+        j += ",\"pmHeap\":"  + String((unsigned long)g_pmPrev.freeHeap);
+        j += ",\"pmBlock\":" + String((unsigned long)g_pmPrev.maxBlock);
+        j += ",\"pmStack\":" + String((unsigned long)g_pmPrev.stackLeft);
+    }
+    // Поточні числа — щоб тренд було видно НЕ ЛИШЕ після падіння.
+    // ⚑ ВІДБИТОК ЗБІРКИ — У ЗВИЧАЙНОМУ СТАНІ, А НЕ ЛИШЕ В /api/fs. Найперше
+    //  питання будь-якого розбору — «а чи та прошивка взагалі в приладі?» — і
+    //  доти на нього не було відповіді жодному клієнтові: дата збірки лежала в
+    //  діагностичній кінцевій точці, куди ніхто не заглядає. Дату й час
+    //  підставляє компілятор, тож збігтися випадково вони не можуть.
+    j += ",\"build\":\"" __DATE__ " " __TIME__ "\"";
+    j += ",\"heap\":"      + String((unsigned long)ESP.getFreeHeap());
+    j += ",\"heapBlock\":" + String((unsigned long)ESP.getMaxAllocHeap());
+    j += ",\"stack\":"     + String((unsigned long)uxTaskGetStackHighWaterMark(NULL));
+
+    // ── профіль, ручні уставки, фаза, залишок часу ───────────────────────
+    j += ",\"profile\":"  + String(chargeProfile());
+    j += ",\"profileText\":\""; j += chargeProfileText(chargeProfile()); j += "\"";
+    j += ",\"phase\":"    + String(g_chg.phase);
+    j += ",\"phaseText\":\"";   j += chargePhaseText(g_chg.phase); j += "\"";
+    j += ",\"manualMv\":" + String(chargeManualMv());
+    j += ",\"manMinMv\":" + String((unsigned)CHARGE_MANUAL_MV_MIN);
+    j += ",\"manMaxMv\":" + String((unsigned)CHARGE_MANUAL_MV_MAX);
+    j += ",\"ratedMah\":" + String(chargeRatedMah());
+    j += ",\"smartCcMa\":"  + String(chargeSmartCMa(chargeRatedMah(), CHARGE_SMART_CC_PCT));
+    j += ",\"smartEndMa\":" + String(chargeSmartEndMa(chargeRatedMah()));
+    j += ",\"etaS\":"     + String((unsigned long)chargeEtaS(
+                                  g_chg.phase, g_chg.lastPct, g_chg.targetPct,
+                                  chargeRatedMah(), g_chg.lastMa));
+    j += ",\"psuSensed\":" + String(chargePsuSensed() ? "true" : "false");
+    j += ",\"psuMv\":"    + String(chargePsuMv());
+    // НОМІНАЛ блока живлення — головне число в повідомленні про помилку:
+    // саме його користувач має під'єднати. Допуск нижче лише пояснює, чому
+    // нинішній блок відхилено.
+    j += ",\"psuNomMv\":" + String((unsigned)CHARGE_SUPPLY_MV);
+    j += ",\"psuMinMv\":" + String((unsigned)CHARGE_PSU_MIN_MV);
+    j += ",\"psuMaxMv\":" + String((unsigned)CHARGE_PSU_MAX_MV);
+    j += ",\"psuOk\":"    + String(!chargePsuFault() ? "true" : "false");
+    j += ",\"psuHead\":\""; j += chargePsuHead(chargePsuState()); j += "\"";
+    j += ",\"psuText\":\""; j += chargePsuText(chargePsuState()); j += "\"";
     j += "}";
     return j;
 }
@@ -1565,6 +3484,270 @@ bool performHeaderComplete(String *note) {
     return ok;
 }
 
+// ═══════════ СИНХРОНІЗАЦІЯ ДЗЕРКАЛА DS2438 -> DS2433 З ПРАВКОЮ ═══════════
+//  «Добудова заголовка» вище — сліпа: копіює всі 26 байтів і виправляє суму.
+//  Це правильно рівно в одному випадку — коли монітор ТОЧНО свій. А він буває
+//  чужий, і тоді сліпе копіювання не лікує, а закріплює чужу ідентичність.
+//
+//  Тому поруч живе план: показати побайтову різницю, дати зняти зайве, дати
+//  вписати паспортну ємність руками — і лише потім писати. Логіка плану чиста
+//  й лежить у mirror_plan.h; тут — лише стан сеансу й перекладання в JSON.
+static MirrorPlan g_mirPlan;
+static bool       g_mirPlanReady = false;
+
+// ⚑ ГОЛОВНЕ ПИТАННЯ ПЕРЕД СИНХРОНІЗАЦІЄЮ: А ЦЕЙ МОНІТОР ВІД ЦЬОГО ПАКЕТА?
+//  Операція переносить ідентичність З МОНІТОРА в пам'ять пакета. Якщо монітор
+//  чужий, ми не полагодимо пакет, а припишемо йому чужу особу — і зробимо це
+//  впевнено, «за планом». Ознака в нас є: наробіток ETM більший за вік пакета.
+//  Рахуємо тут, бо саме тут є і розшифрована дата, і годинник; сам план
+//  лишається чистою арифметикою.
+//
+//  ⚑ ОКРЕМО ВІД ПОБУДОВИ ПЛАНУ — НАВМИСНО. Дата приходить із клієнтом (у
+//  пристрої годинника реального часу немає, див. device_clock.h), тобто вже
+//  ПІСЛЯ того, як план побудовано й людина розставила галочки. Перебудова
+//  плану скинула б їх; тут же чіпаються лише числа, а вибір лишається людський.
+//
+//  ⚑ ТУТ ЖЕ Й ДРУГИЙ, ЗНАЧЕННЄВИЙ БІК ПЛАНУ — і зроблено це в одному місці
+//  свідомо: обидва потребують того самого — розшифрованого DS2433 і дати. Той
+//  бік і є головним: у пакеті власника байтове дзеркало збігалося ПОВНІСТЮ, а
+//  розходились саме числа (ETM 6397 діб проти віку 15, CCA/DCA 31/37 циклів
+//  проти 1+5 у лічильниках Motorola).
+static void mirrorPlanFactsRefresh() {
+    // ⚑ ВІК НЕВІДОМИЙ — ЦЕ −1. Нуль діб законний (пакетові щойно вписали
+    //  сьогоднішню дату виготовлення), тож починати з нуля означало б
+    //  оголосити «вік відомий і дорівнює нулю» ще до того, як його порахують.
+    long etmD = 0, age = -1;
+    MirrorValIn in;
+    memset(&in, 0, sizeof(in));
+
+    if (hasDump && hasDump2438) {
+        ImpresBms b;
+        int ty = 0, tm = 0, td = 0;
+        bool haveToday = deviceClockToday(&ty, &tm, &td);
+        if (impresBmsParse(batteryDump, batteryDump2438,
+                           hasSN2433 ? chipSN2433 : nullptr, 0.0f, &b)) {
+            if (b.haveKey) impresBmsDecrypt(batteryDump, &b);
+
+            in.have33    = true;
+            in.have38    = true;
+            in.ratedMah  = b.ratedMah;
+            in.rsense    = b.rsense;              // 0, якщо в чипі поля немає
+            in.rsFromChip = b.rsenseFromChip;
+            in.monEtmDays = (long)(b.etmSec / 86400UL);
+            in.monCca    = b.cca;
+            in.monDca    = b.dca;
+
+            // Лічильники циклів пакета ключа не потребують — вони в гістограмі.
+            // Порівнюємо з накопиченим зарядом монітора СУМУ обох: CCA не
+            // розрізняє, від IMPRES-станції прийшов заряд чи від простої ЗП.
+            if (b.cycles >= 0) {
+                // ⚑ НЕВІДОМЕ НЕ ДОДАЄМО. nonImpresCycles = −1 означає «блок
+                //  побитий, числа немає». Додати його як є — це відняти
+                //  цикл; додати як нуль — це тихо оголосити, що простою ЗП
+                //  пакет не заряджали жодного разу, і саме це число потім
+                //  поїхало б у монітор рядком CCA/DCA плану синхронізації.
+                //  Тому невідоме лишається невідомим.
+                long non = (b.nonImpresCycles >= 0) ? (long)b.nonImpresCycles : 0;
+                in.packCycKnown  = true;
+                in.packCycles    = (long)b.cycles + non;
+                in.packCycImpres = (long)b.cycles;
+                in.packNonImpres = (long)b.nonImpresCycles;   // −1 доходить як −1
+            }
+
+            if (haveToday && b.ok && b.haveKey &&
+                impresBmsDateSane(b.mfgY, b.mfgM, b.mfgD)) {
+                age  = impresBmsToDays(ty, tm, td) -
+                       impresBmsToDays(b.mfgY, b.mfgM, b.mfgD);
+                etmD = in.monEtmDays;
+                // Наробіток, який ПАКЕТ вважає своїм: від дати першого вмикання
+                // (вона в зашифрованому блоці) до сьогодні. Саме це число рація
+                // читає навпаки — показує «перше користування = зараз − ETM».
+                if (impresBmsDateSane(b.useY, b.useM, b.useD)) {
+                    long d = impresBmsToDays(ty, tm, td) -
+                             impresBmsToDays(b.useY, b.useM, b.useD);
+                    if (d >= 0) { in.packEtmKnown = true; in.packEtmDays = d; }
+                }
+            }
+        }
+    }
+    // Нулі теж записуємо: якщо дата зникла (перечитали інший пакет), свідчення
+    // мусить зникнути разом із нею, а не лишитись від попереднього.
+    mirrorPlanSetEtm(g_mirPlan, etmD, age);
+    mirrorPlanSetVals(g_mirPlan, in);
+}
+
+// Дата від клієнта. Її несуть усі запити плану — синхронізація не виняток:
+// без «сьогодні» вік пакета не порахувати, а отже й не перевірити, чи монітор
+// від нього. Клієнти шлють її з кожним MIRROR/api-mirror запитом.
+static void mirrorPlanClock(long today) {
+    if (today > 0) deviceClockSetNum(today);
+}
+
+static void mirrorPlanRefresh() {
+    mirrorPlanBuild(g_mirPlan,
+                    hasDump ? batteryDump : nullptr,
+                    hasDump2438 ? batteryDump2438 : nullptr);
+    g_mirPlanReady = hasDump;
+    mirrorPlanFactsRefresh();
+}
+
+static String mirrorPlanJson() {
+    String j; j.reserve(1024);
+    const MirrorPlan &p = g_mirPlan;
+    j  = "{\"ok\":";        j += p.have33 ? "true" : "false";
+    j += ",\"have38\":";    j += p.have38 ? "true" : "false";
+    j += ",\"srcUsable\":"; j += p.srcUsable ? "true" : "false";
+    j += ",\"inSync\":";    j += p.mirrorOkNow ? "true" : "false";
+    j += ",\"hdrOk\":";     j += p.hdrSumOkNow ? "true" : "false";
+    j += ",\"diffCount\":"; j += p.diffCount;
+    j += ",\"changes\":";   j += mirrorPlanChanges(p);
+    j += ",\"at33\":";      j += (int)IMPRES_MIRROR_D33_AT;
+    j += ",\"at38\":";      j += (int)IMPRES_MIRROR_D38_AT;
+    j += ",\"len\":";       j += (int)IMPRES_MIRROR_LEN;
+    j += ",\"ratedIdx\":";  j += (int)MIRROR_RATED_IDX;
+    j += ",\"ratedNow\":";  j += p.ratedNow;
+    j += ",\"ratedSrc\":";  j += p.ratedSrc;
+    j += ",\"ratedUser\":"; j += p.ratedUser;
+    j += ",\"ratedStep\":"; j += (int)IMPRES_RATED_STEP;
+    // Свідчення «чи монітор від цього пакета» — числами, без готового тексту:
+    // довгі пояснення у прошивці коштували б флеша, а він у нас на рахунку.
+    j += ",\"haveAge\":";   j += p.haveAge ? "true" : "false";
+    j += ",\"etmDays\":";   j += (long)p.etmDays;
+    j += ",\"ageDays\":";   j += (long)p.ageDays;
+    j += ",\"etmForeign\":"; j += p.etmForeign ? "true" : "false";
+    // Якою датою рахували вік — і звідки вона. Без цього «свідчення немає»
+    // виглядає як «усе гаразд», хоча насправді просто не заведено годинник.
+    j += ",\"today\":";     j += deviceClockNum();
+    j += ",\"todaySrc\":\""; j += deviceClockSrcName(); j += "\"";
+    // ── значеннєвий бік: ті самі факти, які чипи ведуть різними числами ──
+    //  Назви рядків тримають КЛІЄНТИ: у прошивці кожен рядок тексту — це флеш,
+    //  а його щойно не вистачило (див. «Sketch too big»). Порядок рядків
+    //  задано перерахуванням MVAL_* і однаковий скрізь.
+    j += ",\"haveVals\":"; j += p.haveVals ? "true" : "false";
+    j += ",\"vChanges\":"; j += mirrorValChanges(p);
+    j += ",\"vChangesMon\":";  j += mirrorValChanges(p, true, false);
+    j += ",\"vChangesPack\":"; j += mirrorValChanges(p, false, true);
+    j += ",\"rated\":";    j += p.ratedMah;
+    j += ",\"rsRaw\":";    j += (long)(p.rsense * 100000.0f + 0.5f);
+    j += ",\"rsChip\":";   j += p.rsFromChip ? "true" : "false";
+    j += ",\"v\":[";
+    for (int i = 0; i < MVAL_COUNT; i++) {
+        const MirrorVal &v = p.val[i];
+        if (i) j += ",";
+        j += "{\"w\":";   j += mirrorValToMon(i) ? "38" : "33";   // куди пише рядок
+        j += ",\"a\":";  j += v.avail ? "1" : "0";
+        j += ",\"pk\":";  j += v.packKnown ? "1" : "0";
+        j += ",\"t\":";   j += v.take ? "1" : "0";
+        j += ",\"p\":";   j += (long)v.pack;
+        j += ",\"m\":";   j += (long)v.mon;
+        j += ",\"u\":";   j += (long)v.user;
+        j += ",\"o\":";   j += (long)v.out;
+        j += ",\"raw\":"; j += (long)v.outRaw;
+        j += "}";
+    }
+    j += "]";
+    j += ",\"b\":[";
+    char t[8];
+    for (int i = 0; i < IMPRES_MIRROR_LEN; i++) {
+        if (i) j += ",";
+        j += "{\"now\":";  snprintf(t, sizeof(t), "%u", p.now[i]); j += t;
+        j += ",\"src\":";  snprintf(t, sizeof(t), "%u", p.src[i]); j += t;
+        j += ",\"out\":";  snprintf(t, sizeof(t), "%u", p.out[i]); j += t;
+        j += ",\"d\":";    j += p.diff[i] ? "1" : "0";
+        j += ",\"t\":";    j += p.take[i] ? "1" : "0";
+        j += "}";
+    }
+    j += "]}";
+    return j;
+}
+
+// GET /api/mirror[?today=РРРРММДД] — побудувати й віддати план (у чип не пише).
+void handleMirrorPlan() {
+    mirrorPlanClock(server.hasArg("today") ? server.arg("today").toInt() : 0);
+    if (!hasDump) {
+        server.send(400, "application/json",
+                    "{\"ok\":false,\"err\":\"Спочатку зчитайте АКБ\"}");
+        return;
+    }
+    mirrorPlanRefresh();
+    server.send(200, "application/json", mirrorPlanJson());
+}
+
+// POST /api/mirror/edit — правка ПЕРЕД синхронізацією, без запису в чип.
+//  take=all|none | byte=<0..25>&on=0|1 | rated=<мА·год> [| today=РРРРММДД]
+void handleMirrorEdit() {
+    if (!requireAdmin()) return;
+    long hadClock = deviceClockNum();
+    mirrorPlanClock(server.hasArg("today") ? server.arg("today").toInt() : 0);
+    if (!g_mirPlanReady) mirrorPlanRefresh();
+    // Дата змінилась (годинник щойно завели або настала нова доба) — свідчення
+    // про наробіток перераховуємо, але план НЕ перебудовуємо: галочки поставила
+    // людина, і вони мусять лишитись.
+    else if (hadClock != deviceClockNum()) mirrorPlanFactsRefresh();
+    if (!g_mirPlan.have33) {
+        server.send(400, "application/json",
+                    "{\"ok\":false,\"err\":\"Спочатку зчитайте АКБ\"}");
+        return;
+    }
+    if (server.hasArg("take")) {
+        String t = server.arg("take");
+        mirrorPlanTakeAll(g_mirPlan, t == "all");
+    }
+    if (server.hasArg("byte"))
+        mirrorPlanTakeOne(g_mirPlan, server.arg("byte").toInt(),
+                          server.arg("on") == "1");
+    if (server.hasArg("rated"))
+        mirrorPlanSetRated(g_mirPlan, server.arg("rated").toInt());
+    // Значеннєві рядки: галочка й вписане число (v=-1 — скасувати ручне).
+    if (server.hasArg("val"))
+        mirrorValTake(g_mirPlan, server.arg("val").toInt(), server.arg("on") == "1");
+    if (server.hasArg("vset"))
+        mirrorValSetUser(g_mirPlan, server.arg("vset").toInt(),
+                         server.hasArg("v") ? server.arg("v").toInt() : -1);
+    server.send(200, "application/json", mirrorPlanJson());
+}
+
+// POST /api/mirror/apply[&today=РРРРММДД] — записати те, що показано в плані.
+void handleMirrorApply() {
+    if (!requireAdmin()) return;
+    mirrorPlanClock(server.hasArg("today") ? server.arg("today").toInt() : 0);
+    if (!g_mirPlanReady) mirrorPlanRefresh();
+    if (!g_mirPlan.have33) {
+        server.send(400, "application/json",
+                    "{\"ok\":false,\"err\":\"Спочатку зчитайте АКБ\"}");
+        return;
+    }
+    ledSet(LED_WRITE); displayShow("СИНХР. 2433...");
+    int n = mirrorPlanApply(g_mirPlan, batteryDump);
+    // Лічильники циклів — теж у DS2433, тож правимо ДО єдиного запису чипа.
+    int nCyc = mirrorPlanApply33Vals(g_mirPlan, batteryDump);
+    bool ok = battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (ok) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+    // ── і другий чип, якщо в плані є значеннєві рядки ────────────────────
+    //  Пишемо ПІСЛЯ DS2433 і лише коли справді є що змінювати: зайвий цикл
+    //  запису монітора нікому не потрібен, а сторінки 0-2 ще й «живі».
+    int n38 = 0;
+    if (ok && hasDump2438) {
+        n38 = mirrorPlanApply38(g_mirPlan, batteryDump2438);
+        if (n38) {
+            displayShow("СИНХР. 2438...");
+            ok = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+            if (ok) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+        }
+    }
+    displayShow(ok ? "СИНХР. OK" : "СИНХР. ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    Serial.printf("MIRROR: %d байт + %d лічильників у DS2433, %d значень у DS2438, запис %s\n",
+                  n, nCyc, n38, ok ? "OK" : "FAIL");
+    mirrorPlanRefresh();
+    String j = "{\"ok\":"; j += ok ? "true" : "false";
+    j += ",\"changed\":"; j += n;
+    j += ",\"changedCyc\":"; j += nCyc;
+    j += ",\"changed38\":"; j += n38;
+    j += ",\"plan\":"; j += mirrorPlanJson(); j += "}";
+    server.send(ok ? 200 : 500, "application/json", j);
+}
+
 // POST /api/hdrfix
 void handleHeaderComplete() {
     if (!requireAdmin()) return;
@@ -1625,9 +3808,17 @@ void handleClean() {
     if (!hasDump && !hasDump2438) {
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}"); return;
     }
+    if (hasDump && !hasSN2433) {
+        server.send(400, "application/json",
+            "{\"status\":\"error\",\"message\":\"ROM-ID чипа DS2433 невідомий — історію "
+            "в DS2433 нічим переписати, а обнуляти лише монітор не можна (пакет перестане "
+            "впізнаватись). Перечитайте АКБ на пристрої й повторіть.\"}");
+        return;
+    }
     bool ok = performFactoryClean();
     server.send(ok ? 200 : 500, "application/json",
-        ok ? "{\"status\":\"success\",\"message\":\"Usage data cleared (identity kept)\"}"
+        ok ? "{\"status\":\"success\",\"message\":\"Історію використання обнулено в ОБОХ "
+             "чипах; ідентичність, модель і дата виготовлення збережені\"}"
            : "{\"status\":\"error\",\"message\":\"Clean write failed\"}");
 }
 
@@ -1932,9 +4123,21 @@ void handleResetBattery() {
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Read battery first\"}");
         return;
     }
+    // Без ROM-ID скидання свідомо не робиться (див. resetBatteryData): краще
+    // відмова з поясненням, ніж пакет із розсинхронізованими чипами.
+    if (hasDump && !hasSN2433) {
+        server.send(400, "application/json",
+            "{\"status\":\"error\",\"message\":\"ROM-ID чипа DS2433 невідомий. "
+            "Історія в DS2433 зашифрована ключем із нього, і без ключа її не обнулити. "
+            "Обнулити самі лічильники монітора не можна: пакет із порожнім монітором "
+            "проти повного історії DS2433 рація читає як «невідомий акумулятор». "
+            "Перечитайте АКБ на пристрої й повторіть.\"}");
+        return;
+    }
     bool ok = performReset();
     server.send(ok ? 200 : 500, "application/json",
-        ok ? "{\"status\":\"success\",\"message\":\"Battery counters reset\"}"
+        ok ? "{\"status\":\"success\",\"message\":\"Лічильники обнулено в ОБОХ чипах "
+             "(дата виготовлення збережена)\"}"
            : "{\"status\":\"error\",\"message\":\"Failed to write reset\"}");
 }
 
@@ -2079,7 +4282,16 @@ bool performInitBattery(const char *model, long mah) {
     }
     // Свіжий стан: зануляємо лічильники/історію/статистику, лишаємо
     // ідентичність/криву/дзеркало.
-    factoryCleanData();
+    //
+    // ⚑ Результат тут свідомо не перевіряємо, і ось чому. factoryCleanData()
+    //  відмовляється працювати без ROM-ID, щоб не лишити чипи
+    //  розсинхронізованими. Але «новий АКБ» — не той випадок: нижче йде
+    //  impresIdentityWrite(), яка переписує ВСЮ ідентичність під ключ цього
+    //  чипа, а слідом impresCyclesWrite(0)/impresNonImpresWrite(0) обнуляють
+    //  нешифровані гістограми. Тобто узгодженість тут забезпечує не очистка, а
+    //  повний перезапис. Якщо ж ROM невідомий, то й ідентичність не запишеться
+    //  — про це користувачу кажуть прямим текстом у відповіді обробника.
+    (void)factoryCleanData();
     impresFixHeader(batteryDump);
 
     // ⚑ ІДЕНТИЧНІСТЬ ГЕНЕРУЄМО, А НЕ КОПІЮЄМО. Зашифровані блоки еталона
@@ -2624,6 +4836,12 @@ void handleRestore() {
 void handleDischargeStart() {
     if (!requireAdmin()) return;
     uint16_t target = server.hasArg("target") ? (uint16_t)server.arg("target").toInt() : 0;
+    // Струм і профіль — тим самим запитом, що й старт (дзеркально до заряду).
+    if (server.hasArg("ma")) {
+        long m = server.arg("ma").toInt();
+        dischargeSetManualMa(m > 0 ? (uint16_t)m : 0);
+    }
+    if (server.hasArg("profile")) dischargeSetProfile((uint8_t)server.arg("profile").toInt());
     const char *err = dischargeStart(target);
     if (err) {
         String j = "{\"status\":\"error\",\"message\":\""; j += err; j += "\"}";
@@ -2645,9 +4863,120 @@ void handleDischargeStatus() {
 
 // Заряд: старт/зупинка/стан. Так само, як розряд — небезпечна операція,
 // тому старт вимагає явного підтвердження з клієнта.
+// Ручний струм заряду. ma=0 — повернутись до автоматичного профілю.
+//  Окремий обробник, а не параметр старту: струм міняють САМЕ ПІД ЧАС заряду,
+//  дивлячись на нагрів і на поведінку пакета. Вимагати для цього зупинки й
+//  повторного старту означало б щоразу збивати накопичену ємність сеансу.
+void handleChargeMa() {
+    if (!requireAdmin()) return;
+    if (chargeGateClosed()) return;
+    if (!server.hasArg("ma")) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"No ma\"}");
+        return;
+    }
+    long want = server.arg("ma").toInt();
+    if (want < 0) want = 0;
+    uint16_t got = chargeSetManualMa((uint16_t)want);
+    Serial.printf("charge: ручна уставка %ld мА -> %u мА (%s)\n",
+                  want, got, got ? "ручний режим" : "автомат");
+    String j = "{\"status\":\"success\",\"manualMa\":"; j += got;
+    j += ",\"asked\":"; j += want;
+    j += ",\"charge\":"; j += chargeJson(); j += "}";
+    server.send(200, "application/json", j);
+}
+
+// Ручна ЦІЛЬ заряду у мілівольтах. mv=0 — повернутись до цілі за відсотком.
+//  Окремий обробник із тієї ж причини, що й струм: напругу міняють, дивлячись
+//  на пакет, і вимагати заради цього зупинки означало б щоразу збивати
+//  накопичену ємність сеансу.
+void handleChargeMv() {
+    if (!requireAdmin()) return;
+    if (chargeGateClosed()) return;
+    if (!server.hasArg("mv")) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"No mv\"}");
+        return;
+    }
+    long want = server.arg("mv").toInt();
+    if (want < 0) want = 0;
+    uint16_t got = chargeSetManualMv((uint16_t)want);
+    Serial.printf("charge: ручна ціль %ld мВ -> %u мВ (%s)\n",
+                  want, got, got ? "ручна напруга" : "за відсотком");
+    String j = "{\"status\":\"success\",\"manualMv\":"; j += got;
+    j += ",\"asked\":"; j += want;
+    j += ",\"charge\":"; j += chargeJson(); j += "}";
+    server.send(200, "application/json", j);
+}
+
+// Профіль заряду: 0 — заводський (таблиця за відсотком), 1 — розумний (CC/CV
+// за паспортною ємністю пакета).
+void handleChargeProfile() {
+    if (!requireAdmin()) return;
+    if (chargeGateClosed()) return;
+    if (!server.hasArg("p")) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"No p\"}");
+        return;
+    }
+    uint8_t got = chargeSetProfile((uint8_t)server.arg("p").toInt());
+    Serial.printf("charge: профіль -> %s\n", chargeProfileText(got));
+    String j = "{\"status\":\"success\",\"profile\":"; j += got;
+    j += ",\"charge\":"; j += chargeJson(); j += "}";
+    server.send(200, "application/json", j);
+}
+
+// Ручний струм розряду. ma=0 — повернутись до лінійки за напругою.
+void handleDischargeMa() {
+    if (!requireAdmin()) return;
+    if (!server.hasArg("ma")) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"No ma\"}");
+        return;
+    }
+    long want = server.arg("ma").toInt();
+    if (want < 0) want = 0;
+    uint16_t got = dischargeSetManualMa((uint16_t)want);
+    Serial.printf("discharge: ручна уставка %ld мА -> %u мА (%s)\n",
+                  want, got, got ? "ручний режим" : "автомат");
+    String j = "{\"status\":\"success\",\"manualMa\":"; j += got;
+    j += ",\"asked\":"; j += want;
+    j += ",\"discharge\":"; j += dischargeJson(); j += "}";
+    server.send(200, "application/json", j);
+}
+
+// Профіль розряду: 0 — заводська лінійка, 1 — розумний (0.2C).
+void handleDischargeProfile() {
+    if (!requireAdmin()) return;
+    if (!server.hasArg("p")) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"No p\"}");
+        return;
+    }
+    uint8_t got = dischargeSetProfile((uint8_t)server.arg("p").toInt());
+    Serial.printf("discharge: профіль -> %s\n", dischargeProfileText(got));
+    String j = "{\"status\":\"success\",\"profile\":"; j += got;
+    j += ",\"discharge\":"; j += dischargeJson(); j += "}";
+    server.send(200, "application/json", j);
+}
+
 void handleChargeStart() {
     if (!requireAdmin()) return;
+    if (chargeGateClosed()) return;
     uint8_t target = server.hasArg("target") ? (uint8_t)server.arg("target").toInt() : 0;
+    // Дозволяємо задати струм тим самим запитом, що й старт: інакше між
+    // «почати» і «поставити струм» був би прохід на автоматичній уставці.
+    if (server.hasArg("ma")) {
+        long m = server.arg("ma").toInt();
+        chargeSetManualMa(m > 0 ? (uint16_t)m : 0);
+    }
+    // Те саме для ручної ЦІЛІ у вольтах: задати її тим самим запитом, що й
+    // старт, інакше перший прохід ішов би до цілі за відсотком.
+    if (server.hasArg("mv")) {
+        long v = server.arg("mv").toInt();
+        chargeSetManualMv(v > 0 ? (uint16_t)v : 0);
+    }
+    if (server.hasArg("profile")) chargeSetProfile((uint8_t)server.arg("profile").toInt());
     const char *err = chargeStart(target);
     if (err) {
         String j = "{\"status\":\"error\",\"message\":\""; j += err; j += "\"}";
@@ -2657,11 +4986,56 @@ void handleChargeStart() {
     server.send(200, "application/json",
         String("{\"status\":\"success\",\"message\":\"Заряд почато\",\"charge\":") + chargeJson() + "}");
 }
+// Примусове пробудження. Окремий обробник, а не прапорець у /api/charge/start:
+// у нього інші умови старту, інші межі й інший сенс, і плутати їх одним полем
+// означало б, що випадковий зайвий параметр запускає режим без контролю
+// температури. Параметрів у нього немає взагалі — усе задає settings.h.
+void handleChargeWake() {
+    if (!requireAdmin()) return;
+    if (chargeGateClosed()) return;
+    const char *err = chargeWakeStart();
+    if (err) {
+        String j = "{\"status\":\"error\",\"message\":\""; j += err; j += "\"}";
+        server.send(400, "application/json", j);
+        return;
+    }
+    server.send(200, "application/json",
+        String("{\"status\":\"success\",\"message\":\"Пробудження почато\",\"charge\":")
+        + chargeJson() + "}");
+}
+// ── ПРИБРАТИ ПІДСУМОК ЗАВЕРШЕНОЇ ОПЕРАЦІЇ ─────────────────────────────────
+//  На пристрої підсумок знімає будь-яка кнопка (див. displayHandleButton), а в
+//  клієнтів такої дороги не було взагалі: панель назавжди лишалась у стані
+//  «завершено»/«аварія», а разом із нею — у вигляді того режиму, який щойно
+//  скінчився. Рівно на це й скарга.
+//
+//  ⚑ ГЕЙТА ЗАРЯДУ ТУТ НЕМАЄ НАВМИСНО. Вимикач «версія без заряду» сам зупиняє
+//  заряд, що йшов, тобто саме він і створює підсумок. Закрити гейтом дорогу до
+//  його прибирання означало б лишити на панелі напис, який уже нічим не
+//  прибрати.
+void handleChargeDismiss() {
+    if (!requireAdmin()) return;
+    chargeDismiss();                       // не діє, якщо заряд справді йде
+    server.send(200, "application/json",
+        String("{\"status\":\"success\",\"charge\":") + chargeJson() + "}");
+}
+void handleDischargeDismiss() {
+    if (!requireAdmin()) return;
+    dischargeDismiss();
+    server.send(200, "application/json",
+        String("{\"status\":\"success\",\"discharge\":") + dischargeJson() + "}");
+}
+
 void handleChargeStop() {
     if (!requireAdmin()) return;
+    // Одна кнопка на обидва режими: зупиняє те, що саме йде. Друга кнопка
+    // «зупинити пробудження» лише плодила б стан, у якому натиснуто не ту.
+    bool wasWake = chargeWaking();
     chargeStop(CHGR_USER);
     server.send(200, "application/json",
-        String("{\"status\":\"success\",\"message\":\"Заряд зупинено\",\"charge\":") + chargeJson() + "}");
+        String("{\"status\":\"success\",\"message\":\"")
+        + (wasWake ? "Пробудження зупинено" : "Заряд зупинено")
+        + "\",\"charge\":" + chargeJson() + "}");
 }
 void handleChargeStatus() {
     server.send(200, "application/json", chargeJson());
@@ -2746,10 +5120,19 @@ static String soundFullJson() {
     j += ",\"defaults\":{\"enabled\":true,\"click\":true,\"volume\":" + String((int)BUZZER_VOLUME) +
          ",\"tempo\":100,\"glide\":100,\"attack\":" + String((int)BUZZ_ATTACK_MS) +
          ",\"release\":" + String((int)BUZZ_RELEASE_MS) + ",\"semitones\":0}";
-#ifdef BUZZER_PIN
-    j += ",\"hasBuzzer\":true,\"pin\":" + String((int)BUZZER_PIN);
+    // ⚑ ТУТ БУВ ПЕРЕКІС: перевірявся ЛИШЕ BUZZER_PIN (ШІМ), бо ЦАП-варіанта
+    //  тоді ще не існувало. Поки звук стояв вимкнений, це нічого не значило;
+    //  щойно його ввімкнули на BUZZER_DAC_PIN — усі три клієнти діставали
+    //  hasBuzzer:false і малювали «буззер не підключено» просто над
+    //  повзунками, які насправді працюють. Питання не «чи є BUZZER_PIN», а
+    //  «чи є вихід звуку взагалі», тож перевіряються обидва; який саме — у
+    //  полі out, щоб клієнт міг сказати це словами, а не вгадувати за піном.
+#if defined(BUZZER_DAC_PIN)
+    j += ",\"hasBuzzer\":true,\"out\":\"dac\",\"pin\":" + String((int)BUZZER_DAC_PIN);
+#elif defined(BUZZER_PIN)
+    j += ",\"hasBuzzer\":true,\"out\":\"pwm\",\"pin\":" + String((int)BUZZER_PIN);
 #else
-    j += ",\"hasBuzzer\":false,\"pin\":-1";
+    j += ",\"hasBuzzer\":false,\"out\":\"none\",\"pin\":-1";
 #endif
     j += ",\"signals\":[";
     for (int i = 0; i < BZ_SIGNAL_COUNT; i++) {
@@ -2770,6 +5153,219 @@ static String soundFullJson() {
 //  зайве. Рахунок і запис — тим самим кодом (restore_plan.h), щоб два входи не
 //  розійшлися: знос залежить і від шунта, і від паспортної ємності, і власна
 //  копія формули одного дня дала б інший CTS.
+// ═══════════════ РУЧНИЙ РЕДАКТОР: УСІ ЗНАЧЕННЯ ОДНИМ СПИСКОМ ═══════════════
+//  Правила, назви, одиниці й межі — в edit_plan.h. Тут лише транспорт: зібрати
+//  план із прочитаних дампів, віддати його клієнтові й прийняти правки назад.
+//
+//  ⚑ КЛІЄНТ НЕ ЗНАЄ НІ НАЗВ, НІ МЕЖ — ЇХ НАЗИВАЄ ПРИСТРІЙ. Три власні копії
+//  цього списку розійшлися б на першій же правці: у проєкті так уже було з
+//  іменем силового ключа й із причиною недоступності заряду.
+static void editPlanFromChips(EditPlan &p) {
+    editPlanBuild(p, hasDump ? batteryDump : nullptr,
+                     hasDump2438 ? batteryDump2438 : nullptr,
+                     hasSN2433 ? chipSN2433 : nullptr,
+                     deviceClockNum());
+}
+
+static String editPlanJson(const EditPlan &p) {
+    String j = "{\"status\":\"success\",\"have33\":";
+    j += p.have33 ? "true" : "false";
+    j += ",\"have38\":";  j += p.have38 ? "true" : "false";
+    j += ",\"haveKey\":"; j += p.haveKey ? "true" : "false";
+    j += ",\"today\":";   j += deviceClockNum();
+    j += ",\"rated\":";   j += p.ratedEff;
+    j += ",\"fields\":[";
+    for (int i = 0; i < EDF_COUNT; i++) {
+        if (i) j += ",";
+        j += "{\"i\":";      j += i;
+        j += ",\"name\":\""; j += editFieldName(i);
+        j += "\",\"unit\":\"";j += editFieldUnit(i);
+        j += "\",\"type\":"; j += editFieldType(i);
+        j += ",\"chip\":";   j += editFieldChip(i);
+        j += ",\"avail\":";  j += p.f[i].avail ? "true" : "false";
+        j += ",\"cur\":";    j += p.f[i].cur;
+        j += ",\"lo\":";     j += p.f[i].lo;
+        j += ",\"hi\":";     j += p.f[i].hi;
+        j += "}";
+    }
+    j += "]}";
+    return j;
+}
+
+void handleEditGet() {
+    if (!hasDump && !hasDump2438) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Спочатку зчитайте АКБ\"}");
+        return;
+    }
+    EditPlan p;
+    editPlanFromChips(p);
+    server.send(200, "application/json", editPlanJson(p));
+}
+
+void handleEditApply() {
+    if (!requireAdmin()) return;
+    if (!hasDump && !hasDump2438) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Спочатку зчитайте АКБ\"}");
+        return;
+    }
+    EditPlan p;
+    editPlanFromChips(p);
+
+    // Правки приходять як f<номер>=<значення>. Порожнє або відсутнє поле
+    // означає «не чіпати» — саме тому клієнт і не мусить надсилати весь список.
+    for (int i = 0; i < EDF_COUNT; i++) {
+        String key = "f" + String(i);
+        if (!server.hasArg(key)) continue;
+        String v = server.arg(key);
+        v.trim();
+        if (!v.length()) continue;
+        // ⚑ ПОМИЛКУ ВВЕДЕННЯ ВИПРАВЛЯЄ САМ ПЛАН, А НЕ ВІДХИЛЯЄ. Відмова
+        //  лишилась там, де виправляти нема чого: поля з такою назвою немає
+        //  або блок, у якому воно живе, не читається.
+        if (!editPlanSet(p, i, v.toInt())) {
+            String m = "{\"status\":\"error\",\"message\":\"";
+            m += editFieldName(i); m += ": "; m += p.err; m += "\"}";
+            server.send(400, "application/json", m);
+            return;
+        }
+    }
+    // ⚑ ЗВІРКА НАБОРУ — ПІСЛЯ ВСІХ ПОЛІВ, А НЕ ПІСЛЯ КОЖНОГО. Людина може
+    //  посунути дату виготовлення й дату запуску одним заходом, і кожна з них
+    //  окремо виглядає безглуздою рівно доти, доки не побачиш другу. Тут набір
+    //  теж ЛАГОДИТЬСЯ: пізнішу подію підтягуємо до ранішої.
+    char why[128];
+    if (!editPlanRepair(p)) {
+        editPlanConsistent(p, why, sizeof(why));
+        String m = "{\"status\":\"error\",\"message\":\"Набір суперечить сам собі, а полагодити нічим: ";
+        m += why; m += "\"}";
+        server.send(400, "application/json", m);
+        return;
+    }
+    if (editPlanCount(p, 0) == 0) {
+        // Могло статись і так: усе, що вписали, виправилось назад у поточне.
+        // Промовчати тут означало б лишити людину з питанням «а чому нічого?».
+        String m = "{\"status\":\"success\",\"applied\":0,\"fix\":\"";
+        m += p.fix;
+        m += "\",\"message\":\"Нічого не змінилось\"}";
+        server.send(200, "application/json", m);
+        return;
+    }
+
+    bool w33 = false, w38 = false;
+    int done = editPlanApply(p, hasDump ? batteryDump : nullptr,
+                                hasDump2438 ? batteryDump2438 : nullptr, &w33, &w38);
+    ledSet(LED_WRITE);
+    displayShow("РЕДАГУВАННЯ...");
+    // ⚑ ЯКЩО ЗАПИС НЕ ПРОЙШОВ — ПЕРЕЧИТУЄМО ЧИП, А НЕ ЛИШАЄМО ПРАВКУ В
+    //  ПАМ'ЯТІ. Інакше інтерфейс показував би змінене там, де в чипі старе, і
+    //  наступна правка поїхала б поверх вигаданого стану.
+    bool ok = true;
+    if (w33) ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (w38) ok &= battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (!ok) {
+        bool a = false, b = false;
+        readAllChips(a, b);
+        ledSet(LED_ERROR);
+        server.send(500, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Запис не пройшов — чипи перечитано\"}");
+        return;
+    }
+    if (w33) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+    if (w38) saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+    ledSet(LED_OK);
+    displayShow("ЗАПИСАНО");
+
+    EditPlan after;
+    editPlanFromChips(after);
+    String j = "{\"status\":\"success\",\"applied\":"; j += done;
+    j += ",\"fix\":\""; j += p.fix; j += "\"";
+    j += ",\"plan\":"; j += editPlanJson(after);
+    j += "}";
+    server.send(200, "application/json", j);
+}
+
+// ═══════════ ЗНІМОК «ДО СТАНЦІЇ» І ПОБАЙТОВА РІЗНИЦЯ З НИМ ════════════════
+//  Чотири рази поспіль розбір «звідки повернулось число» йшов одним шляхом:
+//  власник називає число, ми перебираємо корпус, шукаємо поле. Це коштує днів
+//  і працює лише тоді, коли потрібне поле вже є в чиємусь дампі.
+//
+//  ⚑ ТУТ — ПРЯМЕ ВИМІРЮВАННЯ. Зняли знімок обох чипів ДО станції, зняли після
+//  — і видно, ЯКІ САМЕ БАЙТИ вона змінила. П'яте місце, якщо воно є,
+//  знайдеться за один захід і навіть тоді, коли в корпусі такого дампа немає.
+#define SNAP33_PATH "/snap33.bin"
+#define SNAP38_PATH "/snap38.bin"
+
+static bool snapLoad(const char *path, uint8_t *out, size_t n) {
+    File f = SPIFFS.open(path, "r");
+    if (!f) return false;
+    size_t got = f.read(out, n);
+    f.close();
+    return got == n;
+}
+
+void handleSnapshotSave() {
+    if (!requireAdmin()) return;
+    if (!hasDump && !hasDump2438) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Спочатку зчитайте АКБ\"}");
+        return;
+    }
+    if (hasDump)     saveDump(SNAP33_PATH, batteryDump, DUMP_SIZE);
+    if (hasDump2438) saveDump(SNAP38_PATH, batteryDump2438, DS2438_MEM_SIZE);
+    String j = "{\"status\":\"success\",\"has33\":";
+    j += hasDump ? "true" : "false";
+    j += ",\"has38\":"; j += hasDump2438 ? "true" : "false";
+    j += ",\"message\":\"Знімок знято\"}";
+    server.send(200, "application/json", j);
+}
+
+// Різниця «знімок → те, що в чипах зараз», окремо по кожному чипу.
+static void snapDiffJson(String &j, const char *name, const uint8_t *now, int len,
+                         const char *path, const char *(*nameOf)(int)) {
+    j += "\""; j += name; j += "\":";
+    uint8_t was[DUMP_SIZE];
+    if (len > (int)sizeof(was) || !snapLoad(path, was, (size_t)len)) {
+        j += "{\"have\":false}";
+        return;
+    }
+    SnapDiff d;
+    snapDiffBytes(was, now, len, d, nameOf);
+    j += "{\"have\":true,\"total\":"; j += d.total;
+    j += ",\"truncated\":"; j += d.truncated ? "true" : "false";
+    j += ",\"runs\":[";
+    for (int i = 0; i < d.n; i++) {
+        if (i) j += ",";
+        j += "{\"at\":";    j += d.runs[i].at;
+        j += ",\"len\":";   j += d.runs[i].len;
+        j += ",\"name\":\""; j += nameOf(d.runs[i].at);
+        j += "\",\"was\":\"";
+        for (int k = 0; k < d.runs[i].len; k++) {
+            char b[4]; snprintf(b, sizeof(b), "%02X", was[d.runs[i].at + k]); j += b;
+        }
+        j += "\",\"now\":\"";
+        for (int k = 0; k < d.runs[i].len; k++) {
+            char b[4]; snprintf(b, sizeof(b), "%02X", now[d.runs[i].at + k]); j += b;
+        }
+        j += "\"}";
+    }
+    j += "]}";
+}
+
+void handleSnapshotDiff() {
+    String j = "{\"status\":\"success\",";
+    if (hasDump) snapDiffJson(j, "d33", batteryDump, DUMP_SIZE, SNAP33_PATH, snapName33);
+    else         j += "\"d33\":{\"have\":false}";
+    j += ",";
+    if (hasDump2438) snapDiffJson(j, "d38", batteryDump2438, DS2438_MEM_SIZE, SNAP38_PATH, snapName38);
+    else             j += "\"d38\":{\"have\":false}";
+    j += ",\"snap33\":"; j += SPIFFS.exists(SNAP33_PATH) ? "true" : "false";
+    j += ",\"snap38\":"; j += SPIFFS.exists(SNAP38_PATH) ? "true" : "false";
+    j += "}";
+    server.send(200, "application/json", j);
+}
+
 void handleSetHealth() {
     if (!requireAdmin()) return;
     if (!hasDump) {
@@ -3254,9 +5850,31 @@ void setupWebServer() {
     size_t usedBytes = SPIFFS.usedBytes();
     Serial.printf("SPIFFS Status: Total=%d bytes, Used=%d bytes, Free=%d bytes\n", 
                  totalBytes, usedBytes, totalBytes - usedBytes);
+    // ⚑ І СПИСОК ФАЙЛІВ. Найчастіша причина «сторінка не відкривається» — теку
+    //  data/ просто не залили в пристрій, а дізнатись про це не було як:
+    //  порожній екран у браузері не пояснює нічого. Тепер видно одразу.
+    {
+        File dir = SPIFFS.open("/");
+        bool anyPage = false;
+        for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+            Serial.printf("  SPIFFS: %-24s %8u B\n", f.name(), (unsigned)f.size());
+            String n = String(f.name());
+            if (n.endsWith("index.html.gz") || n.endsWith("index.html")) anyPage = true;
+        }
+        // Сторінка є завжди — вона вшита в прошивку. Файл у SPIFFS лише
+        // ПЕРЕКРИВАЄ її, тож про його відсутність казати нема чого; а от про
+        // наявність сказати варто: інакше «правлю сторінку, а нічого не
+        // змінюється» стане наступною загадкою.
+        Serial.printf("  сторінка: %s (%u Б у прошивці)\n",
+                      anyPage ? "файл зі SPIFFS ПЕРЕКРИВАЄ вшиту" : "вшита в прошивку",
+                      (unsigned)PAGE_INDEX_GZ_LEN);
+    }
     
     server.on("/", handleRoot);
     server.on("/logo.png", HTTP_GET, handleLogo);
+    server.on("/api/fs", HTTP_GET, handleFsList);          // що лежить у SPIFFS
+    server.on("/lite", HTTP_GET, handleLite);              // аварійна сторінка на кілька КБ
+    server.on("/bigtest", HTTP_GET, handleBigTest);        // дослід «великий обсяг без стиснення»
     server.on("/api/read", HTTP_GET, handleReadDump);
     server.on("/api/download", HTTP_GET, handleDownloadDump);
     server.on("/api/info", HTTP_GET, handleDumpInfo);
@@ -3271,6 +5889,11 @@ void setupWebServer() {
     server.on("/api/info2438", HTTP_GET, handleDumpInfo2438);
     server.on("/api/write2438", HTTP_POST, handleWriteDump2438);
     server.on("/upload2438", HTTP_POST, handleUploadDone2438, handleUploadDump2438);
+#ifdef DISPLAY_SPLASH_SPIFFS
+    server.on("/uploadsplash", HTTP_POST, handleUploadSplashDone, handleUploadSplash);
+    server.on("/api/splash", HTTP_GET, handleSplashInfo);        // стан заставки
+    server.on("/api/splash/delete", HTTP_POST, handleSplashDelete);
+#endif
     server.on("/api/reset", HTTP_POST, handleResetBattery);
     server.on("/api/clean", HTTP_POST, handleClean);            // очистка (крім критичних)
     server.on("/api/wipe2433", HTTP_POST, handleWipe2433);      // ПОВНЕ стирання DS2433
@@ -3286,7 +5909,14 @@ void setupWebServer() {
     server.on("/api/templates", HTTP_GET, handleTemplates);      // список вшитих моделей
     server.on("/api/ops", HTTP_GET, handleOps);                  // каталог операцій (operations.h)
     server.on("/api/sethealth", HTTP_POST, handleSetHealth);     // знос/здоров'я одним рухом
+    server.on("/api/edit", HTTP_GET,  handleEditGet);            // ручний редактор: усі значення
+    server.on("/api/edit", HTTP_POST, handleEditApply);          // …і запис змінених
+    server.on("/api/snapshot", HTTP_POST, handleSnapshotSave);   // знімок «до станції»
+    server.on("/api/snapshot", HTTP_GET,  handleSnapshotDiff);   // …і побайтова різниця з ним
     server.on("/api/hdrfix", HTTP_POST, handleHeaderComplete);   // добудова заголовка після станції
+    server.on("/api/mirror", HTTP_GET, handleMirrorPlan);        // план синхронізації дзеркала
+    server.on("/api/mirror/edit", HTTP_POST, handleMirrorEdit);  // правка перед синхронізацією
+    server.on("/api/mirror/apply", HTTP_POST, handleMirrorApply);// запис за планом
     server.on("/api/clock", HTTP_GET, handleClockGet);           // системна дата пристрою
     server.on("/api/clock", HTTP_POST, handleClockSet);          // завести годинник
     server.on("/api/sound", HTTP_GET, handleSoundGet);           // налаштування звуку
@@ -3297,7 +5927,15 @@ void setupWebServer() {
     server.on("/api/discharge/stop", HTTP_POST, handleDischargeStop);    // зупинити розряд
     server.on("/api/charge", HTTP_GET, handleChargeStatus);              // стан заряду
     server.on("/api/charge/start", HTTP_POST, handleChargeStart);        // почати заряд
+    server.on("/api/charge/mv", HTTP_POST, handleChargeMv);              // ручна ціль, мВ
+    server.on("/api/charge/profile", HTTP_POST, handleChargeProfile);    // заводський/розумний
+    server.on("/api/discharge/ma", HTTP_POST, handleDischargeMa);        // ручний струм, мА
+    server.on("/api/discharge/profile", HTTP_POST, handleDischargeProfile);
+    server.on("/api/charge/ma", HTTP_POST, handleChargeMa);     // ручний струм заряду
+    server.on("/api/charge/wake", HTTP_POST, handleChargeWake); // примусове пробудження
     server.on("/api/charge/stop", HTTP_POST, handleChargeStop);          // зупинити заряд
+    server.on("/api/charge/dismiss", HTTP_POST, handleChargeDismiss);    // прибрати підсумок
+    server.on("/api/discharge/dismiss", HTTP_POST, handleDischargeDismiss);
     server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
     server.on("/api/clone", HTTP_POST, handleCloneRestore);      // крайній засіб: режим копії
     server.on("/api/clone/samples", HTTP_GET, handleCloneSamples); // вбудовані зразки копій

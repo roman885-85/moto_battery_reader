@@ -47,13 +47,14 @@ static bool mirrorSourceValid(const uint8_t *d38) {
     for (int i = 24; i < 50; i++) { if (d38[i] != 0x00) allZero = false; if (d38[i] != 0xFF) allFF = false; }
     return !allZero && !allFF;
 }
-// ── дослівно з recovery.h: детектор ISS_CHARGER_PARTIAL ───────────────────
+// ── детектор ISS_CHARGER_PARTIAL ──────────────────────────────────────────
+//  ⚑ БЕЗ КОПІЇ. Раніше тут лежало те саме правило, переписане руками з
+//  recovery.h, — і коли оригінал виправили (додали умову «решта чипа порожня»), копія
+//  лишилась старою й тест далі проходив на зламаній логіці, ловлячи справний
+//  пакет як «станція почала добудову». Тепер обидва місця кличуть ОДНУ
+//  функцію з impres_format.h, і розійтися їм нема як.
 static bool chargerPartial(const uint8_t *d33, const uint8_t *d38, bool has38) {
-    bool blank = true;
-    for (int i = 0; i < 0x20; i++) if (d33[i] != 0xFF) { blank = false; break; }
-    bool hdrOk = headerChecksumOk(d33);
-    if (hdrOk || blank || !has38) return false;
-    return mirrorSourceValid(d38) && mirrorOk(d33, d38);
+    return impresChargerPartial(d33, d38, has38);
 }
 
 static bool load(const char *p, uint8_t *b, size_t n) {
@@ -113,6 +114,40 @@ int main() {
                    cp ? "так" : "ні");
             if (cp) bad("звичайне псування переплутано з частковим записом станції");
         }
+    }
+
+    // ── 2а. ПОБУДОВАНИЙ чип із побитою сумою — теж НЕ добудова ─────────────
+    //  Саме цей випадок і був хибно продіагностований: у справного пакета
+    //  дзеркало сходиться (на те воно й дзеркало), тож самої лише «сума хибна
+    //  + дзеркало збігається» замало. Реальний дамп зі скарги власника.
+    printf("\n2а) чип побудований, а сума заголовка втрачена — це НЕ добудова\n");
+    {
+        uint8_t r33[DUMP_SIZE], r38[DS2438_MEM_SIZE];
+        if (load("dumps/20-vymahaie-vidnovlennya/files/03_PMNN4409A_2433.bin", r33, DUMP_SIZE) &&
+            load("dumps/20-vymahaie-vidnovlennya/files/03_PMNN4409A_2438.bin", r38, DS2438_MEM_SIZE)) {
+            int body = 0;
+            for (int i = 0x20; i < (int)DUMP_SIZE; i++) if (r33[i] != 0xFF) body++;
+            printf("   сума заголовка: %s, дзеркало: %s, непорожніх байтів після 0x020: %d\n",
+                   impresHeaderOk(r33) ? "ОК" : "ХИБНА",
+                   impresMirrorOk(r33, r38) ? "сходиться" : "розійшлось", body);
+            if (impresHeaderOk(r33)) bad("дамп зі скарги мусить мати саме ХИБНУ суму заголовка");
+            if (!impresMirrorOk(r33, r38)) bad("…і дзеркало в ньому мусить сходитись — інакше випадок не той");
+            if (body == 0) bad("…і чип мусить бути побудований — інакше це справді добудова");
+            if (chargerPartial(r33, r38, true))
+                bad("побудований чип із втраченою сумою переплутано з добудовою станції");
+            else
+                printf("   ок    діагноз не «добудова» — тобто ремонт піде іншим шляхом\n");
+        } else bad("дамп 20-vymahaie-vidnovlennya/03 не зчитався");
+
+        // І дзеркальна перевірка: варто ЄДИНОМУ байту з'явитися після 0x020 у
+        // справжньому випадку добудови — і це вже не добудова.
+        uint8_t w33[DUMP_SIZE];
+        memcpy(w33, d33, DUMP_SIZE);
+        w33[0x148] = 0x0B;                 // «щось уже записано»
+        if (chargerPartial(w33, d38, true))
+            bad("умова «решта чипа порожня» не діє — один байт її не зрушив");
+        else
+            printf("   ок    один непорожній байт після 0x020 знімає діагноз добудови\n");
     }
 
     // ── 3. Порожній чип — теж не «частковий запис» ─────────────────────────

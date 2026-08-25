@@ -24,12 +24,25 @@
                   repeating-linear-gradient(-45deg,rgba(125,34,48,.03) 0 2px,transparent 2px 22px)}
 header{background:linear-gradient(180deg,#23281a,#171a10);padding:12px 16px;border-bottom:1px solid var(--line);
  border-top:3px solid var(--maroon);
- display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:5}
+ display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:60}
 header h1{font-size:1.05em;margin:0;color:var(--gold)}
 .dot{width:11px;height:11px;border-radius:50%;background:var(--red);display:inline-block;margin-right:6px}
 .dot.on{background:var(--grn)}
 .wrap{max-width:820px;margin:0 auto;padding:12px}
-.tabs{display:flex;gap:6px;margin:10px 0}
+/* Липка смуга вкладок — те саме, що й у веб-інтерфейсі: сторінки довгі,
+   і повертатись угору заради переходу на сусідню вкладку незручно.
+
+   ⚠️ ТУТ УЖЕ Є ОДИН ЛИПКИЙ ЕЛЕМЕНТ — <header> зі станом підключення. Два
+   різні блоки з top:0 не «діляться» місцем: обидва стають на верх вікна, і
+   той, у кого z-index більший, просто закриває інший. Саме це й сталось —
+   смуга вкладок налізла на панель статусу.
+
+   Тому: у шапки z-index ВИЩИЙ (вона головна й має лишатись видимою завжди),
+   а вкладки липнуть на її висоту нижче. Висота задана змінною, щоб два
+   числа не розповзлись: --hdrH використовує і .tabs, і .subnav. */
+:root{ --hdrH:58px; }
+.tabs{display:flex;gap:6px;margin:0 0 10px;position:sticky;top:var(--hdrH);z-index:50;
+      background:var(--bg);padding:8px 0;border-bottom:1px solid var(--line)}
 .tab{flex:1;text-align:center;padding:10px;background:var(--card);border-radius:10px;cursor:pointer;color:var(--mut);border:1px solid var(--line)}
 .tab.active{color:var(--txt);border-color:var(--gold)}
 .tab-wiz{border-color:var(--maroon);color:var(--khaki);font-weight:700}
@@ -38,6 +51,17 @@ header h1{font-size:1.05em;margin:0;color:var(--gold)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
 .card h2{font-size:1em;margin:0 0 10px}
 .row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line);gap:10px}
+/* Ряд уставки операції — один клас на всі ряди заряду й розряду. Підпис має
+   ФІКСОВАНУ колонку, тож кнопки обох карток стоять на одній вертикалі; доки
+   відступ ставили інлайновим style, ряди двох карток розповзались. */
+.oprow{flex-wrap:wrap;margin-top:10px}
+.oprow>.k{flex:0 0 132px}
+.oprow>span:last-child{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+@media(max-width:560px){ .oprow>.k{flex:1 1 100%} }
+/* Підблок третьої операції (пробудження) всередині картки заряду: це той самий
+   ключ і та сама машина, тож окремою карткою він брехав би про незалежність. */
+.opsub{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
+.opsub>h3{margin:0 0 8px;font-size:1em}
 .row:last-child{border-bottom:none}.k{color:var(--mut)}.v{font-weight:600;text-align:right;word-break:break-all}
 /* ⚠️ Колір ФОНУ задає й сам .btn, а не лише модифікатори: кнопка без .b-*
    діставала світло-сірий фон від браузера, і білий напис на ньому зникав
@@ -52,6 +76,18 @@ header h1{font-size:1.05em;margin:0;color:var(--gold)}
 .b-warn{background:var(--org);color:#1a1400}
 .b-dng{background:var(--red)}.b-inf{background:#4a5a38}
 .btns{display:flex;gap:8px;flex-wrap:wrap}.btns .btn{flex:1;min-width:130px;width:auto}
+/* ⚑ ВІКНО, А НЕ ПЛАШКА. Відмова «ця версія пристрою — без заряду» пояснює,
+   чому зникла ціла група дій. Рядок стану живе до наступного повідомлення й
+   зникає — тому в цієї відповіді є «ОК»: вона стоїть, доки її не прочитають. */
+#msgWrap{position:fixed;inset:0;z-index:60;display:none;align-items:center;
+         justify-content:center;background:rgba(0,0,0,.62);padding:18px}
+#msgWrap.on{display:flex}
+#msgBox{background:var(--card);border:1px solid var(--line);border-radius:12px;
+        max-width:520px;width:100%;box-shadow:0 18px 48px rgba(0,0,0,.6)}
+#msgHead{padding:14px 18px;border-bottom:1px solid var(--line);font-weight:700}
+#msgBody{padding:16px 18px;line-height:1.5;color:var(--txt);white-space:pre-wrap}
+#msgFoot{padding:12px 18px 16px;text-align:center}
+#msgOk{min-width:140px;width:auto}
 .note{font-size:.82em;border-radius:8px;padding:8px 10px;margin:8px 0;line-height:1.35}
 .note.i{background:#232a17;color:#cdd0a8}.note.w{background:#4a2f10;color:#ffd9a8}
 input,select,textarea{background:#171a10;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:8px}
@@ -140,7 +176,8 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 .rpg{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:6px;margin-top:6px}
 .rpf{display:flex;align-items:center;gap:6px;justify-content:space-between}
 .rpf span{color:#9a9c82;font-size:.9em}
-.subnav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+.subnav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px;
+        position:sticky;top:calc(var(--hdrH) + 54px);z-index:40;background:var(--bg);padding:6px 0}
 .subtab{padding:7px 13px;border:1px solid #3c4530;border-radius:8px;background:#252b1c;
         color:#9a9c82;cursor:pointer;font-size:.9em;user-select:none}
 .subtab:hover{color:#e7e3d2;border-color:#b9bd86}
@@ -151,6 +188,16 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 .zone{font-weight:700;font-size:.88em;padding:8px 11px;border-radius:8px;margin:16px 0 8px}
 .zone.zi{background:#232a17;color:#cdd0a8}.zone.zd{background:#4a1512;color:#ff9b8f;border:1px solid var(--red)}
 #log{font-family:monospace;font-size:.72em;background:#171a10;border-radius:8px;padding:8px;height:120px;overflow:auto;white-space:pre-wrap;color:#b9bd86}
+/* Аварійне сповіщення про живлення. Блимає навмисно: статичну червону смугу
+   за хвилину перестаєш помічати, а рухома лишається видимою боковим зором. */
+.psuAlert{display:none;margin:0 0 10px;padding:12px 14px;border-radius:10px;
+          background:#5c1a16;border:2px solid #c2483c;color:#f2ece0;font-weight:700;
+          line-height:1.45;animation:psuBlink 1s steps(1,end) infinite}
+.psuAlert b{font-size:1.15em;display:block;margin-bottom:2px}
+.psuAlert small{display:block;font-weight:400;opacity:.92;margin-top:4px}
+@keyframes psuBlink{0%,100%{background:#5c1a16;border-color:#c2483c}
+                    50%{background:#2a0d0b;border-color:#5c1a16}}
+@media (prefers-reduced-motion: reduce){ .psuAlert{animation:none} }
 .hxwrap{margin-top:8px;font-family:monospace;font-size:.8em;line-height:1.4;background:#171a10;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
 .hxbar{display:flex;color:#a9c06a;background:#232a17;padding:4px 0;white-space:pre}
 .hxrow{display:flex;height:170px}
@@ -185,14 +232,29 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 </style>
 </head>
 <body>
+<!-- Вікно повідомлення з «ОК». Одне на весь інтерфейс — див. msgShow(). -->
+<div id="msgWrap" onclick="msgBackdrop(event)">
+  <div id="msgBox" role="dialog" aria-modal="true" aria-labelledby="msgHead">
+    <div id="msgHead">—</div>
+    <div id="msgBody"></div>
+    <div id="msgFoot"><button class="btn b-pri" id="msgOk" onclick="msgClose()">ОК</button></div>
+  </div>
+</div>
 <header>
-  <h1>🔋 Moto IMPRES — USB</h1>
+  <!-- ⚑ ВІДБИТОК ЗБІРКИ В ШАПЦІ. Перше питання будь-якого розбору — «а чи та
+       прошивка взагалі в приладі?». Доти відповідь лежала в /api/fs, куди
+       USB-клієнт навіть не ходить, і через це двічі виходило, що правку
+       шукали в приладі, який її не має. Дату підставляє компілятор. -->
+  <h1>🔋 Moto IMPRES — USB<span id="fwStamp" style="font-size:.5em;font-weight:400;opacity:.75"></span></h1>
   <span class="bar"><span class="dot" id="dot"></span><span id="st">Не підключено</span></span>
   <div style="flex:1"></div>
   <button class="btn b-pri" style="width:auto" id="btnConn" onclick="toggleConn()">🔌 Підключити</button>
 </header>
 
 <div class="wrap">
+<!-- Аварія живлення +14 В — видима з будь-якої вкладки: без блока живлення
+     заряд не піде, і дізнатись про це лише на вкладці «Заряд» означало б пізно. -->
+<div class="psuAlert" id="psuAlert"><b id="psuAlertHead">—</b><span id="psuAlertBody"></span></div>
   <div id="unsupported" class="note w" style="display:none">
     ⚠️ Web Serial API недоступний. Відкрийте цей файл у <b>Chrome</b> або <b>Edge</b>.
     Якщо не працює з <code>file://</code> — покладіть файл у теку й запустіть
@@ -203,6 +265,7 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
     <div class="tab active" onclick="tab(this,'ov')">📊 Огляд</div>
     <div class="tab tab-wiz" onclick="tab(this,'wz')">🧙 Майстер</div>
     <div class="tab" onclick="tab(this,'dt')">🔬 Дані</div>
+    <div class="tab" onclick="tab(this,'ed')">✍️ Редактор</div>
     <div class="tab" onclick="tab(this,'fw')">🔧 Ремонт</div>
     <div class="tab" onclick="tab(this,'cfg')">⚙️ Налаштування</div>
   </div>
@@ -306,6 +369,29 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
     <div class="card"><h2>📋 Дамп DS2433 (512 Б)</h2><div id="h33" style="font-family:monospace;font-size:.75em;white-space:pre;overflow-x:auto">—</div></div>
   </div>
 
+  <!-- РЕДАКТОР: одне місце, де видно ВЕСЬ стан пакета й де кожне значення
+       можна виправити руками. Список полів, назви, одиниці й межі називає
+       ПРИСТРІЙ (edit_plan.h) — своя копія розійшлася б із прошивкою. -->
+  <div class="page" id="ed">
+    <div class="card">
+      <h2>✍️ Ручне редагування значень</h2>
+      <div class="note i">Показано <b>усе</b>, з чим працює прилад: лічильники, дати,
+        наробітки, паспортна ємність, знос і паливомір. Порожнє поле означає
+        «не чіпати» — записуються лише змінені рядки.</div>
+      <div class="note w">⚠️ Це прямий запис у пакет, без планів і без еталона.
+        Прилад не пустить лише <b>неможливі</b> набори (дата в майбутньому,
+        запуск раніший за виготовлення, «вмикали, але не заряджали»).</div>
+      <div id="edWarn" class="note w" style="display:none"></div>
+      <div style="overflow-x:auto"><table class="rpt" id="edTable"></table></div>
+      <div class="note i" id="edSum">—</div>
+      <div class="btns">
+        <button class="btn b-pri" onclick="edLoad()">🔄 Перечитати з пакета</button>
+        <button class="btn b-pri" onclick="edClear()">↩ Скинути введене</button>
+        <button class="btn b-warn" onclick="edApply()">💾 ЗАПИСАТИ ЗМІНЕНЕ</button>
+      </div>
+    </div>
+  </div>
+
   <!-- FIRMWARE -->
 <div class="page" id="fw">
   <div class="subnav">
@@ -361,11 +447,49 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         це; профіль і модель цим не відновлюються.</div>
       <button class="btn b-inf" onclick="hdrFix()">🔌 ДОБУДУВАТИ ЗАГОЛОВОК</button>
     </div>
+    <div class="card" style="border-color:var(--inf)">
+      <h2>🔗 Синхронізація чипів DS2438 ↔ DS2433 <span class="chipb">пише в обидва</span></h2>
+      <div class="note i">Спільні дані лежать у двох чипах двома шарами. <b>Байти ідентичності</b>
+        (26 шт.) беруться з монітора й пишуться в DS2433. <b>Лічильники</b> — навпаки, з пакета:
+        наробіток і накопичений заряд монітор веде своїми числами, і саме вони розходяться.</div>
+      <div class="note w" id="mirWarn" style="display:none"></div>
+      <div class="row"><span class="k">Стан</span><span class="v" id="mirState">—</span></div>
+      <div class="note i" style="margin-top:8px">📊 <b>Лічильники: пакет проти монітора</b>. Рація рахує
+        «дату першого користування» як <i>сьогодні − наробіток</i>, тобто читає DS2438, а не дату з
+        DS2433. Записується в DS2438; лічильники самого пакета не чіпаються.</div>
+      <div class="rpwrap"><table class="rpt" id="mirVals"></table></div>
+      <div class="note i" id="mirValNote" style="display:none"></div>
+      <div class="note i" style="margin-top:8px">🧬 <b>Байти ідентичності</b> — з монітора в DS2433.</div>
+      <div class="row"><span class="k">Паспортна ємність</span>
+        <span><span class="v" id="mirRated">—</span>
+          <input type="number" id="mirRatedInp" placeholder="вручну" min="1000" max="6000" step="25"
+                 style="width:110px;margin-left:8px"> <span style="opacity:.7">мА·год</span>
+          <button type="button" class="btn b-inf" style="padding:4px 10px" onclick="mirSetRated()">Задати</button>
+        </span></div>
+      <div class="rpwrap"><table class="rpt" id="mirTable"></table></div>
+      <button class="btn b-inf" onclick="mirLoad()">🔄 Перечитати план</button>
+      <button class="btn b-inf" onclick="mirTake('ALL')">☑ Взяти все</button>
+      <button class="btn b-inf" onclick="mirTake('NONE')">☐ Не брати нічого</button>
+      <button class="btn b-warn" onclick="mirApply()">🔗 СИНХРОНІЗУВАТИ ЗА ПЛАНОМ</button>
+    </div>
   </div>
   <div class="sub" id="fwcal">
     <div class="subintro">Розряд перед калібруванням і сама процедура на IMPRES-ЗП. Прошивкою вона не замінюється.</div>
 <div class="card" style="border-color:var(--org)">
-      <h2>🪫 Розряд перед калібруванням <span class="chipb">пише в DS2438</span></h2>
+      <h2>⚙️ Операція з пакетом <span class="chipb">пише в DS2438</span></h2>
+      <!-- ⚑ ТРИ ОПЕРАЦІЇ — ОДНЕ ВІКНО: прошивка їх взаємно блокує, тож разом
+           вони не йдуть ніколи. Режим обирається списком, і на екрані рівно
+           те, що стосується обраного. -->
+      <div class="row oprow"><span class="k">Режим</span>
+        <select id="opMode" onchange="opModeApply()">
+          <option value="chg">🔋 Заряд</option>
+          <option value="dis">🪫 Розряд</option>
+          <option value="wake">🩺 Пробудження</option>
+        </select></div>
+      <div class="note i" id="opModeNote"></div>
+      <div class="note w" id="chgUnavail" style="display:none"></div>
+      <div id="opBlkDis" class="opblk" style="display:none">
+      <h3>🪫 Розряд перед калібруванням</h3>
       <div class="note i">Розряд — це <b>приймальний контроль після перепайки</b>: він міряє реальну ємність нових банок. Для калібрування він <b>не обов'язковий</b> — фірмова станція бере в цикл навіть повністю заряджений пакет, якщо він оригінальний. Але якщо станція вперлась і не переходить у калібрування, часткова розрядка це підштовхує.</div>
       <div class="note w">⚠️ Аварійна зупинка: напруга &lt; 6.00 В, перегрів 45 °C, стеля часу, втрата зв'язку з
         монітором. Резистор гріється (~14 Вт на 5 Ом) — не лишайте без нагляду.</div>
@@ -388,18 +512,14 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
              <div class="dmband" id="disBand"></div><div class="dmmark" id="disMark"></div></div>
         <div class="dmlab"><span>шпаруватість ключа (ШІМ)</span><span id="disDutyTxt">—</span></div>
         <div class="dmtrack"><div class="dmcur" id="disDuty" style="background:var(--blu)"></div></div>
-        <div class="dmg">
-          <div class="dmc hero"><div class="dmck">віддано, мА·год</div><div class="dmcv" id="disMah">—</div></div>
-          <div class="dmc"><div class="dmck">DCA, мА·год</div><div class="dmcv" id="disDca">—</div></div>
-          <div class="dmc"><div class="dmck">струм, мА</div><div class="dmcv" id="disMa">—</div></div>
-          <div class="dmc"><div class="dmck">потужність, Вт</div><div class="dmcv" id="disW">—</div></div>
-          <div class="dmc"><div class="dmck">температура, °C</div><div class="dmcv" id="disT">—</div></div>
-          <div class="dmc"><div class="dmck" id="disIcaK">паливомір ICA</div><div class="dmcv" id="disIca">—</div></div>
-          <div class="dmc"><div class="dmck">лишилось ≈</div><div class="dmcv" id="disEta">—</div></div>
-        </div>
+        <!-- Плитки будує opTiles() з тієї ж таблиці, що й у заряду: інакше
+             набори розходяться самі собою — саме на цій сторінці «фаза» й
+             «лишилось ≈» так і не з'явились плитками, хоча пристрій ці числа
+             віддавав. -->
+        <div class="dmg" id="disTiles"></div>
         <div class="dmwarn" id="disWarn"></div>
       </div>
-      <div class="row" id="disTgtRow" style="margin-top:10px"><span class="k">Розряджати до</span>
+      <div class="row oprow" id="disTgtRow"><span class="k">Розряджати до</span>
         <span>
           <button type="button" class="tgtb" onclick="disSetTarget(7800)">7.80 В</button>
           <button type="button" class="tgtb" onclick="disSetTarget(7600)">7.60 В</button>
@@ -410,6 +530,25 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
                  oninput="this.dataset.touched=1;disRamp()" style="width:90px"> <span style="opacity:.7">мВ</span>
         </span></div>
       <div class="note i" id="disRampNote"></div>
+      <div class="row oprow" id="disMaRow"><span class="k">Струм розряду</span>
+        <span>
+          <button type="button" class="tgtb" onclick="disSetMa(0)">Авто</button>
+          <button type="button" class="tgtb" onclick="disSetMa(300)">300</button>
+          <button type="button" class="tgtb" onclick="disSetMa(500)">500</button>
+          <button type="button" class="tgtb" onclick="disSetMa(700)">700</button>
+          <button type="button" class="tgtb" onclick="disSetMa(1000)">1000</button>
+          <input type="number" id="disMaInp" placeholder="авто" min="0" step="50" style="width:90px">
+          <span style="opacity:.7">мА</span>
+          <button type="button" class="btn b-inf" style="padding:4px 10px"
+                  onclick="disSetMa(+(document.getElementById('disMaInp').value||0))">Задати</button>
+        </span></div>
+      <div class="note i" id="disMaNote"></div>
+      <div class="row oprow" id="disProfRow"><span class="k">Профіль розряду</span>
+        <span>
+          <button type="button" class="tgtb" id="disProf0" onclick="disSetProfile(0)">Заводський</button>
+          <button type="button" class="tgtb" id="disProf1" onclick="disSetProfile(1)">Розумний 0.2C</button>
+        </span></div>
+      <div class="note i" id="disProfNote"></div>
       <!-- Графік УСТАВКИ СТРУМУ за напругою: перемальовується при зміні цілі,
            тож видно, що малий струм припадає рівно на неї. -->
       <svg id="disRampSvg" viewBox="0 0 300 84" preserveAspectRatio="none"
@@ -425,18 +564,25 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         <text id="disRampLo" x="4"   y="80" fill="#8b9166" font-size="9"></text>
         <text id="disRampHi" x="296" y="80" fill="#8b9166" font-size="9" text-anchor="end"></text>
       </svg>
-      <button class="btn b-warn" id="btnDisStart" onclick="disStart()">🪫 ПОЧАТИ РОЗРЯД</button>
-      <button class="btn b-dng" onclick="disStop()">⏹ ЗУПИНИТИ</button>
-      <button class="btn b-inf" onclick="disStatus()">🔄 Оновити зараз</button>
-    </div>
-    <div class="card" style="border-color:var(--blu)">
-      <h2>🔋 Заряд через DC/DC <span class="chipb">пише в DS2438</span></h2>
-      <div class="note i">Керований заряд через готову плату на TL494: enable-каскад + аналогове керування
-        вихідною напругою. Профіль струму масштабується під ОБРАНУ ціль — заряд завжди закінчується
-        плавним спадом струму перед самою ціллю, хай яку обрано. Пакет не прийме струм, доки не піднято
+      <div class="btns">
+        <button class="btn b-warn" id="btnDisStart" onclick="disStart()">🪫 ПОЧАТИ РОЗРЯД</button>
+        <button class="btn b-dng" onclick="disStop()">⏹ ЗУПИНИТИ</button>
+        <button class="btn" id="btnDisDismiss" style="display:none" onclick="disDismiss()">✓ ЗАКРИТИ ПІДСУМОК</button>
+        <button class="btn b-inf" onclick="disStatus()">🔄 Оновити зараз</button>
+      </div>
+      </div><!-- /opBlkDis -->
+      <div id="opBlkChg" class="opblk">
+      <h3>🔋 Керований заряд</h3>
+      <!-- ⚑ ОПИС ЗАЛІЗА — З ПРИСТРОЮ (поле chgHwTxt). Тут він лежав рядком і
+           після заміни ключа називав чуже залізо; з появою другої силової
+           частини (готова плата DC/DC на TL494) став би просто неправдою. -->
+      <div class="note i"><span id="chgHwTxt">Силова частина заряду — з пристрою.</span>
+        Силова частина: <b id="swName">—</b>. Пакет не прийме струм, доки не піднято
         enable-сигнал (та сама лінія, що й для читання/запису пам'яті) — прошивка тримає його сама.</div>
-      <div class="note w">⚠️ Аварійна зупинка: напруга вище межі, перегрів 45 °C, стеля часу 6 год, втрата
-        зв'язку з монітором. Заряд і розряд не можуть іти одночасно.</div>
+      <div class="note w">⚠️ Аварійна зупинка: напруга вище межі, перегрів 45 °C, стеля часу
+        6 год, втрата зв'язку з монітором, «вихід у стелі, а струму немає». Там, де є власні
+        давачі, додаються пік струму й живлення поза допуском 12.5…16 В.
+        Заряд і розряд не можуть іти одночасно.</div>
       <div class="dm" id="chgMon">
         <div class="dmhead"><span class="dmled"></span><span id="chgSt">—</span>
              <span class="dmclock" id="chgEl">0:00:00</span></div>
@@ -444,21 +590,28 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
              <span class="dmto" id="chgPctSub">—</span></div>
         <div class="dmbar"><div class="dmfill" id="chgFill"></div>
              <span class="dmbartxt" id="chgPctTxt"></span></div>
+        <!-- Крива напруги за сеанс і коридор уставки — такі самі, як у
+             розряду: без риски уставки видно лише «скільки тече», а не
+             «скільки МАЄ текти». -->
+        <svg class="dmspark" id="chgSpark" viewBox="0 0 300 58" preserveAspectRatio="none">
+          <polyline id="chgSparkArea" fill="rgba(111,143,58,.22)" stroke="none" points=""/>
+          <line id="chgSparkTarget" x1="0" x2="300" y1="-9" y2="-9" stroke="#a3312e"
+                stroke-width="1" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>
+          <polyline id="chgSparkLine" fill="none" stroke="#c8b04a" stroke-width="2"
+                    vector-effect="non-scaling-stroke" stroke-linejoin="round" points=""/>
+        </svg>
         <div class="dmlab"><span>струм / уставка</span><span id="chgLim">—</span></div>
-        <div class="dmtrack"><div class="dmcur" id="chgCurBar"></div></div>
-        <div class="dmlab"><span>ціль на виході ДС/ДС</span><span id="chgDutyTxt">—</span></div>
+        <div class="dmtrack"><div class="dmcur" id="chgCur"></div>
+             <div class="dmband" id="chgBand"></div><div class="dmmark" id="chgMark"></div></div>
+        <div class="dmlab"><span>шпаруватість ключа</span><span id="chgDutyTxt">—</span></div>
         <div class="dmtrack"><div class="dmcur" id="chgDutyBar" style="background:var(--blu)"></div></div>
-        <div class="dmg">
-          <div class="dmc hero"><div class="dmck">отримано, мА·год</div><div class="dmcv" id="chgMah">—</div></div>
-          <div class="dmc"><div class="dmck">CCA, мА·год</div><div class="dmcv" id="chgCca">—</div></div>
-          <div class="dmc"><div class="dmck">струм, мА</div><div class="dmcv" id="chgMa">—</div></div>
-          <div class="dmc"><div class="dmck">потужність, Вт</div><div class="dmcv" id="chgW">—</div></div>
-          <div class="dmc"><div class="dmck">температура, °C</div><div class="dmcv" id="chgT">—</div></div>
-          <div class="dmc"><div class="dmck" id="chgIcaK">паливомір ICA</div><div class="dmcv" id="chgIca">—</div></div>
-        </div>
+        <!-- Ті самі плитки, що в розряду. Три останні МІНЯЮТЬ ПІДПИС у
+             пробудженні (DS2438 тоді мовчить — у цьому вся суть режиму), але
+             лишаються на своїх місцях: сітка не перебудовується. -->
+        <div class="dmg" id="chgTiles"></div>
         <div class="dmwarn" id="chgWarn"></div>
       </div>
-      <div class="row" id="chgTgtRow" style="margin-top:10px"><span class="k">Заряджати до</span>
+      <div class="row oprow chgonly" id="chgTgtRow"><span class="k">Заряджати до</span>
         <span>
           <button type="button" class="tgtb" onclick="chgSetTarget(100)">100%</button>
           <button type="button" class="tgtb" onclick="chgSetTarget(95)">95%</button>
@@ -468,9 +621,76 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
           <input type="number" id="chgTarget" value="100" min="50" max="100" step="5"
                  oninput="this.dataset.touched=1;chgTargetPaint()" style="width:90px"> <span style="opacity:.7">%</span>
         </span></div>
-      <button class="btn b-ok" id="btnChgStart" onclick="chgStart()">🔋 ПОЧАТИ ЗАРЯД</button>
-      <button class="btn b-dng" onclick="chgStop()">⏹ ЗУПИНИТИ</button>
-      <button class="btn b-inf" onclick="chgStatus()">🔄 Оновити зараз</button>
+      <div class="row oprow chgonly" id="chgMaRow"><span class="k">Струм заряду</span>
+        <span>
+          <button type="button" class="tgtb" onclick="chgSetMa(0)">Авто</button>
+          <button type="button" class="tgtb" onclick="chgSetMa(200)">200</button>
+          <button type="button" class="tgtb" onclick="chgSetMa(400)">400</button>
+          <button type="button" class="tgtb" onclick="chgSetMa(700)">700</button>
+          <button type="button" class="tgtb" onclick="chgSetMa(1000)">1000</button>
+          <input type="number" id="chgMaInp" placeholder="авто" min="0" step="50" style="width:90px">
+          <span style="opacity:.7">мА</span>
+          <button type="button" class="btn b-inf" style="padding:4px 10px"
+                  onclick="chgSetMa(+(document.getElementById('chgMaInp').value||0))">Задати</button>
+        </span></div>
+      <div class="note i chgonly" id="chgMaNote">Порожньо або «Авто» — струм веде профіль за відсотком заряду.</div>
+      <div class="row oprow chgonly" id="chgMvRow"><span class="k">Ціль у вольтах</span>
+        <span>
+          <button type="button" class="tgtb" onclick="chgSetMv(0)">За %</button>
+          <button type="button" class="tgtb" onclick="chgSetMv(8200)">8.20</button>
+          <button type="button" class="tgtb" onclick="chgSetMv(8000)">8.00</button>
+          <button type="button" class="tgtb" onclick="chgSetMv(7800)">7.80</button>
+          <button type="button" class="tgtb" onclick="chgSetMv(7400)">7.40</button>
+          <input type="number" id="chgMvInp" placeholder="за %" min="0" step="50" style="width:90px">
+          <span style="opacity:.7">мВ</span>
+          <button type="button" class="btn b-inf" style="padding:4px 10px"
+                  onclick="chgSetMv(+(document.getElementById('chgMvInp').value||0))">Задати</button>
+        </span></div>
+      <div class="note i chgonly" id="chgMvNote">«За %» — ціль через криву SoC. Вольти потрібні для зберігання
+        (7.40 В = 3.70 В на банку) і для ремонтних сценаріїв.</div>
+      <div class="row oprow chgonly" id="chgProfRow"><span class="k">Профіль заряду</span>
+        <span>
+          <button type="button" class="tgtb" id="chgProf0" onclick="chgSetProfile(0)">Заводський</button>
+          <button type="button" class="tgtb" id="chgProf1" onclick="chgSetProfile(1)">Розумний CC/CV</button>
+        </span></div>
+      <div class="note i chgonly" id="chgProfNote"></div>
+      <div class="btns">
+        <button class="btn b-ok chgonly" id="btnChgStart" onclick="chgStart()">🔋 ПОЧАТИ ЗАРЯД</button>
+        <button class="btn b-dng" id="btnChgStop" onclick="chgStop()">⏹ ЗУПИНИТИ</button>
+        <button class="btn b-inf" onclick="chgStatus()">🔄 Оновити зараз</button>
+        <button class="btn" id="btnChgDismiss" style="display:none" onclick="chgDismiss()">✓ ЗАКРИТИ ПІДСУМОК</button>
+      </div>
+      <!-- ── ПРИМУСОВЕ ПРОБУДЖЕННЯ ─────────────────────────────────────────
+           Окремим блоком, а не ще однією кнопкою в ряду вище: інші умови,
+           інший сенс, і випадкове натискання поруч із «ПОЧАТИ ЗАРЯД» було б
+           найгіршим із можливих сусідств. -->
+      <div class="opsub" id="opBlkWake">
+        <h3>🩺 Пробудження — пакет не читається після заміни елементів</h3>
+        <div class="row oprow"><span class="k">Режим тримає</span>
+          <span>
+            <span class="v"><b id="wkMv">8.00</b> В</span><span style="opacity:.7">·</span>
+            <span class="v">стеля <b id="wkMa">150</b> мА</span><span style="opacity:.7">·</span>
+            <span class="v">не довше <b id="wkSec">120</b> с</span><span style="opacity:.7">·</span>
+            <span class="v">не більше <b id="wkMah">8</b> мА·год</span>
+          </span></div>
+        <div class="note i">Контролер захисту після заміни банок часто лишається заблокованим і не відпускає
+          клеми, доки не побачить <b>зовнішню зарядну напругу</b>. Поки він мовчить, мовчать і DS2438 з DS2433 —
+          а звичайний заряд саме тому й відмовляє: без DS2438 немає температури. Пробудження розриває це коло:
+          коротко тримає на клемах зазначену вище напругу і раз на кілька секунд пробує гукнути монітор. Щойно
+          той відповів — режим сам зупиняється.</div>
+        <div class="note i">Чому це безпечно без датчика температури: обидві межі в рядку вище — <b>тверді</b>,
+          і це менше, ніж пакет втрачає на власний саморозряд. Запуск буде відхилено, лише якщо пакет
+          <b>і читається, і має напругу на клемі</b> — там доступний звичайний заряд. А <b>заблокований</b>
+          пакет часто читається при <b>нулі на клемі</b>: 1-Wire сидить до силового ключа захисту. Це теж
+          випадок для пробудження, і навіть безпечніший — температура тут є.</div>
+        <!-- Кнопка — у тому самому ряду, що й «ПОЧАТИ ЗАРЯД» та «ПОЧАТИ
+             РОЗРЯД»: три операції — три однакові ряди. -->
+        <div class="btns">
+          <button class="btn b-warn" id="btnChgWake" onclick="chgWake()">🩺 РОЗБУДИТИ ПАКЕТ</button>
+          <button class="btn b-dng" onclick="chgStop()">⏹ ЗУПИНИТИ</button>
+        </div>
+      </div>
+      </div><!-- /opBlkChg -->
     </div>
     <div class="card" style="border-color:var(--ok)">
       <h2>🔌 Калібрування на зарядній станції</h2>
@@ -488,46 +708,29 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
   <div class="sub" id="fwval">
     <div class="subintro">Окремі поля АКБ. Безпечно для ідентичності — модель, крива й заводська таблиця не чіпаються.</div>
 <div class="card">
-      <h2>🔋 Ємність — внести залишок у мА·год <span class="chipb">пише в DS2438</span></h2>
-      <div class="note i">Окрема операція: записує <b>залишок ємності</b> в паливомір (регістр ICA
-        DS2438) у мА·год — так само, як його рахує Motorola: одиниця ICA = 0.4882 мВ·год / шунт
-        цього пакета. Це залишок заряду, а не паспортна ємність і не знос.</div>
-      <div class="row"><span class="k">мА·год</span><input type="number" id="mahv" min="0" max="6000" value="0" style="width:110px;text-align:center"></div>
-      <button class="btn b-warn" onclick="setMah()">💾 ЗАПИСАТИ мА·год</button>
+      <h2>✍️ Окремі значення переїхали в «Редактор»</h2>
+      <div class="note i">Залишок у мА·год, рівень заряду, наробіток і дати, знос,
+        паспортна ємність, усі лічильники — тепер <b>одним списком</b> на вкладці
+        <b>✍️ Редактор</b>. Доти кожне мало тут свою картку, а побачити ВЕСЬ стан
+        пакета одразу не було де.</div>
     </div>
-<div class="card">
-      <h2>⚡ Рівень заряду у відсотках <span class="chipb">пише в DS2438</span></h2>
-      <div class="note i">Той самий регістр ICA, але у відсотках від паспортної ємності — коли
-        точних мА·год немає. Станція згодом уточнить значення сама.</div>
-      <div class="row"><span class="k">Заряд, % (0..100)</span><input type="number" id="chgv" min="0" max="100" placeholder="авто" style="width:110px;text-align:center"></div>
+    <div class="card">
+      <h2>⚡ Заряд за напругою <span class="chipb">пише в DS2438</span></h2>
+      <div class="note i">Не «вписати число», а <b>виміряти</b>: прилад бере напругу на
+        клемах, рахує за нею відсоток і кладе його в паливомір. Саме тому дія й
+        лишилась окремо від Редактора — вручну тут задавати нічого.</div>
       <button class="btn b-warn" id="btnChgAuto" onclick="setChargeAuto()">⚡ ЗА НАПРУГОЮ</button>
-      <button class="btn b-warn" onclick="setChargePct()">💾 ЗАПИСАТИ ЗАРЯД %</button>
     </div>
-<div class="card">
-      <h2>📅 Дата першого використання <span class="chipb">пише в DS2438</span></h2>
-      <div class="note i">Рація рахує «перше користування» = її час − ETM (наробіток DS2438). Дата не зберігається
-        у батареї, на оригінальність не впливає. Зміна: ETM = (сьогодні − обрана дата).</div>
-      <div class="row"><span class="k">Бажана дата</span><input type="date" id="etmDate"></div>
-      <button class="btn b-warn" onclick="setEtm()">📅 ЗАПИСАТИ ДАТУ (ETM)</button>
+    <div class="card">
+      <h2>🏭 Заводський байт 0x129 <span class="chipb">пише в DS2433</span></h2>
+      <div class="note w">⚠️ Лежить у <b>заводській таблиці моделі</b> — у всіх екземплярів
+        однієї моделі вона побайтово однакова, тому показань рації правка тут
+        <b>не змінить</b>. У Редакторі його немає навмисно. Поточне: <b id="capNow">—</b>.</div>
+      <div class="row"><span class="k">Ємність, %</span>
+        <input type="number" id="capv" min="0" max="100" value="100" style="width:90px"></div>
+      <button class="btn b-warn" onclick="setCap()">💾 ЗАПИСАТИ %</button>
     </div>
-<div class="card">
-      <h2>🩺 Знос/здоров'я <span class="chipb">пише в DS2433</span></h2>
-      <div class="note i">Те число, яке рація й фірмове ПЗ показують як знос: поле <code>CTS</code>
-        у зашифрованому блоці <code>RECOND</code>. Після заміни елементів виправляти треба саме
-        його. Зараз у чипі: <b id="hpNow">—</b>.</div>
-      <div class="row"><span class="k">Знос, % (1..100)</span><input type="number" id="hpv" min="1" max="100" placeholder="напр. 100" style="width:90px;text-align:center"></div>
-      <button class="btn b-ok" onclick="setHealth()">💾 ЗАПИСАТИ ЗНОС</button>
-      <div class="note i">Знос залежить і від <b>шунта</b>, і від <b>паспортної ємності</b>: 100 % —
-        це «вся паспортна». Тому спершу задайте ємність нових банок у «Ремонті». Ключ шифрування —
-        з ROM-ID чипа DS2433, тож правка можлива лише на живому чипі.</div>
-      <details style="margin-top:8px">
-        <summary style="cursor:pointer;opacity:.8">Заводський байт 0x129 (для аналізу)</summary>
-        <div class="note w">⚠️ Однаковий у всіх екземплярів моделі — показань рації правка тут не змінить.</div>
-        <div class="row"><span class="k">Ємність, %</span><input type="number" id="capv" min="0" max="100" value="100" style="width:90px;text-align:center"></div>
-        <button class="btn b-warn" onclick="setCap()">💾 ЗАПИСАТИ %</button>
-      </details>
-    </div>
-<div class="card">
+    <div class="card">
       <h2>🧹 Очистити (крім критичних) <span class="chipb">пише в DS2433 + DS2438</span></h2>
       <div class="note w">⚠️ Стирає все використання/історію/статистику. Зберігає модель/серійний/ID/калібрування.</div>
       <button class="btn b-dng" onclick="op('CLEAN','🧹 Стерти всі дані використання, лишивши ID/калібрування?',15000)">🧹 ОЧИСТИТИ</button>
@@ -751,7 +954,10 @@ function tab(el,id){document.querySelectorAll('.tab').forEach(t=>t.classList.rem
   el.classList.add('active');$(id).classList.add('active');window.scrollTo(0,0);
   // Дату пристрою питаємо при вході на «Налаштування»: вона міняється раз на
   // добу, постійно опитувати немає сенсу.
-  if(id==='cfg') clockLoad();}
+  if(id==='cfg') clockLoad();
+  // Редактор читає ОБИДВА чипи — беремо значення при вході, а не тримаємо
+  // свіжими постійним опитуванням.
+  if(id==='ed') edLoad();}
 // Під-вкладки «Ремонту»: сторінка була на 20 карток в один скрол. Картка
 // «Відновити еталон» показує план правок — при поверненні на неї план треба
 // перечитати, інакше висів би складений під іншу модель.
@@ -759,7 +965,10 @@ function sub(el,id){const box=el.closest('.page');
   box.querySelectorAll('.subtab').forEach(t=>t.classList.remove('active'));
   box.querySelectorAll('.sub').forEach(p=>p.classList.remove('active'));
   el.classList.add('active');$(id).classList.add('active');window.scrollTo(0,0);
-  if(id==='fwid'&&$('restModel')&&$('restModel').value) rpLoad(false);}
+  if(id==='fwid'&&$('restModel')&&$('restModel').value) rpLoad(false);
+  // План дзеркала читає ОБИДВА чипи — будуємо його при вході на «Ремонт»,
+  // а не на кожному оновленні статусу.
+  if(id==='fwrep'&&connected) mirLoad();}
 function log(s){const l=$('log');l.textContent+=s+'\n';l.scrollTop=l.scrollHeight;}
 function toast(m){$('st').textContent=m;}
 function setBusy(b){document.querySelectorAll('.btn').forEach(x=>{if(x.id!=='btnConn')x.disabled=b;});}
@@ -785,7 +994,11 @@ async function connect(){
     log('> порт відкрито, очікування завантаження ESP32 (1.6 с)...');
     await new Promise(r=>setTimeout(r,1600));   // ESP32 перезавантажується при відкритті порту
     const p=await cmd('PING',3000);
-    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')'; await refresh(); await loadTemplates(); await sndLoad(); await clLoadSamples();
+    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')';
+    // Ім'я силового ключа — з ПРИСТРОЮ: власної назви заліза клієнт не тримає.
+    // Збірку прошивки називає ПРИСТРІЙ — вона приходить у самому рукостисканні.
+    if(p.build&&$('fwStamp')) $('fwStamp').textContent=' · прошивка '+p.build;
+                 await refresh(); await loadTemplates(); await sndLoad(); await clLoadSamples();
                  await disTick(); await chgTick(); }   // одразу підхопити розряд/заряд, якщо вже йде
     else { $('st').textContent='Немає відповіді (перевірте порт/швидкість)'; }
   }catch(e){ log('! '+e.message); $('st').textContent='Помилка: '+e.message; disconnect(); }
@@ -838,7 +1051,13 @@ function cmd(c,timeout=8000){
   const run=()=>new Promise(resolve=>{
     if(!connected||!writer){resolve({ok:false,err:'не підключено'});return;}
     let done=false;
-    const finish=v=>{ if(!done){done=true;clearTimeout(timer);pending=null;resolve(v);} };
+    // ⚑ ВІДМОВУ «БЕЗ ЗАРЯДУ» ЛОВИМО ТУТ, А НЕ В КОЖНОГО ВИКЛИКУ. Пристрій
+    //  позначає її кодом (code=nocharge), і кодом же ми її й упізнаємо: за
+    //  текстом — означало б, що перше ж переформулювання тихо поверне рядок
+    //  стану замість вікна.
+    const finish=v=>{ if(!done){done=true;clearTimeout(timer);pending=null;
+                                if(v&&v.code==='nocharge') msgShow('⛔ Заряд недоступний', v.err||'');
+                                resolve(v);} };
     const timer=setTimeout(()=>finish({ok:false,err:'таймаут'}),timeout);
     pending=finish;
     const disp=c.startsWith('AUTH ')?'AUTH ***':(c.length>60?c.slice(0,60)+'…':c);
@@ -885,7 +1104,11 @@ async function refresh(){
   // Шкалу «заряд за напругою» називає ПРИСТРІЙ — інакше підпис кнопки лишався б
   // брехати після зміни BATTERY_EMPTY_MV у прошивці.
   if(d.scaleTxt){ const b=$('btnChgAuto'); if(b)b.textContent='⚡ ЗА НАПРУГОЮ ('+d.scaleTxt+')'; }
-  if(rmah!==null)$('mahv').value=rmah;
+  // Ім'я силового ключа теж називає ПРИСТРІЙ. Раніше його брали з відповіді на
+  // PING, де його ніколи не було (його дає INFO), — умова не могла спрацювати
+  // жодного разу, і підпис довічно лишався прочерком.
+  if(d.swName&&$('swName')) $('swName').textContent=d.swName;
+  if(d.chgHwTxt&&$('chgHwTxt')) $('chgHwTxt').textContent=d.chgHwTxt;
   $('fill').style.width=(pct!==null?pct:0)+'%';
   $('fill').style.background=pct===null?'#555':(pct<20?'#e74c3c':pct<50?'#f39c12':'#2ecc71');
   if(d.voltage!==undefined){$('volt').textContent=d.voltage.toFixed(2)+' В';$('dV').textContent=d.voltage.toFixed(2)+' В';}
@@ -903,7 +1126,8 @@ async function refresh(){
   if(typeof d.headerOk==='boolean')$('integ').innerHTML='заголовок '+(d.headerOk?'✅':'❌')
     +' · дзеркало '+(d.mirrorOk?'✅':'❌')
     +(d.profileOk===undefined?'':' · профіль '+(d.profileOk?'✅':'❌'))
-    +(d.copyright===undefined?'':' · ©'+({ok:'✅',broken:'❌',none:'—'}[d.copyright]||'?'));
+    +(d.copyright===undefined?'':' · © '+({ok:'✅',broken:'❌ сума хибна',
+                                           none:'— немає (норма для цієї моделі)'}[d.copyright]||'?'));
   $('dI').textContent=(d.currentMa!==undefined?d.currentMa:'—')+' мА';
   $('dSer').textContent=d.serial||'—';
   const mah=(v,raw)=>v!==undefined?('≈'+v+' мА·год (raw '+raw+')'):'—';
@@ -921,7 +1145,6 @@ async function refresh(){
       $('dEtm').textContent=y+' р '+dd+' дн ('+etm+' с)';
       $('dFirst').textContent=first.toLocaleDateString();
     }
-    if($('etmDate')&&!$('etmDate').value)$('etmDate').value=first.toISOString().slice(0,10);
     // Справжня дата з чипа має пріоритет над оцінкою «сьогодні − ETM».
     if(d.bms&&d.bms.firstUseDate){$('dFirst').textContent=d.bms.firstUseDate+' (з чипа)';$('dFirst').style.color='';}
     warnForeign2438(d, etm);
@@ -934,13 +1157,6 @@ async function refresh(){
   if(d.rsense!==undefined)$('dRs').textContent=(d.rsense*1000).toFixed(2)+' мОм'+
     (d.rsenseChip?' (з чипа)':' (з налаштувань — у чипі поля немає)');
   renderBms(d.bms);
-  // Поточний знос — одразу в картку правки, щоб не звірятись з іншою вкладкою.
-  if($('hpNow')){
-    const h=(d.bms&&d.bms.haveKey)?d.bms.health:null;
-    $('hpNow').textContent=(h!==null&&h!==undefined)
-      ? (h+' % (≈'+d.bms.potentialMah+' мА·год)') : '— (ключ не визначено)';
-    if($('hpv')&&!$('hpv').value&&h) $('hpv').placeholder='зараз '+h;
-  }
   if(d.hex38)$('h38').textContent=hexDump(d.hex38);
   if(d.hex33)$('h33').textContent=hexDump(d.hex33);
 }
@@ -954,15 +1170,6 @@ const ETM_AGE_SLACK_D = 180;
 // Знос окремою дією. Рахує ПРИСТРІЙ (той самий restore_plan.h, що й у плані):
 // знос залежить від шунта й паспортної ємності, і друга формула тут одного дня
 // розійшлася б із прошивкою.
-async function setHealth(){
-  if(!connected){toast('Підключіться');return;}
-  const v=$('hpv').value;
-  if(!v||+v<1||+v>100){toast('Знос має бути 1..100 %');return;}
-  if(!confirm('💾 Записати знос '+v+' %?\n\nПишеться поле CTS у блок RECOND (DS2433).'))return;
-  const r=await cmd('SETHEALTH '+v,20000);
-  if(r&&r.ok){toast('Знос '+r.health+' % записано (CTS '+r.cts+')');await refresh();}
-  else toast('Помилка: '+((r&&r.err)||'збій запису'));
-}
 // Дата пристрою: єдине джерело — клієнт, тож показуємо, що пристрій думає,
 // і даємо виправити одним рухом.
 const CLK_SRC={client:'від клієнта (точна)',
@@ -1037,6 +1244,128 @@ async function cloneRestore(){
 }
 // Добудова заголовка після зарядної станції WPLN4226A — див. картку «Ремонт
 // цілісності». Окрема функція, а не op(): треба показати r.note, не просто «Готово».
+// Синхронізація дзеркала DS2438 -> DS2433. План будує ПРИСТРІЙ (команда
+// MIRROR), тут лише показ і правки — другої реалізації різниці байтів немає.
+let mirPlan=null;
+async function mirLoad(){
+  if(!connected){toast('Підключіться');return;}
+  // TODAY= — так само, як його несуть усі інші запити плану. Годинника
+  // реального часу в пристрої немає, а без «сьогодні» не порахувати вік
+  // пакета, тобто й не перевірити, чи монітор узагалі від нього.
+  const r=await cmd('MIRROR TODAY='+rpToday(),10000);
+  if(r&&r.ok){mirPlan=r;mirRender();} else {mirPlan=null;toast('Помилка: '+((r&&r.err)||''),'err');}
+}
+function mirRender(){
+  const p=mirPlan,t=$('mirTable'),w=$('mirWarn');
+  if(!p){t.innerHTML='';w.style.display='none';return;}
+  // Числа наробітку показуємо завжди, коли є з чим порівнювати, — не лише в
+  // разі підозри: операторові потрібне співвідношення, а не вирок.
+  $('mirState').textContent=(p.inSync
+    ? ('чипи збігаються'+(p.hdrOk?'':', але сума заголовка побита'))
+    : (p.diffCount+' байт(ів) різняться, буде записано '+p.changes))
+    +(p.haveAge?(' · наробіток '+p.etmDays+' діб при віці '+p.ageDays+' діб'):'');
+  // Від найважчого до найлегшого: спершу «монітор може бути чужий» — це
+  // ставить під сумнів усю операцію, бо вона переносить ідентичність саме
+  // з монітора.
+  let msg='';
+  if(p.etmForeign) msg=etmForeignHtml(p.etmDays,p.ageDays)
+    +'<br><b>Для синхронізації це головне питання:</b> вона переносить ідентичність '
+    +'<b>із монітора</b> в пам\'ять пакета. Якщо монітор чужий, ви не полагодите пакет, '
+    +'а припишете йому чужу особу.';
+  else if(!p.have38) msg='⚠️ DS2438 не зчитано — переносити нема звідки.';
+  else if(!p.srcUsable) msg='⚠️ У DS2438 дзеркала немає — переносити нема звідки.';
+  else if(p.diffCount===0) msg='ℹ️ Чипи вже збігаються — переносити нема чого. Синхронізація '
+    +'лише перерахує суму заголовка. Галочки активні: байт можна перезаписати навмисно.';
+  // ⚑ Окремим рядком, а не замість: «нема чого переносити» й «перевірити, чи
+  //  монітор свій, не вдалося» — різні речі. Мовчання читалося б як «гаразд».
+  if(!p.etmForeign && p.have38 && p.srcUsable && !p.haveAge)
+    msg += (msg?'<br>':'') + (p.today
+      ? 'ℹ️ Вік пакета порахувати не вдалось: немає читаної дати виготовлення (немає ключа або '
+        +'дата не схожа на дату). Перевірити наробітком, чи монітор від цього пакета, нема з чим.'
+      : '⚠️ Годинник пристрою не заведено (дату шле клієнт), тому наробіток нема з чим порівняти. '
+        +'Перечитайте план — запит уже несе сьогоднішню дату.');
+  if(msg){w.style.display='';w.innerHTML=msg;} else w.style.display='none';
+  mirRenderVals(p);
+  $('mirRated').textContent='у чипі '+(p.ratedNow?p.ratedNow+' мА·год':'—')
+    +' · у моніторі '+(p.ratedSrc?p.ratedSrc+' мА·год':'—')
+    +(p.ratedUser?(' · вручну '+p.ratedUser+' мА·год'):'');
+  let h='<tr><th></th><th>Байт</th><th>Зараз</th><th>З DS2438</th><th>Буде</th></tr>';
+  for(let i=0;i<p.b.length;i++){
+    const b=p.b[i], hx=v=>v.toString(16).toUpperCase().padStart(2,'0');
+    const addr=(p.at33+i).toString(16).toUpperCase().padStart(3,'0');
+    const mark=(i===p.ratedIdx)?' (ємність)':'';
+    h+='<tr'+(b.d?' style="color:var(--org)"':'')+'>'
+      +'<td><input type="checkbox" '+(b.t?'checked':'')+(p.srcUsable?'':' disabled')
+      +' onchange="mirByte('+i+',this.checked)"></td>'
+      +'<td>0x'+addr+mark+'</td><td>'+hx(b.now)+'</td><td>'+hx(b.src)+'</td>'
+      +'<td><b>'+hx(b.out)+'</b></td></tr>';
+  }
+  t.innerHTML=h;
+}
+// Лічильники, які чипи ведуть по-різному. Назви й одиниці — у клієнті: у
+// прошивці кожен рядок тексту це флеш. Порядок рядків задає пристрій (MVAL_*).
+const MIR_VALS=[{n:'Наробіток (ETM)',u:'діб'},
+                {n:'Заряджено (CCA)',u:'циклів'},
+                {n:'Розряджено (DCA)',u:'циклів'},
+                {n:'Циклів IMPRES',   u:'циклів'},
+                {n:'Циклів не-IMPRES',u:'циклів'}];
+function mirRenderVals(p){
+  const t=$('mirVals'), note=$('mirValNote');
+  if(!p||!p.v){t.innerHTML='';note.style.display='none';return;}
+  let h='<tr><th></th><th>Показник</th><th>У пакеті</th><th>У моніторі</th><th>Буде</th>'
+       +'<th>Куди</th><th>Вручну</th></tr>';
+  for(let i=0;i<p.v.length && i<MIR_VALS.length;i++){
+    const r=p.v[i], d=MIR_VALS[i];
+    const nowVal=(r.w===33)?r.p:r.m;
+    h+='<tr'+((r.a&&r.o!==nowVal)?' style="color:var(--org)"':'')+'>'
+      +'<td><input type="checkbox" '+(r.t?'checked':'')+(r.a?'':' disabled')
+      +' onchange="mirVal('+i+',this.checked)"></td>'
+      +'<td>'+d.n+'</td><td>'+(r.pk?(r.p+' '+d.u):'—')+'</td>'
+      +'<td>'+((r.w===33&&!r.m)?'—':(r.m+' '+d.u))+'</td>'
+      +'<td><b>'+r.o+' '+d.u+'</b></td>'
+      +'<td style="opacity:.75">DS'+(r.w||38)+'</td>'
+      +'<td><input type="number" id="mirV'+i+'" min="0" step="1" style="width:78px" '
+      +'value="'+(r.u>=0?r.u:'')+'" placeholder="—" onchange="mirValSet('+i+')"></td></tr>';
+  }
+  t.innerHTML=h;
+  let m='';
+  if(!p.have38) m='⚠️ DS2438 не зчитано — лічильники монітора писати нікуди.';
+  else if(!p.rsChip) m='⚠️ Шунт у DS2438 не записаний — цикли з накопиченого заряду не перерахувати. '
+    +'Наробіток правити можна: він від шунта не залежить.';
+  else if(!p.v[0].pk) m='ℹ️ Наробіток пакета не порахувати: немає читаної дати першого користування '
+    +'(потрібен ключ). Число можна вписати вручну.';
+  else if(!p.vChanges) m='ℹ️ Лічильники збігаються — синхронізувати нема чого.';
+  if(m){note.style.display='';note.textContent=m;} else note.style.display='none';
+}
+function mirVal(i,on){ mirSend('VAL='+i+' ON='+(on?1:0)); }
+function mirValSet(i){
+  const e=$('mirV'+i), v=(e&&e.value!=='')?(+e.value|0):-1;
+  mirSend('VSET='+i+' V='+v);
+}
+async function mirSend(a){
+  if(!connected){toast('Підключіться');return;}
+  await ensureAuth();
+  const r=await cmd('MIRROR '+a+' TODAY='+rpToday(),10000);
+  if(r&&r.ok){mirPlan=r;mirRender();} else toast('Помилка: '+((r&&r.err)||''),'err');
+}
+function mirTake(w){ mirSend('TAKE='+w); }
+function mirByte(i,on){ mirSend('BYTE='+i+' ON='+(on?1:0)); }
+function mirSetRated(){ const v=$('mirRatedInp').value; mirSend('RATED='+(v?(+v|0):0)); }
+async function mirApply(){
+  if(!mirPlan){toast('Спершу перечитайте план');return;}
+  // Називаємо обидва чипи: операція пише в два різні чипи в протилежних
+  // напрямках, і мовчазний другий запис був би несподіванкою.
+  if(!confirm('🔗 Записати '+mirPlan.changes+' байт(ів) ідентичності в DS2433'
+            +(mirPlan.vChanges?(' і '+mirPlan.vChanges+' лічильник(ів) у DS2438'):'')+'?\n\n'
+            +'У DS2433 — лише дзеркало ідентичності й сума заголовка.'
+            +(mirPlan.vChanges?'\nУ DS2438 — лише позначені лічильники.':'')))return;
+  await ensureAuth();
+  const r=await cmd('MIRROR APPLY TODAY='+rpToday(),20000);
+  if(r&&r.ok){toast('✅ Байтів у DS2433: '+r.changed+', лічильників у DS2438: '+(r.changed38||0));
+              if(r.plan){mirPlan=r.plan;mirRender();} await refresh();}
+  else toast('Помилка: '+((r&&r.err)||''),'err');
+}
+
 async function hdrFix(){
   if(!connected){toast('Підключіться');return;}
   if(!confirm('🔌 Добудувати заголовок із дзеркала DS2438?\nПрофіль і модель цим не відновлюються.'))return;
@@ -1053,11 +1382,17 @@ function warnForeign2438(d, etmSec){
   const etmD=Math.floor(etmSec/86400);
   if(etmD>ageD+ETM_AGE_SLACK_D){
     w.style.display='';
-    w.innerHTML='⚠️ Напрацювання ETM (<b>'+etmD+' діб</b>) більше за вік пакета ('+ageD+' діб від '+mfg+
-      '). Або монітор <b>не від цього АКБ</b> (перечитайте DS2438 — доти струм, залишок і знос '+
-      'неправильні), або пакет пройшов <b>цикл на станції</b>: ЗП переписує ETM своїм числом. '+
-      'Тому наробіток правлять <b>ПІСЛЯ</b> калібрування, а не до нього.';
+    w.innerHTML=etmForeignHtml(etmD, ageD, mfg);
   } else w.style.display='none';
+}
+// ⚑ Текст попередження — ОДИН на весь клієнт: він потрібен і тут, і в картці
+//  синхронізації дзеркала, а друга копія розійшлася б із першою.
+function etmForeignHtml(etmD, ageD, mfg){
+  return '⚠️ Напрацювання ETM (<b>'+etmD+' діб</b>) більше за вік пакета ('+ageD+' діб'+
+    (mfg?(' від '+mfg):'')+'). Або монітор <b>не від цього АКБ</b> (перечитайте DS2438 — '+
+    'доти струм, залишок і знос неправильні), або пакет пройшов <b>цикл на станції</b>: '+
+    'ЗП переписує ETM своїм числом. Тому наробіток правлять <b>ПІСЛЯ</b> калібрування, '+
+    'а не до нього.';
 }
 
 // Штатні поля Motorola із INFO. Цикли показуємо завжди; знос і дати — лише
@@ -1066,19 +1401,28 @@ function renderBms(b){
   const set=(id,v,col)=>{const e=$(id); if(!e)return; e.textContent=v; if(col!==undefined)e.style.color=col;};
   if(!b){['bCyc','bCycN','bPot','bHealth','bCal','bMfg','bUse','bKey'].forEach(i=>set(i,'—')); return;}
   set('bCyc', b.cycles>=0?String(b.cycles):'— (блок гістограми побитий)');
-  set('bCycN', b.nonImpresCycles!==undefined?String(b.nonImpresCycles):'—');
+  // −1 = блок лічильника побитий, а не «жодного разу».
+  set('bCycN', (b.nonImpresCycles===undefined||b.nonImpresCycles<0)
+               ? 'не читається' : String(b.nonImpresCycles));
   if(b.haveKey){
     set('bPot', b.potentialMah+' мА·год'+(b.firstUseMah?(' (на початку '+b.firstUseMah+')'):''));
     // Без шунта з чипа знос — лише оцінка: у різних моделей шунт удвічі різний.
     set('bHealth', b.health+' %'+(window.__rsChip?'':' (оцінка: шунт не з чипа)'),
         b.health>=80?'#22c55e':(b.health>=60?'':'#ef4444'));
     set('bCal', String(b.calCycles));
-    set('bMfg', b.mfgDate||'—');
-    set('bUse', b.firstUseDate||'— (пакет ще не вмикався)');
+    // Неправдоподібну дату пристрій не віддає — лише прапорець.
+    set('bMfg', b.mfgDate || (b.mfgDateOk===0 ? '⚠ неправдоподібна (блок DATE побитий)' : '—'));
+    // «Не вмикався» і «не обчислити» — різні твердження.
+    set('bUse', b.firstUseDate
+                || (b.mfgDateOk===0 ? '— не обчислити (немає дати виготовлення)'
+                                    : '— (пакет ще не вмикався)'));
     set('bKey', b.keyGuessed?'підібрано перебором (ROM чипа недоступний)':'з ROM-ID чипа DS2433');
     set('wear', b.health+' %');
     set('cap', b.potentialMah+' мА·год');
-    set('cyc', b.cycles+' зар. IMPRES'+(b.nonImpresCycles?(' / +'+b.nonImpresCycles+' звич. ЗП'):''));
+    set('cyc', b.cycles+' зар. IMPRES'
+        +(b.histCca!==undefined?(' · у пакеті: заряд '+b.histCca+' / розряд '+b.histDca):'')
+        +(b.nonImpresCycles>0?(' / +'+b.nonImpresCycles+' звич. ЗП')
+         :b.nonImpresCycles<0?' / звич. ЗП — не читається':''));
   } else {
     ['bPot','bHealth','bCal','bMfg','bUse'].forEach(i=>set(i,'—'));
     set('bKey','не визначено — зчитайте АКБ пристроєм (потрібен ROM-ID DS2433)');
@@ -1144,16 +1488,6 @@ async function wipe38(){
   await refresh(); setBusy(false);
 }
 
-async function setMah(){
-  if(!connected){toast('Підключіться');return;}
-  const v=parseInt($('mahv').value); if(isNaN(v)||v<0){toast('Вкажіть мА·год');return;}
-  if(!confirm('Записати залишкову ємність '+v+' мА·год?'))return;
-  await ensureAuth();
-  setBusy(true); toast('Запис мА·год...');
-  const r=await cmd('SETMAH '+v,15000);
-  toast(r.ok?('✅ Записано (ICA='+r.ica+')'):('Помилка: '+(r.err||'')));
-  await refresh(); setBusy(false);
-}
 
 async function setChargeAuto(){
   if(!connected){toast('Підключіться');return;}
@@ -1163,30 +1497,7 @@ async function setChargeAuto(){
   toast(r.ok?('✅ Заряд '+r.pct+'% (ICA='+r.ica+')'):('Помилка: '+(r.err||'')));
   await refresh(); setBusy(false);
 }
-async function setChargePct(){
-  if(!connected){toast('Підключіться');return;}
-  const v=parseInt($('chgv').value); if(isNaN(v)||v<0||v>100){toast('Вкажіть 0..100');return;}
-  await ensureAuth();
-  setBusy(true); toast('Запис заряду...');
-  const r=await cmd('SETCHG '+v,15000);
-  toast(r.ok?('✅ Заряд '+r.pct+'% (ICA='+r.ica+')'):('Помилка: '+(r.err||'')));
-  await refresh(); setBusy(false);
-}
 
-async function setEtm(){
-  if(!connected){toast('Підключіться');return;}
-  const ds=$('etmDate').value; if(!ds){toast('Оберіть дату');return;}
-  const target=new Date(ds+'T00:00:00');
-  let sec=Math.floor((Date.now()-target.getTime())/1000);
-  if(sec<0){toast('Дата в майбутньому');return;}
-  if(sec>0xFFFFFFFF)sec=0xFFFFFFFF;
-  if(!confirm('📅 Записати дату «'+target.toLocaleDateString()+'» (ETM='+sec+' с)? Перевірте на рації.'))return;
-  await ensureAuth();
-  setBusy(true); toast('Запис дати...');
-  const r=await cmd('SETETM '+sec,15000);
-  toast(r.ok?('✅ Дату записано (ETM='+(r.etmSec||sec)+')'):('Помилка: '+(r.err||'')));
-  await refresh(); setBusy(false);
-}
 
 async function setCap(){
   if(!connected){toast('Підключіться');return;}
@@ -1248,8 +1559,8 @@ function sndFill(r){
   if(box&&r.signals) box.innerHTML=r.signals.map(s=>
     '<button onclick="sndTest(\''+s.key+'\')">▶ '+wesc(s.title)+' <span style="opacity:.6">'+s.ms+' мс</span></button>').join('');
   if(r.hasBuzzer===false)
-    $('sndHint').innerHTML='⚠️ У цій збірці буззер не підключено (BUZZER_PIN у settings.h не задано) — '+
-      'налаштування зберігаються, але звучати нема чому.';
+    $('sndHint').innerHTML='⚠️ У цій збірці вихід звуку не заданий (ні BUZZER_DAC_PIN, ні BUZZER_PIN '+
+      'у settings.h) — налаштування зберігаються, але звучати нема чому.';
 }
 async function sndLoad(){
   if(!connected)return;
@@ -1295,6 +1606,130 @@ async function loadTemplates(){
   const rs=$('restModel');
   if(rs&&!rs.dataset.rp){rs.dataset.rp='1';rs.addEventListener('change',()=>rpLoad(false));}
   if(models.length)await rpLoad(false);
+}
+
+// ============ РУЧНИЙ РЕДАКТОР ЗНАЧЕНЬ ============
+//  ⚑ КЛІЄНТ НЕ ЗНАЄ НІ НАЗВ ПОЛІВ, НІ ЇХНІХ МЕЖ. Усе це називає пристрій
+//  (edit_plan.h), і приходить воно командою EDIT. Своя копія списку тут
+//  означала б, що після кожної правки прошивки таблиця показувала б застарілі
+//  назви й пускала б заборонені числа.
+var edPlan = null;
+function edEsc(s){ return String(s).replace(/[&<>"]/g,function(c){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
+function edNumToDate(v){ if(!v||v<=0) return ''; var s=String(v);
+    return s.slice(0,4)+'-'+s.slice(4,6)+'-'+s.slice(6,8); }
+function edDateToNum(s){ return s ? s.replace(/-/g,'') : ''; }
+
+async function edLoad(){
+  if(!connected){ edPlan=null; edRender(null,'Спочатку підключіться'); return; }
+  var r = await cmd('EDIT', 12000);
+  if(!r || !r.ok || !r.plan){ edPlan=null; edRender(null,(r&&r.err)||'Спочатку зчитайте АКБ'); return; }
+  edPlan = r.plan;
+  edRender(r.plan, '');
+}
+
+function edRender(p, err){
+  var t=$('edTable'); if(!t) return;
+  if(!p){ t.innerHTML='<tr><td>'+edEsc(err||'Спочатку зчитайте АКБ')+'</td></tr>';
+          $('edSum').textContent='—'; return; }
+  var h='<tr><th>Що саме</th><th>Зараз</th><th>Записати</th></tr>', chip=0;
+  p.fields.forEach(function(f){
+    // Заголовок групи при зміні чипа: «що записано в самому пакеті» й «що
+    // бачить монітор» — різні речі, і плутати їх в одному стовпчику означало б
+    // повторити помилку, з якої почалась історія з поверненням лічильників.
+    if(f.chip!==chip){ chip=f.chip;
+      h+='<tr><td colspan="3" class="note '+(chip===33?'i':'w')+'" style="margin:0">'
+        +(chip===33?'DS2433 — памʼять самого пакета'
+                   :'DS2438 — монітор (його рація читає щомиті)')+'</td></tr>'; }
+    var nm=edEsc(f.name)+(f.unit?' <span class="k">('+edEsc(f.unit)+')</span>':'');
+    if(!f.avail){ h+='<tr><td>'+nm+'</td><td colspan="2" class="k">у цьому пакеті не читається</td></tr>'; return; }
+    var cur=(f.cur<0)?'—':(f.type===1?(f.cur?edNumToDate(f.cur):'не було'):f.cur);
+    var inp=(f.type===1)
+      ? '<input type="date" id="ed'+f.i+'">'
+      : '<input type="number" id="ed'+f.i+'" min="'+f.lo+'" max="'+f.hi+'" placeholder="'+f.lo+'…'+f.hi+'" style="width:120px">';
+    h+='<tr><td>'+nm+'</td><td><b>'+edEsc(String(cur))+'</b></td><td>'+inp+'</td></tr>';
+  });
+  t.innerHTML=h;
+  edSum();
+  var w=$('edWarn');
+  if(w){ w.style.display=p.haveKey?'none':'';
+         w.innerHTML='Ключ шифрування цього пакета не визначився — дати, калібрувальні '
+                    +'цикли й знос показати нічим. Перечитайте АКБ: ключ береться з ROM DS2433.'; }
+  // Кожна зміна оновлює підсумок; на ВИХОДІ з поля число ще й виправляється.
+  p.fields.forEach(function(f){ var el=$('ed'+f.i); if(!el) return;
+    el.oninput = edSum;
+    el.onchange = function(){ edFixInput(f, el); }; });
+}
+
+// ⚑ ВИПРАВЛЕННЯ ПРИ ВВЕДЕННІ — ЗА МЕЖАМИ, ЯКІ ДАВ ПРИСТРІЙ, А НЕ ЗА ВЛАСНИМИ
+//  ПРАВИЛАМИ. Клієнт притискає число до lo/hi й дату до «сьогодні» — це ДАНІ
+//  зі списку полів. Складніші правила (13-й місяць, суперечливий набір дат)
+//  лишаються на приладі: копія тут розійшлася б із ним на першій же правці.
+//  Притискаємо на ВИХОДІ з поля, а не на кожному натисканні: інакше в полі з
+//  нижньою межею 1000 перша ж набрана «1» стрибнула б у 1000.
+function edFixInput(f, el){
+  if(!el.value) return;
+  var v=(f.type===1)?+edDateToNum(el.value):+el.value;
+  if(!isFinite(v)) return;
+  var was=v, why='';
+  if(f.type===1 && edPlan && edPlan.today>0 && v>edPlan.today){ v=edPlan.today; why='дата в майбутньому'; }
+  if(v<f.lo){ v=f.lo; why='межі поля '+f.lo+'…'+f.hi; }
+  if(v>f.hi){ v=f.hi; why='межі поля '+f.lo+'…'+f.hi; }
+  if(v===was) return;
+  el.value=(f.type===1)?edNumToDate(v):v;
+  toast('✎ '+f.name+': '+was+' → '+v+' ('+why+')');
+  edSum();
+}
+
+function edChanges(){
+  var out=[]; if(!edPlan) return out;
+  edPlan.fields.forEach(function(f){
+    var el=$('ed'+f.i); if(!el||!f.avail) return;
+    var v=(f.type===1)?edDateToNum(el.value):el.value.trim();
+    if(v==='') return;
+    v=+v; if(v===f.cur) return;
+    out.push({i:f.i,name:f.name,from:f.cur,to:v,type:f.type});
+  });
+  return out;
+}
+function edSum(){
+  var c=edChanges(), box=$('edSum'); if(!box) return;
+  if(!c.length){ box.textContent='Нічого не змінено — записувати нема чого.'; return; }
+  box.innerHTML='Буде записано <b>'+c.length+'</b>: '+c.map(function(x){
+    var from=x.type===1?(x.from>0?edNumToDate(x.from):'не було'):x.from;
+    var to=x.type===1?edNumToDate(x.to):x.to;
+    return edEsc(x.name)+' '+edEsc(String(from))+' → <b>'+edEsc(String(to))+'</b>';
+  }).join('; ');
+}
+function edClear(){
+  if(!edPlan) return;
+  edPlan.fields.forEach(function(f){ var el=$('ed'+f.i); if(el) el.value=''; });
+  edSum();
+}
+
+async function edApply(){
+  if(!connected){toast('Підключіться');return;}
+  var c=edChanges();
+  if(!c.length){ toast('Нічого не змінено'); return; }
+  var lines=c.map(function(x){
+    var from=x.type===1?(x.from>0?edNumToDate(x.from):'не було'):x.from;
+    var to=x.type===1?edNumToDate(x.to):x.to;
+    return '• '+x.name+': '+from+' → '+to; }).join('\n');
+  if(!confirm('Записати в пакет '+c.length+' знач.?\n\n'+lines
+     +'\n\nЦе прямий запис у чипи, без плану й без еталона.')) return;
+  await ensureAuth();
+  var arg=c.map(function(x){ return x.i+'='+x.to; }).join(' ');
+  var r=await cmd('EDIT '+arg, 30000);
+  if(r&&r.ok){
+    toast('💾 Записано: '+(r.applied||0));
+    // Прилад міг щось виправити сам — це показуємо вікном, а не рядком стану.
+    if(r.fix) msgShow('✎ Виправлено при записі', r.fix);
+    // Показуємо ПЕРЕЧИТАНЕ з чипа, а не те, що просили: різниця між «просив» і
+    // «стало» — саме те, заради чого таблиця й існує.
+    if(r.plan){ edPlan=r.plan; edRender(r.plan,''); }
+    edClear();
+    await refresh();
+  } else msgShow('Редактор', (r&&r.err)||'Запис не пройшов');
 }
 
 // ============ МАЙСТЕР ВІДНОВЛЕННЯ ============
@@ -1401,35 +1836,119 @@ async function wizJournalDelete(serial){
   if(r&&r.ok){toast('Видалено'); wizJournalsLoad();} else toast('Помилка: '+((r&&r.err)||''));
 }
 // ---- керований розряд ------------------------------------------------------
-let disHist=[], disStep=10, disLast=null, disLastAt=0, disTimer=null, disPeriod=0, disBusy=false;
+let disLast=null, disLastAt=0, disTimer=null, disPeriod=0, disBusy=false;
+/* ── СПІЛЬНИЙ КАРКАС ПАНЕЛЕЙ ОПЕРАЦІЙ ─────────────────────────────────────
+   Той самий, що у веб-сторінці пристрою: заряд, розряд і пробудження мусять
+   показувати ОДНІ Й ТІ САМІ величини на ОДНИХ І ТИХ САМИХ місцях. Доки набори
+   плиток писались руками окремо, вони розходились — саме тут «фаза» й
+   «лишилось ≈» лишились узагалі без плиток, хоча пристрій ці числа віддавав. */
+const OP_TILES = [
+    {k:'Mah',   t:'мА·год',        hero:true},
+    {k:'Ma',    t:'струм, мА'},
+    {k:'W',     t:'потужність, Вт'},
+    {k:'Phase', t:'фаза'},
+    {k:'Eta',   t:'лишилось ≈'},
+    {k:'Cnt',   t:'лічильник чипа'},
+    {k:'T',     t:'температура, °C'},
+    {k:'Ica',   t:'паливомір ICA'}
+];
+const OP_HEADS = {
+    chg:  {Mah:'отримано, мА·год', Cnt:'CCA, мА·год',   T:'температура, °C', Ica:'паливомір ICA'},
+    dis:  {Mah:'віддано, мА·год',  Cnt:'DCA, мА·год',   T:'температура, °C', Ica:'паливомір ICA'},
+    wake: {Mah:'віддано, мА·год',  Cnt:'проб монітора', T:'температура, °C', Ica:'межа ШІМ'}
+};
+function opTiles(p){
+  const box=$(p+'Tiles'); if(!box)return;
+  box.innerHTML = OP_TILES.map(function(c){
+    return '<div class="dmc'+(c.hero?' hero':'')+'">'
+         +   '<div class="dmck" id="'+p+c.k+'K">'+c.t+'</div>'
+         +   '<div class="dmcv" id="'+p+c.k+'">—</div>'
+         + '</div>'; }).join('');
+}
+function opTileHead(p,mode){
+  const h=OP_HEADS[mode]; if(!h)return;
+  for(const k in h){ const e=$(p+k+'K'); if(e) e.textContent=h[k]; }
+}
+// Підпис ОДНІЄЇ плитки — коли до нього треба дописати число. Тільки через цю
+// функцію: id плиток породжує opTiles().
+function opTileLabel(p,k,txt){ const e=$(p+k+'K'); if(e) e.textContent=txt; }
+function opTileSet(p,k,v){
+  const e=$(p+k); if(!e||e.textContent===v)return;
+  e.textContent=v; e.classList.remove('flash'); void e.offsetWidth; e.classList.add('flash');
+}
+function opBand(p,ma,setMa,loMa,hiMa,inBand,run){
+  const scale=Math.max(setMa*1.25,ma*1.05,1);
+  const cur=$(p+'Cur'), band=$(p+'Band'), mark=$(p+'Mark');
+  if(cur){ cur.style.width=Math.min(100,ma*100/scale)+'%';
+           cur.className='dmcur'+(run&&!inBand?' out':''); }
+  if(band){ band.style.left=Math.max(0,Math.min(100,loMa*100/scale))+'%';
+            band.style.width=Math.max(0,(hiMa-loMa)*100/scale)+'%'; }
+  if(mark){ mark.style.left=Math.min(100,setMa*100/scale)+'%'; }
+}
+const opHist={chg:{pts:[],step:10}, dis:{pts:[],step:10}};
+function opReset(p){ const h=opHist[p]; if(h){h.pts=[]; h.step=10;} }
 function disFmtT(s){const h=Math.floor(s/3600),m=Math.floor(s/60)%60,x=s%60;
   return h+':'+String(m).padStart(2,'0')+':'+String(x).padStart(2,'0');}
 function disSchedule(ms){ if(disPeriod===ms&&disTimer)return;
   if(disTimer)clearInterval(disTimer); disPeriod=ms; disTimer=setInterval(disTick,ms); }
-function disSet(id,txt){ const el=$(id); if(!el||el.textContent===txt)return;
-  el.textContent=txt; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
 // Точки графіка не викидаються з початку — коли їх забагато, ряд проріджується
 // вдвічі, а крок подвоюється. Так на екрані лишається крива за ВЕСЬ сеанс.
-function disPush(t,mv){ const last=disHist[disHist.length-1];
-  if(last&&t-last.t<disStep)return; disHist.push({t:t,mv:mv});
-  if(disHist.length>300){disHist=disHist.filter((_,i)=>i%2===0); disStep*=2;} }
-function disSpark(targetMv){
-  const tl=$('disSparkTarget');
-  if(disHist.length<2){$('disSparkLine').setAttribute('points','');$('disSparkArea').setAttribute('points','');
-                       tl.setAttribute('y1',-9);tl.setAttribute('y2',-9);return;}
-  const vs=disHist.map(p=>p.mv); let lo=Math.min(...vs)-20, hi=Math.max(...vs)+20;
+// Історія в кожної машини своя, код — один.
+function opPush(p,t,mv){
+  const h=opHist[p]; if(!h)return;
+  // Час пішов назад — почався НОВИЙ сеанс: два сеанси в одному графіку
+  // читались би як один довгий.
+  if(h.pts.length&&t<h.pts[h.pts.length-1].t) opReset(p);
+  const last=h.pts[h.pts.length-1];
+  if(last&&t-last.t<h.step)return;
+  h.pts.push({t:t,mv:mv});
+  if(h.pts.length>300){h.pts=h.pts.filter((_,i)=>i%2===0); h.step*=2;}
+}
+function opSpark(p,targetMv){
+  const tl=$(p+'SparkTarget'), ln=$(p+'SparkLine'), ar=$(p+'SparkArea');
+  if(!tl||!ln||!ar)return;
+  const hp=(opHist[p]||{pts:[]}).pts;
+  if(hp.length<2){ln.setAttribute('points','');ar.setAttribute('points','');
+                  tl.setAttribute('y1',-9);tl.setAttribute('y2',-9);return;}
+  const vs=hp.map(q=>q.mv); let lo=Math.min(...vs)-20, hi=Math.max(...vs)+20;
   if(targetMv&&targetMv<lo) lo=targetMv-20;
-  const t0=disHist[0].t, t1=Math.max(disHist[disHist.length-1].t,t0+1);
-  const X=p=>3+((p.t-t0)/(t1-t0))*294, Y=v=>56-((v-lo)/(hi-lo||1))*52;
-  const pts=disHist.map(p=>X(p).toFixed(1)+','+Y(p.mv).toFixed(1)).join(' ');
-  $('disSparkLine').setAttribute('points',pts);
-  $('disSparkArea').setAttribute('points','3,58 '+pts+' 297,58');
+  if(targetMv&&targetMv>hi) hi=targetMv+20;      // у заряді ціль ЗГОРИ
+  const t0=hp[0].t, t1=Math.max(hp[hp.length-1].t,t0+1);
+  const X=q=>3+((q.t-t0)/(t1-t0))*294, Y=v=>56-((v-lo)/(hi-lo||1))*52;
+  const pts=hp.map(q=>X(q).toFixed(1)+','+Y(q.mv).toFixed(1)).join(' ');
+  ln.setAttribute('points',pts);
+  ar.setAttribute('points','3,58 '+pts+' 297,58');
   const ty=Y(targetMv); tl.setAttribute('y1',ty); tl.setAttribute('y2',ty);
 }
 function disShow(d){
   const mon=$('disMon');
   if(!d){mon.className='dm';$('disSt').textContent='—';return;}
+  opDisD=d; opModeApply();
   if(!d.available){mon.className='dm';$('disSt').textContent='не налаштовано (LOAD_PIN)';return;}
+  { var bdd=$('btnDisDismiss'); if(bdd) bdd.style.display=(d.state==='done'||d.state==='abort')?'':'none'; }
+  // Ручний струм і профіль — з ПРИСТРОЮ: показувати треба те, що ДІЄ, хто б
+  // його не поставив (веб, USB чи кнопки на самому приладі).
+  if(d.manualMa!==undefined){
+    const mi=$('disMaInp');
+    if(mi&&document.activeElement!==mi) mi.value=d.manualMa?d.manualMa:'';
+    disMaPaint(d.manualMa|0);
+    const mn=$('disMaNote');
+    if(mn) mn.innerHTML=(d.manualMa
+      ?('Зараз <b>ручний</b> струм '+d.manualMa+' мА (межі '+d.manMinMa+'…'+d.manMaxMa+' мА). ')
+      :'Зараз <b>автоматична</b> уставка. ')
+      +'Біля цілі ручне значення струм не піднімає.';
+  }
+  if(d.profile!==undefined){
+    const p0=$('disProf0'),p1=$('disProf1');
+    if(p0)p0.classList.toggle('on',!(d.profile|0));
+    if(p1)p1.classList.toggle('on',!!(d.profile|0));
+    const pn=$('disProfNote');
+    if(pn) pn.innerHTML=(d.profile|0)
+      ?('<b>Розумний 0.2C</b> від паспортної ємності ('+(d.ratedMah||0)+' мА·год) — стандартна ставка '
+        +'для ВИМІРУ ємності. Фаза: '+(d.phaseText||'—')+'. Лишилось ≈ '+etaFmt(d.etaS)+'.')
+      :('<b>Заводська лінійка</b> за напругою. Фаза: '+(d.phaseText||'—')
+        +'. Лишилось ≈ '+etaFmt(d.etaS)+'.');
+  }
   // Межі лінійки і цілі — з ПРИСТРОЮ: він їх і застосовує, тож інтерфейс не має
   // права мати власну думку. Поле цілі не чіпаємо, якщо його вже правив
   // користувач — інакше опитування стану щоразу скидало б набране число.
@@ -1442,11 +1961,8 @@ function disShow(d){
   $('disSt').textContent={idle:'очікування',run:'ІДЕ РОЗРЯД',
     done:'✅ ГОТОВО — на IMPRES-ЗП',abort:'⛔ '+(d.reason||'аварія')}[d.state]||d.state;
 
-  if(run){
-    if(disHist.length&&d.elapsedS<disHist[disHist.length-1].t){disHist=[];disStep=10;}
-    disPush(d.elapsedS,d.mv);
-  }
-  disSpark(d.targetMv);
+  if(run) opPush('dis',d.elapsedS,d.mv);
+  opSpark('dis',d.targetMv);
 
   $('disMvBig').innerHTML=(d.mv/1000).toFixed(2)+'<small>В</small>';
   $('disMvSub').textContent='старт '+(d.startMv/1000).toFixed(2)+' В → ціль '+(d.targetMv/1000).toFixed(2)+' В';
@@ -1454,33 +1970,35 @@ function disShow(d){
   const pct=span>0?Math.max(0,Math.min(100,Math.round(dn*100/span))):0;
   $('disFill').style.width=pct+'%'; $('disPct').textContent=pct+' %';
 
-  // Струм тут СЕРЕДНІЙ (ключ під ШІМом): шкала — до 125 % уставки, щоб коридор
-  // займав більшу частину доріжки, а вихід за нього одразу впадав в око.
-  const ma=Math.abs(d.ma), scale=Math.max(d.setMa*1.25,ma*1.05,1);
-  $('disCur').style.width=Math.min(100,ma*100/scale)+'%';
-  $('disCur').className='dmcur'+(run&&!d.inBand?' out':'');
-  $('disBand').style.left=(d.bandLoMa*100/scale)+'%';
-  $('disBand').style.width=Math.max(0,(d.bandHiMa-d.bandLoMa)*100/scale)+'%';
-  $('disMark').style.left=Math.min(100,d.setMa*100/scale)+'%';
+  // Струм тут СЕРЕДНІЙ (ключ під ШІМом). Коридор малює спільний opBand():
+  // шкала — до 125 % уставки, щоб вихід за коридор одразу впадав в око.
+  const ma=Math.abs(d.ma);
+  opBand('dis',ma,d.setMa,d.bandLoMa,d.bandHiMa,d.inBand,run);
   $('disLim').textContent=d.pwm?('уставка '+d.setMa+' мА · пік '+d.peakMa+' мА'):'⚠ ШІМ недоступний';
   $('disLim').style.color=d.pwm?(d.inBand?'var(--grn)':'var(--org)'):'var(--red)';
   $('disDuty').style.width=(d.pwm?d.duty:100)+'%';
   $('disDutyTxt').textContent=d.pwm?(d.duty+' %'):'ключ відкрито постійно';
 
-  disSet('disMah',String(d.mah));
-  disSet('disDca',String(d.dcaMah));      // апаратний лічильник — перевірка нашого інтеграла
-  disSet('disMa',String(d.ma));
-  disSet('disW',String(d.watts));
-  disSet('disT',String(d.tempC));
-  disSet('disIca',String(d.ica));
-  $('disIcaK').textContent='паливомір ICA · старт '+d.icaStart;
+  // Плитки — тими ж ключами й у тому ж порядку, що в заряду й пробудженні.
+  opTileSet('dis','Mah',String(d.mah));
+  opTileSet('dis','Ma',String(d.ma));
+  opTileSet('dis','W',String(d.watts));
+  opTileSet('dis','Phase',d.phaseText||'—');
+  opTileSet('dis','Cnt',String(d.dcaMah));  // апаратний лічильник — перевірка нашого інтеграла
+  opTileSet('dis','T',String(d.tempC));
+  opTileSet('dis','Ica',String(d.ica));
+  opTileLabel('dis','Ica','паливомір ICA · старт '+d.icaStart);
 
+  // Оцінку рахує ПРИСТРІЙ (залишок ємності / струм) — у нього є і паспортна
+  // ємність, і чинний струм, і всі три клієнти показують ОДНЕ число. Темп
+  // падіння напруги лишається запасним: він працює й без відомої ємності.
   let eta='—';
-  if(run&&d.elapsedS>60&&d.startMv>d.mv){
+  if(d.etaS!==undefined && d.etaS) eta=etaFmt(d.etaS);
+  else if(run&&d.elapsedS>60&&d.startMv>d.mv){
     const left=Math.max(0,(d.mv-d.targetMv)/((d.startMv-d.mv)/d.elapsedS));
     eta=left>0?disFmtT(Math.round(left)):'ось-ось';
   }
-  disSet('disEta',eta);
+  opTileSet('dis','Eta',eta);
 
   const w=$('disWarn');
   if(!d.pwm&&(run||d.state==='done')){ w.style.display='block';
@@ -1510,7 +2028,7 @@ async function disStatus(){ if(!connected){toast('Підключіться');ret
 // --- цільова напруга розряду ------------------------------------------------
 // Межі й лінійка струму приходять від пристрою (DISCHARGE ?): тримати їхню
 // копію тут означало б розійтися з discharge.h після наступної правки.
-let disRampCfg={rampHiMv:8250,maHi:1000,maLo:300,tgtMinMv:6800,tgtMaxMv:8000,tgtDefMv:7200};
+let disRampCfg={rampHiMv:8400,maHi:1000,maLo:300,tgtMinMv:6800,tgtMaxMv:8000,tgtDefMv:7200};
 function disTargetMv(){
   const e=$('disTarget');
   let t=parseInt(e&&e.value)||disRampCfg.tgtDefMv||7200;
@@ -1566,8 +2084,10 @@ async function disStart(){
               (t/1000).toFixed(2)+' В.\nНавантаження буде увімкнено, резистор нагріється.\n'+
               'Не лишайте пристрій без нагляду.'))return;
   await ensureAuth();
+  { const mi=$('disMaInp'); const ma=mi&&mi.value?(+mi.value|0):0;
+    if(ma) await cmd('DISCHARGE MA='+ma,8000); }
   const r=await cmd('DISCHARGE '+t,15000);
-  if(r&&r.ok){toast('✅ Розряд почато');disHist=[];disStep=10;disShow(r.discharge);}
+  if(r&&r.ok){toast('✅ Розряд почато');opReset('dis');disShow(r.discharge);}
   else toast('Помилка: '+((r&&r.err)||''),'err');
 }
 async function disStop(){
@@ -1576,37 +2096,158 @@ async function disStop(){
   if(r&&r.ok){toast('⏹ Розряд зупинено');disShow(r.discharge);} else toast('Помилка','err');
 }
 
-// --- ЗАРЯД через DC/DC (CHARGE ?/CHARGE/CHARGE STOP) ------------------------
+// --- КЕРОВАНИЙ ЗАРЯД (CHARGE ?/CHARGE/CHARGE STOP) ------------------------
 // Ціль фіксована (CHARGE_TARGET_MV у settings.h) — на відміну від розряду
 // тут немає перемикача цілі й графіка-лінійки.
 let chgLast=null, chgLastAt=0, chgTimer=null, chgPeriod=0, chgBusy=false, chgWasRun=false;
+
+// ── АВАРІЯ ЖИВЛЕННЯ +14 В ───────────────────────────────────────────────────
+// Ті самі поля, що малює екран пристрою й веб-інтерфейс, тож розходження між
+// трьома поверхнями неможливе.
+function psuAlertUpdate(d){
+  const el=$('psuAlert'); if(!el)return;
+  if(!d||!d.psuSensed||d.psuOk){ el.style.display='none'; return; }
+  const v=x=>(x/1000).toFixed(1).replace(/\.0$/,'');
+  const mv=(d.psuMv/1000).toFixed(2), nom=v(d.psuNomMv||14000), lo=v(d.psuMinMv), hi=v(d.psuMaxMv);
+  $('psuAlertHead').textContent='⛔ '+(d.psuHead||d.psuText);
+  $('psuAlertBody').innerHTML='виміряно <b style="display:inline">'+mv+' В</b> — треба <b style="display:inline">'+nom+' В</b> (допуск '+lo+'…'+hi+')'
+    +'<small>'+d.psuText+'<br>Заряд неможливий. Читання й правка пам\'яті пакета працюють без блока живлення.</small>';
+  el.style.display='block';
+}
 function chgShow(d){
   const mon=$('chgMon');
   if(!d){mon.className='dm';$('chgSt').textContent='—';return;}
-  if(!d.available){mon.className='dm';$('chgSt').textContent='не налаштовано (CHARGE_PIN/CHARGE_CTRL_PIN)';return;}
+  // Причина приходить із прошивки (availWhy): «не налаштовано» і «ця версія
+  // пристрою без заряду» — різні відповіді, і власна копія пари тут
+  // розійшлася б із приладом.
+  // ⚑ Одного рядка замало: раніше причина писалась дрібним у стан панелі, а
+  // кнопки лишались живими — людина тиснула «ПОЧАТИ ЗАРЯД» і діставала помилку
+  // замість пояснення. Тепер видима плашка, а дії вимкнені.
+  opChgD=d; opModeApply();
+  chgSetUnavail(d.available?'':(d.availWhy||'заряд недоступний'));
+  if(!d.available){mon.className='dm';$('chgSt').textContent='функція недоступна';return;}
   const run=d.state==='run';
   mon.className='dm '+d.state;
-  $('chgSt').textContent={idle:'очікування',run:'ІДЕ ЗАРЯД',
+  // ⚑ ПРОБУДЖЕННЯ — інший режим тієї самої панелі. d.wake приходить за РЕЖИМОМ,
+  //  а не за станом: підсумок лишається видимим після зупинки, і показати його
+  //  як «ЗАРЯД ЗАВЕРШЕНО» означало б збрехати там, де читають результат.
+  const wake=!!d.wake;
+  if(d.manualMv!==undefined){
+    const vi=$('chgMvInp');
+    if(vi&&document.activeElement!==vi) vi.value=d.manualMv?d.manualMv:'';
+    chgMvPaint(d.manualMv|0);
+    const vn=$('chgMvNote');
+    if(vn) vn.innerHTML=(d.manualMv
+      ?('Зараз ціль <b>'+(d.manualMv/1000).toFixed(2)+' В</b>. ')
+      :'Зараз ціль <b>за відсотком</b>. ')+'7.40 В — напруга зберігання.';
+  }
+  if(d.profile!==undefined){
+    const p0=$('chgProf0'),p1=$('chgProf1');
+    if(p0)p0.classList.toggle('on',!(d.profile|0));
+    if(p1)p1.classList.toggle('on',!!(d.profile|0));
+    const pn=$('chgProfNote');
+    if(pn) pn.innerHTML=(d.profile|0)
+      ?('<b>Розумний CC/CV</b> від ємності пакета ('+(d.ratedMah||0)+' мА·год): CC '+(d.smartCcMa||0)
+        +' мА, завершення за струмом '+(d.smartEndMa||0)+' мА. Фаза: '+(d.phaseText||'—')
+        +'. Лишилось ≈ '+(wake?etaFmt(Math.max(0,(d.wakeMaxS|0)-(d.elapsedS|0))):etaFmt(d.etaS))+'.')
+      :('<b>Заводський</b> профіль за відсотком. Фаза: '+(d.phaseText||'—')
+        +'. Лишилось ≈ '+(wake?etaFmt(Math.max(0,(d.wakeMaxS|0)-(d.elapsedS|0))):etaFmt(d.etaS))+'.');
+  }
+  let st={idle:'очікування',run:'ІДЕ ЗАРЯД',
     done:'✅ ЗАРЯД ЗАВЕРШЕНО',abort:'⛔ '+(d.reason||'аварія')}[d.state]||d.state;
+  if(wake) st={idle:'очікування',run:'🩺 ІДЕ ПРОБУДЖЕННЯ',
+    done:'✅ '+(d.reason||'пакет ожив'),
+    abort:'⛔ '+(d.reason||'аварія')}[d.state]||d.state;
+  // ЖИВЛЕННЯ +14 В — попереду стану заряду: несправний блок означає, що заряд
+  // не піде взагалі, і «очікування» поверх цього приховало б єдину причину,
+  // яку користувач може усунути сам.
+  if(d.psuSensed && !d.psuOk){
+    st='⛔ '+d.psuText+' ('+(d.psuMv/1000).toFixed(2)+' В, треба '
+       +((d.psuNomMv||14000)/1000).toFixed(1).replace(/\.0$/,'')+' В)';
+    mon.className='dm abort';
+  }
+  $('chgSt').textContent=st;
+
+  // Крива напруги за сеанс — той самий opPush()/opSpark(), що в розряду.
+  if(run) opPush('chg',d.elapsedS,d.mv);
+  opSpark('chg', wake ? (d.wakeMv||0) : d.targetMv);
+
+  // Перемикання панелі між двома режимами. Ховаються тільки УСТАВКИ (chgonly):
+  // у пробудженні ні цілі, ні ручного струму, ні профілю не існує, і показувати
+  // їх означало б обіцяти керування, якого немає.
+  // Показом уставок відає opModeApply(): він знає і про обраний режим, і про
+  // те, що зараз на залізі. Друга копія цього рішення тут розійшлася б із ним.
+  { var bd=$('btnChgDismiss'); if(bd) bd.style.display=(d.state==='done'||d.state==='abort')?'':'none'; }
+  // А плитки не ховаються й не переставляються — міняються лише підписи трьох
+  // останніх: сітка, що перебудовується, змушує щоразу шукати величину заново.
+  opTileHead('chg', wake?'wake':'chg');
 
   $('chgMvBig').innerHTML=(d.mv/1000).toFixed(2)+'<small>В</small>';
-  $('chgPctSub').textContent=d.pct+' % · старт '+(d.startMv/1000).toFixed(2)+' В → ціль '+(d.targetMv/1000).toFixed(2)+' В';
-  $('chgFill').style.width=d.pct+'%'; $('chgPctTxt').textContent=d.pct+' %';
+  if(wake){
+    // Смуга показує ЧАС, а не відсоток: відсоток рахується з напруги на клемі,
+    // а вона зараз показує не пакет, а те, що ми самі туди подали.
+    const lim=d.wakeMaxS||120, el=Math.min(d.elapsedS,lim), p=Math.round(el*100/lim);
+    $('chgPctSub').textContent='тримаємо '+((d.wakeMv||0)/1000).toFixed(2)+' В · старт '
+      +(d.startMv/1000).toFixed(2)+' В · стеля струму '+(d.wakeMa||0)+' мА';
+    $('chgFill').style.width=p+'%'; $('chgPctTxt').textContent=el+' / '+lim+' с';
+    // Підпис плитки проб — із пристрою: у меті «клема мертва» монітор
+    // говорить із самого початку.
+    opTileSet('chg','Cnt',String(d.wakeProbes||0));
+    if(d.wakeGoalText) opTileLabel('chg','Cnt','проб · '+d.wakeGoalText);
+    // Температура є САМЕ В МЕТІ RAIL: там монітор говорить.
+    opTileSet('chg','T', d.wakeGoal ? String(d.tempC) : '—');
+    opTileSet('chg','Ica',(d.dutyCap||0)+' / '+(d.dutyFull||0));
+  }else{
+    $('chgPctSub').textContent=d.pct+' % · старт '+(d.startMv/1000).toFixed(2)+' В → ціль '+(d.targetMv/1000).toFixed(2)+' В';
+    $('chgFill').style.width=d.pct+'%'; $('chgPctTxt').textContent=d.pct+' %';
+  }
 
-  const ma=Math.abs(d.ma), scale=Math.max(d.setMa*1.25,ma*1.05,1);
-  $('chgCurBar').style.width=Math.min(100,ma*100/scale)+'%';
-  $('chgLim').textContent=d.pwm?('уставка '+d.setMa+' мА · зараз '+d.ma+' мА'):'⚠ керування недоступне';
+  // Коридор уставки — спільний із розрядом. У пробудженні «уставкою» служить
+  // стеля струму режиму: іншої там немає, і саме її регулятор тримає.
+  const ma=Math.abs(d.ma), setMa=wake?(d.wakeMa||0):d.setMa, dead=d.deadbandMa||30;
+  opBand('chg',ma,setMa,Math.max(0,setMa-dead),setMa+dead,Math.abs(ma-setMa)<=dead,run);
+  if(d.manualMa!==undefined){
+    var mi=$('chgMaInp');
+    if(mi&&document.activeElement!==mi) mi.value=d.manualMa?d.manualMa:'';
+    if(mi) mi.max=d.manMaxMa||1000;
+    chgMaPaint(d.manualMa|0);
+    var nn=$('chgMaNote');
+    if(nn) nn.innerHTML=(d.manualMa
+      ? ('Зараз <b>ручний</b> режим: '+d.manualMa+' мА (межі '+d.manMinMa+'…'+d.manMaxMa+' мА).')
+      : 'Зараз <b>автоматичний</b> профіль за відсотком заряду.')
+      + ' Дозаряд наприкінці ручне значення не скасовує: береться менше з двох.';
+  }
+  $('chgLim').textContent=d.pwm?(wake?('стеля '+(d.wakeMa||0)+' мА · зараз '+d.ma+' мА')
+                                     :('уставка '+d.setMa+' мА · зараз '+d.ma+' мА'))
+                               :'⚠ керування недоступне';
   $('chgLim').style.color=d.pwm?'var(--grn)':'var(--red)';
-  $('chgDutyBar').style.width=(d.pwm?(d.outMv*100/d.outMaxMv):100)+'%';
-  $('chgDutyTxt').textContent=d.pwm?((d.outMv/1000).toFixed(2)+' В (стеля '+(d.outMaxMv/1000).toFixed(1)+' В)'):'керування недоступне';
+  // Керування тепер — ШПАРУВАТІСТЬ силового ключа (через керуючий NPN), а не «цільова
+  // напруга DC/DC»: смужку заповнюємо відносно РОБОЧОЇ стелі dutyMax. У
+  // пробудженні стеля інша — стеля СЕАНСУ (dutyCap), і саме вона тримає напругу.
+  const dcap = wake ? (d.dutyCap||d.dutyMax||1) : (d.dutyMax||1);
+  $('chgDutyBar').style.width=(d.pwm?(d.duty*100/dcap):100)+'%';
+  $('chgDutyTxt').textContent=d.pwm
+    ?(d.dutyPct+'% ШІМ ('+d.duty+'/'+d.dutyFull+', стеля '+dcap+(wake?' — межа напруги':'')+')'
+      +' · пік '+d.peakMa+' мА з '+d.peakMaxMa+' (шунт '+(d.shuntMohm/1000).toFixed(2)+' Ом)')
+    :'керування недоступне';
 
-  disSet('chgMah',String(d.mah));
-  disSet('chgCca',String(d.ccaMah));
-  disSet('chgMa',String(d.ma));
-  disSet('chgW',String(d.watts));
-  disSet('chgT',String(d.tempC));
-  disSet('chgIca',String(d.ica));
-  $('chgIcaK').textContent='паливомір ICA · старт '+d.icaStart;
+  // Ті самі п'ять перших плиток, що в розряду. Три останні в пробудженні вже
+  // заповнені вище — там у них інші джерела.
+  opTileSet('chg','Mah', wake ? (d.mah+' / '+(d.wakeMahMax||0)) : String(d.mah));
+  opTileSet('chg','Ma',String(d.ma));
+  opTileSet('chg','W',String(d.watts));
+  // У пробудженні «фази» профілю немає — є сам режим, і так і підписано:
+  // порожня плитка в спільній сітці читалась би як «дані не дійшли».
+  opTileSet('chg','Phase', wake ? 'ПРОБУДЖЕННЯ' : (d.phaseText||'—'));
+  opTileSet('chg','Eta', wake
+    ? (d.wakeMaxS!==undefined ? etaFmt(Math.max(0,(d.wakeMaxS|0)-(d.elapsedS|0))) : '—')
+    : etaFmt(d.etaS));
+  if(!wake){
+    opTileSet('chg','Cnt',String(d.ccaMah));
+    opTileSet('chg','T',String(d.tempC));
+    opTileSet('chg','Ica',String(d.ica));
+    opTileLabel('chg','Ica','паливомір ICA · старт '+d.icaStart);
+  }
 
   const w=$('chgWarn');
   if(!d.pwm&&(run||d.state==='done')){w.style.display='block';
@@ -1615,7 +2256,18 @@ function chgShow(d){
 
   chgLast=d; chgLastAt=Date.now();
   $('chgEl').textContent=disFmtT(d.elapsedS);
-  chgSchedule(run?3000:30000);
+  psuAlertUpdate(d);
+  // Числа в описі режиму — з ВІДПОВІДІ пристрою: власна копія меж розійшлася б
+  // із settings.h на першій же правці, і опис почав би обіцяти не те, що робить
+  // прошивка.
+  if(d.wakeMv!==undefined){
+    const s=function(id,v){const e=$(id); if(e)e.textContent=v;};
+    s('wkMv',(d.wakeMv/1000).toFixed(2)); s('wkMa',String(d.wakeMa));
+    s('wkMah',String(d.wakeMahMax));      s('wkSec',String(d.wakeMaxS));
+  }
+  // Несправне живлення опитуємо частіше за звичайний спокій: користувач саме
+  // зараз щось перемикає в блоці й чекає, коли смуга зникне.
+  chgSchedule(run?3000:((d.psuSensed&&!d.psuOk)?3000:30000));
   if(!run&&chgWasRun){chgWasRun=false;}
   if(run)chgWasRun=true;
 }
@@ -1653,17 +2305,206 @@ chgTargetPaint();
 async function chgStart(){
   if(!connected){toast('Підключіться');return;}
   const t=chgTargetPct();
-  if(!confirm('🔋 Почати заряд через DC/DC до '+t+'%?\n\nСтрум керується за профілем, масштабованим під цю ціль. '
+  if(!confirm('🔋 Почати заряд до '+t+'%?\n\nСтрум керується за профілем, масштабованим під цю ціль. '
             +'Переконайтесь, що керування ПЕРЕВІРЕНЕ мультиметром (enable=LOW безпечно).\n'
             +'Не лишайте пристрій без нагляду.'))return;
   await ensureAuth();
   const r=await cmd('CHARGE '+t,15000);
   if(r&&r.ok){toast('✅ Заряд почато');chgShow(r.charge);} else toast('Помилка: '+((r&&r.err)||''),'err');
 }
+// Ручний струм заряду; 0 — автомат. Межі приходять із пристрою (manMinMa/
+// manMaxMa), власної копії діапазону тут немає навмисно.
+async function chgSetMv(mv){
+  if(!connected){toast('Підключіться');return;}
+  mv=mv|0; if(mv<0)mv=0;
+  await ensureAuth();
+  const r=await cmd('CHARGE MV='+mv,10000);
+  if(r&&r.ok){
+    const got=r.manualMv|0;
+    $('chgMvInp').value=got?got:'';
+    if(got&&r.asked&&got!==(r.asked|0))toast('Ціль затиснуто в межі: '+got+' мВ');
+    else toast(got?('✅ Ціль '+(got/1000).toFixed(2)+' В'):'✅ Ціль за відсотком');
+    chgMvPaint(got);
+    if(r.charge)chgShow(r.charge);
+  } else toast('Помилка: '+((r&&r.err)||''),'err');
+}
+function chgMvPaint(cur){
+  document.querySelectorAll('#chgMvRow .tgtb').forEach(b=>{
+    const t=b.textContent.trim();
+    const v=(t==='За %')?0:Math.round(parseFloat(t)*1000);
+    b.classList.toggle('on', !isNaN(v)&&v===(cur|0));
+  });
+}
+async function chgSetProfile(p){
+  if(!connected){toast('Підключіться');return;}
+  await ensureAuth();
+  const r=await cmd('CHARGE '+((p|0)?'SMART':'AUTO'),10000);
+  if(r&&r.ok){ toast('✅ Профіль: '+((r.profile|0)?'розумний CC/CV':'заводський'));
+               if(r.charge)chgShow(r.charge); }
+  else toast('Помилка: '+((r&&r.err)||''),'err');
+}
+async function disSetMa(ma){
+  if(!connected){toast('Підключіться');return;}
+  ma=ma|0; if(ma<0)ma=0;
+  await ensureAuth();
+  const r=await cmd('DISCHARGE MA='+ma,10000);
+  if(r&&r.ok){
+    const got=r.manualMa|0;
+    $('disMaInp').value=got?got:'';
+    toast(got?('✅ Струм '+got+' мА'):'✅ Автоматична лінійка');
+    disMaPaint(got);
+    if(r.discharge)disShow(r.discharge);
+  } else toast('Помилка: '+((r&&r.err)||''),'err');
+}
+function disMaPaint(cur){
+  document.querySelectorAll('#disMaRow .tgtb').forEach(b=>{
+    const t=b.textContent.trim();
+    const v=(t==='Авто')?0:parseInt(t,10);
+    b.classList.toggle('on', !isNaN(v)&&v===(cur|0));
+  });
+}
+async function disSetProfile(p){
+  if(!connected){toast('Підключіться');return;}
+  await ensureAuth();
+  const r=await cmd('DISCHARGE '+((p|0)?'SMART':'AUTO'),10000);
+  if(r&&r.ok){ toast('✅ Профіль: '+((r.profile|0)?'розумний 0.2C':'заводський'));
+               if(r.discharge)disShow(r.discharge); }
+  else toast('Помилка: '+((r&&r.err)||''),'err');
+}
+// «Скільки ще лишилось». 0 = оцінити не можна.
+function etaFmt(s){
+  s=s|0;
+  if(!s) return '—';
+  if(s<60) return '<1 хв';
+  if(s<3600) return Math.round(s/60)+' хв';
+  return Math.floor(s/3600)+' год '+Math.round((s%3600)/60)+' хв';
+}
+async function chgSetMa(ma){
+  if(!connected){toast('Підключіться');return;}
+  ma=ma|0; if(ma<0)ma=0;
+  await ensureAuth();
+  const r=await cmd('CHARGE MA='+ma,10000);
+  if(r&&r.ok){
+    const got=r.manualMa|0;
+    $('chgMaInp').value=got?got:'';
+    if(got&&r.asked&&got!==(r.asked|0))toast('Уставку затиснуто в межі: '+got+' мА');
+    else toast(got?('✅ Струм '+got+' мА'):'✅ Автоматичний профіль');
+    chgMaPaint(got);
+    if(r.charge)chgShow(r.charge);
+  } else toast('Помилка: '+((r&&r.err)||''),'err');
+}
+function chgMaPaint(cur){
+  document.querySelectorAll('#chgMaRow .tgtb').forEach(function(b){
+    var t=b.textContent.trim(); var v=(t==='Авто')?0:parseInt(t,10);
+    b.classList.toggle('on', !isNaN(v)&&v===(cur|0));
+  });
+}
+// ═══════════ ТРИ ОПЕРАЦІЇ В ОДНОМУ ВІКНІ ══════════════════════════════════
+//  Заряд, розряд і пробудження ніколи не йдуть разом — прошивка їх взаємно
+//  блокує. Тому й вікно одне, а режим обирається списком. Поки операція ЙДЕ,
+//  режим задає залізо й список замкнений; щойно скінчилась — знову вільний.
+let opChgD=null, opDisD=null, opSnapped='';
+function opForcedMode(){
+  if(opDisD && opDisD.state==='run') return 'dis';
+  if(opChgD && opChgD.state==='run') return opChgD.wakeRun?'wake':'chg';
+  return '';
+}
+function opSummaryMode(){
+  if(opDisD && (opDisD.state==='done'||opDisD.state==='abort')) return 'dis';
+  if(opChgD && (opChgD.state==='done'||opChgD.state==='abort')) return opChgD.wake?'wake':'chg';
+  return '';
+}
+const OP_NOTE={
+  chg:'Керований заряд власним понижувачем до обраного відсотка.',
+  dis:'Приймальний контроль після перепайки: міряє реальну ємність нових банок.',
+  wake:'Коротко подати на клеми зарядну напругу, щоб зняти блокування контролера захисту.'
+};
+function opModeApply(){
+  var sel=$('opMode'); if(!sel) return;
+  var forced=opForcedMode();
+  var snap=forced||opSummaryMode();
+  if(snap && snap!==opSnapped) sel.value=snap;
+  opSnapped=snap;
+  if(forced) sel.value=forced;
+  sel.disabled=!!forced;
+  var m=sel.value;
+  var nb=$('opModeNote'); if(nb) nb.textContent=OP_NOTE[m]||'';
+  var bd=$('opBlkDis'); if(bd) bd.style.display=(m==='dis')?'':'none';
+  var bc=$('opBlkChg'); if(bc) bc.style.display=(m==='dis')?'none':'';
+  document.querySelectorAll('.chgonly').forEach(function(e){ e.style.display=(m==='chg')?'':'none'; });
+  var bw=$('opBlkWake'); if(bw) bw.style.display=(m==='wake')?'':'none';
+}
+
+// Закрити підсумок завершеної операції: на пристрої це робить будь-яка кнопка,
+// а тут такої дороги не було — панель назавжди лишалась у стані «завершено».
+async function chgDismiss(){
+  if(!connected){toast('Підключіться');return;}
+  const r=await cmd('CHARGE DISMISS',10000);
+  if(r&&r.ok)chgShow(r.charge);
+}
+async function disDismiss(){
+  if(!connected){toast('Підключіться');return;}
+  const r=await cmd('DISCHARGE DISMISS',10000);
+  if(r&&r.ok)disShow(r.discharge);
+}
+// Плашка «функція недоступна» + вимкнені дії. Порожній текст = усе гаразд.
+//
+//  ⚑ ПЛАШКА ЛИШАЄТЬСЯ, ВІКНО ЇЇ НЕ ЗАМІНЮЄ: вікно відповідає на питання
+//  «чому не працює» тоді, коли його ставлять, а плашка тримає відповідь на
+//  видноті потім.
+var chgUnavailSeen='';         // за яку саме причину вікно вже показували
+function chgSetUnavail(why){
+  var box=$('chgUnavail');
+  if(box){
+    box.textContent=why;
+    box.style.display=why?'':'none';
+    box.style.cursor=why?'pointer':'';
+    box.onclick=why?function(){ msgShow('⛔ Заряд недоступний', why); }:null;
+  }
+  ['btnChgStart','btnChgStop','btnChgWake'].forEach(function(id){
+    var b=$(id); if(b) b.disabled=!!why;
+  });
+  // Один раз на причину, а не на кожне опитування стану.
+  if(why!==chgUnavailSeen){
+    chgUnavailSeen=why;
+    if(why) msgShow('⛔ Заряд недоступний', why);
+  }
+}
+
+// Вікно повідомлення з «ОК». Одне на весь інтерфейс.
+function msgShow(head,text){
+  var w=$('msgWrap'); if(!w)return;
+  $('msgHead').textContent=head||'Повідомлення';
+  $('msgBody').textContent=text||'';
+  w.classList.add('on');
+  var ok=$('msgOk'); if(ok) ok.focus();
+}
+function msgClose(){ var w=$('msgWrap'); if(w) w.classList.remove('on'); }
+// Клік повз вікно — теж закриття. Названою функцією, а не умовою в onclick:
+// перевірка клієнтів читає розмітку й імені в такому виразі не бачить.
+function msgBackdrop(e){ if(e && e.target && e.target.id==='msgWrap') msgClose(); }
+// Esc закриває так само, як «ОК»: вікно без виходу з клавіатури — пастка.
+document.addEventListener('keydown',function(e){ if(e.key==='Escape') msgClose(); });
 async function chgStop(){
   if(!connected){toast('Підключіться');return;}
   const r=await cmd('CHARGE STOP',10000);
-  if(r&&r.ok){toast('⏹ Заряд зупинено');chgShow(r.charge);} else toast('Помилка','err');
+  if(r&&r.ok){toast('⏹ Зупинено');chgShow(r.charge);} else toast('Помилка','err');
+}
+// Примусове пробудження. Параметрів немає навмисно: усі межі задає settings.h,
+// і саме тому режим лишається безпечним — його не можна «трохи підкрутити».
+async function chgWake(){
+  if(!connected){toast('Підключіться');return;}
+  if(!confirm('🩺 Примусово розбудити пакет?\n\n'
+    +'Пристрій коротко подасть на клеми зарядну напругу, щоб зняти блокування контролера '
+    +'захисту, і зупиниться сам, щойно монітор відповість.\n\n'
+    +'Якщо пакет НЕ читається, режим працює без контролю температури — тому жорстко обмежений '
+    +'за струмом, часом і відданою ємністю. Якщо пакет читається, а на клемі нуль (спрацював '
+    +'захист), режим чекатиме напруги на клемі й додатково стежитиме за температурою.'
+    +'\n\nНе лишайте пристрій без нагляду.'))return;
+  await ensureAuth();
+  const r=await cmd('CHARGE WAKE',15000);
+  if(r&&r.ok){toast('🩺 Пробудження почато');chgShow(r.charge);}
+  else toast('Помилка: '+((r&&r.err)||''),'err');
 }
 
 // ============ ПРАВКИ ЕТАЛОНА ПІД ЦЕЙ ПАКЕТ ============
@@ -2067,6 +2908,10 @@ async function hxWrite(){
 
 // Синхронне прокручування + прив'язка обробників редактора
 window.addEventListener('DOMContentLoaded',function(){
+  // Плитки обох панелей — з ОДНІЄЇ таблиці, до першого опитування.
+  opTiles('dis'); opTileHead('dis','dis');
+  opModeApply();   // одразу привести вікно до обраного режиму
+  opTiles('chg'); opTileHead('chg','chg');
   const d=$('hxD'), a=$('hxAsc');
   if(d){
     d.addEventListener('scroll',function(){$('hxGut').scrollTop=d.scrollTop; a.scrollTop=d.scrollTop;});

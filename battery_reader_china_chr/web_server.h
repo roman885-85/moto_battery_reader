@@ -933,10 +933,14 @@ void handleDumpInfo2438() {
     json += ",\"emptyMv\":" + String(BATTERY_EMPTY_MV);
     json += ",\"fullMv\":"  + String(BATTERY_FULL_MV);
     json += ",\"scaleTxt\":\"" BATTERY_SCALE_TXT "\"";
-    // ⚑ Ім'я силового ключа теж віддає ПРИСТРІЙ. Клієнти тримали його
+    // ⚑ Ім'я силової частини теж віддає ПРИСТРІЙ. Клієнти тримали його
     //  рядком у себе («PNP B772M»), і після заміни на P-MOSFET усі троє
     //  почали називати чуже залізо. Тепер назва одна — з settings.h.
-    json += ",\"swName\":\"" CHARGE_SW_NAME "\"";
+    //  А з появою другої топології туди ж переїхав і ВЕСЬ опис: на платі
+    //  TL494 в клієнтському абзаці про дросель і шунт неправдою є кожне
+    //  слово, тож писати його в клієнті стало неможливо в принципі.
+    json += ",\"swName\":\"" CHARGE_STAGE_NAME "\"";
+    json += ",\"chgHwTxt\":\"" CHARGE_STAGE_TXT "\"";
     // ETM (DS2438[8..11], сек наробітку). Рація показує «дату першого користування»
     // як (свій поточний час − ETM) — перевірено діффом до/після калібрування.
     uint32_t etm = ((uint32_t)batteryDump2438[11] << 24) | ((uint32_t)batteryDump2438[10] << 16) |
@@ -2190,8 +2194,14 @@ const char *chargeStart(uint8_t targetPct) {
     //  виглядає це як несправність пакета, а не як забутий блок живлення.
     //  Міряємо саме зараз, на закритому ключі, — під струмом на шині живлення
     //  є просадка, і поріг довелося б розмазувати.
+    //  ⚑ ⚠️ ПРО «PSU_UNKNOWN» У ЦІЙ УМОВІ. Це не поблажка, а єдина чесна
+    //  відповідь там, де подільника немає: на платі TL494 його немає ніколи, у
+    //  збірці понижувача — доки CHARGE_PSU_PIN закоментований. Пропускати старт
+    //  при «не знаю» правильно саме тому, що інакше нова перевірка блокувала б
+    //  функцію, яка до неї працювала.
     uint8_t psu = chargePsuPoll();
     if (psu != PSU_OK && psu != PSU_UNKNOWN) {
+#ifdef CHARGE_PSU_PIN
         ledSet(LED_FAULT);
         // ⚑ ПОВІДОМЛЕННЯ МУСИТЬ ВЕСТИ ДО ВИХОДУ, а не лише називати біду.
         //  Контроль живлення — НОВИЙ вузол (подільник 68к/10к на GPIO39), і
@@ -2213,8 +2223,34 @@ const char *chargeStart(uint8_t targetPct) {
                  CHARGE_PSU_MAX_MV / 1000, (CHARGE_PSU_MAX_MV % 1000) / 100);
         Serial.printf("=== Charge NOSTART: %s ===\n", msg);
         return msg;
+#else
+        // Без подільника сюди не потрапити: chargePsuPoll() віддає PSU_UNKNOWN,
+        // а він умову не проходить. Гілка існує лише для того, щоб текст вище
+        // не посилався на пін, якого в цій збірці немає.
+        return "Живлення поза допуском";
+#endif
     }
 
+#if CHARGE_IS_TL494
+    // ── ПЛАТА TL494: ОБИДВА ЧИСЛА З ОДНОГО ЧИТАННЯ ───────────────────────
+    //  Свого подільника й шунта тут немає, тож «два різні джерела» вище
+    //  зводяться до одного: DS2438 усередині пакета дає і напругу, і струм, і
+    //  температуру за одну транзакцію. Порядок від цього не міняється —
+    //  спершу переконатись, що монітор говорить, і лише потім щось вирішувати.
+    uint16_t mv = 0; int16_t ma = 0, t = 0;
+    if (!dischargeSample(&mv, &ma, &t)) {
+        chargeOff();
+        return "DS2438 не читається — заряд наосліп заборонено (без температури "
+               "пакет можна перегріти). Спершу домогтися читання: сторінка "
+               "стану скаже, чого бракує — підтяжки 4.7к, лінії даних чи enable";
+    }
+    // Показання одразу віддаємо в спільний шар: далі і старт, і опитування
+    // читають напругу через ті самі chargePackMv()/chargeMeasureMa(), що й на
+    // понижувачі. Двох шляхів до одного числа не заводимо.
+    chargeFeedPackReading(mv, ma);
+    uint16_t maIdle = 0;         // шунта немає — «струм на закритому ключі» не питання
+    uint16_t dummyMv = mv;       // на цій платі клема й монітор — це одне й те саме
+#else
     uint16_t mv = chargePackMv();
     uint16_t mvPeak; uint16_t maIdle = chargeMeasureMa(&mvPeak);
 
@@ -2225,6 +2261,7 @@ const char *chargeStart(uint8_t targetPct) {
                "пакет можна перегріти). Спершу домогтися читання: сторінка "
                "стану скаже, чого бракує — підтяжки 4.7к, лінії даних чи enable";
     }
+#endif
     // Правдоподібність власного вимірювального кола: заряджати, не бачачи
     // напруги, не можна.
     //
@@ -2238,6 +2275,25 @@ const char *chargeStart(uint8_t targetPct) {
     //  імпульс і подивитись, чи з'явиться напруга. Це й робить пробудження.
     //  Тому тут не «перевірте пін», а конкретні числа й шлях далі.
     if (!chargeRailAlive(mv)) {
+#if CHARGE_IS_TL494
+        // ⚑ ТУТ ЦЕ ІНШЕ ПИТАННЯ, І ВІДПОВІДЬ НА НЬОГО ІНША. На понижувачі
+        //  нижче цього порога опинявся НАШ подільник, тобто мовчала КЛЕМА, а
+        //  монітор при цьому говорив — і різниця між двома числами й була
+        //  діагнозом. На цій платі число одне: його дає сам монітор. Отже
+        //  низька напруга тут означає не «клеми розімкнуті», а те, що пакет
+        //  справді порожній до небезпечного. Радити пробудження було б
+        //  подвійною неправдою: воно і не по адресі, і на цьому залізі його
+        //  немає взагалі.
+        static char msg[220];
+        snprintf(msg, sizeof(msg),
+                 "Монітор усередині пакета показує %u мВ — це нижче за половину "
+                 "порожнього (%d мВ). Такий пакет заряджати звичайним струмом "
+                 "небезпечно: спершу з'ясуйте, чи не глибокий це розряд і чи "
+                 "цілі банки.",
+                 mv, (int)(BATTERY_EMPTY_MV / 2));
+        Serial.printf("=== Charge NOSTART: монітор %u мВ — глибокий розряд ===\n", mv);
+        return msg;
+#else
         static char msg[260];
         snprintf(msg, sizeof(msg),
                  "На клемі %u мВ, а монітор УСЕРЕДИНІ пакета бачить %u мВ. Пакет "
@@ -2250,6 +2306,7 @@ const char *chargeStart(uint8_t targetPct) {
         Serial.printf("=== Charge NOSTART: клема %u мВ, чип %u мВ — захист пакета "
                       "або обрив VSENSE ===\n", mv, dummyMv);
         return msg;
+#endif
     }
     if (maIdle > CHARGE_DEADBAND_MA)
         return "На закритому ключі шунт бачить струм — перевірте ключ (можливо, пробитий MOSFET)";
@@ -2274,7 +2331,9 @@ const char *chargeStart(uint8_t targetPct) {
     // Паспортна ємність САМОГО пакета — з чипа. Розумний профіль рахує від неї
     // струм у частках C; 0 (чипа не читали) означає «беремо номінал».
     chargeSetRatedMah((uint16_t)(hasDump ? impresRatedFromDump(batteryDump) : 0));
+#if CHARGE_IS_BUCK
     (void)ma;                        // струм DS2438 тут не потрібен: міряємо своїм шунтом
+#endif                               // на платі TL494 він, навпаки, ЄДИНИЙ — його вже згодовано
 
     // ⚑ СТАРТ ІЗ РОЗРАХОВАНОЇ ТОЧКИ НУЛЬОВОГО СТРУМУ, а не з нуля.
     //  Шлях від нуля до робочої точки — сотні відліків ШІМ, тобто хвилини
@@ -2306,12 +2365,23 @@ const char *chargeStart(uint8_t targetPct) {
     // він перекриє сторінку заряду (докладніше — коментар там).
     dischargeDismiss();                    // не діє, якщо розряд справді йде
     chargeMarkDirty(2);
+#if CHARGE_IS_TL494
+    // ⚑ ПІДПИС ОДИНИЦЬ — ЧЕСНИЙ. Друкувати «duty 0 з 8600 (стеля 85 %)» тут
+    //  означало б назвати мілівольти відліками ШІМ і приписати платі відсоток,
+    //  якого в неї немає.
+    Serial.printf("\n=== Charge started: %u mV (%u%%) -> ціль %u mV (%u%%), setpoint %u mA, "
+                  "старт з %u мВ виходу (стеля %u мВ, крок %d мВ)%s ===\n",
+                  mv, g_chg.lastPct, targetMv, targetPct, g_chg.setMa,
+                  g_chg.duty, (unsigned)CHARGE_DUTY_MAX, (int)CHARGE_TL_STEP_MV,
+                  chargePwmOk() ? "" : ", PWM UNAVAILABLE");
+#else
     Serial.printf("\n=== Charge started: %u mV (%u%%) -> ціль %u mV (%u%%), setpoint %u mA, "
                   "старт duty %u з %u (стеля %u = %d%%)%s ===\n",
                   mv, g_chg.lastPct, targetMv, targetPct, g_chg.setMa,
                   g_chg.duty, (unsigned)CHARGE_DUTY_FULL,
                   (unsigned)CHARGE_DUTY_MAX,
                   (int)CHARGE_DUTY_MAX_PCT, chargePwmOk() ? "" : ", PWM UNAVAILABLE");
+#endif
     return nullptr;
     }();
 
@@ -2561,11 +2631,179 @@ inline void chargeWakeTask() {
 }
 
 // Викликати часто з loop(). Реальна робота — раз на CHARGE_POLL_MS.
+#if CHARGE_IS_TL494
+// ═══ ОПИТУВАННЯ ЗАРЯДУ НА ПЛАТІ TL494 ════════════════════════════════════
+//  ⚑ ЧОМУ ЦЕ ОКРЕМА ФУНКЦІЯ, А НЕ ГІЛКИ ВСЕРЕДИНІ chargeTask(). Штатний
+//  прохід понижувача складається з п'яти кроків, і ЧОТИРИ з них тут не
+//  існують фізично: вимір струму власним шунтом, коротке закриття ключа заради
+//  чесної напруги, опитування +14 В і свідок насичення клеми. Розставити по
+//  них вісім #if означало б залишити функцію, яку неможливо прочитати цілком
+//  для жодної з двох плат — а саме такий код у цьому проєкті вже двічі ховав
+//  дефекти. Спільне (межі, відсічки, завершення, журнал) лишається спільним:
+//  його рахують ті самі функції з charge.h, які ганяє хостовий тест.
+//
+//  ЩО ТУТ НАСПРАВДІ ВІДБУВАЄТЬСЯ. Одне читання DS2438 дає ОДРАЗУ напругу,
+//  струм і температуру — той самий вимір, яким користується розряд. Тому:
+//    • читаємо КОЖНЕ опитування, а не раз на CHARGE_TEMP_EVERY_N: тут це не
+//      «додаткова» транзакція заради температури, а єдине джерело зворотного
+//      зв'язку, без якого регулятор сліпий;
+//    • ключ НЕ закриваємо: падіння на дротах вимір не спотворює, бо міряє його
+//      сам пакет — усередині, за своїми клемами;
+//    • темп задає 1-Wire: сотні мілісекунд на транзакцію. Саме тому крок
+//      регулятора тут фіксований і маленький (CHARGE_TL_STEP_MV).
+inline void chargeTaskTl() {
+    unsigned long now = millis();
+
+    if ((now - g_chg.startMs) / 60000UL >= (unsigned long)CHARGE_MAX_MIN) {
+        chargeStop(CHGR_TIMEOUT);
+        Serial.println("=== Charge ABORT: timeout ===");
+        return;
+    }
+    chargeWatchdogFeed();
+    if (now - g_chg.lastPollMs < CHARGE_POLL_MS) return;
+
+    unsigned long dtMs = now - g_chg.lastPollMs;
+    g_chg.lastPollMs = now;
+
+    // Сторож (програмна половина) — той самий принцип і той самий поріг, що й
+    // у понижувача: довга затримка = вихід побув під напругою без нагляду.
+    if (dtMs > CHARGE_STALL_MS) {
+        chargeStop(CHGR_STALL);
+        Serial.printf("=== Charge ABORT: main loop stalled for %lu ms ===\n", dtMs);
+        return;
+    }
+    g_chg.elapsedS = (now - g_chg.startMs) / 1000UL;
+
+    // Інтеграл ємності за інтервал, що ЩОЙНО минув — на чинному (до цього
+    // опитування) струмі, а не на щойно виміряному.
+    g_chg.mahX1000 += ((uint32_t)(g_chg.lastMa < 0 ? -g_chg.lastMa : g_chg.lastMa) * dtMs) / 3600UL;
+
+    // ── крок 1: ЄДИНЕ ЧИТАННЯ — напруга, струм і температура ──────────────
+    pmStep(PM_STEP_DS2438);
+    uint16_t mv = 0; int16_t ma = 0, t = 0;
+    if (!dischargeSample(&mv, &ma, &t)) {
+        // ⚑ ТУТ МОВЧАННЯ МОНІТОРА — ЦЕ ВТРАТА ЗВОРОТНОГО ЗВ'ЯЗКУ, А НЕ ЛИШЕ
+        //  ВТРАТА ТЕМПЕРАТУРИ. На понижувачі регулятор пережив би кілька
+        //  німих проходів, ведучи струм за власним шунтом; тут вести його
+        //  нічим. Тому уставку ОДРАЗУ опускаємо в нуль (виходу немає) і лише
+        //  потім рахуємо витримку: якщо шина оживе, розгін почнеться заново з
+        //  soft-start, а не з чужої напруги.
+        chargeSetDuty(0);
+        g_chg.duty = 0;
+        // ⚑ І ЧИННИЙ СТРУМ — ТЕЖ У НУЛЬ. Інтеграл ємності на наступному
+        //  проході множиться саме на нього (рядок вище: mahX1000 += lastMa ×
+        //  dt), а виходу вже немає. Лишити старе число означало б домальовувати
+        //  мА·год, яких пакет не отримував, — і то саме тоді, коли шина
+        //  мовчить і перевірити нічим.
+        g_chg.lastMa = 0;
+        if (++g_chg.readFails >= CHARGE_MAX_READ_FAILS) {
+            chargeStop(CHGR_NOREAD);
+            Serial.println("=== Charge ABORT: DS2438 unreadable ===");
+        }
+        return;
+    }
+    g_chg.readFails = 0;
+    g_chg.polls++;
+    chargeFeedPackReading(mv, ma);
+    g_chg.lastCca = impresCca(batteryDump2438);
+    g_chg.lastIca = batteryDump2438[12];
+    // На цій платі клема й монітор — це одне й те саме число. Записуємо його
+    // й у chipMv теж: клієнти й екрани показують саме його, і порожнє поле
+    // читалось би як «монітор мовчить».
+    g_chg.chipMv = mv;
+
+    // ── крок 2: уставка й регулятор ───────────────────────────────────────
+    pmStep(PM_STEP_REGULATOR);
+    int pct = impresPercentFromMv(mv);
+    g_chg.lastPct = (uint8_t)pct;
+    // Струм беремо через спільний шар (він же випрямляє від'ємне показання в
+    // нуль), а не з ma напряму: інакше з'явився б другий шлях до того самого
+    // числа — з іншим правилом про знак.
+    uint16_t avgMa = chargeMeasureMa(nullptr);
+    g_chg.setMa = chargeSetpointFor(pct, g_chg.targetPct, mv, g_chg.targetMv,
+                                    t, true, &g_chg.inTaper, &g_chg.phase);
+    g_chg.duty  = chargeNextDuty(g_chg.duty, (int32_t)avgMa, g_chg.setMa);
+    chargeSetDuty(g_chg.duty);
+
+    // ── «ВИХІД У СТЕЛІ, А СТРУМУ НЕМАЄ» ───────────────────────────────────
+    //  Та сама відсічка, що й у понижувача, і рахує вона те саме: регулятор
+    //  уперся у верх шкали, а пакет струму не бере. Причини тут інші (не
+    //  ключ, а плата, контакти або сам пакет), тож інша й підказка — але
+    //  чекати шість годин до відсічки за часом однаково не можна.
+    if (chargeNoDriveTrip(g_chg.duty, (int32_t)avgMa, g_chg.setMa, &g_chg.lowDrivePolls)) {
+        chargeStop(CHGR_NODRIVE);
+        ledSet(LED_FAULT);
+        Serial.printf("=== Charge ABORT: уставка вже %u мВ (стеля %u), а струм лише "
+                      "%u мА з %u мА. Перевірте: живлення плати TL494, enable "
+                      "(GPIO%d), напругу керування (GPIO%d) і контакт клем ===\n",
+                      g_chg.duty, (unsigned)CHARGE_DUTY_MAX, avgMa, g_chg.setMa,
+                      (int)CHARGE_TL_EN_PIN, (int)CHARGE_TL_CTRL_PIN);
+        return;
+    }
+
+    g_chg.lastMv = mv;
+    g_chg.lastMa = (int16_t)avgMa;
+    g_chg.peakMa = 0;                // вершини пульсацій тут не міряє ніхто
+    g_chg.lastTempC10 = t;
+
+    pmStep(PM_STEP_REPORT);
+    pmNote(PM_MODE_CHARGE, g_chg.polls, g_chg.duty, g_chg.lastMa, mv);
+    Serial.printf("charge: %u mV (%d%%), %d mA (set %u, вихід %u мВ зі %u), "
+                  "%.1f W, %.1f C, %lu mAh (CCA %lu), ICA %u, %lus, "
+                  "купа %lu/%lu, стек %lu\n",
+                  mv, pct, g_chg.lastMa, g_chg.setMa,
+                  g_chg.duty, (unsigned)CHARGE_DUTY_MAX,
+                  chargeWattsX10(mv, g_chg.lastMa) / 10.0f, t / 10.0f,
+                  (unsigned long)chargeMah(), (unsigned long)chargeCcaMah(),
+                  g_chg.lastIca, (unsigned long)g_chg.elapsedS,
+                  (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap(),
+                  (unsigned long)uxTaskGetStackHighWaterMark(NULL));
+    chargeMarkDirty(1);
+    ledSet(g_chg.inTaper ? LED_CHARGE_TAPER : LED_CHARGE);
+
+    // ── крок 3: ЗАВЕРШЕННЯ Й АВАРІЇ ───────────────────────────────────────
+    //  Той самий набір і той самий порядок, що й у понижувача, за вирахуванням
+    //  двох перевірок, яким тут нема на чому стояти: «пакета немає» й «пакет
+    //  закрився сам» читались через насичення НАШОГО подільника. Пакет, що
+    //  від'єднався, видно інакше — DS2438 перестає читатись, і це вже
+    //  оброблено вище (CHGR_NOREAD).
+    if (mv >= (uint32_t)g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV) {
+        chargeStop(CHGR_HARD_MAX);
+        Serial.printf("=== Charge ABORT: above hard maximum (%u мВ >= %u мВ) ===\n",
+                      mv, (unsigned)(g_chg.targetMv + CHARGE_HARD_MAX_HEADROOM_MV));
+    } else if (t >= CHARGE_MAX_TEMP_C * 10) {
+        chargeStop(CHGR_TEMP);
+        Serial.println("=== Charge ABORT: overheat ===");
+    } else if (chargeProfile() == CHG_PROF_SMART) {
+        // Розумний профіль завершується за СТРУМОМ (докладніше — коментар у
+        // штатному chargeTask()).
+        ChargeSmartOut so; so.phase = g_chg.phase; so.setMa = g_chg.setMa;
+        uint16_t endMa = chargeSmartEndMa(chargeRatedMah());
+        if (chargeSmartFull(so, (int32_t)g_chg.lastMa, endMa, &g_chg.fullPolls)) {
+            chargeStop(CHGR_TARGET);
+            Serial.printf("=== Charge DONE (CC/CV): струм %d мА впав до порога %u мА "
+                          "на %u мВ (ціль %u). %lu mAh за %lus ===\n",
+                          g_chg.lastMa, endMa, mv, g_chg.targetMv,
+                          (unsigned long)chargeMah(), (unsigned long)g_chg.elapsedS);
+        }
+    } else if (mv >= g_chg.targetMv) {
+        chargeStop(CHGR_TARGET);
+        Serial.printf("=== Charge DONE: %lu mAh in %lus ===\n",
+                      (unsigned long)chargeMah(), (unsigned long)g_chg.elapsedS);
+    }
+}
+#endif  // CHARGE_IS_TL494
+
 inline void chargeTask() {
     if (g_chg.state != CHG_RUN) return;
     // Пробудження — окрема машина з іншим кроком, іншим регульованим значенням
     // і іншими межами. Штатний шлях нижче лишається незмінним до байта.
     if (g_chg.mode == CHG_MODE_WAKE) { chargeWakeTask(); return; }
+    // Плата TL494 — так само окрема машина, і з тієї ж причини: інші джерела
+    // вимірів, інший темп, інший набір відсічок (див. chargeTaskTl() вище).
+#if CHARGE_IS_TL494
+    chargeTaskTl();
+#else
     unsigned long now = millis();
 
     if ((now - g_chg.startMs) / 60000UL >= (unsigned long)CHARGE_MAX_MIN) {
@@ -2942,6 +3180,7 @@ inline void chargeTask() {
                       g_chg.chipMv, g_chg.targetMv, mv,
                       (unsigned long)chargeMah(), (unsigned long)g_chg.elapsedS);
     }
+#endif  // CHARGE_IS_TL494 / буку — тіло вище
 }
 
 // ── КОНТРОЛЬ ЖИВЛЕННЯ У СПОКОЇ ─────────────────────────────────────────────

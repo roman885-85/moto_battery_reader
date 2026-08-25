@@ -27,6 +27,9 @@
 #include "battery_reader.h"
 #include "templates.h"    // BATTERY_TEMPLATES/COUNT — дії «Новий АКБ»
 #include "operations.h"   // ЄДИНИЙ каталог операцій (порядок/назви/небезпека)
+#include "battbar.h"      // коли шкалу батареї треба перемальовувати, а коли ні
+#include "combo.h"        // приховані жести (чиста логіка, спільна з display.h)
+#include "textwrap.h"     // перенос по словах: текст не вилазить за плашку
 #include "discharge.h"    // стан керованого розряду для сторінки моніторингу
 #include "charge.h"       // стан керованого заряду для сторінки моніторингу
 
@@ -106,6 +109,38 @@ extern bool hasSN2433;
 // бібліотеки Adafruit (вона знає стандартні панелі 240x240/240x320/135x240/
 // 240x280 у свіжих версіях), і підклас із доступом до protected-полів навіть
 // не компілюється — стандартний випадок максимально безпечний.
+// ── CS: пін, якого на модулі може не бути ──────────────────────────────────
+//  Модулі ST7789 240x240 (GMT130 і подібні 1.3"/1.54") виводять лише
+//  GND/VCC/SCL/SDA/RES/DC/BLK — CS на платі припаяний до землі, тобто
+//  контролер вибраний завжди. Adafruit_SPITFT це штатно підтримує: -1 означає
+//  «CS немає», і бібліотека просто не смикає пін (ані pinMode, ані рівні в
+//  startWrite()). Тому тут не заглушка, а документований режим драйвера.
+//
+//  ⚠️ Наслідок, який варто пам'ятати: шину SPI більше не можна ділити. Поки
+//  дисплей на ній єдиний — а в цьому проєкті так і є, — це нічого не змінює.
+#ifdef DISPLAY_CS_PIN
+  #define ST7789_CS_ARG (DISPLAY_CS_PIN)
+#else
+  #define ST7789_CS_ARG (-1)
+#endif
+
+// ── НОМЕР РЕЖИМУ SPI -> КОНСТАНТА ПЛАТФОРМИ ────────────────────────────────
+//  У settings.h режим задається числом 0..3 і НАВМИСНО не константою: макроси
+//  SPI_MODE0..SPI_MODE3 на різних платформах мають різні значення (на AVR —
+//  0x00/0x04/0x08/0x0C, на ESP32 — 0..3), тож «просто число» туди підставляти
+//  не можна. Перетворення — тут, де вже підключено SPI.h разом з Adafruit.
+#if   (DISPLAY_ST7789_SPI_MODE) == 3
+  #define ST7789_SPI_MODE_CONST SPI_MODE3
+#elif (DISPLAY_ST7789_SPI_MODE) == 2
+  #define ST7789_SPI_MODE_CONST SPI_MODE2
+#elif (DISPLAY_ST7789_SPI_MODE) == 1
+  #define ST7789_SPI_MODE_CONST SPI_MODE1
+#elif (DISPLAY_ST7789_SPI_MODE) == 0
+  #define ST7789_SPI_MODE_CONST SPI_MODE0
+#else
+  #error "DISPLAY_ST7789_SPI_MODE має бути 0, 1, 2 або 3."
+#endif
+
 #if defined(DISPLAY_ST7789_MANUAL_OFFSET) || defined(DISPLAY_ST7789_XOFF) || defined(DISPLAY_ST7789_YOFF)
   #define ST7789_USE_OFFSET_CLASS 1
   class ST7789Panel : public Adafruit_ST7789 {
@@ -117,9 +152,9 @@ extern bool hasSN2433;
       setRotation(rotation);             // перерахувати _xstart/_ystart
     }
   };
-  static ST7789Panel tft = ST7789Panel(DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+  static ST7789Panel tft = ST7789Panel(ST7789_CS_ARG, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
 #else
-  static Adafruit_ST7789 tft = Adafruit_ST7789(DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
+  static Adafruit_ST7789 tft = Adafruit_ST7789(ST7789_CS_ARG, DISPLAY_DC_PIN, DISPLAY_RST_PIN);
 #endif
 static U8G2_FOR_ADAFRUIT_GFX u8g2Fonts;
 
@@ -153,22 +188,39 @@ inline uint16_t TC(uint16_t c) { return g_errTint ? redFilter(c) : c; }
 #define C_GREEN   TC(0x07E6)     // добрий заряд
 #define C_ORANGE  TC(0xFC60)     // середній
 #define C_RED     TC(0xF800)     // низький / небезпека
+// Темна фаза блимання аварійної плашки. Не чорний: плашка мусить лишатись
+// ПЛАШКОЮ в обидві фази, інакше замість блимання виходить зникнення.
+#define C_DARKRED TC(0x6000)     // темно-червоний — друга фаза блимання
 
 // -------------------- Шрифти, адаптивно за шириною --------------------
 // ВАЖЛИВО: беремо ЛИШЕ ті кириличні шрифти, що зашиті в U8g2_for_Adafruit_GFX
 // (це підмножина u8g2: 4x6/5x8/6x12/7x13/8x13/9x15/10x20 *_t_cyrillic).
 // Немає 9x18_t_cyrillic і fub* — тому великий % малюємо вбудованим шрифтом GFX.
+// ⚑ ШИРИНА КОМІРКИ ЙДЕ ПОРУЧ ІЗ ІМЕНЕМ ШРИФТА, А НЕ ОКРЕМО. Усі ці шрифти
+//  МОНОШИРИННІ, і число в їхній назві — це і є ширина гліфа в пікселях. Саме
+//  вона дозволяє порахувати, скільки символів улізе в плашку, ДО того як
+//  малювати (див. textwrap.h). Тримати ці два числа в різних місцях означало б
+//  одного дня перемкнути шрифт і забути про ширину — і текст знову поповз би
+//  за межі.
 #if TFT_W < 200                                   // вузькі панелі (135/170/172)
   #define FONT_HDR    u8g2_font_7x13_t_cyrillic
   #define FONT_BODY   u8g2_font_6x12_t_cyrillic
   #define FONT_SMALL  u8g2_font_5x8_t_cyrillic
   #define FONT_MODEL  u8g2_font_8x13_t_cyrillic
+  #define FONT_HDR_W    7
+  #define FONT_BODY_W   6
+  #define FONT_SMALL_W  5
+  #define FONT_MODEL_W  8
   #define BIG_TSIZE   3                           // масштаб вбудованого шрифту GFX
 #else                                             // 240-піксельні панелі
   #define FONT_HDR    u8g2_font_10x20_t_cyrillic
   #define FONT_BODY   u8g2_font_9x15_t_cyrillic
   #define FONT_SMALL  u8g2_font_6x12_t_cyrillic
   #define FONT_MODEL  u8g2_font_10x20_t_cyrillic
+  #define FONT_HDR_W   10
+  #define FONT_BODY_W   9
+  #define FONT_SMALL_W  6
+  #define FONT_MODEL_W 10
   #define BIG_TSIZE   4
 #endif
 
@@ -192,9 +244,14 @@ inline uint16_t TC(uint16_t c) { return g_errTint ? redFilter(c) : c; }
 
 static char g_displayStatus[36] = "ЗАПУСК";
 static int  g_displayPage = 0;
+// Стан прихованих жестів і повноекранного повідомлення — тут, бо на них
+// дивиться і обробник кнопок, і рендер.
+static ComboHold  g_hold;
+static ComboFlash g_flash;
+inline bool displayFlashActive() { return comboFlashActive(g_flash, millis()); }
 static bool g_readRequested = false;
-static int  g_actionSel = 0;
-static int  g_actionRequested = -1;
+static int  g_menuSel = 1;                 // курсор у списку (0 — «‹ Показання»)
+static int  g_actionRequested = -1;        // -1 нема; інакше — КОД операції для .ino
 
 // Екранний Майстер відновлення (ті самі глобали, що й у моно-драйвері):
 // рендер читає, wizDeviceRefresh() (recovery.h) заповнює, .ino оркеструє.
@@ -211,7 +268,6 @@ static char g_wizNext[48] = "";
 // displayAnimTick() «дихає» яскравістю всього заповнення, але НЕ чіпає рамку
 // цифр (g_pct*) — тож великий відсоток не блимає під час пульсації.
 static uint8_t g_animPhase = 0;
-static int g_animPrevX = -1;                 // (сумісність; більше не використ.)
 static int g_battX = 0, g_battY = 0, g_battW = 0, g_battH = 0;
 static int g_pctTx = 0, g_pctTy = 0, g_pctTw = 0, g_pctTh = 0;   // рамка цифр %
 
@@ -280,8 +336,12 @@ inline void fixRecordChecksum(uint8_t *buf, int start, int len) {
 inline int batteryPercent(const char **src) {
     if (!hasDump2438) { *src = "--"; return -1; }
     long vmv = (long)(((uint16_t)batteryDump2438[4] << 8) | batteryDump2438[3]) * 10;
-    int vpct = (int)((vmv - BATTERY_EMPTY_MV) * 100 / (BATTERY_FULL_MV - BATTERY_EMPTY_MV));
-    if (vpct < 0) vpct = 0; if (vpct > 100) vpct = 100;
+    // ⚑ ДРУГОЇ КОПІЇ ШКАЛИ ТУТ БІЛЬШЕ НЕМАЄ. Раніше відсоток рахувався прямо
+    //  тут власною лінійною формулою — тобто шкала жила у двох місцях одразу.
+    //  Поки обидві були лінійними, вони випадково збігались; щойно головна
+    //  стала табличною кривою (soc.h), екран показував би зовсім інше число,
+    //  ніж веб і USB-клієнт. Рахуємо тією самою функцією, що й усі.
+    int vpct = impresPercentFromMv((int)vmv);
     uint8_t config = batteryDump2438[0];
     if (config & 0x01) {
         // Шкала ICA АПАРАТНА: одиниця = 0.4882 мВ·год / Rsense, а не «255 =
@@ -366,12 +426,6 @@ inline bool decodeCapacity(int *capPct, int *wearPct) {
 
 // Заводська таблиця здоров'я моделі (запис @0x129) — для сторінки аналізу.
 // Це НЕ стан конкретного АКБ, а константа моделі; показуємо як довідку.
-inline bool decodeFactoryHealthTable(const uint8_t **data, int *len) {
-    if (!hasDump || !impresRecordOk(batteryDump, IMPRES_FACTORY_REC)) return false;
-    *data = batteryDump + IMPRES_FACTORY_REC + 1;
-    *len  = batteryDump[IMPRES_FACTORY_REC] - 2;
-    return true;
-}
 
 // Евристика справжності/цілісності ПРОШИВКИ (модельно-залежна).
 inline bool batteryGenuine(const char **reason) {
@@ -406,8 +460,9 @@ inline bool batteryGenuine(const char **reason) {
     return true;
 }
 
-// Склад і порядок операцій задає operations.h (спільний для всіх поверхонь).
-inline int numActions() { return opCount(); }
+// ⚑ Тут була numActions() = opCount() — довжина КІЛЬЦЯ дій, якого більше
+// немає. Довжину СПИСКУ рахує menuCount() (operations.h), і вона більша за
+// opCount(): у списку є ще й переходи на службові сторінки.
 
 // ===================== Примітиви малювання (кольорові) =====================
 
@@ -429,6 +484,37 @@ inline void tPut(int x, int y, const char *s) {
 }
 inline int  tWidth(const char *s) { return u8g2Fonts.getUTF8Width(s); }
 
+// Текст ПО ЦЕНТРУ ділянки [x0 .. x0+w) з ПЕРЕНОСОМ по словах. Шрифт і кольори
+// має виставити викликач (tSet) — сюди приходить лише геометрія.
+//
+//  ⚑ Навіщо власний центрувальник, коли поруч є tWidth(). Бо центрування
+//  саме по собі нічого не гарантує: (TFT_W - ширина)/2 при задовгому рядку дає
+//  ВІД'ЄМНИЙ x, і текст їде за лівий край, а хвостом — за правий. Саме це й
+//  бачив власник у банері помилки живлення. Тут ширина спершу обмежується, а
+//  вже потім центрується те, що точно влізе.
+//
+// cellW — ширина гліфа виставленого шрифту (FONT_*_W). Повертає y ПІСЛЯ
+// останнього намальованого рядка.
+inline int tPutWrapCenter(int x0, int w, int y, int lineH,
+                          const char *s, int cellW, int maxLines) {
+    if (!s || cellW <= 0 || w <= 0) return y;
+    int maxG = w / cellW;
+    if (maxG < 1) maxG = 1;
+    TxtLine ln[4];
+    if (maxLines > 4) maxLines = 4;
+    int n = txtWrap(s, maxG, ln, maxLines);
+    char buf[80];
+    for (int i = 0; i < n; i++) {
+        int len = ln[i].len;
+        if (len > (int)sizeof(buf) - 1) len = (int)sizeof(buf) - 1;
+        memcpy(buf, s + ln[i].off, len);
+        buf[len] = '\0';
+        tPut(x0 + (w - tWidth(buf)) / 2, y, buf);
+        y += lineH;
+    }
+    return y;
+}
+
 inline uint16_t chargeColor(int pct) {
     if (pct < 0)   return C_MUTED;
     if (pct >= 60) return C_GREEN;
@@ -436,12 +522,27 @@ inline uint16_t chargeColor(int pct) {
     return C_RED;
 }
 
-inline void drawHeaderBar(const char *title) {
+// counter — що показати праворуч замість номера сторінки (напр. «12/36» у
+// меню). nullptr/порожній рядок = номер сторінки в кільці показань.
+inline void drawHeaderBar(const char *title, const char *counter = nullptr) {
     tft.fillRect(0, 0, TFT_W, HDR_H, C_HDRBG);
     tft.drawFastHLine(0, HDR_H - 1, TFT_W, C_BLUE);
     char h[16];
-    snprintf(h, sizeof(h), "%d/%d", g_displayPage + 1, NUM_DISPLAY_PAGES);
-    tSet(FONT_SMALL, C_TEXT, C_HDRBG);
+    // ⚑ «!» перед номером сторінки — ознака несправності ЖИВЛЕННЯ, видима з
+    // БУДЬ-ЯКОЇ сторінки: без блока живлення заряд не піде, хай що користувач
+    // зараз гортає. Розшифровка — на сторінці заряду й у вебі.
+    bool psuBad = chargePsuFault();
+    // Лічильник рахує ТІЛЬКИ кільце показань. Сторінки, відкриті з меню
+    // (дампи, Майстер), у кільце не входять, і «5/8» на них означало б, що їх
+    // можна догортати, — а їх не можна: вихід із них інший.
+    if (counter && *counter)
+        snprintf(h, sizeof(h), "%s%s", psuBad ? "!" : "", counter);
+    else if (g_displayPage < NUM_STATUS_PAGES)
+        snprintf(h, sizeof(h), "%s%d/%d", psuBad ? "!" : "",
+                 g_displayPage + 1, NUM_STATUS_PAGES);
+    else
+        snprintf(h, sizeof(h), "%s", psuBad ? "!" : "");
+    tSet(FONT_SMALL, psuBad ? C_RED : C_TEXT, C_HDRBG);
     int cx = TFT_W - tWidth(h) - EDGE;
     tPut(cx, 20, h);
     // Заголовок обрізаємо так, щоб він не заліз під лічильник сторінок: назви
@@ -466,18 +567,51 @@ inline void drawFooterBar() {
     g_tFooter = true; tPut(EDGE, TFT_H - 8, f); g_tFooter = false;
 }
 
+// ── ШКАЛА БАТАРЕЇ: МАЛЮЄМО, ЛИШЕ ЯКЩО ЗМІНИВСЯ ГРАФІЧНИЙ РІВЕНЬ ───────────
+//  Що вже намальовано на екрані, і «покоління» екрана (міняється щоразу, коли
+//  екран чи тіло сторінки чистять повністю — інакше кеш брехав би після
+//  fillScreen: стан «той самий», а пікселів уже немає).
+static BattBarDrawn g_battDrawn;
+static uint32_t     g_screenGen = 1;
+
+// Кликати ПІСЛЯ кожного повного очищення екрана або тіла сторінки.
+inline void displayScreenCleared() { g_screenGen++; }
+
 // Іконка батареї зі шкалою заповнення; pct<0 — даних немає.
+//
+//  ⚑ ГОЛОВНЕ ТУТ — РАННІЙ ВИХІД. Під час заряду/розряду ця функція кличеться
+//  на КОЖНОМУ опитуванні (раз на секунду), а displayAnimTick() тим часом ганяє
+//  по заповненню градієнт ~9 к/с. Поки ми перемальовували шкалу беззастережно,
+//  кожне опитування клало поверх градієнта РІВНУ заливку — і раз на секунду
+//  було видно спалах, тобто «анімація скидається». Тепер, якщо графічний рівень
+//  (ширина заповнення в пікселях), колір і геометрія ті самі, ми не чіпаємо
+//  жодного пікселя, і градієнт біжить безперервно.
+//
+//  Порівнюється саме ШИРИНА В ПІКСЕЛЯХ, а не відсоток: шкала на 200 px має
+//  100 різних положень, тож зміна на 1 % часто не рухає нічого. Порівняння за
+//  відсотком лишило б той самий дефект, просто рідше.
 inline void drawBatteryBar(int x, int y, int w, int h, int pct, uint16_t col) {
     g_battX = x; g_battY = y; g_battW = w; g_battH = h;   // для displayAnimTick()
-    g_animPrevX = -1;                                     // скинути слід блику
+    int fw = battFillW(w, pct, 6);
+
+    if (!battBarChanged(g_battDrawn, x, y, w, h, fw, col, g_screenGen)) return;
+
+    // Чистимо ЛИШЕ власний слід (рамка + «плюсовий» вивід), а не смугу на всю
+    // ширину: на головній сторінці поруч стоять цифри відсотка, і широке
+    // затирання з'їдало б їх.
+    tft.fillRect(x - 1, y - 1, w + 6, h + 2, C_BG);
+
     tft.drawRoundRect(x, y, w, h, 4, C_TEXT);
     tft.drawRoundRect(x + 1, y + 1, w - 2, h - 2, 3, C_TEXT);
     tft.fillRect(x + w, y + h / 3, 4, h - 2 * (h / 3), C_TEXT);   // "плюсовий" вивід
-    if (pct < 0) return;
-    int fw = (w - 6) * pct / 100;
-    if (fw < 0) fw = 0;
-    if (fw > w - 6) fw = w - 6;
     if (fw > 0) tft.fillRect(x + 3, y + 3, fw, h - 6, col);
+
+    // Поле за полем, а не агрегатною ініціалізацією: у BattBarDrawn є типові
+    // значення полів, і сумісність такої ініціалізації залежить від стандарту.
+    // Виграшу від однорядковості тут нема, а причина відмови збірки була б
+    // геть неочевидною.
+    g_battDrawn.x = x; g_battDrawn.y = y; g_battDrawn.w = w; g_battDrawn.h = h;
+    g_battDrawn.fw = fw; g_battDrawn.col = col; g_battDrawn.gen = g_screenGen;
 }
 
 // ===================== Заставка =====================
@@ -490,12 +624,158 @@ inline void drawBatteryBar(int x, int y, int w, int h, int pct, uint16_t col) {
   #include "custom_splash.h"
 #endif
 
+// ── ЗАСТАВКА ІЗ SPIFFS ────────────────────────────────────────────────────
+//  Формат і розбір заголовка — у splash.h (спільні з приймальником у
+//  web_server.h і з хостовим тестом). Тут лише виведення на екран.
+#if defined(DISPLAY_SPLASH_SPIFFS)
+  #include <FS.h>
+  #include <SPIFFS.h>
+  #include "splash.h"
+  #ifdef DISPLAY_SPLASH_JPEG
+    #include <TJpg_Decoder.h>
+  #endif
+
+// Останній результат спроби — щоб пристрій міг сказати, ЧОМУ показує типову
+// заставку замість завантаженої. Мовчазна відмова тут була б найгіршим
+// варіантом: людина завантажила файл, нічого не змінилось, і жодного сліду.
+static int      g_splashLast = SPLASH_ERR_SHORT;
+static uint16_t g_splashW = 0, g_splashH = 0;
+
+inline int      splashLastResult() { return g_splashLast; }
+
+// Намалювати заставку з файла. true — намалювали, false — лишається типова.
+//
+//  ⚑ ПОТОКОМ, А НЕ ЦІЛИМ БУФЕРОМ. 240×240 RGB565 — це 115 200 байтів; ESP32
+//  таке виділити зазвичай може, але робити це заради півтори секунди на
+//  старті (та ще й одночасно з підняттям Wi-Fi, який сам просить пам'яті) —
+//  марна витрата. Читаємо шматками по рядку-два й одразу відправляємо в шину.
+//
+//  ⚑ bigEndian=true — і саме тому файл зберігається старшим байтом уперед:
+//  так дані йдуть у панель без жодного перевертання (див. splash.h).
+#ifdef DISPLAY_SPLASH_JPEG
+// Куди TJpg_Decoder віддає розкодовані блоки MCU. Зсув до центру екрана
+// рахується один раз при старті декодування й лежить тут, бо сигнатура
+// callback-а фіксована й нічого свого в неї не передаси.
+static int16_t g_jpgOffX = 0, g_jpgOffY = 0;
+
+// ⚑ swapBytes(true) у splashDrawJpeg() робить порядок байтів таким самим, як
+//  у сирого формату, тож обидва шляхи виводять пікселі однаково.
+static bool splashJpegBlock(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bmp) {
+    if (y >= TFT_H) return false;                 // нижче екрана — decoder зупиниться
+    tft.drawRGBBitmap(g_jpgOffX + x, g_jpgOffY + y, bmp, w, h);
+    return true;
+}
+
+// Намалювати JPEG зі SPIFFS. Розміри перевіряємо ДО малювання: TJpgDec уміє
+// віддати їх, не декодуючи кадр.
+inline bool splashDrawJpeg() {
+    uint16_t w = 0, h = 0;
+    if (TJpgDec.getFsJpgSize(&w, &h, DISPLAY_SPLASH_JPG_PATH, SPIFFS) != JDR_OK) {
+        g_splashLast = SPLASH_ERR_MAGIC;          // не розібрався — отже не JPEG
+        return false;
+    }
+    // ⚑ ЗАВЕЛИКУ КАРТИНКУ НЕ ВІДХИЛЯЄМО, А ЗМЕНШУЄМО. Коефіцієнт один на обидві
+    //  осі, тож пропорції зберігаються самі собою; докладно — у splash.h.
+    uint8_t sc = splashJpegScaleFor(w, h, TFT_W, TFT_H);
+    if (!sc) {
+        g_splashLast = (w == 0 || h == 0) ? SPLASH_ERR_ZERO : SPLASH_ERR_TOO_BIG;
+        return false;
+    }
+    uint16_t dw = splashScaled(w, sc), dh = splashScaled(h, sc);
+
+    //  Зсув рахується від РОЗКОДОВАНОГО розміру, а не від вихідного: callback
+    //  отримує координати вже в зменшеному просторі. Узявши тут вихідні w/h,
+    //  ми б зсунули картинку за край рівно на різницю.
+    g_jpgOffX = (int16_t)((TFT_W - (int)dw) / 2);
+    g_jpgOffY = (int16_t)((TFT_H - (int)dh) / 2);
+    if (g_jpgOffX < 0) g_jpgOffX = 0;
+    if (g_jpgOffY < 0) g_jpgOffY = 0;
+
+    TJpgDec.setJpgScale(sc);
+    TJpgDec.setSwapBytes(true);
+    TJpgDec.setCallback(splashJpegBlock);
+    if (TJpgDec.drawFsJpg(0, 0, DISPLAY_SPLASH_JPG_PATH, SPIFFS) != JDR_OK) {
+        // Кадр міг лягти наполовину — не лишаємо огризок на екрані.
+        tft.fillScreen(C_BG);
+        displayScreenCleared();
+        g_splashLast = SPLASH_ERR_SIZE;
+        return false;
+    }
+    g_splashLast = SPLASH_OK; g_splashW = dw; g_splashH = dh;
+    if (sc != 1)
+        Serial.printf("Splash: JPEG %ux%u зменшено в %u рази -> %ux%u\n", w, h, sc, dw, dh);
+    return true;
+}
+#endif  // DISPLAY_SPLASH_JPEG
+
+inline bool splashDrawFromFs() {
+    g_splashLast = SPLASH_ERR_SHORT; g_splashW = g_splashH = 0;
+
+    // Монтуємо БЕЗ форматування: заставка малюється раніше, ніж setup() дійде
+    // до SPIFFS.begin(true), і відформатувати чужу файлову систему заради
+    // картинки — неприпустимо. Не змонтувалось — просто типова заставка.
+    if (!SPIFFS.begin(false) && !SPIFFS.exists(DISPLAY_SPLASH_PATH)) return false;
+
+    // ⚑ JPEG ПЕРШИМ. Обидва формати можуть лежати поруч, і перевага в JPEG не
+    //  довільна: він з'являється лише тоді, коли користувач щойно його
+    //  завантажив (приймальник видаляє інший формат), тож це завжди свіжіший
+    //  вибір. Не розкодувався — тихо пробуємо сирий.
+#ifdef DISPLAY_SPLASH_JPEG
+    if (SPIFFS.exists(DISPLAY_SPLASH_JPG_PATH) && splashDrawJpeg()) return true;
+#endif
+    if (!SPIFFS.exists(DISPLAY_SPLASH_PATH)) return false;
+
+    File f = SPIFFS.open(DISPLAY_SPLASH_PATH, "r");
+    if (!f) return false;
+
+    uint8_t hdr[SPLASH_HDR_BYTES];
+    size_t  nHdr = f.read(hdr, sizeof(hdr));
+    uint16_t w = 0, h = 0;
+    g_splashLast = splashParse(hdr, nHdr, f.size(), TFT_W, TFT_H, &w, &h);
+    if (g_splashLast != SPLASH_OK) { f.close(); return false; }
+    g_splashW = w; g_splashH = h;
+
+    int sx = (TFT_W - (int)w) / 2, sy = (TFT_H - (int)h) / 2;
+    if (sx < 0) sx = 0;
+    if (sy < 0) sy = 0;
+
+    static uint16_t line[DISPLAY_SPLASH_MAX_W];
+    tft.startWrite();
+    tft.setAddrWindow(sx, sy, w, h);
+    for (uint16_t y = 0; y < h; y++) {
+        size_t want = (size_t)w * 2;
+        if (f.read((uint8_t *)line, want) != want) {   // файл обірвався на ходу
+            tft.endWrite(); f.close();
+            g_splashLast = SPLASH_ERR_SIZE;
+            tft.fillScreen(C_BG);
+            displayScreenCleared();                      // не лишати півкартинки
+            return false;
+        }
+        tft.writePixels(line, w, true, true);          // block=true, bigEndian=true
+    }
+    tft.endWrite();
+    f.close();
+    return true;
+}
+#endif  // DISPLAY_SPLASH_SPIFFS
+
 inline void displaySplash() {
     // Заставка — на ВЕСЬ екран, статус-смуги на ній немає, тож запобіжник
     // «нижче смуги не писати» тут має бути вимкнений: інакше нижній рядок
     // напису зник би на низьких панелях.
     g_tFooter = true;
     tft.fillScreen(C_BG);
+    displayScreenCleared();
+
+    // ⚑ ПОРЯДОК ДЖЕРЕЛ: спершу файл зі SPIFFS, потім вкомпільована картинка,
+    //  потім типова. Саме так, а не навпаки: завантажена користувачем
+    //  заставка — це його свідомий вибір, зроблений ПІЗНІШЕ за прошивання, і
+    //  вона мусить перекривати те, що зашите в код. Немає файла, він битий
+    //  або чужого формату — тихо відкочуємось на наступне джерело, а причину
+    //  лишаємо в splashLastResult() для сторінки стану.
+#if defined(DISPLAY_SPLASH_SPIFFS)
+    if (splashDrawFromFs()) { g_tFooter = false; return; }
+#endif
 
 #if defined(DISPLAY_SPLASH_CUSTOM)
     // Кастомна кольорова картинка по центру екрана.
@@ -557,7 +837,13 @@ inline void drawPageMain() {
     const char *src;
     int pct = batteryPercent(&src);
     int mah = batteryRemainingMah();
-    uint16_t col = chargeColor(pct);
+    // ⚑ ШКАЛА Й ТЕКСТ ФАРБУЮТЬСЯ ПО-РІЗНОМУ, І ЦЕ НАВМИСНО. Заливка —
+    //  battFillColor(): неперервний перехід червоне -> зелене, бо це і є показ
+    //  РІВНЯ, і на великій площі відтінок читається сам собою. Написи там, де
+    //  вони фарбуються станом, лишаються на chargeColor() — три чіткі
+    //  сходинки: дрібні гліфи проміжного відтінку на чорному видно гірше, а
+    //  колір тексту тут означає вирок («мало / середньо / добре»), а не рівень.
+    uint16_t col = battFillColor(pct);
 
     drawHeaderBar("Moto IMPRES");
 
@@ -885,216 +1171,514 @@ inline void drawPageRaw2438() { drawRawColor("DS2438 (hex)", batteryDump2438, ha
 inline void drawPageRaw2433() { drawRawColor("DS2433 (hex)", batteryDump, hasDump, RAW2433_COUNT); }
 
 // Сторінка «Дії»: одна обрана операція крупно + опис + попередження.
-inline void drawPageActions() {
-    // Назви/описи/небезпека беруться з operations.h — того самого каталогу, що
-    // й у монохромному екрані, вебі й USB-клієнті. Локальних списків більше немає.
-    int sel = g_actionSel, total = numActions();
-    const char *name, *l1, *l2; uint8_t danger, chips; char nbuf[26];
-    opInfo(sel, &name, &l1, &l2, &danger, nbuf, sizeof(nbuf), &chips);
+// ── СТОРІНКА ПОМИЛКИ ЖИВЛЕННЯ ──────────────────────────────────────────────
+//  З'являється САМА, щойно контроль живлення бачить несправність. Без блока
+//  живлення заряд не піде взагалі, тож причина має бути на екрані, а не за
+//  кілька натискань кнопки.
+//  Червоне тло на всю площу: цю сторінку не можна сплутати зі звичайною —
+//  решта екранів у проєкті на темному тлі.
+// ── ПЛАШКА ПОМИЛКИ ЖИВЛЕННЯ ───────────────────────────────────────────────
+//  ⚠️ ТУТ БУЛА ПОМИЛКА, І ЇЇ ВАРТО НАЗВАТИ: спершу блимав САМ ТЕКСТ —
+//  півперіоду на екрані висіла порожня червона смуга. Тобто рівно тоді, коли
+//  користувач дивиться на екран, він міг побачити «щось червоне» без жодного
+//  слова про причину. Аварійне повідомлення, яке пів часу нічого не повідомляє,
+//  гірше за статичне.
+//  Правильно навпаки: БЛИМАЄ ПЛАШКА (тло й рамка), а текст усередині стоїть
+//  нерухомо й читається в обидві фази. Рух привертає увагу, зміст лишається.
+#define PSU_PLATE_Y  (HDR_H + 8)
 
-    // У шапці — не лише номер дії, а й КУДИ вона пише: плутанина між DS2433
-    // (ідентичність) і DS2438 (монітор) коштує або моделі, або заводського
-    // калібрування вимірювача струму.
-    char t[36];
-    if (chips == OPC_NONE) snprintf(t, sizeof(t), "Дія %d/%d", sel + 1, total);
-    else                   snprintf(t, sizeof(t), "Дія %d/%d %s", sel + 1, total,
-                                    opChipsShort(chips));
-    drawHeaderBar(t);
+// ── ГЕОМЕТРІЯ ПЛАШКИ РАХУЄТЬСЯ, А НЕ ПІДБИРАЄТЬСЯ ─────────────────────────
+//  Висота була константою 108, і трималась вона рівно доти, доки написи
+//  вміщались у рядок. Не вміщались: «блок живлення просів або не той» — це 31
+//  гліф, тобто 279 px шрифтом 9x15, при плашці 236 px і панелі 240 px.
+//
+//  Тепер під кожен напис ЗАРЕЗЕРВОВАНО стільки рядків, скільки може
+//  знадобитись після переносу, і висота складається з них. Резерв, а не
+//  вимір за фактом: плашка ще й БЛИМАЄ, перемальовуючись на місці, і плаваюча
+//  висота лишала б смуги від попереднього стану.
+#define PSU_PAD       4                       // поле від рамки до тексту
+#define PSU_PLATE_W   (TFT_W - 2 * (EDGE - PSU_PAD))
+#define PSU_INNER_W   (PSU_PLATE_W - 2 * PSU_PAD)
+// ⚑ СКІЛЬКИ РЯДКІВ РЕЗЕРВУВАТИ — РАХУЄМО, А НЕ ВГАДУЄМО ЗА ШИРИНОЮ ПАНЕЛІ.
+//  Спроба прив'язатись до «TFT_W < 200» тут уже провалилась: на панелі 240 зі
+//  СКРУГЛЕНИМИ кутами (EDGE 22) у плашку влазить лише 21 гліф, а найдовше
+//  пояснення — 22. Тобто справа не в панелі, а в тому, скільки лишається
+//  ПІСЛЯ відступів, і рахувати треба саме це.
+//
+//  Числа нижче — довжина найдовшого зі штатних написів у гліфах. Вони не
+//  «підібрані»: display_fit_check перевіряє КОЖЕН напис проти цього резерву на
+//  всіх підтримуваних панелях, тож змінити текст і не помітити не вийде.
+#define PSU_HEAD_MAX_GLYPHS 16                // «НАПРУГА ЗАНИЖЕНА»
+#define PSU_SUB_MAX_GLYPHS  22                // «блок просів або не той»
+#define PSU_HEAD_LINES ((PSU_INNER_W / FONT_MODEL_W) >= PSU_HEAD_MAX_GLYPHS ? 1 : 2)
+#define PSU_SUB_LINES  ((PSU_INNER_W / FONT_BODY_W)  >= PSU_SUB_MAX_GLYPHS  ? 1 : 2)
+#define PSU_NUM_LINES  3                      // «є X В», «треба Y В», допуск
+#define PSU_LH_HEAD   22                      // крок рядка заголовка
+#define PSU_LH_BODY   18                      // крок рядка пояснень
+#define PSU_PLATE_H   (12 + PSU_HEAD_LINES * PSU_LH_HEAD + \
+                       PSU_SUB_LINES * PSU_LH_BODY + PSU_NUM_LINES * PSU_LH_BODY + 8)
 
-    // Картка операції (у межах безпечної зони кутів). Оновлюємо НА МІСЦІ: рамку
-    // перемальовуємо, а кожен рядок тексту чистимо ТОНКО й друкуємо. Тож при
-    // перемиканні операції екран НЕ блимає всім тілом.
-    int cardx = EDGE > 10 ? EDGE - 4 : 10;
-    int txtx  = cardx + 10;
-    int cxi   = cardx + 2;
-    int cw    = TFT_W - 2 * cardx - 4;
-    uint16_t accent = (danger == OPD_WIPE) ? C_RED
-                    : (danger == OPD_WRITE) ? C_YELLOW : C_GREEN;
-    tft.drawRoundRect(cardx, 44, TFT_W - 2 * cardx, 96, 6, accent);
-    tft.fillRect(cxi, 60, cw, 26, C_BG);  tSet(FONT_MODEL, accent); tPut(txtx, 78, name);
-    tft.fillRect(cxi, 90, cw, 20, C_BG);  tSet(FONT_BODY, C_TEXT);  tPut(txtx, 106, l1);
-    tft.fillRect(cxi, 112, cw, 20, C_BG);                           tPut(txtx, 128, l2);
-    tft.fillRect(cxi, 148, cw, 22, C_BG);                 // рядок попередження — чистимо завжди
-    if (danger == OPD_WIPE) {
-        tSet(FONT_BODY, C_RED);
-        tPut(txtx, 164, "!! НЕЗВОРОТНЬО !!");
-    } else if (sel == OP_CELLSWAP) {
-        // Головна операція ремонту — одразу нагадуємо про обов'язковий крок.
-        tSet(FONT_BODY, C_GREEN);
-        tPut(txtx, 164, "далі -> на IMPRES-ЗП");
-    }
+// Текст помилки — одним місцем на всі поверхні, щоб екран, веб і USB-клієнт
+// не розповідали різне. Перший рядок — крупно, другий — пояснення.
+inline const char *psuHeadline(uint8_t st) {
+    return (st == PSU_ABSENT) ? "НЕМАЄ ЖИВЛЕННЯ"
+         : (st == PSU_LOW)    ? "НАПРУГА ЗАНИЖЕНА"
+                              : "НАПРУГА ЗАВИЩЕНА";
+}
+// ⚑ Написи навмисно КОРОТКІ. Перенос нижче — запобіжник на випадок правки й
+//  вузьких панелей, а не спосіб верстки: два рядки там, де досить одного,
+//  читаються гірше. Слово «живлення» з пояснень прибрано не заради економії —
+//  воно вже стоїть і в шапці сторінки («ПОМИЛКА ЖИВЛЕННЯ»), і в заголовку
+//  плашки, тож утретє нічого не додає. Хостовий тест стежить, щоб усі три
+//  вміщались у рядок на штатній панелі.
+inline const char *psuSubline(uint8_t st) {
+    return (st == PSU_ABSENT) ? "блок не під'єднано"
+         : (st == PSU_LOW)    ? "блок просів або не той"
+                              : "не той блок (19 В?)";
+}
 
-    // Підказка керування.
+inline void drawPsuPlate(bool on) {
+    uint8_t  st = chargePsuState();
+    uint16_t mv = chargePsuMv();
+    char b[64];
+
+    // Дві фази — яскраво-червона й темна. Текст білий в обидві: він мусить
+    // читатись завжди, а не лише на «яскравій» половині періоду.
+    uint16_t bg = on ? C_RED : C_DARKRED;
+    const int px = EDGE - PSU_PAD;                 // ліва межа плашки
+    const int tx = px + PSU_PAD;                   // ліва межа ТЕКСТУ всередині
+    tft.fillRect(px, PSU_PLATE_Y, PSU_PLATE_W, PSU_PLATE_H, bg);
+    tft.drawRect(px, PSU_PLATE_Y, PSU_PLATE_W, PSU_PLATE_H, on ? C_YELLOW : C_RED);
+
+    // ⚑ Усе, що нижче, центрується В МЕЖАХ ПЛАШКИ і переноситься, якщо не
+    //  влазить. Раніше центрували по всій ширині екрана й без обмеження —
+    //  довгий рядок їхав за обидва краї одразу.
+    int y = PSU_PLATE_Y + 12 + PSU_LH_HEAD - 4;
+    tSet(FONT_MODEL, C_TEXT, bg);
+    tPutWrapCenter(tx, PSU_INNER_W, y, PSU_LH_HEAD,
+                   psuHeadline(st), FONT_MODEL_W, PSU_HEAD_LINES);
+    y += PSU_HEAD_LINES * PSU_LH_HEAD;
+
+    tSet(FONT_BODY, C_TEXT, bg);
+    tPutWrapCenter(tx, PSU_INNER_W, y, PSU_LH_BODY,
+                   psuSubline(st), FONT_BODY_W, PSU_SUB_LINES);
+    y += PSU_SUB_LINES * PSU_LH_BODY;
+
+    snprintf(b, sizeof(b), "є %u.%02u В", mv / 1000, (mv % 1000) / 10);
+    tPutWrapCenter(tx, PSU_INNER_W, y, PSU_LH_BODY, b, FONT_BODY_W, 1);
+    y += PSU_LH_BODY;
+
+    // ⚑ Головне число тут — НОМІНАЛ («треба 14 В»), а не допуск. Допуск
+    // відповідає на питання «чому цей блок відхилено», а користувачеві
+    // потрібна відповідь на «який тоді під'єднати» — тож номінал іде першим і
+    // тим самим шрифтом, а межі — окремим рядком під ним.
+    //
+    // ⚑ І САМЕ ТОМУ ЦЕ ДВА РЯДКИ, А НЕ ОДИН. Разом («треба 14 В (12.6…15.6)»)
+    //  виходило 22 гліфи — на штатній панелі влазить, а на 135-піксельній і
+    //  на будь-якій зі скругленими кутами вже ні. Розбивши на номінал і
+    //  допуск, отримуємо 12 і 11 гліфів: вміщається скрізь без переносу.
+    char nom[8];
+    snprintf(b, sizeof(b), "треба %s В",
+             chargeMvShort(CHARGE_SUPPLY_MV, nom, sizeof(nom)));
+    tPutWrapCenter(tx, PSU_INNER_W, y, PSU_LH_BODY, b, FONT_BODY_W, 1);
+    y += PSU_LH_BODY;
+
+    snprintf(b, sizeof(b), "(%u.%u…%u.%u)",
+             CHARGE_PSU_MIN_MV / 1000, (CHARGE_PSU_MIN_MV % 1000) / 100,
+             CHARGE_PSU_MAX_MV / 1000, (CHARGE_PSU_MAX_MV % 1000) / 100);
+    tPutWrapCenter(tx, PSU_INNER_W, y, PSU_LH_BODY, b, FONT_BODY_W, 1);
+}
+
+inline void drawPagePsuFault() {
+    uint8_t st = chargePsuState();
+
+    tft.fillScreen(C_BG);
+
+    displayScreenCleared();
+    tft.fillRect(0, 0, TFT_W, HDR_H, C_RED);
+    tft.drawFastHLine(0, HDR_H - 1, TFT_W, C_YELLOW);
+    tSet(FONT_HDR, C_TEXT, C_RED);
+    tPut(EDGE, 21, "ПОМИЛКА ЖИВЛЕННЯ");
+
+    drawPsuPlate(true);                       // плашка з текстом — вона й блимає
+
+    // Нижче плашки — нерухомі пояснення: що робити і що при цьому ще працює.
+    //  Крок і відступ підібрані так, щоб УСІ ТРИ рядки лишались вище смуги
+    //  статусу після того, як плашка підросла під перенос (див. PSU_PLATE_H).
+    //  Третій рядок — «читання пам'яті працює» — саме той, який заспокоює
+    //  користувача, що пристрій не помер; втратити його було б найгірше.
+    int y = PSU_PLATE_Y + PSU_PLATE_H + 16;
+    tSet(FONT_BODY, C_TEXT, C_BG);
+    auto row = [&](const char *txt, uint16_t col) {
+        if (y > FOOT_Y - 6) return;
+        tSet(FONT_BODY, col, C_BG);
+        tPut(EDGE, y, txt);
+        y += 17;
+    };
+    row(st == PSU_ABSENT ? "Під'єднайте блок живлення."
+      : st == PSU_LOW    ? "Потрібен 14 В під струмом."
+                         : "Зніміть завищений блок.", C_TEXT);
+    row("ЗАРЯД НЕМОЖЛИВИЙ.", C_RED);
+    row("Читання пам'яті працює.", C_MUTED);
+
     tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
-    tft.drawFastHLine(0, FOOT_Y, TFT_W, C_BLUE);
+    tft.drawFastHLine(0, FOOT_Y, TFT_W, C_YELLOW);
     tSet(FONT_SMALL, C_MUTED, C_CARD);
+    tPut(EDGE, TFT_H - 8, "будь-яка кнопка — сховати");
+}
+
+// ── ПОВНОЕКРАННЕ ПОВІДОМЛЕННЯ ПО КОМБІНАЦІЇ ───────────────────────────────
+//  Займає весь екран, тримається COMBO_FLASH_MS і знімається сама або першою
+//  ж кнопкою. Малюється НАЙПЕРШОЮ — вище за все інше: у неї немає стану, який
+//  можна пропустити, і живе вона п'ять секунд.
+inline void drawPageFlash() {
+    tft.fillScreen(C_BG);
+    displayScreenCleared();
+    const char *s = "Ляшко ЛОХ";
+    tSet(FONT_HDR, C_YELLOW, C_BG);
+    int w = tWidth(s);
+    int x = (TFT_W - w) / 2; if (x < 0) x = 0;
+    tPut(x, TFT_H / 2 + 6, s);
+}
+
+// ── МЕНЮ: СПИСОК УСЬОГО, ЩО ПРИСТРІЙ УМІЄ ─────────────────────────────────
+//  Замість колишньої «сторінки Дій» — однієї картки з кільцем на три десятки
+//  пунктів, яке гортається лише вперед, — вертикальний СПИСОК із групами.
+//  Видно кілька сусідніх пунктів одразу, тобто видно, де ти в списку і що
+//  поруч; курсор ходить в обидва боки; довге натискання перестрибує групу.
+//
+//  Назва ГРУПИ — у шапці, а не окремим рядком усередині списку. Так усі рядки
+//  однакової висоти (проста арифметика вікна прокрутки), не витрачається
+//  рядок екрана, і зміна групи одразу видно в шапці під час стрибка.
+//
+//  Опис обраного пункту — унизу, під розділювачем: у списку видно ЩО, під ним
+//  — подробиці й КУДИ пише (DS2433 — ідентичність, DS2438 — монітор; сплутати
+//  їх коштує або моделі, або заводського калібрування струму).
+inline void drawPageMenu() {
+    int total = menuCount();
+    if (total <= 0) return;
+    if (g_menuSel < 0) g_menuSel = 0;
+    if (g_menuSel >= total) g_menuSel = total - 1;
+
+    char nbuf[OP_NAME_BUF]; const char *name, *l1, *l2; uint8_t danger, chips;
+    menuInfo(g_menuSel, &name, &l1, &l2, &danger, &chips, nbuf, sizeof(nbuf));
+    uint8_t kind = MI_OP, group = MG_NAV; int code = 0;
+    menuRow(g_menuSel, &kind, &code, &group);
+
+    char cnt[12]; snprintf(cnt, sizeof(cnt), "%d/%d", g_menuSel + 1, total);
+    const char *gname = menuGroupName(group);
+    drawHeaderBar((gname && *gname) ? gname : "МЕНЮ", cnt);
+
+    // Геометрія рахується від панелі, а не зашита числами: на 135x240 рядок
+    // вужчий і нижчий, на 240x320 рядків просто більше.
+    const int ROW_H  = (FONT_BODY_W >= 9) ? 18 : 14;
+    const int DESC_H = (FONT_BODY_W >= 9) ? 62 : 50;
+    int listTop = HDR_H + 4;
+    int listBot = FOOT_Y - DESC_H;
+    int rows    = (listBot - listTop) / ROW_H;
+    if (rows < 3) rows = 3;
+    if (rows > total) rows = total;
+
+    // Вікно прокрутки: курсор тримаємо в середині, поки список це дозволяє.
+    int first = g_menuSel - rows / 2;
+    if (first > total - rows) first = total - rows;
+    if (first < 0) first = 0;
+
+    const int BARW = 3;                       // смужка небезпеки ліворуч
+    int x0 = EDGE, w = TFT_W - 2 * EDGE - 4;  // 4 — під смужку прокрутки
+    int maxG = (w - BARW - 14) / FONT_BODY_W;
+
+    for (int r = 0; r < rows; r++) {
+        int i = first + r, y = listTop + r * ROW_H;
+        const char *n2, *a, *b; uint8_t d2, c2; char b2[OP_NAME_BUF];
+        menuInfo(i, &n2, &a, &b, &d2, &c2, b2, sizeof(b2));
+        uint16_t accent = (d2 == OPD_WIPE) ? C_RED
+                        : (d2 == OPD_WRITE) ? C_YELLOW : C_GREEN;
+        bool cur = (i == g_menuSel);
+        tft.fillRect(x0, y, w, ROW_H, cur ? C_CARD : C_BG);
+        tft.fillRect(x0, y + 1, BARW, ROW_H - 2, accent);
+        char fit[OP_NAME_BUF + 4];
+        txtFit(fit, sizeof(fit), n2, maxG);
+        tSet(FONT_BODY, cur ? C_TEXT : C_MUTED, cur ? C_CARD : C_BG);
+        tPut(x0 + BARW + 10, y + ROW_H - 4, fit);
+    }
+    // Смужка прокрутки: без неї на списку з трьох десятків пунктів не видно,
+    // чи ти на початку, чи вже під кінець.
+    int sbx = TFT_W - EDGE - 3, sbh = rows * ROW_H;
+    tft.fillRect(sbx, listTop, 3, sbh, C_CARD);
+    int kh = sbh * rows / total; if (kh < 6) kh = 6;
+    int ky = listTop + (total > rows ? (sbh - kh) * first / (total - rows) : 0);
+    tft.fillRect(sbx, ky, 3, kh, C_BLUE);
+
+    // ── опис обраного ─────────────────────────────────────────────────────
+    const int DL = (FONT_BODY_W >= 9) ? 12 : 10;
+    int dy = listBot + 2;
+    tft.fillRect(0, dy, TFT_W, FOOT_Y - dy, C_BG);
+    tft.drawFastHLine(EDGE, dy, TFT_W - 2 * EDGE, C_CARD);
+    tSet(FONT_SMALL, C_MUTED);
+    tPut(x0, dy + DL, l1);
+    tPut(x0, dy + 2 * DL, l2);
+    // Передостанній рядок — про наслідки: що зробить натискання і КУДИ пише.
+    // Саме тут, а не в підказці внизу: підказка одна на все меню, а наслідки в
+    // кожного пункту свої, і плутанина DS2433/DS2438 коштує дорого.
+    char tail[48];
+    if (danger == OPD_WIPE)
+        snprintf(tail, sizeof(tail), "НЕЗВОРОТНЬО! трим.OK %s", opChipsShort(chips));
+    else if (kind == MI_PAGE)
+        snprintf(tail, sizeof(tail), "OK - відкрити");
+    else if (danger == OPD_SAFE)
+        snprintf(tail, sizeof(tail), "OK - перемкнути");
+    else if (code == OP_CELLSWAP)
+        snprintf(tail, sizeof(tail), "трим.OK = ПУСК, далі на ЗП");
+    else
+        snprintf(tail, sizeof(tail), "трим.OK = ПУСК  %s", opChipsShort(chips));
+    tSet(FONT_SMALL, (danger == OPD_WIPE) ? C_RED
+                   : (danger == OPD_SAFE) ? C_GREEN : C_YELLOW);
+    tPut(x0, dy + 3 * DL + 2, tail);
+    // Останній — навігація. Вона однакова скрізь, тож найдрібнішим і сірим.
+    tSet(FONT_SMALL, C_MUTED);
 #ifdef MENU_BTN3_PIN
-    tPut(EDGE, TFT_H - 8, "[<][>] меню  [OK] вибір, трим=ПУСК");
+    tPut(x0, dy + 4 * DL + 2, "[<][>] пункт, довго - група");
 #else
-    tPut(EDGE, TFT_H - 8, "[<] вибір   [<] тримати = ПУСК");
+    tPut(x0, dy + 4 * DL + 2, "[>] пункт  [<] вибір/пуск");
 #endif
+
+    // Футер лишається СТАТУСОМ, а не підказкою: саме через нього прилітає
+    // «ЦІЛЬ 95%» і «ВИКОНУЮ...» — зворотний зв'язок про щойно натиснуте.
+    drawFooterBar();
 }
 
 // Сторінка МОНІТОРИНГУ РОЗРЯДУ. Показується автоматично, поки навантаження
 // увімкнене, і має пріоритет над гортанням меню: розряд — довга операція, під
 // час якої на екрані має бути видно все службове, що змінюється.
-inline void drawPageDischarge() {
-    drawHeaderBar("РОЗРЯД");
-    const DischargeState &d = g_dis;
+// ═══════ СПІЛЬНИЙ КАРКАС ЕКРАНІВ ОПЕРАЦІЙ (заряд / розряд / пробудження) ══
+//  Скарга власника: «зроби для заряду, розряду й оживлення однотипний вигляд».
+//  Було три окремі верстки, які лише СХОЖІ одна на одну — і розходились на
+//  кожній правці: у розряду «ціль … (%)», у заряду те саме з іншим
+//  розрахунком, а пробудження взагалі жило вкладеною гілкою всередині заряду
+//  й писало «тримаємо …». Тепер каркас ОДИН, а сторінки лише наповнюють його
+//  рядками в однаковому порядку:
+//
+//      напруга (великим) -> шкала -> ціль -> режим і фаза -> струм ->
+//      уставка/ШІМ -> ємність -> температура -> час і СКІЛЬКИ ЩЕ ЛИШИЛОСЬ.
+//
+//  Позиція рядка тримається у файловій змінній, а не в лямбді: помічники
+//  мусять бути звичайними функціями, щоб їх кликали всі три сторінки.
+static int g_monY = 0;
 
-    // Напруга — найбільшим, це головне число процесу.
-    char b[56];                    // кирилиця в UTF-8 — 2 байти на літеру
+inline void opMonFrame(const char *title, uint16_t mv) {
+    drawHeaderBar(title);
+    char b[40];
     tft.fillRect(0, HDR_H + 4, TFT_W, 40, C_BG);
-    snprintf(b, sizeof(b), "%u.%02u В", d.lastMv / 1000, (d.lastMv % 1000) / 10);
-    tSet(FONT_MODEL, chargeColor(impresPercentFromMv(d.lastMv)));
+    snprintf(b, sizeof(b), "%u.%02u В", mv / 1000, (mv % 1000) / 10);
+    tSet(FONT_MODEL, chargeColor(impresPercentFromMv(mv)));
     tPut(EDGE, HDR_H + 36, b);
 
-    // Прогрес до цілі — числом у рядку «ціль» нижче.
+    // Шкала — та сама анімована іконка, що й на головній сторінці.
+    // ⚑ Смугу НЕ затираємо: саме затирання й «скидало» анімацію на кожному
+    //  опитуванні. drawBatteryBar() чистить власний слід сам і лише тоді, коли
+    //  графічний рівень справді змінився.
+    const char *csrc; int pct = batteryPercent(&csrc);
+    int by = HDR_H + 44, bh = 22;
+    drawBatteryBar(EDGE, by, TFT_W - 2 * EDGE - 6, bh, pct, battFillColor(pct));
+    g_pctTx = g_pctTy = g_pctTw = g_pctTh = 0;     // цифр усередині шкали немає
+    g_monY = by + bh + 18;
+}
+
+// Черговий рядок показань. Кожен сам чистить свою смужку на всю ширину, тож
+// оновлення раз на секунду не блимає і старий текст не «просвічує». Рядки, що
+// не влізли до підвалу, просто не малюємо: на 240×240 місця менше, і краще
+// втратити останній рядок, ніж заїхати текстом на статус.
+inline void opMonRow(const char *txt, uint16_t col) {
+    if (g_monY > FOOT_Y - 4) return;
+    tft.fillRect(0, g_monY - 12, TFT_W, 16, C_BG);
+    tSet(FONT_BODY, col);
+    tPut(EDGE, g_monY, txt);
+    g_monY += 18;
+}
+
+// «Скільки ще лишилось» у компактному вигляді. Порожній рядок = невідомо.
+inline void opMonEtaText(uint32_t etaS, char *out, size_t n) {
+    if (!etaS)             { snprintf(out, n, "—"); return; }
+    if (etaS < 60)         { snprintf(out, n, "<1 хв"); return; }
+    if (etaS < 3600)       { snprintf(out, n, "%lu хв", (unsigned long)(etaS / 60)); return; }
+    snprintf(out, n, "%lu год %lu хв", (unsigned long)(etaS / 3600),
+             (unsigned long)((etaS % 3600) / 60));
+}
+
+// Час і залишок — ОДНИМ рядком і однаково в усіх трьох режимах.
+//  etaS == 0 означає «оцінити не можна», і тоді ми так і пишемо: показати
+//  вигадане число гірше, ніж не показати жодного, бо на нього розраховують.
+inline void opMonTime(uint32_t elapsedS, uint32_t etaS) {
+    char b[56], e[24];
+    opMonEtaText(etaS, e, sizeof(e));
+    unsigned long el = elapsedS;
+    snprintf(b, sizeof(b), "%lu:%02lu:%02lu · ще %s%s",
+             el / 3600, (el / 60) % 60, el % 60, etaS ? "≈" : "", e);
+    opMonRow(b, C_TEXT);
+}
+
+inline void opMonFoot(bool running, bool aborted, const char *text) {
+    tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
+    tft.drawFastHLine(0, FOOT_Y, TFT_W, C_BLUE);
+    tSet(FONT_SMALL, aborted ? C_RED : C_MUTED, C_CARD);
+    tPut(EDGE, TFT_H - 8, running ? "[OK] тримати = ЗУПИНИТИ" : text);
+}
+
+inline void drawPageDischarge() {
+    const DischargeState &d = g_dis;
+    opMonFrame("РОЗРЯД", d.lastMv);
+    char b[56];
+
+    // Прогрес до цілі — числом у рядку «ціль».
     int span = (int)d.startMv - (int)d.targetMv;
     int done = (int)d.startMv - (int)d.lastMv;
     int pct  = (span > 0) ? (done * 100 / span) : 0;
-    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
 
-    // Рівень заряду — ТАКОЮ Ж анімованою іконкою батареї, як на головній
-    // сторінці: drawBatteryBar() запам'ятовує геометрію в g_battX/Y/W/H, а
-    // displayAnimTick() ганяє по заповненню той самий градієнт.
-    const char *csrc; int chargePct = batteryPercent(&csrc);
-    int by = HDR_H + 44, bh = 22;
-    int bx = EDGE, bw = TFT_W - 2 * EDGE - 6;      // −6 px під «плюсовий» вивід
-    tft.fillRect(0, by - 2, TFT_W, bh + 4, C_BG);
-    drawBatteryBar(bx, by, bw, bh, chargePct, chargeColor(chargePct));
-    g_pctTx = g_pctTy = g_pctTw = g_pctTh = 0;     // цифр усередині шкали немає
+    snprintf(b, sizeof(b), "ціль %u.%02u В  (%d%%)",
+             d.targetMv / 1000, (d.targetMv % 1000) / 10, pct);
+    opMonRow(b, C_TEXT);
 
-    // Рядки показань. Кожен сам чистить свою смужку на всю ширину, тож при
-    // оновленні раз на 5 с екран не блимає і старий текст не «просвічує».
-    tSet(FONT_BODY, C_TEXT);
-    int y = by + bh + 18;
-    // Рядки, що не влізли до статус-смуги, просто не малюємо: на вузьких
-    // панелях (240×240) місця менше, і краще втратити «час», ніж заїхати
-    // текстом на підвал. Порядок нижче — за спаданням важливості.
-    auto row = [&](const char *txt, uint16_t col) {
-        if (y > FOOT_Y - 4) return;
-        tft.fillRect(0, y - 12, TFT_W, 16, C_BG);
-        tSet(FONT_BODY, col);
-        tPut(EDGE, y, txt);
-        y += 18;
-    };
+    // Режим і фаза — на тому самому місці, що й у заряді.
+    snprintf(b, sizeof(b), "режим %s · %s%s",
+             dischargeProfileShort(dischargeProfile()),
+             dischargePhaseShort(d.phase),
+             dischargeManualMa() ? " · руч." : "");
+    opMonRow(b, d.phase == DIS_PH_HOLD ? C_YELLOW : C_MUTED);
 
-    snprintf(b, sizeof(b), "ціль %u.%02u В  (%d%%)", d.targetMv / 1000, (d.targetMv % 1000) / 10, pct);
-    row(b, C_TEXT);
-
-    // Струм і потужність — з ВБУДОВАНОГО датчика струму DS2438 (його резистор
-    // стоїть усередині пакета послідовно з банками). Показуємо СЕРЕДНІЙ струм:
-    // ключ працює ШІМом, тож саме він і тече, а не виміряний пік.
+    // Струм і потужність — із ВБУДОВАНОГО датчика DS2438 (його резистор стоїть
+    // усередині пакета послідовно з банками). Показуємо СЕРЕДНІЙ струм: ключ
+    // працює ШІМом, тож саме він і тече, а не виміряний пік.
     int wx10 = dischargeWattsX10(d.lastMv, d.lastMa);
     snprintf(b, sizeof(b), "струм %d мА · %d.%d Вт", d.lastMa, wx10 / 10, wx10 % 10);
-    row(b, (d.state == DIS_RUN && !dischargeInBand(d)) ? C_YELLOW : C_TEXT);
+    opMonRow(b, (d.state == DIS_RUN && !dischargeInBand(d)) ? C_YELLOW : C_TEXT);
 
-    // Обмеження струму: уставка веде за напругою (1000 мА на повному заряді ->
-    // 300 мА у кінці), ключ тримає її шпаруватістю. Пік — струм при 100 %.
     if (dischargePwmOk()) {
         snprintf(b, sizeof(b), "уст %u · ШІМ %u%% · пік %u", d.setMa, d.dutyPct, d.peakMa);
-        row(b, C_MUTED);
+        opMonRow(b, C_MUTED);
     } else {
-        row("БЕЗ ШІМ: не обмежено!", C_RED);
+        opMonRow("БЕЗ ШІМ: не обмежено!", C_RED);
     }
 
-    // Віддано: наш інтеграл по опитуваннях і апаратний лічильник DCA самого
-    // DS2438. DCA рахує неперервно, тож велика розбіжність = опитування щось
-    // пропускає.
     snprintf(b, sizeof(b), "віддано %lu мА·год", (unsigned long)dischargeMah());
-    row(b, C_GREEN);
-    snprintf(b, sizeof(b), "DCA %lu мА·год · ICA %u", (unsigned long)dischargeDcaMah(), d.lastIca);
-    row(b, C_MUTED);
+    opMonRow(b, C_GREEN);
+    snprintf(b, sizeof(b), "DCA %lu мА·год · ICA %u",
+             (unsigned long)dischargeDcaMah(), d.lastIca);
+    opMonRow(b, C_MUTED);
 
     snprintf(b, sizeof(b), "темп. %d.%d °C", d.lastTempC10 / 10, abs(d.lastTempC10 % 10));
-    row(b, d.lastTempC10 >= DISCHARGE_MAX_TEMP_C * 10 - 50 ? C_RED : C_TEXT);
+    opMonRow(b, d.lastTempC10 >= DISCHARGE_MAX_TEMP_C * 10 - 50 ? C_RED : C_TEXT);
 
-    unsigned long el = d.elapsedS;
-    snprintf(b, sizeof(b), "час  %lu:%02lu:%02lu", el / 3600, (el / 60) % 60, el % 60);
-    row(b, C_TEXT);
+    opMonTime(d.elapsedS,
+              dischargeEtaS(impresPercentFromMv(d.lastMv),
+                            impresPercentFromMv(d.targetMv),
+                            dischargeRatedMah(),
+                            (uint16_t)(d.lastMa < 0 ? -d.lastMa : d.lastMa)));
 
-    // Підвал: стан або причина зупинки.
-    tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
-    tft.drawFastHLine(0, FOOT_Y, TFT_W, C_BLUE);
-    const char *foot = (d.state == DIS_RUN)   ? "[OK] тримати = ЗУПИНИТИ"
-                     : (d.state == DIS_DONE)  ? "ГОТОВО -> на IMPRES-ЗП"
-                     : dischargeReasonText(d.reason);
-    tSet(FONT_SMALL, d.state == DIS_ABORT ? C_RED : C_MUTED, C_CARD);
-    tPut(EDGE, TFT_H - 8, foot);
+    opMonFoot(d.state == DIS_RUN, d.state == DIS_ABORT,
+              (d.state == DIS_DONE) ? "ГОТОВО -> на IMPRES-ЗП"
+                                    : dischargeReasonText(d.reason));
 }
 
-// Сторінка МОНІТОРИНГУ ЗАРЯДУ (кольорова) — та сама схема, що й розряд вище,
-// але прогрес рахується у бік ЗРОСТАННЯ напруги (ціль вища за старт), і
-// показуємо ЦІЛЬОВУ вихідну напругу ДС/ДС замість шпаруватості (крива
-// керування нелінійна, див. charge.h/settings.h — сира напруга сама по собі
-// нічого не каже про очікуваний струм).
-inline void drawPageCharge() {
-    drawHeaderBar("ЗАРЯД");
+// Сторінка МОНІТОРИНГУ ЗАРЯДУ — той самий каркас, що й розряд вище.
+//  ⚑ ПРОБУДЖЕННЯ — ОКРЕМА СТОРІНКА, А НЕ ГІЛКА ВСЕРЕДИНІ ЗАРЯДУ. Половина
+//  рядків заряду в ньому була б вигадкою: ціль у відсотках, CCA, ICA й
+//  температура беруться з DS2438, а він мовчить — у цьому вся суть режиму.
+//  Показувати «темп. 0.0 °C» і «CCA 0» означало б видавати відсутність даних
+//  за дані. Каркас при цьому спільний, тож виглядають вони однаково.
+inline void drawPageWake() {
     const ChargeState &c = g_chg;
-
+    opMonFrame("ПРОБУДЖЕННЯ", c.lastMv);
     char b[56];
-    tft.fillRect(0, HDR_H + 4, TFT_W, 40, C_BG);
-    snprintf(b, sizeof(b), "%u.%02u В", c.lastMv / 1000, (c.lastMv % 1000) / 10);
-    tSet(FONT_MODEL, chargeColor(impresPercentFromMv(c.lastMv)));
-    tPut(EDGE, HDR_H + 36, b);
 
-    const char *csrc; int chargePct = batteryPercent(&csrc);
-    int by = HDR_H + 44, bh = 22;
-    int bx = EDGE, bw = TFT_W - 2 * EDGE - 6;
-    tft.fillRect(0, by - 2, TFT_W, bh + 4, C_BG);
-    drawBatteryBar(bx, by, bw, bh, chargePct, chargeColor(chargePct));
-    g_pctTx = g_pctTy = g_pctTw = g_pctTh = 0;
+    snprintf(b, sizeof(b), "тримаємо %u.%02u В",
+             c.targetMv / 1000, (c.targetMv % 1000) / 10);
+    opMonRow(b, C_TEXT);
+    snprintf(b, sizeof(b), "режим пробудження · %u с", (unsigned)CHARGE_WAKE_MAX_S);
+    opMonRow(b, C_MUTED);
+    snprintf(b, sizeof(b), "струм %d мА зі стелі %u", c.lastMa, (unsigned)CHARGE_WAKE_MA);
+    opMonRow(b, C_TEXT);
+    if (chargePwmOk()) {
+        snprintf(b, sizeof(b), "ШІМ %u%% (межа %u з %u)", chargeDutyPct(),
+                 chargeDutyCap(), (unsigned)CHARGE_DUTY_FULL);
+        opMonRow(b, C_MUTED);
+    } else {
+        opMonRow("БЕЗ КЕРУВАННЯ: перевірте!", C_RED);
+    }
+    snprintf(b, sizeof(b), "віддано %lu з %u мА·год",
+             (unsigned long)chargeMah(), (unsigned)CHARGE_WAKE_MAH_MAX);
+    opMonRow(b, C_GREEN);
+    snprintf(b, sizeof(b), "проб %u · %s", c.wakeProbes,
+             chargeWakeGoalText(c.wakeGoal, c.reason));
+    opMonRow(b, chargeReasonIsDone(c.reason) ? C_GREEN : C_MUTED);
 
-    tSet(FONT_BODY, C_TEXT);
-    int y = by + bh + 18;
-    auto row = [&](const char *txt, uint16_t col) {
-        if (y > FOOT_Y - 4) return;
-        tft.fillRect(0, y - 12, TFT_W, 16, C_BG);
-        tSet(FONT_BODY, col);
-        tPut(EDGE, y, txt);
-        y += 18;
-    };
+    // ⚑ ТУТ ЗАЛИШОК ТОЧНИЙ, А НЕ ОЦІНКА: режим обмежений часом жорстко
+    //  (CHARGE_WAKE_MAX_S), тож лишилось рівно стільки, скільки не минуло.
+    uint32_t left = (c.elapsedS < (uint32_t)CHARGE_WAKE_MAX_S)
+                  ? ((uint32_t)CHARGE_WAKE_MAX_S - c.elapsedS) : 0;
+    opMonTime(c.elapsedS, (c.state == CHG_RUN) ? left : 0);
+
+    opMonFoot(c.state == CHG_RUN, c.state == CHG_ABORT,
+              (c.state == CHG_DONE) ? "ГОТОВО" : chargeReasonText(c.reason));
+}
+
+inline void drawPageCharge() {
+    if (chargeWakeShown()) { drawPageWake(); return; }
+    const ChargeState &c = g_chg;
+    opMonFrame("ЗАРЯД", c.lastMv);
+    char b[56];
+
+    // ЖИВЛЕННЯ — найпершим рядком і тільки коли з ним негаразд. Без блока
+    // заряд не піде взагалі, тож ховати причину нижче за наслідки не можна.
+    if (chargePsuFault()) {
+        snprintf(b, sizeof(b), "БЖ %u.%02u В — %s", chargePsuMv() / 1000,
+                 (chargePsuMv() % 1000) / 10,
+                 chargePsuState() == PSU_ABSENT ? "НЕМАЄ ЖИВЛЕННЯ" :
+                 chargePsuState() == PSU_LOW    ? "НАПРУГА ЗАНИЖЕНА" : "НАПРУГА ЗАВИЩЕНА");
+        opMonRow(b, C_RED);
+    }
 
     snprintf(b, sizeof(b), "ціль %u.%02u В (%u%%)",
              c.targetMv / 1000, (c.targetMv % 1000) / 10, c.targetPct);
-    row(b, C_TEXT);
+    opMonRow(b, C_TEXT);
 
-    // Струм і потужність — з ВБУДОВАНОГО датчика струму DS2438 (той самий
-    // шунт, що й розряд).
+    snprintf(b, sizeof(b), "режим %s · %s%s",
+             chargeProfileShort(chargeProfile()), chargePhaseShort(c.phase),
+             chargeManualMa() ? " · руч." : "");
+    opMonRow(b, c.phase == CHG_PH_HOLD ? C_YELLOW : C_MUTED);
+
+    // Струм і потужність — із ВЛАСНОГО шунта пристрою, а не з DS2438: монітор
+    // пакета читається лише на закритому ключі й дає температуру, не струм.
     int wx10 = chargeWattsX10(c.lastMv, c.lastMa);
     snprintf(b, sizeof(b), "струм %d мА · %d.%d Вт", c.lastMa, wx10 / 10, wx10 % 10);
-    row(b, C_TEXT);
+    opMonRow(b, C_TEXT);
 
-    // Уставка й ЦІЛЬОВА вихідна напруга (не шпаруватість — див. коментар вище).
+    // Вершина пульсацій злітає, коли дросель фактично випав із кола, а середнє
+    // це ще приховує — тому пік показуємо окремо.
     if (chargePwmOk()) {
-        snprintf(b, sizeof(b), "уст %u мА · вихід %u.%02u В", c.setMa, c.outMv / 1000, (c.outMv % 1000) / 10);
-        row(b, C_MUTED);
+        snprintf(b, sizeof(b), "уст %u мА · пік %u мА · %u%%",
+                 c.setMa, c.peakMa, chargeDutyPct());
+        opMonRow(b, C_MUTED);
     } else {
-        row("БЕЗ КЕРУВАННЯ: перевірте!", C_RED);
+        opMonRow("БЕЗ КЕРУВАННЯ: перевірте!", C_RED);
     }
 
-    // Отримано: наш інтеграл по опитуваннях і апаратний лічильник CCA самого
-    // DS2438.
     snprintf(b, sizeof(b), "отримано %lu мА·год", (unsigned long)chargeMah());
-    row(b, C_GREEN);
-    snprintf(b, sizeof(b), "CCA %lu мА·год · ICA %u", (unsigned long)chargeCcaMah(), c.lastIca);
-    row(b, C_MUTED);
+    opMonRow(b, C_GREEN);
+    snprintf(b, sizeof(b), "CCA %lu мА·год · ICA %u",
+             (unsigned long)chargeCcaMah(), c.lastIca);
+    opMonRow(b, C_MUTED);
 
     snprintf(b, sizeof(b), "темп. %d.%d °C", c.lastTempC10 / 10, abs(c.lastTempC10 % 10));
-    row(b, c.lastTempC10 >= CHARGE_MAX_TEMP_C * 10 - 50 ? C_RED : C_TEXT);
+    opMonRow(b, c.lastTempC10 >= CHARGE_MAX_TEMP_C * 10 - 50 ? C_RED : C_TEXT);
 
-    unsigned long el = c.elapsedS;
-    snprintf(b, sizeof(b), "час  %lu:%02lu:%02lu", el / 3600, (el / 60) % 60, el % 60);
-    row(b, C_TEXT);
+    opMonTime(c.elapsedS,
+              chargeEtaS(c.phase, c.lastPct, c.targetPct, chargeRatedMah(), c.lastMa));
 
-    tft.fillRect(0, FOOT_Y, TFT_W, FOOT_H, C_CARD);
-    tft.drawFastHLine(0, FOOT_Y, TFT_W, C_BLUE);
-    const char *foot = (c.state == CHG_RUN)  ? "[OK] тримати = ЗУПИНИТИ"
-                      : (c.state == CHG_DONE) ? "ГОТОВО"
-                      : chargeReasonText(c.reason);
-    tSet(FONT_SMALL, c.state == CHG_ABORT ? C_RED : C_MUTED, C_CARD);
-    tPut(EDGE, TFT_H - 8, foot);
+    opMonFoot(c.state == CHG_RUN, c.state == CHG_ABORT,
+              (c.state == CHG_DONE) ? "ГОТОВО" : chargeReasonText(c.reason));
 }
 
 // Сторінка Майстра відновлення (кольорова). Дані готує wizDeviceRefresh().
@@ -1163,7 +1747,11 @@ inline void drawPageWizard() {
 // перекривають старі; фон і так чорний). Без чорного «спалаху» — для зміни лише
 // відтінку (червоний фільтр помилки), щоб екран НЕ блимав.
 inline void displayRenderBody(bool clearBody) {
-    if (clearBody) tft.fillRect(0, HDR_H, TFT_W, FOOT_Y - HDR_H, C_BG);
+    // Очищення тіла стирає й шкалу батареї, тож кеш «уже намальовано» після
+    // нього брехав би: стан той самий, а пікселів немає.
+    if (clearBody) { tft.fillRect(0, HDR_H, TFT_W, FOOT_Y - HDR_H, C_BG);
+                     displayScreenCleared(); }
+    if (comboFlashActive(g_flash, millis())) { drawPageFlash(); return; }
     // Поки навантаження увімкнене — примусово показуємо моніторинг розряду,
     // хоч би яку сторінку було обрано: це довга операція із запобіжниками, її
     // стан має бути на екрані завжди, а не за кілька натискань кнопки.
@@ -1171,19 +1759,45 @@ inline void displayRenderBody(bool clearBody) {
     // не має значення.
     if (dischargeScreenActive()) { drawPageDischarge(); return; }
     if (chargeScreenActive())    { drawPageCharge();    return; }
+    // Помилка живлення — НИЖЧЕ за операції, що йдуть: розряд блока живлення не
+    // потребує взагалі, а зупинений через живлення заряд і так показує ту саму
+    // причину на своїй сторінці. Перебивати роботу, що триває, було б гірше,
+    // ніж почекати — «!» у шапці нікуди не дівається.
+    if (chargePsuScreenActive()) { drawPagePsuFault(); return; }
     switch (g_displayPage) {
-        case 0:  drawPageMain();     break;
-        case 1:  drawPageModel();    break;
-        case 2:  drawPageTech();     break;
-        case 3:  drawPageHealth();   break;
-        case 4:  drawPageRaw2438();  break;
-        case 5:  drawPageRaw2433();  break;
-        case 6:  drawPageActions();  break;
-        case 7:  drawPageWizard();   break;
-        default: drawPageMain();     break;
+        case PAGE_MAIN:   drawPageMain();     break;
+        case PAGE_MODEL:  drawPageModel();    break;
+        case PAGE_TECH:   drawPageTech();     break;
+        case PAGE_HEALTH: drawPageHealth();   break;
+        case PAGE_MENU:   drawPageMenu();     break;
+        case PAGE_RAW38:  drawPageRaw2438();  break;
+        case PAGE_RAW33:  drawPageRaw2433();  break;
+        case PAGE_WIZARD: drawPageWizard();   break;
+        default:          drawPageMain();     break;
     }
 }
 inline void displayRender() { displayRenderBody(true); }
+
+// ── БЛИМАННЯ НАПИСУ ПРО ЖИВЛЕННЯ ──────────────────────────────────────────
+//  Кличеться часто з loop(). Поза сторінкою помилки — миттєво виходить.
+static bool          g_psuBlinkOn = true;
+static unsigned long g_psuBlinkMs = 0;
+
+// Зняти повноекранне повідомлення, коли його час вийшов. Окремим завданням із
+// loop(), як і блимання: сама по собі комбінація нічого більше не робить, і
+// чекати наступного натискання, щоб прибрати напис, було б дивно.
+inline void displayFlashTask() {
+    if (comboFlashExpired(g_flash, millis())) { displayScreenCleared(); displayRender(); }
+}
+
+inline void displayPsuBlinkTask() {
+    if (!chargePsuScreenActive()) { g_psuBlinkOn = true; return; }
+    unsigned long now = millis();
+    if (now - g_psuBlinkMs < DISPLAY_PSU_BLINK_MS) return;
+    g_psuBlinkMs = now;
+    g_psuBlinkOn = !g_psuBlinkOn;
+    drawPsuPlate(g_psuBlinkOn);               // блимає ПЛАШКА, текст усередині стоїть
+}
 
 // Оновлення екрана під час РОЗРЯДУ. full=false — перемальовуємо лише рядки
 // показань (кожен сам чистить свою смужку), тож картинка не блимає раз на 5 с.
@@ -1198,11 +1812,6 @@ inline void displayChargeRefresh(bool full) {
 }
 
 // Освітлити колір RGB565 у бік білого на частку amt (0..255).
-inline uint16_t lighten565(uint16_t c, uint8_t amt) {
-    int r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
-    r += ((31 - r) * amt) >> 8; g += ((63 - g) * amt) >> 8; b += ((31 - b) * amt) >> 8;
-    return (uint16_t)((r << 11) | (g << 5) | b);
-}
 
 // Масштаб яскравості кольору RGB565: lvl 0..255 (255 = без змін, менше = темніше).
 inline uint16_t scale565(uint16_t c, uint8_t lvl) {
@@ -1213,18 +1822,6 @@ inline uint16_t scale565(uint16_t c, uint8_t lvl) {
 
 // Заповнити прямокутник R кольором col, ОМИНАЮЧИ рамку тексту T (перетин R∩T не
 // малюємо) — до 4 смуг. Так пульсуємо все заповнення, не торкаючись цифр %.
-inline void fillRectExcept(int rx, int ry, int rw, int rh,
-                           int tx, int ty, int tw, int th, uint16_t col) {
-    int rx1 = rx + rw, ry1 = ry + rh;
-    int cx0 = tx > rx ? tx : rx,   cy0 = ty > ry ? ty : ry;      // перетин R∩T
-    int cx1 = (tx + tw) < rx1 ? (tx + tw) : rx1;
-    int cy1 = (ty + th) < ry1 ? (ty + th) : ry1;
-    if (cx0 >= cx1 || cy0 >= cy1) { tft.fillRect(rx, ry, rw, rh, col); return; }
-    if (cy0 > ry)  tft.fillRect(rx, ry, rw, cy0 - ry, col);              // над T
-    if (ry1 > cy1) tft.fillRect(rx, cy1, rw, ry1 - cy1, col);            // під T
-    if (cx0 > rx)  tft.fillRect(rx, cy0, cx0 - rx, cy1 - cy0, col);      // ліворуч T
-    if (rx1 > cx1) tft.fillRect(cx1, cy0, rx1 - cx1, cy1 - cy0, col);    // праворуч T
-}
 
 // Тік анімації батареї (з loop() ~9 разів/с). ПУЛЬСАЦІЯ ЗАПОВНЕННЯ: усе залите
 // поле шкали плавно «дихає» яскравістю (колір заряду <-> світліший відтінок),
@@ -1239,16 +1836,37 @@ inline void displayAnimTick() {
     // такий самий, і статична шкала під час довгої операції виглядала б як
     // «завис»).
     if (!(g_displayPage == 0 || dischargeScreenActive() || chargeScreenActive()) || g_battW == 0) return;
+    // ⚑ АНІМУЄМО ЛИШЕ ТУ ШКАЛУ, ЩО СПРАВДІ ЗАРАЗ НА ЕКРАНІ.
+    //  Скарга власника: «при помилці живлення поверх попередження малюється
+    //  індикатор заряду». Так і було. Сторінка помилки живлення виводиться
+    //  ПОВЗ звичайний перемикач сторінок (chargePsuScreenActive() перехоплює
+    //  малювання першим), а g_displayPage при цьому лишається нулем — тобто
+    //  «головна». Анімація дивилась саме на нього, бачила «головна», брала
+    //  ЗАПАМ'ЯТОВАНІ координати шкали й ~9 разів на секунду клала градієнт
+    //  просто поверх червоної плашки з попередженням.
+    //
+    //  Перелічувати тут сторінки-перехоплювачі — програшна гра: наступна така
+    //  сторінка знову про це не знатиме. Тому питання ставиться інакше й
+    //  однозначно: чи та шкала, координати якої ми пам'ятаємо, намальована на
+    //  ЦЬОМУ екрані. Кожне очищення екрана піднімає лічильник поколінь
+    //  (displayScreenCleared), а drawBatteryBar() запам'ятовує покоління, у
+    //  якому малював. Розійшлись — на екрані вже інша сторінка, і чіпати його
+    //  анімації нема чого.
+    if (g_battDrawn.gen != g_screenGen) return;
     if (g_errTint) return;              // під час оповіщення про помилку — статичний
                                         // червоний екран (без руху градієнта)
     if (g_ledMode == LED_READ || g_ledMode == LED_WRITE)
         return;                         // під час операції (читання/запис) — екран
                                         // статичний, без руху/блимання градієнта
-    const char *src; int pct = batteryPercent(&src);
-    if (pct < 0) return;
-    uint16_t col = chargeColor(pct);
-    int fw = (g_battW - 6) * pct / 100;
-    if (fw < 4) return;
+    // ⚑ БЕРЕМО ТЕ, ЩО СПРАВДІ НАМАЛЬОВАНО, а не рахуємо заново. Раніше тут
+    //  був власний перерахунок із batteryPercent(), тобто ДРУГЕ джерело тих
+    //  самих чисел. Поки воно збігалося з тим, що намалювала сторінка, все
+    //  виглядало гаразд; варто було б їм розійтися на піксель — і анімація
+    //  почала б малювати градієнт іншої довжини, ніж рамка, тобто вилазити за
+    //  заповнення або лишати смужку рівного кольору з краю.
+    if (g_battDrawn.fw < 4) return;          // немає даних або смужка надто вузька
+    int fw = g_battDrawn.fw;
+    uint16_t col = g_battDrawn.col;
     int fx = g_battX + 3, fy = g_battY + 3, fh = g_battH - 6;
     int tx0 = g_pctTx, tx1 = g_pctTx + g_pctTw;   // рамка цифр % (оминаємо)
     int ty0 = g_pctTy, ty1 = g_pctTy + g_pctTh;
@@ -1292,11 +1910,13 @@ inline void displayFadeInMain() {
     // повного затемнення й другого спалаху — м'який кросфейд заставка -> меню.
     for (int b = 255; b >= 40; b -= 12) { analogWrite(DISPLAY_BLK_PIN, b); delay(12); }
     tft.fillScreen(C_BG);
+    displayScreenCleared();
     displayRender();
     for (int b = 40; b <= 255; b += 10) { analogWrite(DISPLAY_BLK_PIN, b); delay(12); }
     analogWrite(DISPLAY_BLK_PIN, 255);
 #else
     tft.fillScreen(C_BG);
+    displayScreenCleared();
     displayRender();
 #endif
 }
@@ -1314,6 +1934,13 @@ inline void displaySetStatus(const char *s) {
 // перемальовку (навігація / після читання — див. loop()).
 inline void displayShow(const char *s) {
     displaySetStatus(s);
+    // ⚑ У МЕНЮ оновлюємо ще й тіло. Назви частини пунктів залежать від стану
+    //  («Ціль заряду 100%» -> «...95%»), і саме після натискання, коли статус
+    //  каже «ЦІЛЬ 95%», список показував би стару ціль — тобто дві різні
+    //  відповіді на одне натискання. Тіло перемальовується БЕЗ очищення в
+    //  чорне, тож блимання немає, а drawPageMenu наприкінці сам малює футер
+    //  зі щойно виставленим статусом.
+    if (g_displayPage == PAGE_MENU) { displayRenderBody(false); return; }
     drawFooterBar();
 }
 
@@ -1323,6 +1950,11 @@ inline void displayShow(const char *s) {
 inline void displaySetErrorTint(bool on) {
     if (g_errTint == on) return;
     g_errTint = on;
+    // Відтінок міняє ВСЮ палітру, тож те, що намальовано, більше не відповідає
+    // кешу шкали батареї. Колір заливки й так зміниться (chargeColor піде в
+    // червоне) і кеш це впіймає, але рамка малюється C_TEXT — а її кеш не
+    // стереже. Найпростіше й найнадійніше — оголосити покоління екрана новим.
+    displayScreenCleared();
     // Перемальовуємо ТУ Ж сторінку БЕЗ очищення тіла в чорне (displayRenderBody
     // з clearBody=false): елементи перезаписуються на місці, змінюється лише
     // відтінок. Жодного чорного спалаху й блимання — просто екран стає (чи
@@ -1340,13 +1972,61 @@ inline void displaySetBrightness(uint8_t v) {
 #endif
 }
 
+// ── САМОПЕРЕВІРКА ЕКРАНА: розрізнити «немає підсвітки» і «немає обміну» ───
+//  Вмикається DISPLAY_ST7789_SELFTEST у settings.h. Потрібна рівно тоді, коли
+//  екран чорний: сама по собі чорнота нічого не каже — однаково виглядають і
+//  згасла підсвітка, і мовчазна шина SPI. Тест заливає екран чистими кольорами
+//  при ПОВНІЙ підсвітці, і відповідь читається очима, без осцилографа:
+//    • бачите кольори       -> і підсвітка, і обмін працюють (шукайте далі: у
+//                              верстці, орієнтації, оффсетах);
+//    • екран світлий, але без кольорів -> підсвітка є, обміну немає
+//                              (SDA/SCL/DC/RST, живлення панелі, CS);
+//    • екран лишається темним -> не працює підсвітка (BLK, її живлення).
+inline void displaySelfTest() {
+#if defined(DISPLAY_ST7789_SELFTEST)
+  #ifdef DISPLAY_BLK_PIN
+    analogWrite(DISPLAY_BLK_PIN, 255);       // на час тесту — на повну
+  #endif
+    struct { uint16_t c; const char *n; } steps[] = {
+        { 0xF800, "ЧЕРВОНИЙ" }, { 0x07E0, "ЗЕЛЕНИЙ" },
+        { 0x001F, "СИНІЙ" },    { 0xFFFF, "БІЛИЙ" },
+    };
+    for (auto &s : steps) {
+        tft.fillScreen(s.c);
+        displayScreenCleared();
+        Serial.printf("DISPLAY SELFTEST: %s\n", s.n);
+        delay(700);
+    }
+    tft.fillScreen(C_BG);
+    displayScreenCleared();
+    Serial.println("DISPLAY SELFTEST: завершено. Бачили кольори — обмін і "
+                   "підсвітка справні; світлий екран без кольорів — немає "
+                   "обміну; темний — немає підсвітки.");
+  #ifdef DISPLAY_BLK_PIN
+    analogWrite(DISPLAY_BLK_PIN, 0);         // повертаємо як було до заставки
+  #endif
+#endif
+}
+
 inline void displayInit() {
 #ifdef DISPLAY_BLK_PIN
     pinMode(DISPLAY_BLK_PIN, OUTPUT);
     analogWrite(DISPLAY_BLK_PIN, 0);          // підсвітка ВИМК до заставки —
                                               // ховаємо артефакти ініціалізації
 #endif
-    tft.init(PANEL_W, PANEL_H);               // рідні (портретні) розміри матриці
+    // ⚑ РЕЖИМ SPI передаємо ЯВНО. Раніше init() кликався без нього, тобто
+    //  мовчки брав зашитий у бібліотеку режим 0 — а панелі без виводу CS
+    //  (240x240 GMT130 і подібні) типово вимагають режим 3: CS у них
+    //  припаяний до землі, контролер вибраний завжди, і межу посилки він
+    //  визначає за станом такту в спокої. З «не тим» режимом біти приймаються
+    //  зі зсувом, жодної команди панель не впізнає — і лишається чорною.
+    //  Номер -> константа платформи тут, а не в settings.h: SPI_MODE0..3 на
+    //  різних платформах мають різні значення, тож голе число передавати не
+    //  можна (на AVR це 0x00/0x04/0x08/0x0C, на ESP32 — 0..3).
+    tft.init(PANEL_W, PANEL_H, ST7789_SPI_MODE_CONST);   // рідні (портретні) розміри
+    // ⚑ ЧАСТОТА теж явно. Типова в бібліотеки — десятки МГц: на доріжках
+    //  плати це працює, на дротах-перемичках дає «сніг» або чорний екран.
+    tft.setSPISpeed(DISPLAY_ST7789_SPI_HZ);
     tft.setRotation(DISPLAY_ST7789_ROT);
 #if defined(ST7789_USE_OFFSET_CLASS)
     // Ручні оффсети пам'яті (для нестандартних панелей або якщо авто-зсув хибний).
@@ -1366,9 +2046,33 @@ inline void displayInit() {
                                               // під колір ділянки (без чорних ореолів)
     u8g2Fonts.setFontDirection(0);
     tft.fillScreen(C_BG);
-    Serial.printf("DISPLAY: ST7789 %dx%d (panel %dx%d) color, rot=%d\n",
-                  (int)TFT_W, (int)TFT_H, (int)PANEL_W, (int)PANEL_H, (int)DISPLAY_ST7789_ROT);
+    displayScreenCleared();
+    displaySelfTest();                        // порожньо, доки не увімкнено
+                                              // DISPLAY_ST7789_SELFTEST
+    // ── ЗВІТ ПРО КОНФІГУРАЦІЮ ЕКРАНА ──────────────────────────────────────
+    //  Друкуємо ВСЕ, що впливає на «чорний екран»: геометрію, орієнтацію,
+    //  керуючі піни й те, чи використовується CS. Скарга «зображення немає»
+    //  без цих чисел не діагностується взагалі — а з ними одразу видно, чи
+    //  дійшла прошивка до ініціалізації і з якими саме параметрами.
+    Serial.printf("DISPLAY: ST7789 %dx%d (panel %dx%d) color, rot=%d, "
+                  "SPI mode=%d %.1f МГц, DC=%d RST=%d CS=%s BLK=%s\n",
+                  (int)TFT_W, (int)TFT_H, (int)PANEL_W, (int)PANEL_H,
+                  (int)DISPLAY_ST7789_ROT,
+                  (int)DISPLAY_ST7789_SPI_MODE, DISPLAY_ST7789_SPI_HZ / 1000000.0,
+                  (int)DISPLAY_DC_PIN, (int)DISPLAY_RST_PIN,
+#ifdef DISPLAY_CS_PIN
+                  String((int)DISPLAY_CS_PIN).c_str(),
+#else
+                  "немає (тягнеться до GND на модулі)",
+#endif
+#ifdef DISPLAY_BLK_PIN
+                  String((int)DISPLAY_BLK_PIN).c_str()
+#else
+                  "немає (підсвітка на живленні)"
+#endif
+    );
 }
+
 
 // ---- Кнопки (та ж логіка, що й у монохромній версії) ----
 
@@ -1485,14 +2189,158 @@ inline void displayFlip() {
     buzzClick();
 }
 
-inline void displayHandleButton() {
-    static BtnState b1, b2;
+// Натискання «OK» на пункті меню. Одна функція на всі роди пунктів — саме
+// тому, що «що зробить OK» мусить залежати від ПУНКТА, а не від сторінки.
+//
+//  ⚑ ЧОМУ БЕЗПЕЧНЕ ЙДЕ КОРОТКИМ, А ЗАПИС — ДОВГИМ. Довге натискання тут — це
+//  не прикраса, а єдиний бар'єр між «гортаю список» і «стер ідентичність».
+//  Але той самий бар'єр стояв і перед «Ціль заряду», яка нічого не пише й
+//  існує рівно для того, щоб її натискали по колу, — тримати кнопку заради
+//  зміни числа безглуздо. Тому бар'єр тепер за ознакою НАСЛІДКУ (OPD_*), а не
+//  за родом сторінки.
+inline void menuActivate(bool longPress) {
+    uint8_t kind = MI_OP, group = MG_NAV; int code = 0;
+    if (!menuRow(g_menuSel, &kind, &code, &group)) return;
+    if (kind == MI_PAGE) {
+        if (longPress) return;                    // сторінку відкриває коротке
+        g_displayPage = menuPageToDisplayPage(code);
+        displayFlip();
+        return;
+    }
+    char nb[OP_NAME_BUF]; const char *n, *a, *b2; uint8_t d, c;
+    opInfo(code, &n, &a, &b2, &d, nb, sizeof(nb), &c);
+    if (d == OPD_SAFE) {
+        if (longPress) return;
+        g_actionRequested = code;
+        return;                                   // .ino сам покаже, що вийшло
+    }
+    if (!longPress) { displayShow("тримайте OK = ПУСК"); return; }
+    g_actionRequested = code;
+    displayShow("ВИКОНУЮ...");
+}
+
+// Скільки триває «довге» натискання. Одне число на всі гілки: раніше кожна
+// заводила своє, і сторінка помилки живлення мовчки жила з нулем — тобто без
+// поняття «довге» взагалі. Саме число живе в combo.h разом із порогами
+// жестів: усі три — сходинки однієї шкали, і перевіряти відстані між ними
+// можна лише там, де вони лежать поруч.
+#define BTN_LONG_MS COMBO_LONG_MS
+
+// ── ПРИХОВАНІ ЖЕСТИ: УТРИМАННЯ ОДНІЄЇ КНОПКИ ──────────────────────────────
+//  Кнопка та сама, що зчитує пакет: у складанні з трьома кнопками це «OK», у
+//  складанні з двома окремого OK немає — і роль дістається «‹» (вибір і
+//  виконання). Пороги — 5 с (перемкнути заряд) і 10 с; див. combo.h.
 #ifdef MENU_BTN3_PIN
-    static BtnState b3;
+  #define HOLD_BTN_ST    b3
+#else
+  #define HOLD_BTN_ST    b2
 #endif
+
+// Чи робить довге натискання щось на поточному екрані — і що саме.
+//
+//  ⚑ ПОРОЖНЬО — ТЕЖ ВІДПОВІДЬ. Обіцяти «відпустіть = ПУСК» там, де довге
+//  натискання нічого не виконує (пункт-сторінка, безпечна операція), гірше,
+//  ніж мовчати: людина відпускає, нічого не стається, і наступного разу вона
+//  вже не вірить жодній підказці.
+inline const char *holdLongHint() {
+    if (g_displayPage == PAGE_MENU) {
+        uint8_t kind = MI_OP, group = MG_NAV; int code = 0;
+        if (!menuRow(g_menuSel, &kind, &code, &group)) return nullptr;
+        if (kind == MI_PAGE) return nullptr;          // сторінку відкриває коротке
+        char nb[OP_NAME_BUF]; const char *n, *a, *b2; uint8_t d, c;
+        opInfo(code, &n, &a, &b2, &d, nb, sizeof(nb), &c);
+        return (d == OPD_SAFE) ? nullptr : "відпустіть = ПУСК";
+    }
+    if (g_displayPage == PAGE_WIZARD)      return "відпустіть = ВИКОНАТИ";
+    if (g_displayPage < NUM_STATUS_PAGES)  return "відпустіть = ЗЧИТАТИ";
+    return nullptr;
+}
+
+// Перемкнути «версію без заряду» й показати, що вийшло.
+inline void displayToggleChargeMode() {
+    bool off = chargeSetOffByUser(!chargeOffByUser());
+    // Список щойно став коротшим (або довшим) — курсор міг лишитись за межами.
+    g_menuSel = menuClampSel(g_menuSel);
+    displaySetStatus(off ? "ЗАРЯД ВИМКНЕНО" : "ЗАРЯД УВІМКНЕНО");
+    displayScreenCleared();
+    displayRender();
+    if (off) buzzErr(); else buzzOk();
+}
+
+inline void displayHandleButton() {
+    static BtnState b1, b2, b3;
 #ifdef MENU_BTN_ADC_PIN
     btnAdcRefresh();   // один аналоговий зчит на весь прохід нижче
 #endif
+
+    // ⚑ ОПИТУЄМО КНОПКИ ОДИН РАЗ НА ВСІ ГІЛКИ. Раніше кожен режим (розряд,
+    //  заряд, помилка живлення, звичайне меню) опитував їх сам, своїм набором
+    //  BtnState. Поки подія просто розгалужувалась, це працювало; але жест —
+    //  це ТРИВАЛІСТЬ, і виміряти її чотирма незалежними детекторами
+    //  неможливо: перейшов між сторінками — і відлік почався заново, бо
+    //  тримав його вже інший детектор.
+    // ⚑ ПІД ЧАС ОПЕРАЦІЇ УТРИМАННЯ НАЛЕЖИТЬ АВАРІЙНІЙ ЗУПИНЦІ, А НЕ ЖЕСТАМ.
+    //  Зупинка мусить спрацювати НА ПОРОЗІ: «відпустіть, і тоді зупиниться» —
+    //  це вже не аварійна зупинка. Тому на екранах заряду й розряду жестів
+    //  немає взагалі, і кнопка там працює точно так, як працювала.
+    const bool holdLive = !dischargeScreenActive() && !chargeScreenActive();
+    const unsigned long holdLongMs = holdLive ? 0 : BTN_LONG_MS;
+
+    int e1 = pollButtonRaw(btn1Raw(), b1, BTN_LONG_MS);     // «›» далі
+#ifdef MENU_BTN3_PIN
+    int e2 = pollButtonRaw(btn2Raw(), b2, BTN_LONG_MS);     // «‹» назад
+    int e3 = pollButtonRaw(btn3Raw(), b3, holdLongMs);      // «OK» — на ньому жести
+#else
+    int e2 = pollButtonRaw(btn2Raw(), b2, holdLongMs);      // «‹» — на ньому жести
+    int e3 = 0;
+#endif
+
+    // ── ЖЕСТИ УТРИМАННЯ ───────────────────────────────────────────────────
+    //  ⚑ «ДОВГЕ» НА ЦІЙ КНОПЦІ ВИРІШУЄТЬСЯ НА ВІДПУСКАННІ. Через те їй і
+    //  передано holdLongMs = 0: pollButtonRaw() робить лише антидребезг, а
+    //  подію «довге» дає детектор нижче. Інакше дорога до вимикача заряду
+    //  проходила б через уже виконану операцію: на 0.8 с зробилось би
+    //  скидання, і аж потім, на 5 с, перемкнувся б заряд.
+    uint8_t hev = CHOLD_NONE;
+    if (holdLive) {
+        hev = comboHoldFeed(g_hold, millis(), HOLD_BTN_ST.stable == LOW);
+        int he = (hev == CHOLD_SHORT) ? 1 : (hev == CHOLD_LONG) ? 2 : 0;
+#ifdef MENU_BTN3_PIN
+        e3 = he;
+#else
+        e2 = he;
+#endif
+    } else {
+        comboHoldReset(g_hold);
+    }
+
+    // Поки на екрані повноекранне повідомлення — кнопки лише прибирають його.
+    // Кнопку, якою його щойно викликали, ще тримають: жест уже спрацював і
+    // більше подій не дає, тож повідомлення не зникає само собою під пальцем.
+    if (displayFlashActive()) {
+        if (e1 || e2 || e3 || hev != CHOLD_NONE) { g_flash.until = 0; displayRender(); }
+        return;
+    }
+
+    if (hev == CHOLD_FLASH) {
+        comboFlashArm(g_flash, millis(), COMBO_FLASH_MS);
+        displayScreenCleared();
+        displayRender();
+        return;
+    }
+    if (hev == CHOLD_CHARGE) { displayToggleChargeMode(); return; }
+    if (hev == CHOLD_ARM_CHARGE) {
+        // П'ять секунд, протягом яких нічого не відбувається, читаються як
+        // «не працює». Кажемо, що буде, якщо відпустити зараз.
+        displayShow(chargeOffByUser() ? "відпустіть = ЗАРЯД УВІМК"
+                                      : "відпустіть = ЗАРЯД ВИМК");
+        return;
+    }
+    if (hev == CHOLD_ARM_LONG) {
+        const char *h = holdLongHint();
+        if (h) displayShow(h);
+        return;
+    }
 
     // ── РЕЖИМ РОЗРЯДУ ──────────────────────────────────────────────────────
     // Поки навантаження увімкнене, кнопки НЕ гортають меню: на екрані
@@ -1501,12 +2349,7 @@ inline void displayHandleButton() {
     //   коротке натискання — негайно оновити показання;
     //   довге (0.8 с) на будь-якій кнопці — АВАРІЙНА ЗУПИНКА.
     if (dischargeScreenActive()) {
-        int d1 = pollButtonRaw(btn1Raw(), b1, 800);
-        int d2 = pollButtonRaw(btn2Raw(), b2, 800);
-        int d3 = 0;
-#ifdef MENU_BTN3_PIN
-        d3 = pollButtonRaw(btn3Raw(), b3, 800);
-#endif
+        int d1 = e1, d2 = e2, d3 = e3;
         if (!dischargeRunning()) {
             // Показано ПІДСУМОК завершеного розряду: будь-яке натискання прибирає
             // його й повертає звичайне меню.
@@ -1523,12 +2366,7 @@ inline void displayHandleButton() {
 
     // ── РЕЖИМ ЗАРЯДУ — той самий принцип, що й розряд вище ─────────────────
     if (chargeScreenActive()) {
-        int d1 = pollButtonRaw(btn1Raw(), b1, 800);
-        int d2 = pollButtonRaw(btn2Raw(), b2, 800);
-        int d3 = 0;
-#ifdef MENU_BTN3_PIN
-        d3 = pollButtonRaw(btn3Raw(), b3, 800);
-#endif
+        int d1 = e1, d2 = e2, d3 = e3;
         if (!chargeRunning()) {
             if (d1 || d2 || d3) { chargeDismiss(); displayRender(); }
             return;
@@ -1541,67 +2379,78 @@ inline void displayHandleButton() {
         return;
     }
 
-#ifdef MENU_BTN3_PIN
-    // 3 кнопки: BTN1 — ЧИСТА навігація ВПЕРЕД (жодного «довгого» читання; читання
-    // акумулятора перенесено на BTN3 на головній сторінці). longMs=0 -> «довгих»
-    // подій немає взагалі, тож випадкове утримання не запускає читання.
-    int e1 = pollButtonRaw(btn1Raw(), b1, 0);
-    if (e1 == 1) {
-        g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
-        displayFlip();
+    // ── СТОРІНКА ПОМИЛКИ ЖИВЛЕННЯ ─────────────────────────────────────────
+    // Будь-яке натискання прибирає її й повертає звичайне меню. Сама
+    // несправність нікуди не дівається: лишаються «!» у шапці й код на
+    // світлодіоді, а якщо стан зміниться на інший — сторінка з'явиться знову.
+    if (chargePsuScreenActive()) {
+        if (e1 || e2 || e3) { chargePsuDismiss(); displayRender(); }
+        return;
     }
-#else
-    // 2 кнопки: коротко — наступна сторінка, ДОВГО — читання акумулятора.
-    int e1 = pollButtonRaw(btn1Raw(), b1, 800);
-    if (e1 == 2) {
-        g_readRequested = true;
-        displayShow("ЗЧИТУВАННЯ...");     // лише футер — без перемальовки тіла (без блимання)
-    } else if (e1 == 1) {
-        g_displayPage = (g_displayPage + 1) % NUM_DISPLAY_PAGES;
-        displayFlip();
-    }
-#endif
 
-    int e2 = pollButtonRaw(btn2Raw(), b2, 800);
+    // ── ОДНЕ ПРАВИЛО НА ВСІ ЕКРАНИ ────────────────────────────────────────
+    //  Раніше «OK» означав п'ять різних речей залежно від сторінки (вибір,
+    //  аналіз, читання, перехід у Майстер, «додому»), а на сторінці «Дії»
+    //  взагалі НЕ був вибором — він гортав список. Тепер напрям і дія
+    //  розділені раз і назавжди:
+    //     «‹»/«›» — рух (сторінка або пункт), довге — стрибок (додому/група);
+    //     «OK»    — увійти чи виконати, і більше нічого.
 #ifdef MENU_BTN3_PIN
-    // 3 кнопки: BTN2 — ЧИСТА «назад» скрізь (усе дійове — на BTN3).
-    if (e2 == 1) {
-        g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
-        displayFlip();
+    if (g_displayPage == PAGE_MENU) {
+        int total = menuCount();
+        if      (e1 == 1) { g_menuSel = (g_menuSel + 1) % total;         displayRenderBody(false); }
+        else if (e1 == 2) { g_menuSel = menuNextGroup(g_menuSel);        displayRenderBody(false); }
+        else if (e2 == 1) { g_menuSel = (g_menuSel - 1 + total) % total; displayRenderBody(false); }
+        else if (e2 == 2) { g_menuSel = menuPrevGroup(g_menuSel);        displayRenderBody(false); }
+        else if (e3)      { menuActivate(e3 == 2); }
+        return;
     }
+    if (g_displayPage >= NUM_STATUS_PAGES) {
+        // Службова сторінка, відкрита з меню: «‹» повертає туди, звідки
+        // прийшли, довге «‹» — одразу до показань.
+        if      (e2 == 1) { g_displayPage = PAGE_MENU; displayFlip(); }
+        else if (e2 == 2) { g_displayPage = PAGE_MAIN; displayFlip(); }
+        else if (e1 == 1 && (g_displayPage == PAGE_RAW38 || g_displayPage == PAGE_RAW33)) {
+            // Два дампи — пара, між ними ходити зручніше «›», ніж через меню.
+            g_displayPage = (g_displayPage == PAGE_RAW38) ? PAGE_RAW33 : PAGE_RAW38;
+            displayFlip();
+        } else if (g_displayPage == PAGE_WIZARD) {
+            if      (e3 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
+            else if (e3 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
+        }
+        return;
+    }
+    // Кільце показань.
+    if      (e1 == 1) { g_displayPage = (g_displayPage + 1) % NUM_STATUS_PAGES; displayFlip(); }
+    else if (e2 == 1) { g_displayPage = (g_displayPage - 1 + NUM_STATUS_PAGES) % NUM_STATUS_PAGES; displayFlip(); }
+    else if (e2 == 2) { g_displayPage = PAGE_MAIN; displayFlip(); }
+    else if (e3 == 1) { g_displayPage = PAGE_MENU; displayFlip(); }
+    else if (e3 == 2) { g_readRequested = true; displayShow("ЗЧИТУВАННЯ..."); }
 #else
-    // 2 кнопки: BTN2 суміщає навігацію + вибір/аналіз (коротко) + виконання (довго).
-    if (g_displayPage == RESET_PAGE) {
-        if (e2 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRenderBody(false); }  // оновити картку без блимання
-        else if (e2 == 2) { g_actionRequested = g_actionSel; displayShow("ВИКОНУЮ..."); }
-    } else if (g_displayPage == WIZARD_PAGE) {
-        if (e2 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
-        else if (e2 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
-    } else if (e2 == 1) {
-        g_displayPage = (g_displayPage - 1 + NUM_DISPLAY_PAGES) % NUM_DISPLAY_PAGES;
-        displayFlip();
+    // ДВІ кнопки: «›» — рух, «‹» — вибір/виконання. Те саме правило, лише
+    // рух назад дістається довгому натисканню замість окремої кнопки.
+    if (g_displayPage == PAGE_MENU) {
+        int total = menuCount();
+        if      (e1 == 1) { g_menuSel = (g_menuSel + 1) % total;  displayRenderBody(false); }
+        else if (e1 == 2) { g_menuSel = menuNextGroup(g_menuSel); displayRenderBody(false); }
+        else if (e2)      { menuActivate(e2 == 2); }
+        return;
     }
-#endif
-
-#ifdef MENU_BTN3_PIN
-    // Третя кнопка «OK / Дія»: «Дії» коротко=вибір/довго=виконати; «Майстер»
-    // коротко=аналіз/довго=крок; інші коротко=у Майстер/довго=додому.
-    int e3 = pollButtonRaw(btn3Raw(), b3, 800);
-    if (g_displayPage == RESET_PAGE) {
-        if (e3 == 1) { g_actionSel = (g_actionSel + 1) % numActions(); displayRenderBody(false); }  // оновити картку без блимання
-        else if (e3 == 2) { g_actionRequested = g_actionSel; displayShow("ВИКОНУЮ..."); }
-    } else if (g_displayPage == WIZARD_PAGE) {
-        if (e3 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
-        else if (e3 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
-    } else if (g_displayPage == 0) {
-        // Головна сторінка: BTN3 коротко = ПЕРЕЧИТАТИ акумулятор (саме третя кнопка,
-        // а не довге утримання BTN1); довго = перейти в «Майстер».
-        if (e3 == 1) { g_readRequested = true; displayShow("ЗЧИТУВАННЯ..."); }
-        else if (e3 == 2) { g_displayPage = WIZARD_PAGE; displayFlip(); }
-    } else {
-        if (e3 == 1) { g_displayPage = WIZARD_PAGE; displayFlip(); }   // швидко в «Майстер»
-        else if (e3 == 2) { g_displayPage = 0; displayFlip(); }       // «додому»
+    if (g_displayPage >= NUM_STATUS_PAGES) {
+        if      (e1 == 1 && (g_displayPage == PAGE_RAW38 || g_displayPage == PAGE_RAW33)) {
+            g_displayPage = (g_displayPage == PAGE_RAW38) ? PAGE_RAW33 : PAGE_RAW38;
+            displayFlip();
+        }
+        else if (e1 == 2) { g_displayPage = PAGE_MENU; displayFlip(); }
+        else if (g_displayPage == PAGE_WIZARD) {
+            if      (e2 == 1) { g_wizReq = 1; g_wizBusy = true; displaySetStatus("АНАЛІЗ..."); displayRender(); }
+            else if (e2 == 2) { g_wizReq = 2; g_wizBusy = true; displaySetStatus("ВИКОНУЮ..."); displayRender(); }
+        } else if (e2 == 1) { g_displayPage = PAGE_MENU; displayFlip(); }
+        return;
     }
+    if      (e1 == 1) { g_displayPage = (g_displayPage + 1) % NUM_STATUS_PAGES; displayFlip(); }
+    else if (e1 == 2) { g_readRequested = true; displayShow("ЗЧИТУВАННЯ..."); }
+    else if (e2 == 1) { g_displayPage = PAGE_MENU; displayFlip(); }
 #endif
 }
 

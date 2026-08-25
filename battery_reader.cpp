@@ -8,6 +8,33 @@ BatteryReader::BatteryReader(int pin, int pullupPin) {
 
 bool BatteryReader::begin() {
     pinMode(_pullupPin, OUTPUT);
+    digitalWrite(_pullupPin, LOW);            // enable опущено, доки не читаємо
+
+    // Стан лінії — у журнал ще до першого читання: якщо вона несправна, усі
+    // подальші «чіпів не знайдено» пояснюються саме цим рядком.
+    // ⚑ ВНУТРІШНЯ ПІДТЯЖКА — ЯВНО Й САМЕ ТУТ. Конструктор OneWire уже виконав
+    // pinMode(_pin, INPUT), тобто ЗНЯВ її; відновлюємо після нього, інакше на
+    // платі без зовнішнього резистора лінія лишиться висіти в повітрі.
+    dsIdle();
+
+    uint8_t enl = enableLineCheck();
+    uint8_t bus = busLineCheck();
+    Serial.printf("1-Wire: пін даних %d, enable/підтяжка %d, внутрішня підтяжка %s\n"
+                  "  керуючий пін: %s\n  лінія даних: %s (піднімає: %s%s%s)\n",
+                  _pin, _pullupPin, DS_INTERNAL_PULLUP ? "УВІМК" : "вимк",
+                  enableLineText(enl), busLineText(bus),
+                  _busByCtrl ? "керуючий пін" : "",
+                  (_busByCtrl && _busByInt) ? " + " : "",
+                  _busByInt ? "внутрішня" : (_busByCtrl ? "" : "ніхто"));
+    // ⚠️ НЕСПРАВНА ЛІНІЯ — НЕ ПРИЧИНА ВІДМОВИТИ В ЗАПУСКУ. Виклик у setup()
+    // обгорнутий у `if (!begin()) { ... while(1) delay(1000); }`, тобто
+    // повернути тут false означає ЗАЦИКЛИТИ пристрій назавжди: ні вебу, ні
+    // екрана, ні журналу далі не буде. Несправність підтяжки робить
+    // непрацездатним читання пакета — але не пристрій: екран, Wi-Fi, дампи з
+    // пам'яті, налаштування працюють і далі, і саме через них користувач
+    // побачить, що не так. Тому лише звіт, а вирок — на читанні.
+    (void)enl;
+
     // Підтяжка буде увімкнена пізніше, в методі readBattery/writeBattery
     return true;
 }
@@ -24,6 +51,130 @@ void BatteryReader::pullupOff() {
 void BatteryReader::holdEnable(bool on) {
     _holdEnable = on;
     digitalWrite(_pullupPin, on ? HIGH : LOW);
+}
+
+// Перевірити саму лінію enable/підтяжки: підняти, прочитати назад, опустити,
+// прочитати назад — і повернути стан у те, як було.
+//
+// Що це ловить. Пін ми піднімаємо завжди, але чи піднялась ЛІНІЯ — питання
+// окреме: коротке на землю, обірваний або надто низькоомний резистор,
+// пробитий транзистор підтяжки дають рівно ту скаргу, з якою це й писалось —
+// «читання не працює, підтяжки немає». Без цієї перевірки прошивка повідомляє
+// лише «чіпів не знайдено», що вказує на пакет, а не на власну обв'язку.
+uint8_t BatteryReader::enableLineCheck() {
+    bool held = _holdEnable;                  // запам'ятати, як було
+
+    digitalWrite(_pullupPin, HIGH);
+    delayMicroseconds(500);                   // час на заряд ємності лінії
+    bool hi = digitalRead(_pullupPin);
+    digitalWrite(_pullupPin, LOW);
+    delayMicroseconds(500);
+    bool lo = digitalRead(_pullupPin);
+
+    digitalWrite(_pullupPin, held ? HIGH : LOW);   // повернути як було
+    if (!hi) return ENL_STUCK_LOW;            // не піднімається
+    if (lo)  return ENL_STUCK_HIGH;           // не опускається
+    return ENL_OK;
+}
+
+const char *BatteryReader::enableLineText(uint8_t code) {
+    switch (code) {
+        case ENL_STUCK_LOW:
+            return "лінія enable/підтяжки НЕ ПІДНІМАЄТЬСЯ (коротке на землю, "
+                   "надто низькоомна підтяжка вниз або пробитий ключ)";
+        case ENL_STUCK_HIGH:
+            return "лінія enable/підтяжки НЕ ОПУСКАЄТЬСЯ (коротке на живлення)";
+        default:
+            return "лінія enable/підтяжки справна";
+    }
+}
+
+// Штатний стан спокою лінії даних.
+//
+// ⚑ НАВІЩО ЦЕ ВЗАГАЛІ. Зовнішнього резистора підтяжки на платі немає —
+// підтяжку дає сам ESP32. Але це налаштування піна, і воно ЗНІМАЄТЬСЯ будь-яким
+// pinMode(pin, INPUT): у arduino-esp32 INPUT (0x01) не містить біта PULLUP
+// (0x04). Конструктор OneWire робить рівно це, а далі бібліотека чіпає тільки
+// регістр дозволу виходу й підтяжку не відновлює ніколи — лінія висить у
+// повітрі, і шина мовчить так само, як із порожнім роз'ємом.
+// Тому підтяжку вмикаємо ЯВНО тут і повертаємось сюди після кожної
+// діагностики, що чіпала режим піна.
+void BatteryReader::dsIdle() {
+#if DS_INTERNAL_PULLUP
+    pinMode(_pin, INPUT_PULLUP);
+#else
+    pinMode(_pin, INPUT);
+#endif
+}
+
+// Перевірити ЛІНІЮ ДАНИХ — тобто результат роботи підтяжки, а не намір.
+//
+// ⚑ Саме цього бракувало. enableLineCheck() каже, що керуючий пін піднявся, —
+// але скарга «немає підтяжки» про інше: чи піднялась ЛІНІЯ ДАНИХ. Між ними
+// стоїть уся обв'язка: сам резистор підтяжки, ключ, роз'єм пакета і — після
+// переробки заряду — шунт у мінусовому проводі, що розділив «мінус» пакета й
+// землю ESP32. Якщо спільної землі немає, підтяжка нікуди не доходить, і шина
+// мовчить рівно так, як мовчала б із порожнім роз'ємом.
+uint8_t BatteryReader::busLineCheck() {
+    bool held = _holdEnable;
+    _busByCtrl = _busByInt = false;
+
+    // Фаза 1: жодної ПІДТЯЖКИ ВГОРУ — ні керуючим піном, ні внутрішньої.
+    //
+    // ⚑ Тут саме INPUT_PULLDOWN, а не INPUT, і це принципово. Зовнішніх
+    // резисторів на лінії немає взагалі (використовуються внутрішні засоби
+    // контролера), тож із простим INPUT лінія просто ВИСИТЬ У ПОВІТРІ, і її
+    // рівень — не «низький», а невизначений: наведення однаково легко дає і
+    // нуль, і одиницю. Перевірка «чи тримає щось лінію вгорі» на такому
+    // читанні перетворилась би на підкидання монетки. Слабка внутрішня
+    // підтяжка ВНИЗ робить відповідь однозначною: вільна лінія читається як
+    // нуль, а справді притиснута до живлення — як одиниця.
+    pinMode(_pin, INPUT_PULLDOWN);
+    digitalWrite(_pullupPin, LOW);
+    delayMicroseconds(500);
+    bool idleBare = digitalRead(_pin);
+
+    // Фаза 2: підтяжка КЕРУЮЧИМ ПІНОМ (зовнішня обв'язка).
+    digitalWrite(_pullupPin, HIGH);
+    delayMicroseconds(500);
+    _busByCtrl = digitalRead(_pin);
+
+    // Фаза 3: підтяжка ВНУТРІШНЯ, керуючий пін опущено. Саме цей режим і
+    // працює на платі без зовнішніх резисторів, тож перевіряти його треба
+    // окремо: лінію може піднімати одна з двох підтяжок, і які саме — важливо.
+    digitalWrite(_pullupPin, LOW);
+    pinMode(_pin, INPUT_PULLUP);
+    delayMicroseconds(500);
+    _busByInt = digitalRead(_pin);
+
+    digitalWrite(_pullupPin, held ? HIGH : LOW);   // повернути enable як було
+    dsIdle();                                      // і штатний режим лінії
+
+    // ⚠️ ЧИТАННЯ ФАЗИ 1 БУЛО ПЕРЕВЕРНУТЕ. Спершу тут стояло «висока без нашої
+    // підтяжки -> несправність». Насправді це ознака СПРАВНОЇ плати: штатний
+    // резистор 2.2…4.7 кОм на 3.3 В перемагає слабку внутрішню підтяжку вниз,
+    // і лінія читається високою. Тобто перевірка лаялась на правильну обв'язку
+    // й мовчала на тій, де резистора немає, — рівно навпаки.
+    if (idleBare) return BUS_OK;                   // зовнішня підтяжка є
+    if (_busByInt || _busByCtrl) return BUS_NO_EXT_PULLUP;
+    return BUS_NO_PULLUP;
+}
+
+const char *BatteryReader::busLineText(uint8_t code) {
+    switch (code) {
+        case BUS_NO_EXT_PULLUP:
+            return "НЕМАЄ ЗОВНІШНЬОЇ ПІДТЯЖКИ на лінії даних — тримає лише "
+                   "внутрішня (~45 кОм). Для 1-Wire цього НЕ ДОСИТЬ: DS2433 і "
+                   "DS2438 живляться ПАРАЗИТНО з цієї ж лінії, і 45 кОм не дають "
+                   "їм струму — чипи не відповідають. Потрібен резистор "
+                   "2.2…4.7 кОм із лінії даних на 3.3 В";
+        case BUS_NO_PULLUP:
+            return "ЛІНІЯ ДАНИХ НЕ ПІДНІМАЄТЬСЯ ВЗАГАЛІ: коротке на землю, немає "
+                   "контакту в роз'ємі або НЕМАЄ СПІЛЬНОЇ ЗЕМЛІ з пакетом "
+                   "(перевірте шунт у мінусовому проводі)";
+        default:
+            return "зовнішня підтяжка на місці, лінія даних у нормі";
+    }
 }
 
 // --- Допоміжний Метод ДЛЯ Пошуку Пристроїв ---
@@ -129,8 +280,18 @@ bool BatteryReader::findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr) {
         }
     }
 
-    // Вимикаємо підтяжку, якщо не знайшли ні жодного пристрою
+    // Вимикаємо підтяжку, якщо не знайшли ні жодного пристрою.
+    // ⚑ І одразу перевіряємо ВЛАСНУ обв'язку. «Чіпів не знайдено» вказує на
+    // пакет, і поки лінія enable не перевірена — це припущення, а не висновок:
+    // рівно так само виглядає коротке на землю в підтяжці.
     if (!found2433 && !found2438) {
+        uint8_t enl = enableLineCheck();
+        uint8_t bus = busLineCheck();
+        if (enl != ENL_OK)
+            Serial.printf("1-Wire: %s — річ не в пакеті, а в обв'язці піна %d\n",
+                          enableLineText(enl), _pullupPin);
+        if (bus != BUS_OK)
+            Serial.printf("1-Wire: %s\n", busLineText(bus));
         pullupOff();
         return false;
     }
@@ -546,11 +707,45 @@ bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
         return false;
     }
 
+    // ⚑ ЛІЧИЛЬНИКИ ЗАРЯДУ — ЦЕ НЕ ПАМ'ЯТЬ, А ЖИВІ РЕГІСТРИ.
+    //  ICA (стор. 1) і CCA/DCA (стор. 7) — регістри накопичувача заряду. Поки
+    //  в статусі стоїть біт IAD, чіп сам оновлює їх приблизно кожні 27 мс, і
+    //  щойно записане число затирається власним значенням чипа — даташит
+    //  DS2438 прямо застерігає писати ці регістри при увімкненому вимірі
+    //  струму. Тому на час запису вимикаємо вимір (IAD) і накопичення (CA), а
+    //  потім повертаємо конфігурацію такою, якою її задав викликач.
+    //
+    //  Чому це виявилось важливим. Власник скидав лічильники, ставив пакет на
+    //  зарядну станцію — і бачив старі числа знову. Розбір двох його дампів
+    //  показав: станція НЕ чіпає DS2438 (CCA/DCA байт-у-байт ті самі), зате
+    //  переписує лічильник циклів у DS2433 РІВНО тим числом, яке дає CCA
+    //  монітора (31). Тобто станція вважає монітор першоджерелом, а наш запис
+    //  у монітор до чипа не доїжджав.
+    uint8_t cfgWant = buffer[0];
+    uint8_t cfgHold = (uint8_t)(cfgWant & ~0x03);   // без IAD і CA
+    bool    needHold = (cfgWant & 0x03) != 0;
+    if (needHold) {
+        uint8_t p0[DS2438_PAGE_SIZE];
+        memcpy(p0, buffer, DS2438_PAGE_SIZE);
+        p0[0] = cfgHold;
+        _ow->reset(); _ow->select(ds2438_addr);
+        _ow->write(DS2438_WRITE_SCRATCH); _ow->write((uint8_t)0);
+        for (int i = 0; i < DS2438_PAGE_SIZE; i++) _ow->write(p0[i]);
+        _ow->reset(); _ow->select(ds2438_addr);
+        _ow->write(DS2438_COPY_SCRATCH); _ow->write((uint8_t)0);
+        delay(11);
+    }
+
     // --- Фаза 1: пишемо всі сторінки (Write Scratchpad -> Copy Scratchpad). ---
     // Перевірку scratchpad тут НЕ робимо: для "живих" сторінок (0-2, 7 —
     // Temp/U/I/ETM/ICA/CCA/DCA) вона давала хибну "write failed" і блокувала
     // весь запис. Реальне збереження перевіряємо нижче читанням пам'яті назад.
-    for (uint8_t page = 0; page < DS2438_PAGES; page++) {
+    //
+    // ⚑ Сторінку 0 пишемо ОСТАННЬОЮ (див. цикл нижче): саме вона повертає
+    // вимір струму, і повертати його треба вже після того, як лічильники
+    // лягли на місце.
+    for (uint8_t k = 1; k <= DS2438_PAGES; k++) {
+        uint8_t page = (uint8_t)(k % DS2438_PAGES);      // 1,2,…,7,0
         const uint8_t *pageData = buffer + page * DS2438_PAGE_SIZE;
         _ow->reset();
         _ow->select(ds2438_addr);
@@ -633,9 +828,79 @@ bool BatteryReader::writeDS2438(const uint8_t *buffer, size_t size) {
         }
     }
 
+    // --- Фаза 4: ЛІЧИЛЬНИКИ ЗАРЯДУ (CCA/DCA, сторінка 7, байти 4..7).
+    // Раніше сторінку 7 не звіряв ніхто — «чіп її сам оновлює». Формально так,
+    // але саме через це невдалий запис лічильників був НЕВИДИМИЙ: користувач
+    // бачив «записано», а в чипі лишалися старі числа. А зарядна станція, як
+    // виявилось, бере лічильник циклів пакета саме звідси — і повертає старе
+    // число в DS2433. Тому звіряємо точно: на столі струм ≈ 0, і за кілька
+    // мілісекунд чіп не встигає нічого накопичити.
+    {
+        _ow->reset();
+        _ow->select(ds2438_addr);
+        _ow->write(DS2438_RECALL_MEMORY);
+        _ow->write((uint8_t)7);
+        _ow->reset();
+        _ow->select(ds2438_addr);
+        _ow->write(DS2438_READ_SCRATCH);
+        _ow->write((uint8_t)7);
+        uint8_t rb[9];
+        for (int i = 0; i < 9; i++) rb[i] = _ow->read();
+        if (OneWire::crc8(rb, 8) == rb[8]) {
+            const uint8_t *want = buffer + 7 * DS2438_PAGE_SIZE;
+            if (memcmp(rb + 4, want + 4, 4) != 0) {
+                Serial.printf("ERROR: DS2438 CCA/DCA NOT persisted. want %02X%02X/%02X%02X "
+                              "got %02X%02X/%02X%02X\n",
+                              want[5], want[4], want[7], want[6],
+                              rb[5], rb[4], rb[7], rb[6]);
+                ok = false;
+            } else {
+                Serial.printf("DS2438 CCA/DCA verified: %u / %u\n",
+                              (unsigned)((rb[5] << 8) | rb[4]),
+                              (unsigned)((rb[7] << 8) | rb[6]));
+            }
+        } else {
+            Serial.println("WARN: DS2438 CCA/DCA verify CRC noise — skip");
+        }
+    }
+
+    // --- Фаза 5: конфігурація ПОВЕРНУТА. Ми знімали біти виміру струму на час
+    // запису; якщо останній запис сторінки 0 не пройшов (шум на шині), монітор
+    // лишився б без вимірювання струму — а це вимкнений паливомір і мертві
+    // лічильники до наступного запису. Тому перевіряємо й пробуємо ще раз.
+    if (needHold) {
+        for (int attempt = 0; attempt < 2; attempt++) {
+            _ow->reset();
+            _ow->select(ds2438_addr);
+            _ow->write(DS2438_RECALL_MEMORY);
+            _ow->write((uint8_t)0);
+            _ow->reset();
+            _ow->select(ds2438_addr);
+            _ow->write(DS2438_READ_SCRATCH);
+            _ow->write((uint8_t)0);
+            uint8_t rb[9];
+            for (int i = 0; i < 9; i++) rb[i] = _ow->read();
+            if (OneWire::crc8(rb, 8) != rb[8]) break;          // шум — не наполягаємо
+            if ((rb[0] & 0x03) == (cfgWant & 0x03)) break;     // все на місці
+            if (attempt) {
+                Serial.printf("ERROR: DS2438 config NOT restored (%02X замість %02X) — "
+                              "вимір струму лишився вимкненим\n", rb[0], cfgWant);
+                ok = false;
+                break;
+            }
+            Serial.println("WARN: DS2438 config не повернулась — пишемо ще раз");
+            _ow->reset(); _ow->select(ds2438_addr);
+            _ow->write(DS2438_WRITE_SCRATCH); _ow->write((uint8_t)0);
+            for (int i = 0; i < DS2438_PAGE_SIZE; i++) _ow->write(buffer[i]);
+            _ow->reset(); _ow->select(ds2438_addr);
+            _ow->write(DS2438_COPY_SCRATCH); _ow->write((uint8_t)0);
+            delay(11);
+        }
+    }
+
     _ow->reset();
     pullupOff();
-    Serial.println(ok ? "DS2438 write completed (calib pages 3-6 + ETM verified)"
+    Serial.println(ok ? "DS2438 write completed (pages 3-6 + ETM + CCA/DCA verified)"
                       : "DS2438 write: something did NOT persist (див. вище)");
     return ok;
 }

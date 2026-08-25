@@ -18,6 +18,7 @@ enum LedMode {
     LED_WRITE,       // запис чипа: червоний+зелений почергово (увага!)
     LED_OK,          // успіх: зелений горить ~1.2 с, потім повернення в idle
     LED_ERROR,       // помилка: 4 швидких червоних блимання, потім повернення в idle
+    LED_FAULT,       // НЕСПРАВНІСТЬ ЗАЛІЗА: два червоних спалахи + пауза, ПОСТІЙНО
     LED_DISCHARGE,   // розряд навантаженням: ПЛАВНЕ дихання помаранчевим (зел.+черв.)
     LED_CHARGE,      // заряд, <90 %: ПЛАВНЕ дихання зеленим (той самий механізм, лише без червоного)
     LED_CHARGE_TAPER // заряд, 90..100 %: часте зелене блимання 2 Гц (майже готово)
@@ -55,10 +56,11 @@ inline void ledInit() {
     buzzInit();
 }
 
-inline void ledWrite(bool g, bool r) {
-    digitalWrite(LED_GREEN_PIN, g ? HIGH : LOW);
-    digitalWrite(LED_RED_PIN,   r ? HIGH : LOW);
-}
+// Поточний режим — щоб зовнішня логіка могла ЗНЯТИ свій постійний сигнал
+// (LED_FAULT), не затираючи режим, який тим часом виставив хтось інший
+// (заряд/розряд/читання).
+inline LedMode ledMode() { return g_ledMode; }
+
 
 // --- ПЛАВНЕ дихання для розряду (помаранчеве) і заряду (зелене) ---------
 // Помаранчевий = зелений + червоний разом. Щоб яскравість наростала й спадала
@@ -101,6 +103,34 @@ static bool g_breathUp = false;                // куди йде поточна
 static bool g_breathArmed = false;             // чи запущено згасання
 static unsigned long g_breathUntil = 0;        // коли перевертати напрямок
 
+// Увімкнути/вимкнути світлодіоди «по-цифровому».
+//
+// ⚑ ПОКИ ПІНИ ПІД ШІМ — ПИШЕМО ЧЕРЕЗ ШІМ, а не digitalWrite.
+//  Раніше на кожен «не дихаючий» режим ledSet() відчіплював канали LEDC
+//  (ledcDetach), щоб можна було смикати піни звичайним digitalWrite. Це й
+//  виявилось причиною паніки під час заряду: у «дихаючих» режимах яскравість
+//  веде АПАРАТНЕ згасання ledcFade() тривалістю 1.5 с, і відчеплення каналу
+//  ПОСЕРЕД нього лишало службу згасання з обірваним контекстом — падіння
+//  LoadProhibited усередині її обробника переривання (PC у IRAM, зіпсований
+//  backtrace, EXCVADDR біля нуля).
+//
+//  Заряд був єдиним режимом, який робив це регулярно: на межі 90 % він
+//  перемикався між LED_CHARGE (дихає) і LED_CHARGE_TAPER (блимає) ЩОСЕКУНДИ.
+//  Звідси й «до впровадження заряду перезавантажень не було».
+//
+//  Тепер канали лишаються прикріпленими, а рівні 0/max через ledcWrite() дають
+//  ту саму «цифрову» поведінку. Цілий клас відмов зник разом із відчепленням.
+inline void ledWrite(bool g, bool r) {
+    uint32_t mx = (1UL << LED_BREATH_BITS) - 1;
+    if (g_ledPwmOn) {
+        ledcWrite(LED_GREEN_PIN, g ? mx : 0);
+        ledcWrite(LED_RED_PIN,   r ? mx : 0);
+    } else {
+        digitalWrite(LED_GREEN_PIN, g ? HIGH : LOW);
+        digitalWrite(LED_RED_PIN,   r ? HIGH : LOW);
+    }
+}
+
 inline void ledPwmAttach() {
     if (g_ledPwmOn) return;
     ledcAttach(LED_GREEN_PIN, LED_BREATH_FREQ, LED_BREATH_BITS);
@@ -108,16 +138,24 @@ inline void ledPwmAttach() {
     g_ledPwmOn = true;
     g_breathArmed = false;                     // згасання ще не запущено
 }
+// ⚑ ВІДЧЕПЛЕННЯ БІЛЬШЕ НЕ РОБИМО — І ЦЕ НЕ ЛІНОЩІ.
+//  Відчеплення каналу LEDC посеред апаратного згасання (ledcFade, 1.5 с) —
+//  саме те, на чому пристрій падав у паніку під час заряду. Заряд єдиний
+//  режим, який перемикався між «дихаючим» LED_CHARGE і «мигаючим»
+//  LED_CHARGE_TAPER на межі 90 %, і робив це ЩОСЕКУНДИ (див. гістерезис у
+//  charge.h) — тобто відчіпляв і чіпляв канали десятки разів поспіль.
+//
+//  Тримати канали прикріпленими нічого не коштує: рівні 0/max через
+//  ledcWrite() дають ту саму «цифрову» поведінку, що й digitalWrite, а цілий
+//  клас відмов зникає.
+//
+//  Функція лишена (її кличуть ззовні) і робить єдине безпечне: гасить обидва
+//  світлодіоди, не чіпаючи прикріплення.
 inline void ledPwmDetach() {
     if (!g_ledPwmOn) return;
-    ledcDetach(LED_GREEN_PIN);
-    ledcDetach(LED_RED_PIN);
-    pinMode(LED_GREEN_PIN, OUTPUT);
-    pinMode(LED_RED_PIN, OUTPUT);
-    digitalWrite(LED_GREEN_PIN, LOW);
-    digitalWrite(LED_RED_PIN, LOW);
-    g_ledPwmOn = false;
-    g_breathArmed = false;
+    ledcWrite(LED_GREEN_PIN, 0);
+    ledcWrite(LED_RED_PIN, 0);
+    g_breathArmed = false;      // наступний вхід у дихання почне півхвилю заново
 }
 
 // Червоний притлумлений на третину: на більшості двоколірних складок червоний
@@ -175,6 +213,7 @@ inline void btnLedByMode(LedMode m, bool phase) {
         case LED_READ:  on = true;  break;   // читання — рівне світіння (без блимання)
         case LED_WRITE: on = true;  break;   // запис   — рівне світіння (без блимання)
         case LED_ERROR: on = phase; break;   // помилка — тривожне блимання (алерт)
+        case LED_FAULT: on = phase; break;   // несправність заліза — у такт зі спалахами
         case LED_BOOT:  on = false; break;   // старт — темно
         case LED_OK:    on = true;  break;   // успіх — рівне світіння
         case LED_DISCHARGE: on = phase; break; // розряд — повільне дихання разом із LED
@@ -197,7 +236,10 @@ inline void ledSet(LedMode m) {
     // звичайний digitalWrite-режим.
     bool willBreathe = (m == LED_DISCHARGE || m == LED_CHARGE);
     if (g_ledPwmOn && !willBreathe) ledPwmDetach();
-    if (m == LED_IDLE || m == LED_BOOT) g_ledBase = m;
+    // LED_FAULT — теж БАЗОВИЙ режим, а не одноразовий сигнал: несправність
+    // заліза нікуди не дівається сама, тож короткочасні OK/ERROR мусять
+    // повертатися саме в неї, а не в «готовий».
+    if (m == LED_IDLE || m == LED_BOOT || m == LED_FAULT) g_ledBase = m;
     g_ledMode = m;
     g_ledT0 = g_ledLast = millis();
     g_ledPhase = false;
@@ -251,6 +293,18 @@ inline void ledTask() {
             if (now - g_ledLast > 200) { g_ledPhase = !g_ledPhase; g_ledLast = now; ledWrite(false, g_ledPhase); }
             if (now - g_ledT0 > 1600) ledSet(g_ledBase);
             break;
+
+        case LED_FAULT: {
+            // ДВА швидких червоних спалахи, потім пауза — і так постійно.
+            // Саме «код несправності», а не рівне блимання: рівне вже зайняте
+            // під LED_ERROR (одноразова помилка операції), і сплутати їх
+            // означало б прийняти несправне живлення за невдале читання чипа.
+            unsigned long ph = (now - g_ledT0) % 1600UL;
+            bool on = (ph < 150UL) || (ph >= 300UL && ph < 450UL);
+            ledWrite(false, on);
+            g_ledPhase = on;
+            break;
+        }
 
         case LED_CHARGE:
             // Плавне ЗЕЛЕНЕ дихання (той самий механізм, що й розряд, лише без

@@ -337,6 +337,57 @@ inline long editPlanEff(const EditPlan &p, int i) {
     return (p.f[i].want >= 0) ? p.f[i].want : p.f[i].cur;
 }
 
+// ── ДОПОМІЖНЕ ДЛЯ ДВОХ ПРАВИЛ НИЖЧЕ ───────────────────────────────────────
+//  Дата, віддалена від заданої на стільки діб. Потрібна там, де стелю задає
+//  наробіток: він міряється В ДОБАХ, а поля — датами, і порівнювати їх можна
+//  лише привівши до одного.
+inline long editDatePlusDays(long ymd, long days) {
+    if (ymd <= 0) return 0;
+    long z = impresBmsToDays((int)(ymd / 10000), (int)((ymd / 100) % 100),
+                             (int)(ymd % 100)) + days;
+    int y, m, d;
+    impresBmsFromDays(z, &y, &m, &d);
+    return restoreDateNum(y, m, d);
+}
+
+// Стеля лічильників заряду/розряду в СИРИХ одиницях, що відповідає заданій
+// кількості циклів. Повертає −1, коли перерахувати нічим (немає шунта або
+// паспортної ємності) — тоді правило мовчить, а не вигадує число.
+inline long editCcaCapRaw(const EditPlan &p, long cycles) {
+    long rated = editPlanEff(p, EDF_RATED);
+    if (rated <= 0) rated = p.ratedEff;
+    if (cycles < 0 || rated <= 0 || p.rsOhm <= 0.0f) return -1;
+    return (long)impresCcaRawFromMah(cycles * rated, p.rsOhm);
+}
+
+// ── РОДИНА ЛІЧИЛЬНИКІВ І СТЕЛЯ КОЖНОГО ────────────────────────────────────
+//  ⚑ ОДИН ПЕРЕЛІК НА ЗВІРКУ Й НА ПОЧИНКУ. Спершу тут стояло п'ять майже
+//  однакових умов у звірці й такий самий цикл у починці. Звірка «від
+//  протилежного» це й упіймала: прибери одну умову — і НЕ ВПАДЕ НІЧОГО, бо
+//  сусідні чотири однаково доводять набір до починки, а та однаково притискає
+//  всіх п'ятьох. Умова, яку неможливо повалити, нічого не стереже; тому
+//  перелік один, і ламається він цілком.
+//
+//  Стеля у кожного своя за одиницями, але питання одне: «скільки цей пакет
+//  відпрацював». Лічильники заряду/розряду міряються в сирих одиницях, тож
+//  їхня стеля — те саме число циклів, переведене через ємність і шунт.
+//  Повертає кількість членів; 0 означає «цикли невідомі, правило мовчить».
+inline int editCycleFamily(const EditPlan &p, int *idx, long *cap) {
+    long cyc = p.f[EDF_CYCLES].avail ? editPlanEff(p, EDF_CYCLES) : -1;
+    if (cyc < 0) return 0;
+    int n = 0;
+    idx[n] = EDF_CALCYC; cap[n++] = cyc;
+    long raw = editCcaCapRaw(p, cyc);
+    if (raw >= 0) {
+        idx[n] = EDF_HISTCCA; cap[n++] = raw;
+        idx[n] = EDF_HISTDCA; cap[n++] = raw;
+        idx[n] = EDF_MONCCA;  cap[n++] = raw;
+        idx[n] = EDF_MONDCA;  cap[n++] = raw;
+    }
+    return n;
+}
+#define EDF_FAMILY_MAX 5
+
 // ── ЧИ НЕ СУПЕРЕЧИТЬ НАБІР САМ СОБІ ───────────────────────────────────────
 //  Перевіряємо РЕЗУЛЬТАТ, а не окрему правку: людина може посунути дату
 //  виготовлення й дату запуску одним заходом, і кожна з них окремо виглядає
@@ -370,6 +421,35 @@ inline bool editPlanConsistent(const EditPlan &p, char *why, size_t whyN) {
     if (p.f[EDF_STAMPD].want >= 0 && p.f[EDF_ETM].avail &&
         p.f[EDF_STAMPD].want > editPlanEff(p, EDF_ETM))
         return no("мітка події пізніша за наробіток — станція підтягне наробіток до неї");
+
+    // ⚑ ТЕ САМЕ ПРАВИЛО, АЛЕ ПРО ДАТИ, А НЕ ПРО МІТКУ. Дати живуть ЗМІЩЕННЯМ
+    //  від виготовлення, тож посунути виготовлення НАЗАД означає збільшити
+    //  кожне зміщення, не торкнувшись наробітку. Виміряно на корпусі: у всіх
+    //  41 дампі кожне зміщення менше за наробіток — стану «подія пізніша за
+    //  весь строк роботи» немає в жодному живому пакеті, і саме його станція
+    //  «лікує», повертаючи власні числа. Опора тут — наробіток: його задавала
+    //  людина, а зміщення поїхало саме собою, слідом за датою виготовлення.
+    if (p.f[EDF_ETM].avail && mfg > 0) {
+        long lim = editDatePlusDays(mfg, editPlanEff(p, EDF_ETM));
+        if (use > lim) return no("перший запуск пізніший за наробіток монітора");
+        if (chg > lim) return no("останній заряд пізніший за наробіток монітора");
+        if (rec > lim) return no("останнє кондиціювання пізніше за наробіток монітора");
+    }
+
+    // ⚑ ЦИКЛИ IMPRES — СТЕЛЯ ВСІЄЇ РОДИНИ ЛІЧИЛЬНИКІВ. Питання «скільки пакет
+    //  відпрацював» одне, а відповідають на нього шість полів; правку, що
+    //  опускає одне з них і лишає решту, станція бачить як побитий набір і
+    //  відновлює своє. Співвідношення виміряне, а не припущене: у всіх 41
+    //  дампі корпусу кожен брат не більший за цикли з гістограми.
+    int fi[EDF_FAMILY_MAX]; long fc[EDF_FAMILY_MAX];
+    int fn = editCycleFamily(p, fi, fc);
+    for (int k = 0; k < fn; k++) {
+        if (!p.f[fi[k]].avail || editPlanEff(p, fi[k]) <= fc[k]) continue;
+        char m[112];
+        snprintf(m, sizeof(m), "%s: більше, ніж дозволяють цикли IMPRES",
+                 editFieldName(fi[k]));
+        return no(m);
+    }
     return true;
 }
 
@@ -415,6 +495,22 @@ inline bool editPlanRepair(EditPlan &p) {
         if (p.f[EDF_STAMPD].want >= 0 && p.f[EDF_ETM].avail &&
             p.f[EDF_STAMPD].want > editPlanEff(p, EDF_ETM))
             did |= pull(EDF_STAMPD, editPlanEff(p, EDF_ETM), "пізніше за наробіток");
+        // Дата події пізніша за наробіток — підтягуємо ДАТУ, а не наробіток:
+        // підняти наробіток означало б зробити руками рівно те, заради чого
+        // все й написано (див. 3.30 і 3.53 — станція лікує саме так).
+        if (p.f[EDF_ETM].avail && mfg > 0) {
+            long lim = editDatePlusDays(mfg, editPlanEff(p, EDF_ETM));
+            if (use > lim) did |= pull(EDF_USE,     lim, "пізніше за наробіток монітора");
+            if (chg > lim) did |= pull(EDF_LASTCHG, lim, "пізніше за наробіток монітора");
+            if (rec > lim) did |= pull(EDF_LASTREC, lim, "пізніше за наробіток монітора");
+        }
+        // Брати лічильника циклів — під ту саму стелю, тим самим переліком,
+        // що його читає звірка вище.
+        int fi[EDF_FAMILY_MAX]; long fc[EDF_FAMILY_MAX];
+        int fn = editCycleFamily(p, fi, fc);
+        for (int k = 0; k < fn; k++)
+            if (p.f[fi[k]].avail && editPlanEff(p, fi[k]) > fc[k])
+                did |= pull(fi[k], fc[k], "більше за цикли IMPRES");
         if (!did) return false;               // правило є, а полагодити нічим
     }
     char why[128];
@@ -472,9 +568,22 @@ inline int editPlanApply(EditPlan &p, uint8_t *d33, uint8_t *d38,
         // заново, і сусідні поля довелось би відновлювати з пам'яті.
         bool anyCrypt = want(EDF_MFG) || want(EDF_USE) || want(EDF_LASTCHG) ||
                         want(EDF_LASTREC) || want(EDF_CALCYC) || want(EDF_HEALTH);
-        if (p.haveKey && anyCrypt) {
-            ImpresCryptFields cf;
+        // ⚑ ЦИКЛИ ЖИВУТЬ І ТУТ — ПРОСТО ЇХ НЕ ВИДНО. Крім гістограми, яку
+        //  щойно переписав impresCyclesWrite(), ту саму історію тримають
+        //  внутрішній лічильник, реверти й дозаряди в блоці CYCLE. Полями
+        //  редактора вони не є (людині немає чого про них вирішувати), але
+        //  лишити їх вищими за нові цикли означає віддати станції готовий
+        //  «побитий набір» — рівно те, з чого почалась ця правка. Тому блок
+        //  перешифровується й тоді, коли жодного зашифрованого ПОЛЯ не
+        //  чіпали: змінились цикли — родина йде за стелею.
+        bool capNeeded = false;
+        ImpresCryptFields cf;
+        if (p.haveKey) {
             impresCryptRead(d33, p.k1, p.k2, &cf);
+            ImpresCryptFields probe = cf;
+            capNeeded = impresCryptCapByCycles(&probe, editPlanEff(p, EDF_CYCLES));
+        }
+        if (p.haveKey && (anyCrypt || capNeeded)) {
             long mfg = editPlanEff(p, EDF_MFG);
             if (mfg > 0) {
                 cf.mfgY = (int)(mfg / 10000);
@@ -502,6 +611,11 @@ inline int editPlanApply(EditPlan &p, uint8_t *d33, uint8_t *d38,
             if (want(EDF_CALCYC)) cf.calCycles = (uint16_t)p.f[EDF_CALCYC].want;
             if (want(EDF_HEALTH))
                 cf.cts = restoreCtsFromHealth((int)p.f[EDF_HEALTH].want, p.ratedEff, p.rsOhm);
+            // Стеля родини — ОСТАННЬОЮ дією над набором: інакше її перекрила б
+            // правка calCycles, яка йде вище. Правило одне на весь проєкт і
+            // живе поруч із полями (impres_crypt.h), а не тут.
+            if (impresCryptCapByCycles(&cf, editPlanEff(p, EDF_CYCLES)) && wrote33)
+                *wrote33 = true;
             impresCryptWrite(d33, p.k1, p.k2, &cf);
             if (want(EDF_MFG))     did(EDF_MFG, true);
             if (want(EDF_USE))     did(EDF_USE, true);

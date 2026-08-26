@@ -52,6 +52,45 @@ GOOD = ["PMNN4488A", "PMNN4493A", "PMNN4409A"]
 OK_REPLY = {"ok": True, "models": GOOD}
 TIMEOUT = {"ok": False, "err": "таймаут"}
 
+# ── ПОРТИ: ДВА BLUETOOTH-РЯДКИ МУСЯТЬ РОЗРІЗНЯТИСЬ ────────────────────────
+#  Спарований прилад дає ДВА порти з однаковим описом. Доти вони виглядали в
+#  списку однаково, і вибір між ними був підкиданням монетки: обравши вхідний,
+#  людина діставала відмову без пояснення.
+def check_ports():
+    OUT = (r"BTHENUM\{00001101-0000-1000-8000-00805F9B34FB}_VID&00010057_PID&0001"
+           r"\8&31d1a2b&0&A1B2C3D4E5F6_C00000000")
+    INC = (r"BTHENUM\{00001101-0000-1000-8000-00805F9B34FB}_LOCALMFG&0000"
+           r"\7&1d2c0d1b&0&000000000000_00000000")
+    USB = "USB VID:PID=1A86:7523 SER=0001"
+
+    check(G.port_is_bluetooth(OUT) and G.port_is_bluetooth(INC),
+          "обидва порти пари впізнаються як Bluetooth")
+    check(not G.port_is_bluetooth(USB), "USB-перехідник за Bluetooth не видається")
+
+    # ⚑ НАЙВАЖЛИВІШЕ ТУТ. Перша редакція шукала «12 шістнадцяткових цифр» і
+    #  знаходила хвіст GUID послідовного сервісу — однаковий в УСІХ портів.
+    #  Обидва виглядали «вихідними», тобто перевірка не перевіряла нічого.
+    check(G.port_bt_addr(OUT) == "A1B2C3D4E5F6",
+          "адреса приладу читається саме з адреси, а не з GUID сервісу")
+    check(G.port_bt_outgoing(OUT) is True,  "вихідний порт розпізнано")
+    check(G.port_bt_outgoing(INC) is False, "вхідний порт розпізнано")
+    check(G.port_bt_outgoing(USB) is None,
+          "для не-Bluetooth відповідь «не знаю», а не «ні»")
+
+    lo, li = G.port_label("COM5", "Standard Serial over Bluetooth link", OUT), \
+             G.port_label("COM6", "Standard Serial over Bluetooth link", INC)
+    check(lo != li, "два Bluetooth-порти дають РІЗНІ рядки списку")
+    check("ВИХІДНИЙ" in lo, "…і вихідний названо вихідним")
+    check("CH340" in G.port_label("COM3", "USB-SERIAL CH340", USB),
+          "звичайний порт підписується як і раніше")
+
+    # Підказка мусить називати причину, а не повторювати системну помилку.
+    h = G.port_open_hint(INC, "PermissionError(13)")
+    check("вихідним" in h, "відмова на вхідному порту пояснює, що робити")
+    check(G.port_open_hint(USB, "boom") == "boom",
+          "для USB підказка не вигадується — віддається системна помилка")
+
+
 print("СПИСОК МОДЕЛЕЙ: що робити з відповіддю на TEMPLATES\n")
 
 print("1) вдала відповідь — просто беремо моделі")
@@ -135,6 +174,15 @@ i_ref = src.find("self.refresh(), self.sound_load()")
 i_tpl = src.find("self.load_templates()))")
 check(i_ref >= 0 and i_tpl >= 0 and i_ref < i_tpl,
       "при під'єднанні моделі питають ПІСЛЯ оновлення, а не першими")
+
+print("\n6) список портів: два Bluetooth-рядки розрізняються")
+check_ports()
+
+print("\n%s (помилок: %d)" % ("Є ПОМИЛКИ" if fails else "усі перевірки пройдено", fails))
+sys.exit(1 if fails else 0)
+
+print("\n6) список портів: два Bluetooth-рядки розрізняються")
+check_ports()
 
 print("\n%s (помилок: %d)" % ("Є ПОМИЛКИ" if fails else "усі перевірки пройдено", fails))
 sys.exit(1 if fails else 0)

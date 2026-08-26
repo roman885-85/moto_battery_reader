@@ -20,6 +20,7 @@ from tkinter import font as tkfont
 #  ніхто. Саме через це дефект «порожній список еталонів» і дожив
 #  до скарги власника (подробиці — у шапці moto_models.py).
 from moto_models import templates_from_reply, templates_pick_valid, TPL_NONE_FW
+import moto_models as mm
 
 # ===========================================================================
 #  МАСШТАБУВАННЯ ВМІСТУ
@@ -2501,15 +2502,28 @@ class App:
             then()
 
     def refresh_ports(self):
+        # ⚑ ПІДПИС СКЛАДАЄ moto_models, А НЕ ЦЕЙ РЯДОК. Спарований по Bluetooth
+        #  прилад дає ДВА порти з однаковим описом «Standard Serial over
+        #  Bluetooth link», і доти вони виглядали як два невідрізнимі рядки:
+        #  обравши вхідний, людина діставала відмову без жодної підказки, ЧОМУ.
+        #  Логіка живе в модулі без віджетів — тут її ганяє хостовий тест, а в
+        #  обробнику не ганяв би ніхто (та сама історія, що в 3.56).
         self._portmap = {}
+        self._hwidmap = {}
         vals = []
+        bt_out = None
         for p in serial.tools.list_ports.comports():
-            label = f"{p.device} — {(p.description or '')[:28]}"
+            label = mm.port_label(p.device, p.description, p.hwid or "")
             self._portmap[label] = p.device
+            self._hwidmap[label] = p.hwid or ""
             vals.append(label)
+            if bt_out is None and mm.port_bt_outgoing(p.hwid or "") is True:
+                bt_out = label
         self.cbPort["values"] = vals
         if vals and not self.cbPort.get():
-            self.cbPort.current(0)
+            # Вихідний Bluetooth-порт — єдиний, яким узагалі можна під'єднатись;
+            # якщо він є, ставити першим-ліпшим означало б наперед обрати не той.
+            self.cbPort.set(bt_out if bt_out else vals[0])
 
     # ---- підключення ---------------------------------------------------
     def toggle_conn(self):
@@ -2526,25 +2540,30 @@ class App:
 
     def _on_open(self, r):
         self.btnConn.config(state="normal")
-        if r.get("ok"):
-            self.connected = True
-            self.btnConn.config(text="⏏ Відключити")
-            self.status("Підключено (" + r.get("port", "") + ")", True)
-            # ⚑ ПОРЯДОК ТУТ — НЕ ОФОРМЛЕННЯ. Робітник виконує чергу СУВОРО
-            #  по черзі, тож те, що стоїть першим, питається в найгучнішу
-            #  мить: ESP щойно перезавантажився від відкриття порту й ще
-            #  досипає стартовий звіт у той самий UART. Донедавна першим
-            #  стояв саме TEMPLATES — і одна не отримана відповідь лишала
-            #  користувача без списку еталонів до кінця сеансу.
-            #  Веб-клієнт цієї біди не мав, бо питає моделі ПІСЛЯ повного
-            #  оновлення (await refresh(); await loadTemplates()). Робимо так
-            #  само: спершу INFO, і лише потім усе інше.
-            self.cmd("PING", 3.0, cb=lambda p: (self._fw_stamp(p),
-                                                 self.refresh(), self.sound_load(),
-                                                 self.clock_load(), self.clone_samples_load(),
-                                                 self.load_templates()))
-        else:
-            self.status("Помилка порту: " + r.get("err", ""), False)
+        if not r.get("ok"):
+            # ⚑ ПРИЧИНА, А НЕ ЛИШЕ ФАКТ. Для Bluetooth відмова відкриття майже
+            #  завжди означає одне й те саме — обрано вхідний порт замість
+            #  вихідного, — і мовчазне «помилка» лишає людину сам на сам із
+            #  двома однаковими рядками списку.
+            hw = getattr(self, "_hwidmap", {}).get(self.cbPort.get(), "")
+            self.status("Не відкрився: " + mm.port_open_hint(hw, r.get("err", "")), False)
+            return
+        self.connected = True
+        self.btnConn.config(text="⏏ Відключити")
+        self.status("Підключено (" + r.get("port", "") + ")", True)
+        # ⚑ ПОРЯДОК ТУТ — НЕ ОФОРМЛЕННЯ. Робітник виконує чергу СУВОРО
+        #  по черзі, тож те, що стоїть першим, питається в найгучнішу
+        #  мить: ESP щойно перезавантажився від відкриття порту й ще
+        #  досипає стартовий звіт у той самий UART. Донедавна першим
+        #  стояв саме TEMPLATES — і одна не отримана відповідь лишала
+        #  користувача без списку еталонів до кінця сеансу.
+        #  Веб-клієнт цієї біди не мав, бо питає моделі ПІСЛЯ повного
+        #  оновлення (await refresh(); await loadTemplates()). Робимо так
+        #  само: спершу INFO, і лише потім усе інше.
+        self.cmd("PING", 3.0, cb=lambda p: (self._fw_stamp(p),
+                                             self.refresh(), self.sound_load(),
+                                             self.clock_load(), self.clone_samples_load(),
+                                             self.load_templates()))
 
     # ⚑ ВІДБИТОК ЗБІРКИ В ЗАГОЛОВКУ ВІКНА. Перше питання будь-якого розбору —
     #  «а чи та прошивка взагалі в приладі?». Доти дата збірки лежала лише в

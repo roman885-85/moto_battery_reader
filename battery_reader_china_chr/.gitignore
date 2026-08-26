@@ -1,7 +1,0 @@
-# Артефакти хостових тестів (tools/*_check.cpp) — збираються й пишуться в CWD.
-build/
-*.wav
-
-# Python
-__pycache__/
-*.pyc

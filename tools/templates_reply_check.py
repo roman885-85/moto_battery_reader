@@ -29,6 +29,7 @@
   ганяється тут напряму. Той самий прийом, що й із charge.h проти
   web_server.h: логіка живе там, куди тест дістає.
 """
+import io
 import os
 import sys
 
@@ -80,9 +81,39 @@ def check_ports():
     lo, li = G.port_label("COM5", "Standard Serial over Bluetooth link", OUT), \
              G.port_label("COM6", "Standard Serial over Bluetooth link", INC)
     check(lo != li, "два Bluetooth-порти дають РІЗНІ рядки списку")
-    check("ВИХІДНИЙ" in lo, "…і вихідний названо вихідним")
+    check("вихідний" in lo and "вхідний" not in lo.replace("вихідний", ""),
+          "…і вихідний названо вихідним, а не сплутано з вхідним")
     check("CH340" in G.port_label("COM3", "USB-SERIAL CH340", USB),
           "звичайний порт підписується як і раніше")
+
+    # ── ІМ'Я ПРИЛАДУ В РЯДКУ СПИСКУ ──────────────────────────────────────
+    #  Windows підписує всі Bluetooth-порти однаково, тож без цього прилад у
+    #  списку був без назви взагалі.
+    import tempfile
+    check("A1B2C3D4E5F6" in G.port_label("COM5", "x", OUT),
+          "поки ім'я невідоме — у рядку адреса, а не порожнє місце")
+    names = G.bt_names_merge({}, "A1B2C3D4E5F6", "MotoBattery-E5F6")
+    check("MotoBattery-E5F6" in G.port_label("COM5", "x", OUT, names),
+          "щойно прилад назвався — порт підписано ІМЕНЕМ")
+    # ⚑ ІМ'Я НЕ ВИГАДУЄТЬСЯ Й НЕ ПРИЛИПАЄ ДО ЧУЖОЇ АДРЕСИ.
+    check("MotoBattery" not in G.port_label("COM7", "x",
+          OUT.replace("A1B2C3D4E5F6", "0102030405F0"), names),
+          "чужий прилад не отримує чужого імені")
+    check(G.bt_names_merge(names, "", "X") == names and
+          G.bt_names_merge(names, "AABBCCDDEEFF", "") == names,
+          "порожня адреса чи порожнє ім'я не потрапляють у пам'ять")
+    check(G.bt_names_merge(names, "A1B2C3D4E5F6", "Інший") ["A1B2C3D4E5F6"] == "Інший",
+          "перейменований прилад перезаписує стару назву, а не додає другу")
+
+    # Довідник, без якого все працює, не сміє валити програму.
+    d = tempfile.mkdtemp()
+    path = G.bt_names_path(d)
+    check(G.bt_names_load(path) == {}, "немає файла — просто ще нічого не знаємо")
+    check(G.bt_names_save(path, names) and G.bt_names_load(path) == names,
+          "записали — прочитали те саме")
+    with io.open(path, "w", encoding="utf-8") as f:
+        f.write("{це не json")
+    check(G.bt_names_load(path) == {}, "побитий файл не валить програму, а просто мовчить")
 
     # Підказка мусить називати причину, а не повторювати системну помилку.
     h = G.port_open_hint(INC, "PermissionError(13)")

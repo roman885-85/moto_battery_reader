@@ -945,6 +945,16 @@ void handleDumpInfo2438() {
     // шукати причину, чому пристрій зник із Wi-Fi після перемикання.
     json += ",\"radio\":\""; json += radioModeName(radioMode()); json += "\"";
     json += ",\"radioSwitchable\":"; json += radioSwitchable() ? "true" : "false";
+    // ⚑ ІМ'Я В ЕФІРІ — ТЕЖ ІЗ ПРИЛАДУ. Windows підписує послідовний порт
+    //  Bluetooth однаково для всіх — «Standard Serial over Bluetooth link», —
+    //  і в списку портів наш прилад нічим не відрізняється від будь-якого
+    //  іншого спареного пристрою. Ім'я знає лише сам прилад, тож він його й
+    //  каже; клієнт запам'ятовує його за адресою і підписує порт наступного разу.
+    #ifdef BT_ENABLED
+    json += ",\"btName\":\""; json += btName(); json += "\"";
+    #else
+    json += ",\"btName\":\"\"";
+    #endif
     // ETM (DS2438[8..11], сек наробітку). Рація показує «дату першого користування»
     // як (свій поточний час − ETM) — перевірено діффом до/після калібрування.
     uint32_t etm = ((uint32_t)batteryDump2438[11] << 24) | ((uint32_t)batteryDump2438[10] << 16) |

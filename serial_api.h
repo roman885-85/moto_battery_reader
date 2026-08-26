@@ -198,6 +198,16 @@ static String serBuildInfo() {
         // шукати причину, чому пристрій зник із Wi-Fi після перемикання.
         j += ",\"radio\":\""; j += radioModeName(radioMode()); j += "\"";
         j += ",\"radioSwitchable\":"; j += radioSwitchable() ? "true" : "false";
+        // ⚑ ІМ'Я В ЕФІРІ — ТЕЖ ІЗ ПРИЛАДУ. Windows підписує послідовний порт
+        //  Bluetooth однаково для всіх — «Standard Serial over Bluetooth link», —
+        //  і в списку портів наш прилад нічим не відрізняється від будь-якого
+        //  іншого спареного пристрою. Ім'я знає лише сам прилад, тож він його й
+        //  каже; клієнт запам'ятовує його за адресою і підписує порт наступного разу.
+        #ifdef BT_ENABLED
+        j += ",\"btName\":\""; j += btName(); j += "\"";
+        #else
+        j += ",\"btName\":\"\"";
+        #endif
         j += ",\"serial\":\"" + serial + "\"";
         if (hasSN2433) {
             char b[3]; String s33 = "";

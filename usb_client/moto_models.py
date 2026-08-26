@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import io
+import json
+import os
 import re
 """СПИСОК МОДЕЛЕЙ-ЕТАЛОНІВ: що показувати після відповіді на TEMPLATES.
 
@@ -125,18 +128,69 @@ def port_bt_outgoing(hwid):
     return a.strip("0") != ""  # усі нулі -> локальний, тобто вхідний
 
 
+# ── ІМ'Я ПРИЛАДУ В СПИСКУ ПОРТІВ ──────────────────────────────────────────
+#  Windows підписує послідовний порт Bluetooth однаково для всіх — «Standard
+#  Serial over Bluetooth link», — тож у списку наш прилад нічим не відрізнявся
+#  від будь-якого іншого спареного пристрою: людина бачила порт без назви.
+#
+#  ⚑ ІМ'Я ЗНАЄ ЛИШЕ САМ ПРИЛАД, і питати його нема в кого, доки не з'єднались.
+#  Тому клієнт запам'ятовує ім'я за АДРЕСОЮ (її видно в списку портів завжди) і
+#  підписує порт починаючи з наступного разу. Скласти ім'я самому з BT_NAME
+#  прошивки не можна: це була б друга копія константи по інший бік дроту, і
+#  перейменувавши прилад, ми дістали б клієнта, який упевнено показує стару
+#  назву. Краще чесне «поки не знаю», ніж упевнена неправда.
+def bt_names_path(home):
+    """Де лежить пам'ять імен. Окремий файл, а не налаштування програми:
+    це не смак користувача, а довідник, який заповнюється сам."""
+    return os.path.join(home or ".", ".moto_bt_names.json")
+
+
+def bt_names_load(path):
+    """Немає файла або він побитий — це НЕ помилка: просто ще нічого не знаємо.
+    Порожній словник тут чесніший за виняток, бо єдиний наслідок незнання —
+    порт підпишеться адресою замість імені."""
+    try:
+        with io.open(path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return {str(k).upper(): str(v) for k, v in d.items() if k and v}
+    except Exception:
+        return {}
+
+
+def bt_names_save(path, names):
+    """Не вдалось записати — теж не помилка: наступного разу просто спитаємо
+    прилад знову. Падати через довідник, без якого все працює, не можна."""
+    try:
+        with io.open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(names or {}, ensure_ascii=False, indent=1))
+        return True
+    except Exception:
+        return False
+
+
+def bt_names_merge(names, addr, name):
+    """Повертає НОВИЙ словник; порожнє ім'я або адресу не запам'ятовує."""
+    out = dict(names or {})
+    a = (addr or "").upper()
+    n = (name or "").strip()
+    if a and n:
+        out[a] = n
+    return out
+
+
 # Рядок для випадного списку. Два Bluetooth-порти мусять відрізнятись ОЧИМА —
 # інакше підказка «оберіть вихідний» не має до чого відноситись.
-def port_label(device, description, hwid=""):
+def port_label(device, description, hwid="", names=None):
     if not port_is_bluetooth(hwid):
         return "%s — %s" % (device, (description or "")[:28])
     out = port_bt_outgoing(hwid)
     a = port_bt_addr(hwid)
+    known = (names or {}).get(a.upper()) if a else None
     if out is True:
-        return "%s — Bluetooth, схоже на ВИХІДНИЙ (%s)" % (device, a)
+        return "%s — %s (Bluetooth, вихідний)" % (device, known or a or "прилад")
     if out is False:
         return "%s — Bluetooth, схоже на вхідний" % device
-    return "%s — Bluetooth" % device
+    return "%s — %s (Bluetooth)" % (device, known or "прилад")
 
 
 # Порада, коли порт не відкрився. Для Bluetooth причина майже завжди одна й та

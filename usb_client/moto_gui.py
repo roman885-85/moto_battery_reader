@@ -2510,10 +2510,12 @@ class App:
         #  обробнику не ганяв би ніхто (та сама історія, що в 3.56).
         self._portmap = {}
         self._hwidmap = {}
+        if not hasattr(self, "_btnames"):
+            self._btnames = mm.bt_names_load(mm.bt_names_path(os.path.expanduser("~")))
         vals = []
         bt_out = None
         for p in serial.tools.list_ports.comports():
-            label = mm.port_label(p.device, p.description, p.hwid or "")
+            label = mm.port_label(p.device, p.description, p.hwid or "", self._btnames)
             self._portmap[label] = p.device
             self._hwidmap[label] = p.hwid or ""
             vals.append(label)
@@ -2613,6 +2615,17 @@ class App:
             self.lblSwName.config(text="силова частина: %s" % d["swName"])
         if d.get("chgHwTxt") and hasattr(self, "lblChgHw"):
             self.lblChgHw.config(text=d["chgHwTxt"])
+        # ⚑ ІМ'Я ПРИЛАДУ ЗАПАМ'ЯТОВУЄМО ЗА АДРЕСОЮ. Windows підписує всі
+        #  Bluetooth-порти однаково, тож у списку прилад був без назви. Ім'я знає
+        #  лише він сам — питаємо його тут і підписуємо порт починаючи з
+        #  наступного разу. Складати назву самому з BT_NAME прошивки не можна:
+        #  це була б друга копія константи по інший бік дроту.
+        bn = d.get("btName")
+        if bn:
+            addr = mm.port_bt_addr(getattr(self, "_hwidmap", {}).get(self.cbPort.get(), ""))
+            if addr:
+                self._btnames = mm.bt_names_merge(getattr(self, "_btnames", {}), addr, bn)
+                mm.bt_names_save(mm.bt_names_path(os.path.expanduser("~")), self._btnames)
         if d.get("scaleTxt"):
             self.scaleTxt = d["scaleTxt"]
             if hasattr(self, "btnChgAuto"):

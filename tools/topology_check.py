@@ -70,6 +70,55 @@ def strip_strings(src):
     return src
 
 
+# ── ВИКОРИСТАНО РАНІШЕ, НІЖ ОГОЛОШЕНО ─────────────────────────────────────
+#  ⚑ ЧОМУ ЦЕ ТУТ, А НЕ В ХОСТОВОМУ ТЕСТІ. Скетч не збирається на хості ЖОДНИМ
+#  тестом — за ним весь Arduino-світ. Через це помилка «X was not declared in
+#  this scope» доходить не до нас, а до власника, просто в Arduino IDE: саме
+#  так і сталося, коли web_server.h звернувся до btName(), а bt_link.h у скетчі
+#  включався ПІСЛЯ нього (через serial_api.h). Складалось усе рівно доти, доки
+#  звідти ніхто по цьому імені не звертався.
+#
+#  ПРЕПРОЦЕСУВАТИ скетч при цьому можна завжди — і в готовому тексті видно те
+#  саме, що бачить компілятор: порядок. Якщо перше ЗВЕРТАННЯ до функції стоїть
+#  раніше за її оголошення, C++ такий текст не прийме, хай які заголовки
+#  включені.
+#
+#  Перелік імен НЕ ведеться руками: беремо всі inline-функції наших власних
+#  заголовків, тож нова функція потрапляє під нагляд сама.
+OWN_HEADERS = ("bt_link.h", "radio_mode.h", "charge.h", "discharge.h",
+               "operations.h", "impres_crypt.h", "edit_plan.h", "snapshot_diff.h")
+
+DEF_RE = re.compile(r"^[ \t]*inline[ \t]+[A-Za-z_][\w:*&<>, ]*?([A-Za-z_]\w*)[ \t]*\(", re.M)
+
+
+def own_inline_names():
+    names = set()
+    for h in OWN_HEADERS:
+        path = os.path.join(ROOT, h)
+        if not os.path.exists(path):
+            continue
+        txt = open(path, encoding="utf-8").read()
+        names |= {m.group(1) for m in DEF_RE.finditer(txt)}
+    return names
+
+
+def check_declared_before_use(code, names):
+    """Повертає перелік імен, до яких звернулись раніше, ніж оголосили."""
+    bad = []
+    for n in sorted(names):
+        # Оголошення (воно ж може бути й визначенням) у препроцесованому тексті.
+        d = re.search(r"\binline\b[^;{]*?\b%s\b[ \t]*\(" % re.escape(n), code)
+        if not d:
+            continue                      # у цій конфігурації функції немає
+        first = None
+        for m in re.finditer(r"\b%s\b[ \t]*\(" % re.escape(n), code):
+            first = m.start()
+            break
+        if first is not None and first < d.start():
+            bad.append(n)
+    return bad
+
+
 def main():
     known = defined_names()
     fails = 0
@@ -90,6 +139,15 @@ def main():
             fails += 1
         else:
             print("   ок    топологія %d (%s)" % (topo, name))
+
+        bad = check_declared_before_use(code, own_inline_names())
+        if bad:
+            print("   ЗБІЙ  топологія %d (%s): звертання РАНІШЕ за оголошення — %s\n"
+                  "        (заголовок із цією функцією включається пізніше за того, "
+                  "хто її кличе)" % (topo, name, ", ".join(bad)))
+            fails += 1
+        else:
+            print("   ок    …і жодну функцію не кличуть раніше, ніж оголосять")
 
     print("\n%s (помилок: %d)" % ("Є ПОМИЛКИ" if fails else "усі перевірки пройдено", fails))
     return 1 if fails else 0

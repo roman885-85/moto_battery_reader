@@ -29,6 +29,7 @@
   ганяється тут напряму. Той самий прийом, що й із charge.h проти
   web_server.h: логіка живе там, куди тест дістає.
 """
+import json
 import io
 import os
 import sys
@@ -155,6 +156,69 @@ def check_ports():
     check('u.path == "/find"' in src, "…а сторінка має до чого звертатись (/find)")
     #  Копії правил у мосту бути не повинно: одна відповідь на одне питання.
     check("BTHENUM" not in src, "міст не тримає власної копії ознаки Bluetooth")
+
+    # ── А ТЕПЕР ГОЛОВНЕ: СТОРІНКУ ПИТАЄМО ТАК, ЯК ЇЇ ПИТАЄ БРАУЗЕР ───────
+    #  ⚑ ЧОМУ ГРЕПУ ПО ВИХІДНОМУ ТЕКСТУ НЕ ВИСТАЧАЄ. Перевірки вище стерегли
+    #  НАПИСАНЕ, а скарга власника була про ВІДДАНЕ: «кнопки нема». І текст, і
+    #  маршрут були на місці — а сторінка не віддавалась узагалі, бо емодзі в
+    #  рядку впорскування було записане парою сурогатів, і сервер падав на
+    #  .encode("utf-8") ще до першого байта відповіді. Греп бачив кнопку;
+    #  браузер не бачив нічого.
+    #
+    #  Тому тут піднімається СПРАВЖНІЙ обробник мосту на справжньому сокеті й
+    #  сторінка читається по HTTP. pyserial на збірковій машині немає — і не
+    #  треба: заглушка потрібна лише щоб модуль зібрався, портів у ній нема.
+    import types, threading, urllib.request
+    from http.server import ThreadingHTTPServer
+
+    stub = types.ModuleType("serial"); stub.Serial = object
+    tools_mod = types.ModuleType("serial.tools")
+    lp = types.ModuleType("serial.tools.list_ports"); lp.comports = lambda: []
+    tools_mod.list_ports = lp; stub.tools = tools_mod
+    sys.modules.setdefault("serial", stub)
+    sys.modules.setdefault("serial.tools", tools_mod)
+    sys.modules.setdefault("serial.tools.list_ports", lp)
+
+    argv_was, sys.argv = sys.argv, ["moto_bridge.py"]
+    try:
+        import moto_bridge as MB
+    finally:
+        sys.argv = argv_was
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), MB.Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = "http://127.0.0.1:%d" % srv.server_address[1]
+    page, err = None, None
+    try:
+        page = urllib.request.urlopen(base + "/", timeout=10).read().decode("utf-8")
+    except Exception as e:
+        err = "%s: %s" % (type(e).__name__, e)
+
+    check(page is not None, "сторінка мосту взагалі віддається браузеру (%s)" % (err or "ок"))
+    if page:
+        #  Кнопку шукаємо в тому, що ПРИЙШЛО по мережі, а не у вихідному тексті.
+        check("Знайти прилад" in page, "…і кнопка пошуку приладу в ній є")
+        check("/find" in page, "…і вона має куди звертатись")
+        #  ⚑ КНОПКА НЕ МУСИТЬ ЗАЛЕЖАТИ ВІД СПИСКУ ПОРТІВ. Тут портів немає
+        #  зовсім (заглушка віддає порожньо) — саме той випадок, коли пошук
+        #  потрібен найбільше. Раніше кнопка народжувалась усередині обробника
+        #  /ports і при порожньому списку не з'являлась зовсім.
+        i_ins, i_ports = page.rfind("insertBefore(fb"), page.find("fetch('/ports')")
+        check(i_ins >= 0 and (i_ports < 0 or i_ins < i_ports),
+              "…і вставляється ДО того, як міст питають про порти, а не в відповіді")
+    srv.shutdown()
+
+    # Довідка про порти по HTTP теж мусить віддаватись, а не падати.
+    try:
+        srv2 = ThreadingHTTPServer(("127.0.0.1", 0), MB.Handler)
+        threading.Thread(target=srv2.serve_forever, daemon=True).start()
+        raw = urllib.request.urlopen("http://127.0.0.1:%d/ports" % srv2.server_address[1],
+                                     timeout=10).read().decode("utf-8")
+        srv2.shutdown()
+        ok_ports = json.loads(raw).get("ports") == []
+    except Exception as e:
+        ok_ports = False
+    check(ok_ports, "перелік портів віддається у JSON навіть коли портів немає")
 
     # Підказка мусить називати причину, а не повторювати системну помилку.
     h = G.port_open_hint(INC, "PermissionError(13)")

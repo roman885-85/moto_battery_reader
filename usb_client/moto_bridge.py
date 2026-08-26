@@ -161,6 +161,13 @@ def find_device():
 
 # Шар, що підмінює транспорт client_usb.html з Web Serial на локальний міст.
 # Впорскується перед </body>; перевизначає глобальні cmd()/toggleConn().
+#
+#  ⚑ ТЕКСТ ТУТ ПИШЕТЬСЯ ТЕКСТОМ, А НЕ \\uXXXX. Файл у UTF-8, сторінка
+#  віддається в UTF-8 — екранувати нема від чого. А ціна екранування виявилась
+#  не косметичною: у звичайному (не r"") рядку Python \\uXXXX розбирає САМ, і
+#  емодзі, записане парою сурогатів, ставало в рядку двома половинками, яких у
+#  UTF-8 не існує. Сторінка після цього не віддавалась взагалі — сервер падав
+#  на .encode("utf-8") ще до першого байта відповіді.
 INJECT = """
 <script>
 (function(){
@@ -174,44 +181,55 @@ INJECT = """
   // Підключення = відкрити COM-порт на мосту:
   toggleConn=async function(){
     if(connected){ await fetch('/close').catch(function(){}); connected=false;
-      $('dot').classList.remove('on'); $('btnConn').textContent='\\uD83D\\uDD0C \\u041F\\u0456\\u0434\\u043A\\u043B\\u044E\\u0447\\u0438\\u0442\\u0438';
-      $('st').textContent='\\u041D\\u0435 \\u043F\\u0456\\u0434\\u043A\\u043B\\u044E\\u0447\\u0435\\u043D\\u043E'; return; }
-    $('st').textContent='\\u0412\\u0456\\u0434\\u043A\\u0440\\u0438\\u0442\\u0442\\u044F \\u043F\\u043E\\u0440\\u0442\\u0443...';
+      $('dot').classList.remove('on'); $('btnConn').textContent='🔌 Підключити';
+      $('st').textContent='Не підключено'; return; }
+    $('st').textContent='Відкриття порту...';
     try{
       var sel=$('bridgePort'); var pq=(sel&&sel.value)?('?port='+encodeURIComponent(sel.value)):'';
       var r=await (await fetch('/open'+pq)).json();
-      if(r.ok){ connected=true; $('dot').classList.add('on'); $('btnConn').textContent='\\u23CF \\u0412\\u0456\\u0434\\u043A\\u043B\\u044E\\u0447\\u0438\\u0442\\u0438';
-        $('st').textContent='\\u041F\\u0456\\u0434\\u043A\\u043B\\u044E\\u0447\\u0435\\u043D\\u043E ('+r.port+')';
+      if(r.ok){ connected=true; $('dot').classList.add('on'); $('btnConn').textContent='⏏ Відключити';
+        $('st').textContent='Підключено ('+r.port+')';
         await refresh(); await loadTemplates(); await sndLoad(); await clLoadSamples(); await disTick(); }
-      else { $('st').textContent='\\u041F\\u043E\\u043C\\u0438\\u043B\\u043A\\u0430: '+(r.err||''); }
-    }catch(e){ $('st').textContent='\\u041C\\u0456\\u0441\\u0442 \\u043D\\u0435\\u0434\\u043E\\u0441\\u0442\\u0443\\u043F\\u043D\\u0438\\u0439: '+e.message; }
+      else { $('st').textContent='Помилка: '+(r.err||''); }
+    }catch(e){ $('st').textContent='Міст недоступний: '+e.message; }
   };
-  // Показати випадаючий список COM-портів поруч із кнопкою «Підключити».
+
+  var btn=$('btnConn'); if(!btn) return;
+
+  // ⚑ КНОПКА ПОШУКУ СТАВИТЬСЯ ОДРАЗУ, А НЕ У ВІДПОВІДІ ПРО ПОРТИ. Раніше вона
+  //  народжувалась усередині обробника /ports і зникала разом із ним: не
+  //  відповів міст, віддав порожній список, упало перерахування портів — і
+  //  кнопки просто немає, без жодного пояснення. А потрібна вона саме тоді,
+  //  коли з портами незрозуміло.
+  var fb=document.createElement('button');
+  fb.textContent='🔍 Знайти прилад';
+  fb.style.cssText='margin-right:8px;background:#1b2430;color:#e7ecf3;border:1px solid #2a323f;border-radius:8px;padding:6px 10px;cursor:pointer';
+  fb.onclick=async function(){
+    fb.disabled=true;
+    $('st').textContent='Пошук приладу...';
+    try{
+      var r=await (await fetch('/find')).json();
+      if(r.ok){ var sel=$('bridgePort');
+                if(sel){ var seen=false;
+                  for(var i=0;i<sel.options.length;i++) if(sel.options[i].value===r.port){ sel.selectedIndex=i; seen=true; }
+                  if(!seen){ var o=document.createElement('option'); o.value=r.port; o.textContent=r.port;
+                             sel.appendChild(o); sel.selectedIndex=sel.options.length-1; } }
+                if(!connected) await toggleConn(); }
+      else $('st').textContent='Не знайдено: '+(r.err||'');
+    }catch(e){ $('st').textContent='Міст недоступний: '+e.message; }
+    fb.disabled=false;
+  };
+  btn.parentNode.insertBefore(fb, btn);
+
+  // Список COM-портів поруч із кнопкою «Підключити» — окремо й після кнопки
+  // пошуку, бо його поява залежить від відповіді мосту, а її може й не бути.
   fetch('/ports').then(function(r){return r.json();}).then(function(d){
     var ps=(d&&d.ports)||[]; if(!ps.length) return;
     var sel=document.createElement('select'); sel.id='bridgePort';
     sel.style.cssText='margin-right:8px;background:#0e1218;color:#e7ecf3;border:1px solid #2a323f;border-radius:8px;padding:6px';
     ps.forEach(function(p){var o=document.createElement('option');o.value=p.port;o.textContent=p.port+(p.desc?(' — '+p.desc):'');sel.appendChild(o);});
-    var btn=$('btnConn'); btn.parentNode.insertBefore(sel, btn);
-    // ⚑ КНОПКА ПОШУКУ — ГОЛОВНА ДЛЯ ТОГО, ХТО НЕ ЗНАЄ НОМЕРА ПОРТУ. У системі
-    //  десяток COM-портів, жоден не підписаний іменем приладу; прилад
-    //  представляється сам у відповідь на PING, тож питаємо кожен.
-    var fb=document.createElement('button');
-    fb.textContent='\uD83D\uDD0D \u0417\u043D\u0430\u0439\u0442\u0438 \u043F\u0440\u0438\u043B\u0430\u0434';
-    fb.style.cssText='margin-right:8px;background:#1b2430;color:#e7ecf3;border:1px solid #2a323f;border-radius:8px;padding:6px 10px;cursor:pointer';
-    fb.onclick=async function(){
-      fb.disabled=true;
-      $('st').textContent='\u041F\u043E\u0448\u0443\u043A \u043F\u0440\u0438\u043B\u0430\u0434\u0443...';
-      try{
-        var r=await (await fetch('/find')).json();
-        if(r.ok){ for(var i=0;i<sel.options.length;i++) if(sel.options[i].value===r.port) sel.selectedIndex=i;
-                  if(!connected) await toggleConn(); }
-        else $('st').textContent='\u041D\u0435 \u0437\u043D\u0430\u0439\u0434\u0435\u043D\u043E: '+(r.err||'');
-      }catch(e){ $('st').textContent='\u041C\u0456\u0441\u0442 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0438\u0439: '+e.message; }
-      fb.disabled=false;
-    };
-    btn.parentNode.insertBefore(fb, btn);
-  });
+    fb.parentNode.insertBefore(sel, fb);
+  }).catch(function(){});
 })();
 </script>
 """

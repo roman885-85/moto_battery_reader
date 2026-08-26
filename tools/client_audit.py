@@ -207,5 +207,33 @@ for nm in ("monDis", "monChg"):
         bad("exe-клієнт: панель %s не масштабується разом із вікном" % nm)
 print("   спільний каркас: у вебі opTiles/opBand/opSpark, в exe — OpMonitor")
 
+# ── РЯДОК, ЯКИЙ НЕМОЖЛИВО ВІДДАТИ ─────────────────────────────────────────
+#  ⚑ ЗВІДКИ ЦЕ. Скарга «кнопки нема»: у мосту в звичайному (не r"") рядку
+#  Python емодзі було записане екранованою парою сурогатів. Python розібрав
+#  \uXXXX САМ — і в рядку опинились дві половинки символу, яких у UTF-8 не
+#  існує. Сервер падав на .encode("utf-8") ще до першого байта відповіді:
+#  сторінка не віддавалась узагалі. Греп по вихідному тексту при цьому бачив
+#  і кнопку, і маршрут — усе було «на місці».
+#
+#  Дефект не в конкретному рядку, а в самому прийомі, тож перевіряється весь
+#  Python проєкту: жоден рядковий літерал не сміє містити половинки символу.
+import ast
+print("\n=== рядки, які можна віддати в UTF-8")
+scanned = 0
+for py in sorted(root.rglob("*.py")):
+    if ".git" in py.parts:
+        continue
+    try:
+        tree = ast.parse(py.read_text(encoding="utf-8"))
+    except SyntaxError as e:
+        bad("%s: не розбирається як Python: %s" % (py.name, e)); continue
+    scanned += 1
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Constant) and isinstance(n.value, str):
+            if any(0xD800 <= ord(c) <= 0xDFFF for c in n.value):
+                bad("%s:%d — рядок містить половинки символу (сурогати); "
+                    "такий текст не віддати в UTF-8" % (py.name, n.lineno))
+print("   перевірено файлів: %d" % scanned)
+
 print("\n%s (помилок: %d)" % ("Є ПОМИЛКИ" if fails else "усі перевірки пройдено", fails))
 sys.exit(1 if fails else 0)

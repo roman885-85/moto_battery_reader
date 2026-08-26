@@ -80,6 +80,14 @@ const char *resetReasonText(esp_reset_reason_t r) {
     }
 }
 
+// ── ЯКЕ РАДІО СПРАВДІ ПІДНЯЛОСЬ ───────────────────────────────────────────
+//  ⚑ ЦЕ НЕ ДУБЛЬ radioMode(), І РІЗНИЦЯ ТУТ ІСТОТНА. radioMode() відповідає на
+//  питання «що обрав власник», а цей прапорець — «що зараз працює». У нормі
+//  вони збігаються, але Bluetooth може не піднятись (не та схема розділів,
+//  бракує пам'яті), і тоді прилад свідомо вмикає Wi-Fi, щоб не лишитись німим
+//  в обох ефірах. Питання різні — отже й відповіді дві, і жодна з них не зайва.
+static bool g_wifiUp = false;
+
 void setup() {
     // ПРИМІТКА: setRxBufferSize() тут НЕ викликаємо. Великі команди запису по USB
     // (WRITE33 ~1 КБ) надсилаються КЛІЄНТОМ частинами по ~200 Б із мікропаузами
@@ -220,7 +228,32 @@ void setup() {
     }
     Serial.println("Battery reader initialized");
     
+    // ── ЗВ'ЯЗОК ІЗ КЛІЄНТАМИ: ОДНЕ РАДІО ЗА РАЗ ───────────────────────────
+    //  Радіо в ESP32 одне, стеків два, і вирішує тут пам'ять: Bluedroid бере
+    //  ~70 КБ одним шматком. Правила («що з чого випливає») живуть у
+    //  radio_mode.h — там їх дістає хостовий тест; тут лишається виконання.
+    //
+    //  ⚑ BLUETOOTH ПІДНІМАЄМО ПЕРШИМ, і це не косметика. Раніше він стояв
+    //  останнім у setup() — щоб рядок про вільну купу показував чесний
+    //  залишок. Тепер режими взаємовиключні, а от відмова Bluetooth мусить
+    //  лишити час підняти Wi-Fi замість нього: підніматись йому вже НЕМА КОЛИ,
+    //  якщо точка доступу піднялась раніше й зайняла пам'ять.
+    g_wifiUp = radioWantsWifi(radioMode());
+    if (radioWantsBt(radioMode())) {
+        btBegin();
+        if (!btUp()) {
+            // Німий в обох ефірах — найгірший результат перемикача зв'язку:
+            // достукатись до приладу лишиться тільки кабелем, а причина
+            // («не та схема розділів») з екрана не видна.
+            Serial.println("BT: не піднявся — вмикаємо Wi-Fi, щоб прилад "
+                           "не лишився без зв'язку взагалі.");
+            displaySetStatus("BT НЕ ЗАПУСТИВСЯ");
+            g_wifiUp = true;
+        }
+    }
+
     // Створюємо точку доступу
+    if (g_wifiUp) {
     Serial.printf("Creating Access Point: %s\n", AP_SSID);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
     // Вимикаємо WiFi modem-sleep: періодичні цикли «сон/пробудження» радіо
@@ -242,6 +275,12 @@ void setup() {
     // при підключенні до Wi-Fi одразу запропонував відкрити нашу сторінку.
     dnsServer.start(53, "*", IP);
     Serial.println("Captive-portal DNS started");
+    } else {
+        // Точку доступу свідомо НЕ піднімаємо: увесь сенс режиму Bluetooth у
+        // тому, щоб радіо й пам'ять дісталися одному стеку.
+        Serial.println("Wi-Fi: точку доступу не піднімаємо — обрано зв'язок "
+                       "через Bluetooth (меню «ЗВ'ЯЗОК»).");
+    }
 
     // Короткий зелений сигнал успішного старта AP
     ledSet(LED_OK);
@@ -284,20 +323,19 @@ void setup() {
     // Силовий ключ заряду — так само, у безпечний стан ДО всього іншого.
     chargeInit();
 
-    // Запускаємо веб-сервер
-    setupWebServer();
-
-    // Bluetooth — ОСТАННІМ із мережевого. Стек класичного BT забирає помітний
-    // шматок пам'яті, і піднімати його до Wi-Fi/веб-сервера означало б міряти
-    // «скільки лишилось» уже після нього, тобто не бачити справжньої картини
-    // в рядку про вільну купу нижче.
-    btBegin();
+    // Запускаємо веб-сервер — лише там, де є кому відповідати. У режимі
+    // Bluetooth сокет нікуди не під'єднати, а пам'ять він забере.
+    if (g_wifiUp) setupWebServer();
 
     Serial.println("\n==============================================");
     Serial.println("READY!");
-    Serial.printf("Connect to Wi-Fi: %s\n", AP_SSID);
-    Serial.printf("Password: %s\n", AP_PASSWORD);
-    Serial.printf("Open browser: http://%s\n", ESP_IP);
+    Serial.printf("Зв'язок: %s%s\n", radioModeName(radioMode()),
+                  (radioWantsBt(radioMode()) && g_wifiUp) ? " (не піднявся, працює Wi-Fi)" : "");
+    if (g_wifiUp) {
+        Serial.printf("Connect to Wi-Fi: %s\n", AP_SSID);
+        Serial.printf("Password: %s\n", AP_PASSWORD);
+        Serial.printf("Open browser: http://%s\n", ESP_IP);
+    }
 #ifdef BT_ENABLED
     Serial.printf("Bluetooth: %s (SPP — у системі з'явиться COM-порт)\n",
                   btUp() ? btName().c_str() : "НЕ ЗАПУСТИВСЯ");
@@ -348,12 +386,16 @@ void setup() {
 }
 
 void loop() {
-    // Captive-portal: обробляємо DNS-запити (усі домени -> 192.168.4.1).
-    dnsServer.processNextRequest();
-
-    // Обробка усіх клієнтських запитів
-    // WebServer автоматично обробляє multipart upload в handleClient()
-    server.handleClient();
+    // Captive-portal і веб — тільки коли точка доступу справді піднята.
+    //
+    //  ⚑ ГЕЙТ, А НЕ «ВОНО САМО НІЧОГО НЕ ЗРОБИТЬ». handleClient() на сервері,
+    //  якому не робили begin(), лізе в неініціалізований сокет; те саме з DNS.
+    //  У режимі Bluetooth їх просто немає кому обслуговувати.
+    if (g_wifiUp) {
+        dnsServer.processNextRequest();
+        // WebServer автоматично обробляє multipart upload в handleClient()
+        server.handleClient();
+    }
 
     // Командний протокол по USB-Serial (Windows-клієнт). Працює паралельно з Wi-Fi.
     serialTask();
@@ -389,6 +431,19 @@ void loop() {
     // файлова система живе тут. Прапорець ставить chargeSetOffByUser(), запис
     // робимо в циклі — той самий прийом, що й зі зняттям сигналу enable.
     if (chargeConsumeModeSave()) chargeModeSave();
+
+    // Режим зв'язку — тим самим шляхом і в той самий файл: обидва значення
+    // пише chargeModeSave(), тож зберігати їх окремо не можна (затерли б
+    // сусіда). Перезавантаження — ПІСЛЯ запису й з паузою на дописування
+    // Serial: рестарт із недописаним файлом означав би, що обраний режим
+    // мовчки не застосувався.
+    if (radioConsumeSave()) chargeModeSave();
+    if (radioConsumeReboot()) {
+        displayShow("ПЕРЕЗАВАНТАЖ.");
+        Serial.flush();
+        delay(600);
+        ESP.restart();
+    }
 
     // Зняти утримання сигналу enable після зупинки розряду/заряду. Робиться
     // тут, а не в dischargeStop()/chargeStop(), щоб ці файли не залежали від
@@ -464,6 +519,18 @@ void loop() {
                                             if (e) { Serial.println(e); displayShow("ЗАРЯД: ЗБІЙ");
                                                      ledSet(LED_ERROR); } }
         // «Ціль заряду» нічого не пише — лише перемикає відсоток по колу.
+        // Зв'язок: перемикач по колу, як і цілі. Сам рестарт робить цикл вище —
+        // тут лише кажемо людині, що саме буде після нього.
+        else if (act == OP_RADIO)         { uint8_t nm = radioCycleMode(); char m[28];
+                                            if (radioSwitchable()) {
+                                                snprintf(m, sizeof(m), "ЗВ'ЯЗОК: %s", radioModeShort(nm));
+                                                displayShow(m); ledSet(LED_IDLE); buzzOk();
+                                            } else {
+                                                // Чесніше за мовчазне «нічого не сталось»:
+                                                // пункт видно, а перемкнути нема на що.
+                                                displayShow("BT НЕ ВКОМПІЛЬОВАНО");
+                                                ledSet(LED_IDLE); buzzErr();
+                                            } }
         else if (act == OP_CHARGE_TGT)    { char m[24];
                                             snprintf(m, sizeof(m), "ЦІЛЬ %u%%", chargeCycleTarget());
                                             displayShow(m); ledSet(LED_IDLE); }

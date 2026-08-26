@@ -389,6 +389,11 @@ python tools/make_color_splash.py logo.png -W 240 -H 280   # під свою р�
    прошивка займає ~1.31 МБ і не влазить —
    `Sketch too big; text section exceeds available space in board`.
    З «Huge APP» вона займає ~42 % від 3 МБ, а SPIFFS у 1 МБ вистачає з запасом.
+   ⚠️ Відколи в збірку входить **Bluetooth** (режим зв'язку перемикається в
+   меню приладу, група «ЗВ'ЯЗОК»), ця вимога стала жорсткішою: разом зі стеком
+   Bluedroid прошивка в «Default 4MB with spiffs» не влізе точно. Не потрібен
+   Bluetooth — закоментуйте `BT_ENABLED` у `settings.h`, і звичайна схема
+   розділів знову підійде.
 3. Скомпілюйте та завантажте `motorola-battery-reader-web.ino`.
 4. **Нічого більше заливати не треба.** Сторінка вшита в саму прошивку
    (`page_index.h`, стиснута gzip), тож веб-інтерфейс працює одразу.

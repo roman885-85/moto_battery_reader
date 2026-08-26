@@ -25,6 +25,8 @@
 
 // operations.h оголошує ці наперед (вони живуть у charge.h/discharge.h);
 // для правил Майстра досить сталих значень — так само, як у menu_check.
+#include "radio_mode.h"   // RADIO_* потрібні заглушці radioMode() нижче
+
 inline uint16_t dischargeTargetMv()  { return 7200; }
 inline uint8_t  chargeTargetPct()    { return 100; }
 inline uint8_t  chargeProfile()      { return 0; }

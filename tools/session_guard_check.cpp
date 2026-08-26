@@ -3061,6 +3061,74 @@ int main() {
                                                      "стелю датам задає наробіток монітора — і в звірці, і в починці");
     }
 
+    printf("\n53) зв'язок: одне радіо за раз, і прилад не лишається німим\n");
+    {
+        // ⚑ ЩО САМЕ СТЕРЕЖЕ ЦЕЙ РОЗДІЛ. Правила («рівно одне радіо», «те, що
+        //  не підняти, не обирається») перевіряє radio_mode_check на обох
+        //  збірках — там їм і місце. Тут — те, чого хостовий тест не бачить:
+        //  скетч і web_server.h на хості не збираються взагалі, а саме в них
+        //  правило або виконується, або тихо ні.
+        check(fileHasText("radio_mode.h", "inline bool radioWantsWifi(uint8_t m)") &&
+              fileHasText("radio_mode.h", "inline bool radioWantsBt(uint8_t m)"),
+                                                     "правило «яке радіо піднімати» оголошене в radio_mode.h");
+        check(fileHasNo("motorola-battery-reader-web.ino", "inline bool radioWantsWifi"),
+                                                     "…і другої копії в скетчі немає");
+
+        // ⚑ ПІДЙОМ BLUETOOTH МУСИТЬ СТОЯТИ ДО ТОЧКИ ДОСТУПУ. Якщо він піде
+        //  після неї, відмові Bluetooth уже нічим зарадити: пам'ять забрана,
+        //  а Wi-Fi піднімати запізно — і прилад лишається без обох.
+        check(fileDefinesBefore("motorola-battery-reader-web.ino", "btBegin();", "WiFi.softAP("),
+                                                     "Bluetooth піднімається ДО точки доступу");
+        check(fileCountText("motorola-battery-reader-web.ino", "btBegin();") == 1,
+                                                     "…і рівно один раз: другий виклик підняв би його поверх Wi-Fi");
+
+        // Відкат на Wi-Fi, коли Bluetooth не піднявся.
+        check(fileHasText("motorola-battery-reader-web.ino", "if (!btUp())"),
+                                                     "відмова Bluetooth помічається");
+        check(fileHasText("motorola-battery-reader-web.ino",
+                          "не лишився без зв'язку взагалі"),
+                                                     "…і прилад свідомо вмикає Wi-Fi замість нього");
+
+        // ⚑ ГЕЙТ ПОТРІБЕН У ДВОХ МІСЦЯХ, І САМЕ ДРУГЕ ЛЕГКО ЗАБУТИ. У setup()
+        //  без нього піднялася б точка доступу; у loop() — handleClient() поліз
+        //  би в сокет, якому не робили begin(). Тому рахуємо обидва.
+        check(fileHasText("motorola-battery-reader-web.ino", "if (g_wifiUp) setupWebServer();"),
+                                                     "веб-сервер піднімається лише в режимі Wi-Fi");
+        check(fileHasText("motorola-battery-reader-web.ino", "if (g_wifiUp) {\n        dnsServer.processNextRequest();"),
+                                                     "…а цикл не смикає DNS і веб, коли їх немає");
+
+        // Режим зберігається ТИМ САМИМ записом, що й «версія без заряду»: файл
+        // один, і два незалежні записи затирали б сусіда.
+        check(fileCountText("web_server.h", "radioCfgFormat(line,") == 1 &&
+              fileCountText("web_server.h", "radioCfgParse(line.c_str()") == 1,
+                                                     "файл налаштувань складає й розбирає рівно одне місце");
+        check(fileHasText("motorola-battery-reader-web.ino", "if (radioConsumeSave()) chargeModeSave();"),
+                                                     "…і режим пишеться тим самим записом, що й комплектація");
+        check(fileHasText("motorola-battery-reader-web.ino", "if (radioConsumeReboot()) {"),
+                                                     "перемикання доводиться до кінця перезавантаженням");
+        check(fileDefinesBefore("motorola-battery-reader-web.ino",
+                                "if (radioConsumeSave()) chargeModeSave();",
+                                "if (radioConsumeReboot()) {"),
+                                                     "…але СПОЧАТКУ запис, а потім рестарт");
+
+        // Пункт меню має опис для клієнтів.
+        //
+        //  ⚑ ПРО МІСЦЕ В МЕНЮ ТУТ НЕ ПИТАЄМО, І ЦЕ НАВМИСНО. Перша редакція
+        //  мала рядок fileHasText("OP_RADIO            = 16") — і звірка «від
+        //  протилежного» показала, що він тримається на ПРОБІЛАХ: правка
+        //  коментаря поруч його не валила, а перенесення пункту в інше місце
+        //  меню — теж. Позицію доводить menu_check, дивлячись на справжній
+        //  список; вартовий, який дублює це за виглядом тексту, дає хибну
+        //  впевненість і хибні падіння.
+        check(fileHasText("operations.h", "{ \"radio\", \"Зв'язок із клієнтами"),
+                                                     "…і має опис для клієнтів");
+        check(fileHasText("operations.h",
+                          "static_assert(sizeof(OP_DOC) / sizeof(OP_DOC[0]) == OP_BASE_COUNT,"),
+                                                     "…а забути такий опис більше не можна мовчки");
+        check(fileCountText("motorola-battery-reader-web.ino", "radioCycleMode()") == 1,
+                                                     "перемикає режим рівно одне місце");
+    }
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

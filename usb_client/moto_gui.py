@@ -129,6 +129,39 @@ class SerialWorker(threading.Thread):
                 except Exception as e:
                     self.ser = None
                     self.results.put((token, {"ok": False, "err": str(e)}))
+            elif kind == "find":
+                # ⚑ ПИТАЄМО КОЖЕН ПОРТ, ХТО ВІН. Прилад представляється сам у
+                #  відповідь на PING, тож вгадувати нічого не треба. Порти
+                #  пробуємо в порядку, який рахує moto_models (вхідні
+                #  Bluetooth-канали туди не потрапляють узагалі — їх відкриття
+                #  ВИСНЕ на кілька секунд, і пошук читався б як зависання).
+                cands, baud = args
+                found = None
+                for dev, is_bt in cands:
+                    try:
+                        if self.ser:
+                            self.ser.close()
+                        self.ser = serial.Serial(dev, baud, timeout=0.2)
+                        # USB-порт скидає ESP32 при відкритті — треба дати йому
+                        # піднятись; Bluetooth нічого не скидає, там чекати нема чого.
+                        time.sleep(0.4 if is_bt else 1.8)
+                        self.ser.reset_input_buffer()
+                        if _probe_ok(self._cmd("PING", 2.5)):
+                            found = dev
+                            break
+                        self.ser.close()
+                        self.ser = None
+                    except Exception:
+                        # Порт зайнятий, немає прав, це взагалі модем — не наша
+                        # біда й не привід зупиняти пошук.
+                        try:
+                            if self.ser:
+                                self.ser.close()
+                        except Exception:
+                            pass
+                        self.ser = None
+                self.results.put((token, {"ok": bool(found), "port": found or "",
+                                          "err": "" if found else "прилад не відповів на жодному порту"}))
             elif kind == "close":
                 try:
                     if self.ser:
@@ -175,6 +208,11 @@ class SerialWorker(threading.Thread):
             return {"ok": False, "err": "таймаут"}
         except Exception as e:
             return {"ok": False, "err": str(e)}
+
+
+def _probe_ok(reply):
+    """Тонка обгортка: саме правило живе в moto_models, щоб його ганяв тест."""
+    return mm.probe_is_our_device(reply)
 
 
 # ===========================================================================
@@ -1104,9 +1142,18 @@ class App:
         self.cbPort = ttk.Combobox(top, width=28, state="readonly")
         self.cbPort.pack(side="left", padx=4)
         ttk.Button(top, text="⟳", width=3, command=self.refresh_ports).pack(side="left")
+        # ⚑ ГОЛОВНА КНОПКА ДЛЯ ТОГО, ХТО НЕ ЗНАЄ НОМЕРА ПОРТУ. У системі буває
+        #  десяток COM-портів, і жоден не підписаний іменем приладу. Замість
+        #  «оберіть зі списку» програма питає кожен порт, хто він.
+        self.btnFind = ttk.Button(top, text="🔍 Знайти прилад", command=self.find_device)
+        self.btnFind.pack(side="left", padx=4)
         self.btnConn = ttk.Button(top, text="🔌 Підключити", command=self.toggle_conn)
         self.btnConn.pack(side="left", padx=6)
-        ttk.Label(top, text="Пароль (опц.):").pack(side="left")
+        # ⚑ ПІДПИС, А НЕ «ОПЦ.». Поле працює давно — `maybe_auth` шле AUTH перед
+        #  КОЖНОЮ командою запису, — але підписане воно було так, що в рядку з
+        #  портом і кнопками його просто не помічали. Скарга «пароль вводити
+        #  нікуди» була саме про це.
+        ttk.Label(top, text="Пароль запису:").pack(side="left")
         self.pw = ttk.Entry(top, width=12, show="•")
         self.pw.pack(side="left", padx=2)
         # Другий рядок: стан ліворуч, керування масштабом праворуч. Верхній
@@ -2526,6 +2573,42 @@ class App:
             # Вихідний Bluetooth-порт — єдиний, яким узагалі можна під'єднатись;
             # якщо він є, ставити першим-ліпшим означало б наперед обрати не той.
             self.cbPort.set(bt_out if bt_out else vals[0])
+
+    # ---- пошук приладу -------------------------------------------------
+    def find_device(self):
+        """Опитати порти й під'єднатись до того, який назветься нашим."""
+        if self.connected:
+            self.status("Спершу відключіться", False); return
+        ports = [(p.device, p.description or "", p.hwid or "")
+                 for p in serial.tools.list_ports.comports()]
+        order = mm.port_probe_order(ports, getattr(self, "_btnames", {}))
+        if not order:
+            self.status("Немає жодного порту, який варто питати", False); return
+        bt = {d: mm.port_is_bluetooth(h) for d, _, h in ports}
+        cands = [(d, bool(bt.get(d))) for d in order]
+        self.btnFind.config(state="disabled")
+        self.btnConn.config(state="disabled")
+        # Час чесно попереджаємо: USB-порт скидає ESP32 при відкритті, і тих
+        # двох секунд на порт не обійти — інакше прилад просто не встигне
+        # відповісти, і пошук оголосив би «не знайдено» на робочому приладі.
+        self.status("Шукаю прилад (%d порт(ів), до %d с)..."
+                    % (len(cands), int(sum(2.5 if not b else 1.0 for _, b in cands))))
+        self._submit("find", cands, 115200, cb=self._on_found)
+
+    def _on_found(self, r):
+        self.btnFind.config(state="normal")
+        self.btnConn.config(state="normal")
+        if not r.get("ok"):
+            self.status("Не знайдено: " + r.get("err", ""), False)
+            return
+        # Ставимо знайдений порт у список і йдемо звичайним шляхом під'єднання,
+        # щоб не заводити ДРУГИЙ шлях у під'єднаний стан.
+        self.refresh_ports()
+        for label, dev in getattr(self, "_portmap", {}).items():
+            if dev == r.get("port"):
+                self.cbPort.set(label)
+                break
+        self._on_open({"ok": True, "port": r.get("port", "")})
 
     # ---- підключення ---------------------------------------------------
     def toggle_conn(self):

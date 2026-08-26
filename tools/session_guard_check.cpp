@@ -1031,17 +1031,38 @@ int main() {
 
         // Саме правило доступу.
         check(serCmdAllowed("WIPE33", false, false), "по USB стирання дозволене без пароля (перепустка — кабель)");
-        check(!serCmdAllowed("WIPE33", true,  false), "по BT стирання БЕЗ пароля заборонене");
         check(serCmdAllowed("WIPE33", true,  true),  "по BT стирання з паролем дозволене");
         check(serCmdAllowed("PING",   true,  false), "по BT читання вільне — клієнт може знайти пристрій");
         check(serCmdAllowed("AUTH",   true,  false), "сам AUTH по BT доступний, інакше пароль ніяк не надіслати");
 
+        // ⚑ БАР'ЄРІВ ДВА, І ПЕРЕВІРЯТИ ТРЕБА ТОЙ, ЩО ВВІМКНЕНИЙ. Перша редакція
+        //  цього розділу вимагала пароль на записі БЕЗУМОВНО — і щойно власник
+        //  свідомо вимкнув BT_REQUIRE_AUTH, вона впала на робочому рішенні,
+        //  тобто стерегла не правило, а одну з його відповідей. Тепер
+        //  перевіряється саме правило: якщо пароль вимкнено, мусить лишитись
+        //  PIN на спарюванні — бо без ЖОДНОГО з двох будь-хто в радіусі дії
+        //  стирає пам'ять пакета командою WIPE33.
+#if defined(BT_REQUIRE_AUTH) && (BT_REQUIRE_AUTH == 0)
+        check(true, "пароль на записі по BT вимкнено власником (BT_REQUIRE_AUTH 0)");
+  #ifdef BT_PIN
+        check(sizeof(BT_PIN) - 1 >= 4, "…і бар'єром лишається PIN спарювання");
+  #else
+        check(false, "БЕЗ пароля І БЕЗ PIN: будь-хто в радіусі дії стирає пам'ять пакета");
+  #endif
+        for (const char *c : { "WIPE33", "WIPE38", "WRITE33", "CLEAN" }) {
+            char m[112];
+            snprintf(m, sizeof(m), "«%s» по BT проходить без пароля — так і задумано", c);
+            check(serCmdAllowed(c, true, false), m);
+        }
+#else
+        check(!serCmdAllowed("WIPE33", true, false), "по BT стирання БЕЗ пароля заборонене");
         // Найнебезпечніша пара в переліку — окремо й поіменно.
         for (const char *c : { "WIPE33", "WIPE38", "WRITE33", "CLEAN" }) {
             char m[96];
             snprintf(m, sizeof(m), "«%s» по BT без пароля не пройде", c);
             check(!serCmdAllowed(c, true, false), m);
         }
+#endif
     }
 
     printf("\n15) Bluetooth: відповідь іде туди, звідки прийшла команда\n");
@@ -3138,8 +3159,15 @@ int main() {
         check(fileCountText("serial_api.h", "btName\\\":") == 2 &&
               fileCountText("web_server.h", "btName\\\":") == 2,
                                                      "ім'я в ефірі віддають обидва канали — і по USB, і по Wi-Fi");
-        check(fileHasNo("usb_client/moto_models.py", "MotoBattery"),
-                                                     "…а клієнт своєї копії назви приладу не тримає");
+        //  ⚑ ГОЛКА З ЛАПКАМИ, А НЕ ПРОСТО СЛОВО. Перша редакція шукала
+        //  «MotoBattery» підрядком — і завалилась на «MotoBatteryReader»,
+        //  тобто на ІДЕНТИФІКАТОРІ ПРОТОКОЛУ, яким прилад представляється у
+        //  відповідь на PING. Це різні константи: BT_NAME — ім'я в ефірі, його
+        //  власник може змінити; "MotoBatteryReader" — частина формату обміну,
+        //  як заголовок пакета, і клієнт зобов'язаний його знати. Заборона
+        //  стосується лише першої.
+        check(fileHasNo("usb_client/moto_models.py", "\"MotoBattery\""),
+                                                     "…а клієнт своєї копії ІМЕНІ В ЕФІРІ не тримає");
     }
 
     printf("\n%s (помилок: %d)\n",

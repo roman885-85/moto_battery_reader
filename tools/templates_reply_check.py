@@ -115,6 +115,32 @@ def check_ports():
         f.write("{це не json")
     check(G.bt_names_load(path) == {}, "побитий файл не валить програму, а просто мовчить")
 
+    # ── ЗНАЙТИ ПРИЛАД САМОМУ ─────────────────────────────────────────────
+    #  У системі десяток портів, жоден не підписаний іменем приладу. Але
+    #  вгадувати й не треба: прилад представляється сам у відповідь на PING.
+    ports = [("COM3", "CH340", USB), ("COM6", "BT", INC),
+             ("COM5", "BT", OUT), ("COM7", "BT", OUT.replace("A1B2C3D4E5F6", "FFEEDDCCBBAA"))]
+    order = G.port_probe_order(ports)
+    #  ⚑ ВХІДНИЙ КАНАЛ НЕ ПИТАЄМО ВЗАГАЛІ. Його відкриття не просто марне — воно
+    #  ВИСНЕ на кілька секунд, а таких портів у системі стільки ж, скільки
+    #  спарених пристроїв. Пошук, який упирається в них усі, читався б як
+    #  зависання програми.
+    check("COM6" not in order, "вхідний Bluetooth-канал у пошук не потрапляє")
+    check(set(order) == {"COM3", "COM5", "COM7"}, "решта портів питається — жоден не загублено")
+    check(order.index("COM5") < order.index("COM3") and
+          order.index("COM7") < order.index("COM3"),
+          "Bluetooth питається раніше за звичайні порти")
+    known = G.port_probe_order(ports, {"FFEEDDCCBBAA": "MotoBattery-BBAA"})
+    check(known[0] == "COM7", "знайомий прилад питається ПЕРШИМ")
+
+    check(G.probe_is_our_device({"ok": True, "dev": G.PROBE_DEV}),
+          "наш прилад упізнається за тим, як він сам себе назвав")
+    check(not G.probe_is_our_device({"ok": True, "dev": "ChinaScale"}),
+          "чужий пристрій за наш не видається")
+    check(not G.probe_is_our_device({"ok": True}) and not G.probe_is_our_device(None)
+          and not G.probe_is_our_device("MotoBatteryReader"),
+          "відповідь без імені, порожня чи не-словник — це «ні», а не виняток")
+
     # Підказка мусить називати причину, а не повторювати системну помилку.
     h = G.port_open_hint(INC, "PermissionError(13)")
     check("вихідним" in h, "відмова на вхідному порту пояснює, що робити")

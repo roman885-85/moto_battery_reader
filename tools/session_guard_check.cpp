@@ -3019,6 +3019,116 @@ int main() {
                                                      "…і в .exe теж лишився");
     }
 
+    printf("\n52) одна історія пакета — одне правило, і воно живе в одному місці\n");
+    {
+        // ⚑ ЧОМУ ЦЕ ВАРТОВИЙ, А НЕ ХОСТОВИЙ ТЕСТ. Сам розрахунок стелі
+        //  перевіряє edit_plan_check на 41 живому пакеті — там він і має
+        //  бути. Тут стережеться інше: щоб правило лишалось ОДНЕ й лежало
+        //  поруч із полями, а не розповзлось копіями по редактору, ремонту й
+        //  Майстру. Саме так у цьому проєкті вже розходились ім'я силового
+        //  ключа й причина недоступності заряду.
+        // ⚑ ЗА ПОВНИМ ПІДПИСОМ, А НЕ ЗА ІМЕНЕМ. fileCalls() дивиться лише на
+        //  символ ПЕРЕД словом, тож «impresCryptCapByCyclesRENAMED» він
+        //  порахував би за виклик — рівно та пастка, на якій у цьому проєкті
+        //  вже мовчав вартовий «def ensure_templates» проти
+        //  «def ensure_templates_DISABLED». Звірка «від протилежного» це й
+        //  упіймала: перейменування визначення не валило нічого.
+        check(fileHasText("impres_crypt.h",
+                          "impresCryptCapByCycles(ImpresCryptFields *f, long cycles)"),
+                                                     "стеля родини лічильників оголошена поруч із самими полями");
+        check(fileHasNo("edit_plan.h", "inline bool impresCryptCapByCycles"),
+                                                     "…і другої копії в редакторі немає");
+        check(fileCalls("edit_plan.h", "impresCryptCapByCycles"),
+                                                     "…і запис редактора її кличе");
+        // ⚑ ПРИТИСКАЄ, АЛЕ НЕ ПІДНІМАЄ. Те саме правило, що й у impresSetEtm()
+        //  для міток: брат, менший за стелю, — законна історія пакета.
+        check(fileHasText("impres_crypt.h", "if ((long)v > cycles)"),
+                                                     "…і саме притискає, а не рівняє в обидва боки");
+        // Перелік родини — один на звірку й на починку. Два переліки
+        // розійшлися б, і половина братів лишилась би позаду.
+        check(fileCalls("edit_plan.h", "editCycleFamily"),
+                                                     "перелік родини заведено окремо");
+        check(fileCountText("edit_plan.h", "editCycleFamily(p, fi, fc)") == 2,
+                                                     "…і його читають рівно двоє: звірка й починка");
+        // Стеля дат — наробіток монітора, і рахується вона через ту саму
+        // функцію, що переводить доби в дату.
+        // ⚑ РІВНО ДВА МІСЦЯ, А НЕ «ХОЧА Б ОДНЕ». Той самий вираз стоїть у
+        //  звірці й у починці; поки перевірка питала «чи є хоч десь»,
+        //  підміна одного з них на стелю, до якої не дотягнутись, не валила
+        //  нічого — другий доводив наявність за обох.
+        check(fileCountText("edit_plan.h",
+                            "editDatePlusDays(mfg, editPlanEff(p, EDF_ETM))") == 2,
+                                                     "стелю датам задає наробіток монітора — і в звірці, і в починці");
+    }
+
+    printf("\n53) зв'язок: одне радіо за раз, і прилад не лишається німим\n");
+    {
+        // ⚑ ЩО САМЕ СТЕРЕЖЕ ЦЕЙ РОЗДІЛ. Правила («рівно одне радіо», «те, що
+        //  не підняти, не обирається») перевіряє radio_mode_check на обох
+        //  збірках — там їм і місце. Тут — те, чого хостовий тест не бачить:
+        //  скетч і web_server.h на хості не збираються взагалі, а саме в них
+        //  правило або виконується, або тихо ні.
+        check(fileHasText("radio_mode.h", "inline bool radioWantsWifi(uint8_t m)") &&
+              fileHasText("radio_mode.h", "inline bool radioWantsBt(uint8_t m)"),
+                                                     "правило «яке радіо піднімати» оголошене в radio_mode.h");
+        check(fileHasNo("motorola-battery-reader-web.ino", "inline bool radioWantsWifi"),
+                                                     "…і другої копії в скетчі немає");
+
+        // ⚑ ПІДЙОМ BLUETOOTH МУСИТЬ СТОЯТИ ДО ТОЧКИ ДОСТУПУ. Якщо він піде
+        //  після неї, відмові Bluetooth уже нічим зарадити: пам'ять забрана,
+        //  а Wi-Fi піднімати запізно — і прилад лишається без обох.
+        check(fileDefinesBefore("motorola-battery-reader-web.ino", "btBegin();", "WiFi.softAP("),
+                                                     "Bluetooth піднімається ДО точки доступу");
+        check(fileCountText("motorola-battery-reader-web.ino", "btBegin();") == 1,
+                                                     "…і рівно один раз: другий виклик підняв би його поверх Wi-Fi");
+
+        // Відкат на Wi-Fi, коли Bluetooth не піднявся.
+        check(fileHasText("motorola-battery-reader-web.ino", "if (!btUp())"),
+                                                     "відмова Bluetooth помічається");
+        check(fileHasText("motorola-battery-reader-web.ino",
+                          "не лишився без зв'язку взагалі"),
+                                                     "…і прилад свідомо вмикає Wi-Fi замість нього");
+
+        // ⚑ ГЕЙТ ПОТРІБЕН У ДВОХ МІСЦЯХ, І САМЕ ДРУГЕ ЛЕГКО ЗАБУТИ. У setup()
+        //  без нього піднялася б точка доступу; у loop() — handleClient() поліз
+        //  би в сокет, якому не робили begin(). Тому рахуємо обидва.
+        check(fileHasText("motorola-battery-reader-web.ino", "if (g_wifiUp) setupWebServer();"),
+                                                     "веб-сервер піднімається лише в режимі Wi-Fi");
+        check(fileHasText("motorola-battery-reader-web.ino", "if (g_wifiUp) {\n        dnsServer.processNextRequest();"),
+                                                     "…а цикл не смикає DNS і веб, коли їх немає");
+
+        // Режим зберігається ТИМ САМИМ записом, що й «версія без заряду»: файл
+        // один, і два незалежні записи затирали б сусіда.
+        check(fileCountText("web_server.h", "radioCfgFormat(line,") == 1 &&
+              fileCountText("web_server.h", "radioCfgParse(line.c_str()") == 1,
+                                                     "файл налаштувань складає й розбирає рівно одне місце");
+        check(fileHasText("motorola-battery-reader-web.ino", "if (radioConsumeSave()) chargeModeSave();"),
+                                                     "…і режим пишеться тим самим записом, що й комплектація");
+        check(fileHasText("motorola-battery-reader-web.ino", "if (radioConsumeReboot()) {"),
+                                                     "перемикання доводиться до кінця перезавантаженням");
+        check(fileDefinesBefore("motorola-battery-reader-web.ino",
+                                "if (radioConsumeSave()) chargeModeSave();",
+                                "if (radioConsumeReboot()) {"),
+                                                     "…але СПОЧАТКУ запис, а потім рестарт");
+
+        // Пункт меню має опис для клієнтів.
+        //
+        //  ⚑ ПРО МІСЦЕ В МЕНЮ ТУТ НЕ ПИТАЄМО, І ЦЕ НАВМИСНО. Перша редакція
+        //  мала рядок fileHasText("OP_RADIO            = 16") — і звірка «від
+        //  протилежного» показала, що він тримається на ПРОБІЛАХ: правка
+        //  коментаря поруч його не валила, а перенесення пункту в інше місце
+        //  меню — теж. Позицію доводить menu_check, дивлячись на справжній
+        //  список; вартовий, який дублює це за виглядом тексту, дає хибну
+        //  впевненість і хибні падіння.
+        check(fileHasText("operations.h", "{ \"radio\", \"Зв'язок із клієнтами"),
+                                                     "…і має опис для клієнтів");
+        check(fileHasText("operations.h",
+                          "static_assert(sizeof(OP_DOC) / sizeof(OP_DOC[0]) == OP_BASE_COUNT,"),
+                                                     "…а забути такий опис більше не можна мовчки");
+        check(fileCountText("motorola-battery-reader-web.ino", "radioCycleMode()") == 1,
+                                                     "перемикає режим рівно одне місце");
+    }
+
     printf("\n%s (помилок: %d)\n",
            fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);
     return fails ? 1 : 0;

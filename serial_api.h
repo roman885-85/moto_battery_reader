@@ -194,6 +194,10 @@ static String serBuildInfo() {
         //  web_server.h: клієнт один і той самий, а джерело буває різне.
         j += ",\"swName\":\"" CHARGE_STAGE_NAME "\"";
         j += ",\"chgHwTxt\":\"" CHARGE_STAGE_TXT "\"";
+        // Яким радіо прилад зараз розмовляє. Клієнт, який це бачить, не буде
+        // шукати причину, чому пристрій зник із Wi-Fi після перемикання.
+        j += ",\"radio\":\""; j += radioModeName(radioMode()); j += "\"";
+        j += ",\"radioSwitchable\":"; j += radioSwitchable() ? "true" : "false";
         j += ",\"serial\":\"" + serial + "\"";
         if (hasSN2433) {
             char b[3]; String s33 = "";

@@ -138,6 +138,32 @@ inline void impresCryptNormalize(ImpresCryptFields *f) {
         f->dayInitialUse2 = f->dayInitialUse;   // поле-близнюк іде разом
 }
 
+// ── СТЕЛЯ РОДИНИ ЛІЧИЛЬНИКІВ — ЦИКЛИ IMPRES ───────────────────────────────
+//  «Скільки цей пакет відпрацював» — ОДНЕ питання, і в чипі на нього відповідає
+//  не одне число, а ціла родина: цикли з гістограми (їх показує фірмове ПЗ),
+//  внутрішній лічильник у блоці CYCLE, реверти, дозаряди, калібрувальні цикли.
+//  Виміряно на корпусі: у ВСІХ 41 дампі з ключем кожен із братів не більший за
+//  цикли з гістограми. Тобто гістограма — стеля родини, а не ще один її член.
+//
+//  ⚑ ПРИТИСКАЄ, АЛЕ НЕ ПІДНІМАЄ — те саме правило, що й у impresSetEtm() для
+//  міток подій. Брат, менший за стелю, — це законна історія пакета (реверти
+//  бувають і нульовими); брат, БІЛЬШИЙ за неї, — стан, якого немає в жодному
+//  живому пакеті, і саме такий станція «лікує», повертаючи свої числа.
+//
+//  Правило живе ТУТ, поруч із самими полями, а не в редакторі: обнуляти цикли
+//  вміє не лише він, і копія цієї умови в кожному місці розійшлася б на першій
+//  же правці.
+inline bool impresCryptCapByCycles(ImpresCryptFields *f, long cycles) {
+    if (!f || cycles < 0) return false;
+    bool did = false;
+    auto cap = [&](uint16_t &v) {
+        if ((long)v > cycles) { v = (uint16_t)cycles; did = true; }
+    };
+    if (f->haveCyc) { cap(f->cyclesEnc); cap(f->reverts); cap(f->topOffCycles); }
+    if (f->haveRec) { cap(f->calCycles); }
+    return did;
+}
+
 inline void impresCryptWrite(uint8_t *d33, uint8_t k1, uint8_t k2,
                              const ImpresCryptFields *fIn) {
     ImpresCryptFields tmp = *fIn;

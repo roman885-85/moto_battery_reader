@@ -172,13 +172,19 @@ int main() {
         struct { int f; long v; const char *nm; } tries[] = {
             { EDF_CYCLES,  123,      "цикли IMPRES" },
             { EDF_NONIMP,  7,        "цикли не-IMPRES" },
-            { EDF_HISTCCA, 4321,     "наробіток у пакеті: заряд" },
-            { EDF_HISTDCA, 1234,     "наробіток у пакеті: розряд" },
+            // ⚑ ЛІЧИЛЬНИКИ ЗАРЯДУ/РОЗРЯДУ — ЗНАЧЕННЯ ЗАВІДОМО НИЖЧІ ЗА ПОТОЧНІ.
+            //  Раніше тут стояли 4321/1234/5555/4444 — числа, узяті «щоб було
+            //  видно», і вони перевищували стелю родини (цикли IMPRES) у
+            //  десятки разів. Тобто перевірка вимагала записати стан, якого
+            //  немає в жодному з 41 живого пакета корпусу, — і сама ж
+            //  доводила б, що редактор такий стан пропускає.
+            { EDF_HISTCCA, 21,       "наробіток у пакеті: заряд" },
+            { EDF_HISTDCA, 13,       "наробіток у пакеті: розряд" },
             { EDF_RATED,   2500,     "паспортна ємність" },
             { EDF_CALCYC,  9,        "калібрувальні цикли" },
             { EDF_ETM,     42,       "наробіток монітора" },
-            { EDF_MONCCA,  5555,     "лічильник заряду монітора" },
-            { EDF_MONDCA,  4444,     "лічильник розряду монітора" },
+            { EDF_MONCCA,  17,       "лічильник заряду монітора" },
+            { EDF_MONDCA,  11,       "лічильник розряду монітора" },
         };
         for (auto &t : tries) {
             uint8_t b33[DUMP_SIZE], b38[DS2438_MEM_SIZE];
@@ -187,20 +193,36 @@ int main() {
             EditPlan p;
             editPlanBuild(p, b33, b38, wrom, 20260824);
             if (!p.f[t.f].avail) { printf("   —     %s: у цьому пакеті немає\n", t.nm); continue; }
-            char why[128];
+            // ⚑ ЧЕРЕЗ ПОЧИНКУ, А НЕ ЧЕРЕЗ ГОЛУ ЗВІРКУ. Саме так кличуть
+            //  редактор веб і USB (editPlanRepair -> editPlanApply): звірка
+            //  лише КАЖЕ, що набір суперечливий, а рішення про очевидну
+            //  правку ухвалює починка. Перевіряти шлях, якого немає в
+            //  прошивці, означає стерегти не те.
             bool set = editPlanSet(p, t.f, t.v);
-            bool cons = editPlanConsistent(p, why, sizeof(why));
+            bool cons = set && editPlanRepair(p);
             bool w3 = false, w8 = false;
-            int done = (set && cons) ? editPlanApply(p, b33, b38, &w3, &w8) : 0;
+            int done = cons ? editPlanApply(p, b33, b38, &w3, &w8) : 0;
             EditPlan q;
             editPlanBuild(q, b33, b38, wrom, 20260824);
             char msg[160];
             snprintf(msg, sizeof(msg), "%s: %ld -> %ld (прочитано %ld)",
                      t.nm, p.f[t.f].cur, t.v, q.f[t.f].cur);
-            check(set && cons && done == 1 && q.f[t.f].cur == t.v, msg);
+            check(set && cons && done >= 1 && q.f[t.f].cur == t.v, msg);
             // Правка в один чип не сміє «забруднювати» другий.
-            check(w3 == (editFieldChip(t.f) == 33) && w8 == (editFieldChip(t.f) == 38),
-                  "…і торкнулась рівно того чипа, якому належить");
+            //
+            // ⚑ НАРОБІТОК — ЗАКОННИЙ ВИНЯТОК, І САМЕ ЧЕРЕЗ НЬОГО ПРАВИЛО
+            //  ЗВУЖЕНЕ, А НЕ СКАСОВАНЕ. Дати подій лежать у DS2433 ЗМІЩЕННЯМ
+            //  від виготовлення, а стелю їм задає наробіток із DS2438. Опустив
+            //  наробіток — і подія опинилась пізніше за весь строк роботи
+            //  пакета; лишити її там означає віддати станції рівно той
+            //  «побитий набір», з якого вона відновлює свої числа. Тож правка
+            //  наробітку МУСИТЬ дійти й до другого чипа. Що саме вона там
+            //  зробила — перевіряється окремо, нижче.
+            if (t.f == EDF_ETM)
+                check(w8, "…і дійшла до монітора");
+            else
+                check(w3 == (editFieldChip(t.f) == 33) && w8 == (editFieldChip(t.f) == 38),
+                      "…і торкнулась рівно того чипа, якому належить");
             // ⚑ І НЕ СМІЄ ЗАЧЕПИТИ СУСІДА. Обидва наробітки лежать в ОДНОМУ
             //  блоці й пишуться однією дією — тож правка лише одного з них
             //  легко обнуляє другий, і помітити це можна лише отак, дивлячись
@@ -213,12 +235,28 @@ int main() {
                 //  створити «подію в майбутньому», з якої станція й відновлює
                 //  старе число. Перевіряємо це окремо, нижче.
                 if (k == EDF_STAMPD && t.f == EDF_ETM) continue;
+                // ⚑ ДАТИ ПОДІЙ — ТОЙ САМИЙ ВИНЯТОК І З ТІЄЇ Ж ПРИЧИНИ.
+                //  Наробіток задає їм стелю, тож опущений наробіток тягне їх
+                //  за собою. Перевіряємо це окремо, нижче, — і саме як
+                //  «опустило», а не як «щось змінило».
+                if (t.f == EDF_ETM &&
+                    (k == EDF_USE || k == EDF_LASTCHG || k == EDF_LASTREC)) continue;
                 if (q.f[k].cur != p.f[k].cur) { intact = false; break; }
             }
             check(intact, "…і не зачепила жодного сусіднього значення");
-            if (t.f == EDF_ETM)
+            if (t.f == EDF_ETM) {
                 check(q.f[EDF_STAMPD].cur <= t.v,
                       "…а мітку події підтягнуло за наробітком, а не лишило в майбутньому");
+                // ⚑ І ДАТИ ТЕЖ — ІНАКШЕ СТАНЦІЯ ПІДТЯГНЕ НАРОБІТОК НАЗАД.
+                //  Межа рахується в тих самих одиницях, у яких зберігається
+                //  саме поле: доба від дати виготовлення.
+                long lim = editDatePlusDays(q.f[EDF_MFG].cur, t.v);
+                bool datesPulled = true;
+                for (int k : { EDF_USE, EDF_LASTCHG, EDF_LASTREC })
+                    if (q.f[k].avail && q.f[k].cur > lim) datesPulled = false;
+                check(datesPulled,
+                      "…і жодна дата події не лишилась пізнішою за наробіток");
+            }
             // ⚑ ЗАГОЛОВОК DS2433 МУСИТЬ ЛИШИТИСЬ ЦІЛИМ. Паспортна ємність
             //  лежить у байті 0x008, тобто ВСЕРЕДИНІ заголовка: не перерахувати
             //  його суму — це віддати рації пакет, який вона вважає побитим.
@@ -535,10 +573,17 @@ int main() {
         memcpy(b38, w38, DS2438_MEM_SIZE);
         EditPlan p;
         editPlanBuild(p, b33, b38, wrom, 20260824);
-        editPlanSet(p, EDF_CYCLES,  55);
+        // ⚑ НАБІР ЗАВІДОМО НЕСУПЕРЕЧЛИВИЙ, І ЦЕ НЕ ПІДГОНКА ПІД ПЕРЕВІРКУ.
+        //  Тут перевіряється, що П'ЯТЬ правок одним заходом доїжджають до
+        //  обох чипів, а не те, як лагодиться суперечність, — для неї є
+        //  окремі розділи. Раніше стояло 55 циклів при 777/666/888 сирих
+        //  одиницях (це ~165 циклів заряду) і наробіток 11 діб при подіях на
+        //  1500-й добі: набір, якого немає в жодному живому пакеті, і саме
+        //  його перевірка вимагала записати.
+        editPlanSet(p, EDF_CYCLES,  555);
         editPlanSet(p, EDF_HISTCCA, 777);
         editPlanSet(p, EDF_HISTDCA, 666);
-        editPlanSet(p, EDF_ETM,     11);
+        editPlanSet(p, EDF_ETM,     2000);
         editPlanSet(p, EDF_MONCCA,  888);
         check(editPlanCount(p, 33) == 3 && editPlanCount(p, 38) == 2,
               "план знає, скільки правок у кожен чип");
@@ -549,8 +594,8 @@ int main() {
         EditPlan q;
         editPlanBuild(q, b33, b38, wrom, 20260824);
         check(done == 5 && w3 && w8, "усі п'ять застосовано, обидва чипи позначені");
-        check(q.f[EDF_CYCLES].cur == 55 && q.f[EDF_HISTCCA].cur == 777 &&
-              q.f[EDF_HISTDCA].cur == 666 && q.f[EDF_ETM].cur == 11 &&
+        check(q.f[EDF_CYCLES].cur == 555 && q.f[EDF_HISTCCA].cur == 777 &&
+              q.f[EDF_HISTDCA].cur == 666 && q.f[EDF_ETM].cur == 2000 &&
               q.f[EDF_MONCCA].cur == 888, "…і всі п'ять читаються назад");
         // ⚑ ОБИДВА НАРОБІТКИ ЛЕЖАТЬ В ОДНОМУ БЛОЦІ. Записати їх по черзі —
         //  це двічі перерахувати ту саму суму; сума мусить лишитись цілою.
@@ -577,6 +622,163 @@ int main() {
         // не сміє вимикати редактор цілком.
         check(p.f[EDF_MONCCA].avail && p.f[EDF_ETM].avail,
               "монітор при цьому лишається доступним");
+    }
+
+    printf("\n11) один пакет — одна історія: правка не лишає братів позаду\n");
+    {
+        // ⚑ НА ВСЬОМУ КОРПУСІ, А НЕ НА ОДНОМУ ПАКЕТІ. Обидва правила тут
+        //  ВИМІРЯНІ, а не придумані: спочатку доводимо, що співвідношення
+        //  справді тримається в живих пакетах, і лише потім — що редактор
+        //  його не ламає. Без першої половини друга доводила б, що ми
+        //  стережемо власну вигадку.
+        int packs = 0, holdsCyc = 0, holdsDate = 0;
+        int cycOk = 0, cycTried = 0, datOk = 0, datTried = 0, keyOk = 0;
+        for (auto &p33 : all) {
+            uint8_t a33[DUMP_SIZE], a38[DS2438_MEM_SIZE], rom8[8];
+            if (!load(p33.c_str(), a33, DUMP_SIZE)) continue;
+            std::string p38 = p33;
+            size_t q = p38.find("2433");
+            if (q != std::string::npos) p38.replace(q, 4, "2438");
+            if (!load(p38.c_str(), a38, DS2438_MEM_SIZE)) continue;
+            if (!romFor(a33, a38, rom8)) continue;
+            ImpresBms b;
+            impresBmsParse(a33, a38, rom8, 0.025f, &b);
+            impresBmsDecrypt(a33, &b);
+            if (!b.ok || b.cycles <= 0) continue;
+            ImpresCryptFields f;
+            impresCryptRead(a33, rom8[1], rom8[6], &f);
+            uint32_t etm = ((uint32_t)a38[11] << 24) | ((uint32_t)a38[10] << 16) |
+                           ((uint32_t)a38[9] << 8) | a38[8];
+            long etmD = (long)(etm / 86400UL);
+            if (etmD <= 0) continue;
+            packs++;
+
+            // (а) стеля родини тримається в самому пакеті
+            if ((long)f.cyclesEnc <= b.cycles && (long)f.reverts <= b.cycles &&
+                (long)f.topOffCycles <= b.cycles && (long)f.calCycles <= b.cycles &&
+                b.ccaCycles <= b.cycles) holdsCyc++;
+            // (б) жодна подія не пізніша за наробіток
+            if ((long)f.dayInitialUse <= etmD && (long)f.dayLastCharge <= etmD &&
+                (long)f.dayLastRecond <= etmD) holdsDate++;
+
+            // (в) обнулили цикли — внутрішній лічильник пішов слідом
+            {
+                uint8_t b33[DUMP_SIZE], b38[DS2438_MEM_SIZE];
+                memcpy(b33, a33, DUMP_SIZE);
+                memcpy(b38, a38, DS2438_MEM_SIZE);
+                EditPlan p;
+                editPlanBuild(p, b33, b38, rom8, 20260824);
+                if (p.f[EDF_CYCLES].avail && editPlanSet(p, EDF_CYCLES, 0) &&
+                    editPlanRepair(p)) {
+                    cycTried++;
+                    bool w3 = false, w8 = false;
+                    editPlanApply(p, b33, b38, &w3, &w8);
+                    ImpresCryptFields g;
+                    impresCryptRead(b33, rom8[1], rom8[6], &g);
+                    uint16_t nsC = 0, nsD = 0;
+                    impresBmsHistCounters(b33, &nsC, &nsD);
+                    if (g.cyclesEnc == 0 && g.reverts == 0 && g.topOffCycles == 0 &&
+                        g.calCycles == 0 && nsC == 0 && nsD == 0) cycOk++;
+                    // ⚑ І НАШ ВЛАСНИЙ ПІДБІР КЛЮЧА МУСИТЬ ЛИШИТИСЬ ОДНОЗНАЧНИМ.
+                    //  Це найсуворіша перевірка з можливих: він відкидає зміст,
+                    //  який САМ вважає неможливим, тож пакет, що після правки
+                    //  перестав розбиратись, — це пакет, який ми щойно зіпсували.
+                    ImpresBms nb;
+                    impresBmsParse(b33, b38, nullptr, 0.025f, &nb);
+                    if (impresBmsFindKey(b33, b38, &nb) == 1) keyOk++;
+                }
+            }
+
+            // (г) посунули дату виготовлення на рік назад — жодна подія не
+            //     опинилась пізніше за наробіток
+            {
+                uint8_t b33[DUMP_SIZE], b38[DS2438_MEM_SIZE];
+                memcpy(b33, a33, DUMP_SIZE);
+                memcpy(b38, a38, DS2438_MEM_SIZE);
+                EditPlan p;
+                editPlanBuild(p, b33, b38, rom8, 20260824);
+                long back = editDatePlusDays(p.f[EDF_MFG].cur, -365);
+                if (p.f[EDF_MFG].avail && p.f[EDF_MFG].cur > 0 &&
+                    editPlanSet(p, EDF_MFG, back) && editPlanRepair(p)) {
+                    datTried++;
+                    bool w3 = false, w8 = false;
+                    editPlanApply(p, b33, b38, &w3, &w8);
+                    ImpresCryptFields g;
+                    impresCryptRead(b33, rom8[1], rom8[6], &g);
+                    if ((long)g.dayInitialUse <= etmD && (long)g.dayLastCharge <= etmD &&
+                        (long)g.dayLastRecond <= etmD) datOk++;
+                }
+            }
+        }
+        char m[200];
+        snprintf(m, sizeof(m), "корпус: у %d із %d пакетів жоден брат не більший за цикли IMPRES",
+                 holdsCyc, packs);
+        check(packs > 0 && holdsCyc == packs, m);
+        snprintf(m, sizeof(m), "корпус: у %d із %d жодна подія не пізніша за наробіток",
+                 holdsDate, packs);
+        check(packs > 0 && holdsDate == packs, m);
+        snprintf(m, sizeof(m), "обнулили цикли — брати пішли слідом у %d із %d", cycOk, cycTried);
+        check(cycTried > 0 && cycOk == cycTried, m);
+        snprintf(m, sizeof(m), "…і підбір ключа лишився однозначним у %d із %d", keyOk, cycTried);
+        check(cycTried > 0 && keyOk == cycTried, m);
+        snprintf(m, sizeof(m), "дату виготовлення на рік назад — події лишились у межах наробітку "
+                 "у %d із %d", datOk, datTried);
+        check(datTried > 0 && datOk == datTried, m);
+    }
+
+    printf("\n11б) стеля родини називає ВИННОГО і вміє відповісти «ні»\n");
+    {
+        // ⚑ ПО ОДНОМУ ЧЛЕНУ РОДИНИ ЗА РАЗ. Перевірка, де завеликі відразу
+        //  всі п'ятеро, не розрізнила б «правило працює» і «правило працює
+        //  для сусіда»: починка однаково притисне всіх. Тому кожного
+        //  піднімаємо поодинці, лишаючи решту в межах.
+        //  ⚑ ЦИКЛИ СТАВИМО ВИСОКО НАВМИСНО. Перша редакція брала 5 циклів —
+        //  і тоді стелю перевищували ще й ті лічильники, що вже лежали в
+        //  пакеті, тож звірка чесно називала винним ПЕРШОГО з них, а не того,
+        //  кого підняли. Перевірка падала й показала саме це.
+        struct { int f; long over; const char *nm; } who[] = {
+            { EDF_CALCYC,  950,  "калібрувальні цикли" },
+            { EDF_HISTCCA, 9000, "наробіток у пакеті: заряд" },
+            { EDF_HISTDCA, 9000, "наробіток у пакеті: розряд" },
+            { EDF_MONCCA,  9000, "лічильник заряду монітора" },
+            { EDF_MONDCA,  9000, "лічильник розряду монітора" },
+        };
+        for (auto &t : who) {
+            uint8_t b33[DUMP_SIZE], b38[DS2438_MEM_SIZE];
+            memcpy(b33, w33, DUMP_SIZE);
+            memcpy(b38, w38, DS2438_MEM_SIZE);
+            EditPlan p;
+            editPlanBuild(p, b33, b38, wrom, 20260824);
+            if (!p.f[t.f].avail || !p.f[EDF_CYCLES].avail) {
+                printf("   —     %s: у цьому пакеті немає\n", t.nm); continue;
+            }
+            editPlanSet(p, EDF_CYCLES, 900);
+            editPlanSet(p, t.f, t.over);
+            char why[128];
+            char m[200];
+            bool refused = !editPlanConsistent(p, why, sizeof(why));
+            snprintf(m, sizeof(m), "%s завеликий — звірка каже саме про нього (%s)",
+                     t.nm, why);
+            check(refused && strstr(why, editFieldName(t.f)) != nullptr, m);
+            bool ok = editPlanRepair(p);
+            bool pulled = p.f[t.f].want >= 0 && p.f[t.f].want < t.over;
+            snprintf(m, sizeof(m), "…і починка притиснула його до %ld", p.f[t.f].want);
+            check(ok && pulled, m);
+            check(editPlanFixed(p), "…і сказала про це людині, а не зробила мовчки");
+        }
+        // ⚑ І ГОЛОВНЕ — ПРАВИЛО МУСИТЬ УМІТИ ВІДПОВІСТИ «НІ». Набір, у якому
+        //  всі брати в межах, не сміє нічого чіпати: інакше це не запобіжник,
+        //  а мовчазний перезапис того, що людина щойно ввела.
+        uint8_t b33[DUMP_SIZE], b38[DS2438_MEM_SIZE];
+        memcpy(b33, w33, DUMP_SIZE);
+        memcpy(b38, w38, DS2438_MEM_SIZE);
+        EditPlan p;
+        editPlanBuild(p, b33, b38, wrom, 20260824);
+        editPlanSet(p, EDF_CYCLES, 900);
+        editPlanSet(p, EDF_CALCYC, 7);
+        char why[128];
+        check(editPlanConsistent(p, why, sizeof(why)) && !editPlanFixed(p),
+              "законний набір проходить недоторканим");
     }
 
     printf("\n%s (помилок: %d)\n", fails ? "Є ПОМИЛКИ" : "усі перевірки пройдено", fails);

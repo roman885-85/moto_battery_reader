@@ -941,6 +941,10 @@ void handleDumpInfo2438() {
     //  слово, тож писати його в клієнті стало неможливо в принципі.
     json += ",\"swName\":\"" CHARGE_STAGE_NAME "\"";
     json += ",\"chgHwTxt\":\"" CHARGE_STAGE_TXT "\"";
+    // Яким радіо прилад зараз розмовляє. Клієнт, який це бачить, не буде
+    // шукати причину, чому пристрій зник із Wi-Fi після перемикання.
+    json += ",\"radio\":\""; json += radioModeName(radioMode()); json += "\"";
+    json += ",\"radioSwitchable\":"; json += radioSwitchable() ? "true" : "false";
     // ETM (DS2438[8..11], сек наробітку). Рація показує «дату першого користування»
     // як (свій поточний час − ETM) — перевірено діффом до/після калібрування.
     uint32_t etm = ((uint32_t)batteryDump2438[11] << 24) | ((uint32_t)batteryDump2438[10] << 16) |
@@ -2044,15 +2048,23 @@ static String dischargeJson() {
 //  секунд скаржиться на блок живлення, якого в ньому не передбачено.
 //
 //  Файл окремий від /sound.cfg навмисно: звук — смак, а це — комплектація.
-//  Один рядок «ключ=значення», щоб можна було прочитати очима.
-#define DEVICE_CFG_PATH "/device.cfg"
-
+//  Один рядок «ключ=значення», щоб можна було прочитати очима. Сам формат і
+//  його розбір живуть у radio_mode.h — там їх дістає хостовий тест, а тут
+//  лишається тільки робота з файлом.
+//
+//  ⚑ У ФАЙЛІ ТЕПЕР ДВА ЗНАЧЕННЯ, І ПИШУТЬСЯ ВОНИ РАЗОМ. Писати «своє» поле,
+//  не читаючи сусіднього, означало б, що перемикач радіо мовчки вмикає заряд
+//  назад на приладі, де силової частини немає, — а це рівно той клас дефекту,
+//  за яким тут стежать окремо: одне місце відповідає на два питання.
 inline bool chargeModeSave() {
     File f = SPIFFS.open(DEVICE_CFG_PATH, "w");
     if (!f) { Serial.println("DEVICE: cannot write " DEVICE_CFG_PATH); return false; }
-    f.printf("v1 chgoff=%d\n", chargeOffByUser() ? 1 : 0);
+    char line[64];
+    radioCfgFormat(line, sizeof(line), radioMode(), chargeOffByUser());
+    f.print(line);
     f.close();
-    Serial.printf("DEVICE: заряд %s (збережено)\n", chargeOffByUser() ? "ВИМКНЕНО" : "увімкнено");
+    Serial.printf("DEVICE: заряд %s, зв'язок %s (збережено)\n",
+                  chargeOffByUser() ? "ВИМКНЕНО" : "увімкнено", radioModeName(radioMode()));
     return true;
 }
 
@@ -2066,16 +2078,27 @@ inline void chargeModeLoad() {
     if (!f) return;
     String line = f.readStringUntil('\n');
     f.close();
-    int off = 0;
-    if (sscanf(line.c_str(), "v1 chgoff=%d", &off) != 1) {
-        Serial.println("DEVICE: bad cfg, заряд лишається увімкненим");
+    bool off = false;
+    uint8_t mode = RADIO_MODE_DEFAULT;
+    if (!radioCfgParse(line.c_str(), &mode, &off)) {
+        Serial.println("DEVICE: bad cfg, заряд лишається увімкненим, зв'язок — Wi-Fi");
         return;
     }
+    // ⚑ ПРОПУЩЕНО ЧЕРЕЗ SANITIZE ЩЕ РАЗ, ХОЧ РОЗБІР ЦЕ ВЖЕ ЗРОБИВ. Умова тут
+    //  та сама, але відповідає вона на інше питання: розбір питає «чи можна
+    //  так записати», а це — «чи можна це підняти ЗАРАЗ». Прошивку могли
+    //  перезібрати без Bluetooth між записом файла й цим читанням, і повірити
+    //  збереженому числу означало б не підняти ЖОДНОГО радіо.
+    radioModeSet(mode);
+    if (radioMode() != mode)
+        Serial.printf("DEVICE: у файлі зв'язок %u, але ця збірка його не піднімає — Wi-Fi\n",
+                      (unsigned)mode);
     if (off) {
         chargeSetOffByUser(true);
         chargeConsumeModeSave();     // це читання, а не правка — писати назад нічого
         Serial.println("DEVICE: ця збірка без заряду (з " DEVICE_CFG_PATH ")");
     }
+    radioConsumeSave();              // прочитали, а не змінили — писати назад нічого
 }
 
 // Одні двері для всіх кінцевих точок заряду. Повертає true, якщо запит уже

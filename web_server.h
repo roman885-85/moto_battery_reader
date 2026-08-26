@@ -5220,6 +5220,9 @@ static String editPlanJson(const EditPlan &p) {
         j += "{\"i\":";      j += i;
         j += ",\"name\":\""; j += editFieldName(i);
         j += "\",\"unit\":\"";j += editFieldUnit(i);
+        // Пояснення — з приладу, як назви й межі: своя копія в кожному клієнті
+        // розійшлася б на першій же правці.
+        j += "\",\"help\":\"";j += editFieldHelp(i);
         j += "\",\"type\":"; j += editFieldType(i);
         j += ",\"chip\":";   j += editFieldChip(i);
         j += ",\"avail\":";  j += p.f[i].avail ? "true" : "false";

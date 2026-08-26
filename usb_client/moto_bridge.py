@@ -16,6 +16,14 @@ Moto IMPRES USB bridge — нативний клієнт для COM-порту.
 import sys, os, time, json, threading, webbrowser, urllib.parse, argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# ⚑ ТОЙ САМИЙ МОДУЛЬ, ЩО Й У ПРОГРАМИ. Підпис порту, розрізнення вхідного та
+#  вихідного Bluetooth-каналів, порядок опитування й ознака «це наш прилад» —
+#  усе це вже написане й покрите тестом у moto_models.py. Друга копія тут
+#  розійшлася б із першою на першій же правці, а міст саме та поверхня, де
+#  розходження помічають останнім.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import moto_models as mm
+
 try:
     import serial
     import serial.tools.list_ports
@@ -105,11 +113,50 @@ bridge = Bridge()
 DEFAULT_PORT = [None]
 
 
+def _ports_raw():
+    return [(p.device, p.description or "", p.hwid or "")
+            for p in serial.tools.list_ports.comports()]
+
+
+def _bt_names():
+    return mm.bt_names_load(mm.bt_names_path(os.path.expanduser("~")))
+
+
 def list_ports():
-    out = []
-    for p in serial.tools.list_ports.comports():
-        out.append({"port": p.device, "desc": p.description or ""})
-    return out
+    """Підписи — з moto_models: спарований прилад дає ДВА порти з однаковим
+    описом «Standard Serial over Bluetooth link», і без підпису вибір між ними
+    був підкиданням монетки."""
+    names = _bt_names()
+    return [{"port": d, "desc": mm.port_label(d, desc, hw, names)}
+            for d, desc, hw in _ports_raw()]
+
+
+def find_device():
+    """Опитати порти й повернути той, який назветься нашим приладом.
+
+    ⚑ ВХІДНІ BLUETOOTH-КАНАЛИ НЕ ПИТАЮТЬСЯ ВЗАГАЛІ — їх відкриття виснуть на
+    кілька секунд, а таких портів стільки ж, скільки спарених пристроїв.
+    Порядок і відбір рахує moto_models.port_probe_order().
+    """
+    ports = _ports_raw()
+    bt = {d: mm.port_is_bluetooth(h) for d, _, h in ports}
+    for dev in mm.port_probe_order(ports, _bt_names()):
+        try:
+            bridge.close()
+            bridge.open(dev)
+            # USB-порт скидає ESP32 при відкритті; Bluetooth нічого не скидає.
+            time.sleep(0.4 if bt.get(dev) else 1.8)
+            if mm.probe_is_our_device(bridge.cmd("PING", 2.5)):
+                return dev
+            bridge.close()
+        except Exception:
+            # Порт зайнятий, немає прав, це взагалі модем — не наша біда й не
+            # привід зупиняти пошук.
+            try:
+                bridge.close()
+            except Exception:
+                pass
+    return None
 
 
 # Шар, що підмінює транспорт client_usb.html з Web Serial на локальний міст.
@@ -146,6 +193,24 @@ INJECT = """
     sel.style.cssText='margin-right:8px;background:#0e1218;color:#e7ecf3;border:1px solid #2a323f;border-radius:8px;padding:6px';
     ps.forEach(function(p){var o=document.createElement('option');o.value=p.port;o.textContent=p.port+(p.desc?(' — '+p.desc):'');sel.appendChild(o);});
     var btn=$('btnConn'); btn.parentNode.insertBefore(sel, btn);
+    // ⚑ КНОПКА ПОШУКУ — ГОЛОВНА ДЛЯ ТОГО, ХТО НЕ ЗНАЄ НОМЕРА ПОРТУ. У системі
+    //  десяток COM-портів, жоден не підписаний іменем приладу; прилад
+    //  представляється сам у відповідь на PING, тож питаємо кожен.
+    var fb=document.createElement('button');
+    fb.textContent='\uD83D\uDD0D \u0417\u043D\u0430\u0439\u0442\u0438 \u043F\u0440\u0438\u043B\u0430\u0434';
+    fb.style.cssText='margin-right:8px;background:#1b2430;color:#e7ecf3;border:1px solid #2a323f;border-radius:8px;padding:6px 10px;cursor:pointer';
+    fb.onclick=async function(){
+      fb.disabled=true;
+      $('st').textContent='\u041F\u043E\u0448\u0443\u043A \u043F\u0440\u0438\u043B\u0430\u0434\u0443...';
+      try{
+        var r=await (await fetch('/find')).json();
+        if(r.ok){ for(var i=0;i<sel.options.length;i++) if(sel.options[i].value===r.port) sel.selectedIndex=i;
+                  if(!connected) await toggleConn(); }
+        else $('st').textContent='\u041D\u0435 \u0437\u043D\u0430\u0439\u0434\u0435\u043D\u043E: '+(r.err||'');
+      }catch(e){ $('st').textContent='\u041C\u0456\u0441\u0442 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0438\u0439: '+e.message; }
+      fb.disabled=false;
+    };
+    btn.parentNode.insertBefore(fb, btn);
   });
 })();
 </script>
@@ -191,6 +256,15 @@ class Handler(BaseHTTPRequestHandler):
                 r = {"ok": True, "port": port}
             except Exception as e:
                 r = {"ok": False, "err": str(e)}
+            self._send(200, "application/json", json.dumps(r, ensure_ascii=False))
+            return
+        if u.path == "/find":
+            dev = find_device()
+            if dev:
+                DEFAULT_PORT[0] = dev
+                r = {"ok": True, "port": dev}
+            else:
+                r = {"ok": False, "err": "прилад не відповів на жодному порту"}
             self._send(200, "application/json", json.dumps(r, ensure_ascii=False))
             return
         if u.path == "/close":

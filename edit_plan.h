@@ -49,14 +49,14 @@ enum {
     EDF_CYCLES,      // цикли IMPRES (гістограма)            DS2433
     EDF_NONIMP,      // цикли не-IMPRES                      DS2433
     EDF_CALCYC,      // калібрувальні цикли                  DS2433
-    EDF_HISTCCA,     // наробіток у пакеті: заряд  (сирі)    DS2433
-    EDF_HISTDCA,     // наробіток у пакеті: розряд (сирі)    DS2433
+    EDF_HISTCCA,     // наробіток у пакеті: заряд,  мА·год   DS2433
+    EDF_HISTDCA,     // наробіток у пакеті: розряд, мА·год   DS2433
     EDF_RATED,       // паспортна ємність, мА·год            DS2433
     EDF_HEALTH,      // знос, %                              DS2433
     EDF_ETM,         // наробіток монітора, доби             DS2438
     EDF_STAMPD,      // мітка події в добах (0x32)           DS2438
-    EDF_MONCCA,      // лічильник заряду монітора  (сирі)    DS2438
-    EDF_MONDCA,      // лічильник розряду монітора (сирі)    DS2438
+    EDF_MONCCA,      // лічильник заряду монітора,  мА·год  DS2438
+    EDF_MONDCA,      // лічильник розряду монітора, мА·год  DS2438
     EDF_ICA,         // залишок, мА·год                      DS2438
     EDF_COUNT
 };
@@ -111,7 +111,7 @@ inline const char *editFieldUnit(int i) {
         case EDF_MFG: case EDF_USE: case EDF_LASTCHG: case EDF_LASTREC: return "";
         case EDF_CYCLES: case EDF_NONIMP: case EDF_CALCYC: return "циклів";
         case EDF_HISTCCA: case EDF_HISTDCA:
-        case EDF_MONCCA:  case EDF_MONDCA:  return "сирих одиниць";
+        case EDF_MONCCA:  case EDF_MONDCA:  return "мА·год";
         case EDF_RATED:   case EDF_ICA:     return "мА·год";
         case EDF_HEALTH:  return "%";
         case EDF_ETM: case EDF_STAMPD: return "діб";
@@ -122,6 +122,99 @@ inline int editFieldType(int i) {
     return (i == EDF_MFG || i == EDF_USE || i == EDF_LASTCHG || i == EDF_LASTREC)
            ? EDT_DATE : EDT_NUM;
 }
+// ── ЩО ЦЕ ЗА ЗНАЧЕННЯ Й ЩО БУДЕ, ЯКЩО ЙОГО ЗМІНИТИ ───────────────────────
+//  ⚑ ОДИН ТЕКСТ НА ВСІ ТРИ КЛІЄНТИ, і причина та сама, що з назвами й межами:
+//  своя копія пояснень у кожному клієнті розійшлася б на першій же правці —
+//  у цьому проєкті так уже було з іменем силового ключа й описом зарядного
+//  заліза.
+//
+//  Пояснення відповідає на ДВА питання, і саме в такому порядку: що це число
+//  означає — і що станеться, коли його змінити. Друге важливіше: редактор
+//  пише в пам'ять живого пакета, і «я не знав, що воно на це впливає» тут
+//  коштує дорожче за будь-яку незручність.
+inline const char *editFieldHelp(int i) {
+    switch (i) {
+        case EDF_MFG:
+            return "Дата виготовлення пакета — опора всього блока: решта дат зберігається "
+                   "ЗМІЩЕННЯМ у добах від неї. Посунете її — і всі похідні дати "
+                   "перерахуються, щоб лишитись на місці за календарем.";
+        case EDF_USE:
+            return "Коли пакет увімкнули вперше. Нуль означає «не вмикали» — це законне "
+                   "значення, а не порожнеча. Не може бути ані раніше за виготовлення, "
+                   "ані пізніше за наробіток монітора.";
+        case EDF_LASTCHG:
+            return "Останній заряд. Станція звіряє його з наробітком: подія, пізніша за "
+                   "весь строк роботи пакета, — саме той «побитий набір», який вона "
+                   "лікує, повертаючи свої числа.";
+        case EDF_LASTREC:
+            return "Останнє кондиціювання (калібрувальний цикл на станції). Разом із "
+                   "калібрувальними циклами показує, коли пакет востаннє вимірювали.";
+        case EDF_CYCLES:
+            return "Цикли IMPRES — те саме число, що фірмове ПЗ зве «Total IMPRES charge "
+                   "cycles». Це СТЕЛЯ для решти лічильників: усі вони підуть за ним "
+                   "униз, бо пакет не міг накопичити більше, ніж відпрацював.";
+        case EDF_NONIMP:
+            return "Скільки разів пакет заряджали звичайною (не-IMPRES) зарядкою. На "
+                   "калібрування не впливає — це облік.";
+        case EDF_CALCYC:
+            return "Скільки разів станція проводила повне калібрування. Більшим за цикли "
+                   "IMPRES бути не може.";
+        case EDF_HISTCCA:
+            return "Скільки заряду пакет прийняв за весь строк, у мА·год. Записано в "
+                   "САМОМУ пакеті (DS2433) — і саме звідси станція повертає лічильники "
+                   "після скидання, якщо тут лишити старе число.";
+        case EDF_HISTDCA:
+            return "Скільки заряду з пакета взяли за весь строк, у мА·год. Лежить поруч "
+                   "із попереднім, у самому пакеті, і повертається так само.";
+        case EDF_RATED:
+            return "Паспортна ємність моделі. Від неї рахується знос, відсоток заряду й "
+                   "струми розумного профілю — тобто змінивши її, ви зміните ПОКАЗАННЯ "
+                   "всього іншого, не чіпаючи самих банок.";
+        case EDF_HEALTH:
+            return "Знос: скільки відсотків паспортної ємності пакет ще тримає. Пишеться "
+                   "не як є, а через потенційну ємність (CTS) — саме її читає станція.";
+        case EDF_ETM:
+            return "Наробіток монітора: скільки діб пакет узагалі працював. Це стеля для "
+                   "всіх дат подій — опустите наробіток, і пізніші за нього події "
+                   "поїдуть за ним, бо статись раніше за власне життя вони не могли.";
+        case EDF_STAMPD:
+            return "Мітка останньої події в добах. Четверте місце, де пакет тримав "
+                   "наробіток: станція бачить мітку, пізнішу за наробіток, і підтягує "
+                   "наробіток до неї — саме так число й поверталось.";
+        case EDF_MONCCA:
+            return "Скільки заряду прийняв пакет за версією МОНІТОРА (DS2438), у мА·год. "
+                   "Те саме, що «наробіток у пакеті: заряд», але з іншого чипа — і "
+                   "станція звіряє їх між собою.";
+        case EDF_MONDCA:
+            return "Скільки заряду з пакета взято за версією монітора, у мА·год. Пара до "
+                   "попереднього.";
+        case EDF_ICA:
+            return "Паливомір: скільки мА·год у пакеті ЗАРАЗ. Це поточний залишок, а не "
+                   "історія; станція уточнить його сама при першому ж заряді.";
+        default:
+            return "";
+    }
+}
+
+// ── ЧОТИРИ ЛІЧИЛЬНИКИ, ЯКІ ЖИВУТЬ У СИРИХ ОДИНИЦЯХ ЧИПА ───────────────────
+//  У пам'яті вони лежать не в мА·год, а в «сирих» одиницях накопичувача:
+//  мА·год = 15.625 × сире / шунт. Шунт у кожного пакета СВІЙ (DS2438[56..57]),
+//  тож одна й та сама сира одиниця — це від 339 до 790 мА·год залежно від
+//  екземпляра (виміряно на 62 моніторах корпусу з 65).
+//
+//  Показувати таке число людині означає показувати ніщо: «40» не каже нічого
+//  ні про заряд, ні про знос. Тому редактор працює в мА·год, а переклад робить
+//  сам — за шунтом ЦЬОГО пакета.
+//
+//  ⚑ ЦІНА — ГРУБИЙ КРОК, І ЙОГО НЕ СХОВАТИ. Одиниця чипа велика, тож не кожне
+//  число в мА·год записуване: введене значення притягується до найближчого
+//  можливого, і про це кажуть уголос (див. editPlanSet). Мовчазне округлення
+//  тут було б гірше за сирі одиниці: людина побачила б, що записала не те, і
+//  не зрозуміла б чому.
+inline bool editFieldIsCca(int i) {
+    return i == EDF_HISTCCA || i == EDF_HISTDCA || i == EDF_MONCCA || i == EDF_MONDCA;
+}
+
 // 33 або 38 — у який чип поїде правка. Клієнт групує список саме за цим:
 // «що записано в самому пакеті» й «що бачить монітор» — різні речі, і плутати
 // їх у одному стовпчику означало б повторити помилку, з якої почалась уся
@@ -159,10 +252,23 @@ inline void editPlanBuild(EditPlan &p, const uint8_t *d33, const uint8_t *d38,
 
         uint16_t hC = 0, hD = 0;
         bool haveHist = impresBmsHistCounters(d33, &hC, &hD);
+        // ⚑ БЕЗ ШУНТА ПОЛЕ НЕДОСТУПНЕ, А НЕ «СИРЕ». Перекласти сирі одиниці в
+        //  мА·год можна лише знаючи шунт ЦЬОГО пакета; підставити спільну
+        //  константу означало б показати неправильне число з упевненим
+        //  виглядом — у цьому проєкті вже було, і саме на шунті (сімейство
+        //  4409 занижувалось майже вдвічі). Мовчки відкотитись назад у сирі
+        //  одиниці теж не можна: тоді те саме поле міряється то в одному, то
+        //  в іншому. Шунт не читається в 3 моніторах корпусу з 65.
+        bool haveRs = (p.rsOhm > 0.0f);
         for (int i : { EDF_HISTCCA, EDF_HISTDCA }) {
-            p.f[i].avail = haveHist; p.f[i].lo = 0; p.f[i].hi = 0xFFFF;
+            p.f[i].avail = haveHist && haveRs;
+            p.f[i].lo = 0;
+            p.f[i].hi = haveRs ? impresCcaMahFromRaw(0xFFFF, p.rsOhm) : 0;
         }
-        if (haveHist) { p.f[EDF_HISTCCA].cur = hC; p.f[EDF_HISTDCA].cur = hD; }
+        if (haveHist && haveRs) {
+            p.f[EDF_HISTCCA].cur = impresCcaMahFromRaw(hC, p.rsOhm);
+            p.f[EDF_HISTDCA].cur = impresCcaMahFromRaw(hD, p.rsOhm);
+        }
 
         if (ok) {
             p.f[EDF_CYCLES].avail = (b.cycles >= 0);
@@ -233,10 +339,14 @@ inline void editPlanBuild(EditPlan &p, const uint8_t *d33, const uint8_t *d38,
         p.f[EDF_STAMPD].avail = true;
         p.f[EDF_STAMPD].cur   = impresStampDays(d38);
         p.f[EDF_STAMPD].lo = 0; p.f[EDF_STAMPD].hi = (long)(RP_ETM_MAX / 86400UL);
-        p.f[EDF_MONCCA].avail = true; p.f[EDF_MONCCA].cur = impresCca(d38);
-        p.f[EDF_MONCCA].lo = 0; p.f[EDF_MONCCA].hi = 0xFFFF;
-        p.f[EDF_MONDCA].avail = true; p.f[EDF_MONDCA].cur = impresDca(d38);
-        p.f[EDF_MONDCA].lo = 0; p.f[EDF_MONDCA].hi = 0xFFFF;
+        // Лічильники монітора — теж у мА·год, і з тією самою умовою про шунт.
+        bool rsOk = (p.rsOhm > 0.0f);
+        p.f[EDF_MONCCA].avail = rsOk;
+        p.f[EDF_MONCCA].cur = rsOk ? impresCcaMahFromRaw(impresCca(d38), p.rsOhm) : -1;
+        p.f[EDF_MONCCA].lo = 0; p.f[EDF_MONCCA].hi = rsOk ? impresCcaMahFromRaw(0xFFFF, p.rsOhm) : 0;
+        p.f[EDF_MONDCA].avail = rsOk;
+        p.f[EDF_MONDCA].cur = rsOk ? impresCcaMahFromRaw(impresDca(d38), p.rsOhm) : -1;
+        p.f[EDF_MONDCA].lo = 0; p.f[EDF_MONDCA].hi = rsOk ? impresCcaMahFromRaw(0xFFFF, p.rsOhm) : 0;
         p.f[EDF_ICA].avail = true;
         p.f[EDF_ICA].lo = 0;
         p.f[EDF_ICA].hi = (p.ratedEff > 0) ? p.ratedEff : 5000;
@@ -325,6 +435,21 @@ inline bool editPlanSet(EditPlan &p, int i, long v) {
         editFixNote(p, i, v, fixed, why);
         v = fixed;
     }
+    // ── ⚑ ГРУБИЙ КРОК ЛІЧИЛЬНИКІВ — УГОЛОС ────────────────────────────────
+    //  Одиниця накопичувача велика (339…790 мА·год залежно від шунта), тож
+    //  записуване не кожне число. Притягуємо до найближчого можливого — і
+    //  КАЖЕМО про це. Мовчазне округлення тут гірше за сирі одиниці: людина
+    //  побачила б у полі не те, що ввела, і не мала б жодної підказки чому.
+    if (editFieldIsCca(i) && p.rsOhm > 0.0f) {
+        long snapped = impresCcaMahFromRaw(impresCcaRawFromMah(v, p.rsOhm), p.rsOhm);
+        if (snapped != v) {
+            char why[80];
+            long step = impresCcaMahFromRaw(1, p.rsOhm);
+            snprintf(why, sizeof(why), "крок лічильника %ld мА·год", step);
+            editFixNote(p, i, v, snapped, why);
+            v = snapped;
+        }
+    }
     p.f[i].want = v;
     return true;
 }
@@ -350,14 +475,20 @@ inline long editDatePlusDays(long ymd, long days) {
     return restoreDateNum(y, m, d);
 }
 
-// Стеля лічильників заряду/розряду в СИРИХ одиницях, що відповідає заданій
-// кількості циклів. Повертає −1, коли перерахувати нічим (немає шунта або
-// паспортної ємності) — тоді правило мовчить, а не вигадує число.
-inline long editCcaCapRaw(const EditPlan &p, long cycles) {
+// Стеля лічильників заряду/розряду В МА·ГОД, що відповідає заданій кількості
+// циклів: стільки заряду пакет міг накопичити за N повних циклів. Повертає −1,
+// коли рахувати нічим (немає паспортної ємності) — тоді правило мовчить, а не
+// вигадує число.
+//
+//  ⚑ РАХУЄТЬСЯ В ТИХ САМИХ ОДИНИЦЯХ, У ЯКИХ ЖИВЕ ПОЛЕ. Доти стеля була в сирих
+//  одиницях, бо в них були й поля; перевівши поля в мА·год і лишивши стелю
+//  сирою, ми дістали б звірку числа з числом іншої розмірності — тобто
+//  запобіжник, який спрацьовує будь-як, тільки не за призначенням.
+inline long editCcaCapMah(const EditPlan &p, long cycles) {
     long rated = editPlanEff(p, EDF_RATED);
     if (rated <= 0) rated = p.ratedEff;
-    if (cycles < 0 || rated <= 0 || p.rsOhm <= 0.0f) return -1;
-    return (long)impresCcaRawFromMah(cycles * rated, p.rsOhm);
+    if (cycles < 0 || rated <= 0) return -1;
+    return cycles * rated;
 }
 
 // ── РОДИНА ЛІЧИЛЬНИКІВ І СТЕЛЯ КОЖНОГО ────────────────────────────────────
@@ -377,7 +508,7 @@ inline int editCycleFamily(const EditPlan &p, int *idx, long *cap) {
     if (cyc < 0) return 0;
     int n = 0;
     idx[n] = EDF_CALCYC; cap[n++] = cyc;
-    long raw = editCcaCapRaw(p, cyc);
+    long raw = editCcaCapMah(p, cyc);
     if (raw >= 0) {
         idx[n] = EDF_HISTCCA; cap[n++] = raw;
         idx[n] = EDF_HISTDCA; cap[n++] = raw;
@@ -556,8 +687,9 @@ inline int editPlanApply(EditPlan &p, uint8_t *d33, uint8_t *d38,
         // Обидва наробітки лежать в одному блоці й пишуться однією дією:
         // писати їх по черзі означало б двічі перерахувати ту саму суму.
         if (want(EDF_HISTCCA) || want(EDF_HISTDCA)) {
-            uint16_t cca = (uint16_t)editPlanEff(p, EDF_HISTCCA);
-            uint16_t dca = (uint16_t)editPlanEff(p, EDF_HISTDCA);
+            // Назад у сирі одиниці — за шунтом цього пакета.
+            uint16_t cca = impresCcaRawFromMah(editPlanEff(p, EDF_HISTCCA), p.rsOhm);
+            uint16_t dca = impresCcaRawFromMah(editPlanEff(p, EDF_HISTDCA), p.rsOhm);
             if (impresHistCountersWrite(d33, cca, dca)) {
                 if (want(EDF_HISTCCA)) did(EDF_HISTCCA, true);
                 if (want(EDF_HISTDCA)) did(EDF_HISTDCA, true);
@@ -644,12 +776,12 @@ inline int editPlanApply(EditPlan &p, uint8_t *d33, uint8_t *d38,
             did(EDF_STAMPD, true);
         }
         if (want(EDF_MONCCA)) {
-            uint16_t v = (uint16_t)p.f[EDF_MONCCA].want;
+            uint16_t v = impresCcaRawFromMah(p.f[EDF_MONCCA].want, p.rsOhm);
             d38[60] = (uint8_t)(v & 0xFF); d38[61] = (uint8_t)(v >> 8);
             did(EDF_MONCCA, true);
         }
         if (want(EDF_MONDCA)) {
-            uint16_t v = (uint16_t)p.f[EDF_MONDCA].want;
+            uint16_t v = impresCcaRawFromMah(p.f[EDF_MONDCA].want, p.rsOhm);
             d38[62] = (uint8_t)(v & 0xFF); d38[63] = (uint8_t)(v >> 8);
             did(EDF_MONDCA, true);
         }

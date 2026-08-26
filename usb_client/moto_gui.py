@@ -2198,6 +2198,16 @@ class App:
                                                                         sticky="w", padx=(6, 0))
             self._edVars[fd["i"]] = var
             r0 += 1
+            # ⚑ ПОЯСНЕННЯ ОКРЕМИМ РЯДКОМ ПІД ПОЛЕМ. Редактор пише в пам'ять
+            #  живого пакета, і «я не знав, що воно на це впливає» тут коштує
+            #  дорожче за зайвий рядок на екрані. Текст дає ПРИЛАД (поле help) —
+            #  своєї копії клієнт не тримає.
+            if fd.get("help"):
+                ttk.Label(self.edBox, text=fd["help"], foreground=MIL["mut"],
+                          wraplength=560, justify="left",
+                          font=fnt("Segoe UI", 8)).grid(row=r0, column=0, columnspan=4,
+                                                        sticky="w", pady=(0, 6))
+                r0 += 1
         self._edit_sum()
 
     # ⚑ ВИПРАВЛЕННЯ ПРИ ВВЕДЕННІ — ЗА МЕЖАМИ, ЯКІ ДАВ ПРИСТРІЙ, А НЕ ЗА

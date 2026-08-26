@@ -1641,7 +1641,9 @@ function edRender(p, err){
       h+='<tr><td colspan="3" class="note '+(chip===33?'i':'w')+'" style="margin:0">'
         +(chip===33?'DS2433 — памʼять самого пакета'
                    :'DS2438 — монітор (його рація читає щомиті)')+'</td></tr>'; }
-    var nm=edEsc(f.name)+(f.unit?' <span class="k">('+edEsc(f.unit)+')</span>':'');
+    // Пояснення — з приладу (поле help), як назва й одиниці. Див. index.html.
+    var nm=edEsc(f.name)+(f.unit?' <span class="k">('+edEsc(f.unit)+')</span>':'')
+          +(f.help?'<div class="k" style="font-weight:400;margin-top:2px;max-width:46ch;line-height:1.35">'+edEsc(f.help)+'</div>':'');
     if(!f.avail){ h+='<tr><td>'+nm+'</td><td colspan="2" class="k">у цьому пакеті не читається</td></tr>'; return; }
     var cur=(f.cur<0)?'—':(f.type===1?(f.cur?edNumToDate(f.cur):'не було'):f.cur);
     var inp=(f.type===1)

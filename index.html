@@ -1919,7 +1919,13 @@ function edRender(p, err){
                             : 'DS2438 — монітор (його рація читає щомиті)')
                + '</td></tr>';
         }
-        const nm = esc(f.name) + (f.unit ? ' <span class="k">('+esc(f.unit)+')</span>' : '');
+        // ⚑ ПОЯСНЕННЯ ПОРЯД ІЗ ПОЛЕМ, А НЕ В ДОКУМЕНТАЦІЇ. Редактор пише в
+        //  пам'ять живого пакета; «я не знав, що воно на це впливає» тут
+        //  коштує дорожче за зайвий рядок на екрані. Текст дає ПРИЛАД (поле
+        //  help) — своя копія в кожному клієнті розійшлася б на першій правці.
+        const nm = esc(f.name) + (f.unit ? ' <span class="k">('+esc(f.unit)+')</span>' : '')
+                 + (f.help ? '<div class="k" style="font-weight:400;margin-top:2px;'
+                             + 'max-width:46ch;line-height:1.35">'+esc(f.help)+'</div>' : '');
         if(!f.avail){
             h += '<tr><td>'+nm+'</td><td colspan="2" class="k">у цьому пакеті не читається</td></tr>';
             return;

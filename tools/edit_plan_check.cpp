@@ -96,6 +96,32 @@ int main() {
             if (c != 33 && c != 38) sane = false;
         }
         check(named, "кожне поле має назву — клієнти своїх не вигадують");
+        // ⚑ І ПОЯСНЕННЯ — ТЕЖ У КОЖНОГО. Редактор пише в пам'ять живого
+        //  пакета; поле без пояснення означає, що людина міняє число, не
+        //  знаючи ні що воно, ні що з цього вийде. Порожній рядок тут — не
+        //  «поки не написали», а дірка, яку видно лише на живому приладі.
+        bool helped = true, helpFull = true;
+        for (int i = 0; i < EDF_COUNT; i++) {
+            const char *h = editFieldHelp(i);
+            if (!h[0]) helped = false;
+            //  Коротке «а це лічильник» користі не дає — вимагаємо саме
+            //  пояснення: що означає І що буде, якщо змінити.
+            if (strlen(h) < 60) helpFull = false;
+        }
+        check(helped, "…і пояснення: що це значення означає");
+        check(helpFull, "…причому пояснення, а не два слова");
+        // ⚑ ОДИНИЦІ ЛІЧИЛЬНИКІВ — САМЕ МА·ГОД. Сира одиниця чипа не каже
+        //  людині нічого: «40» — це і не заряд, і не знос, і не цикли. Саме з
+        //  цієї скарги правка й почалась, тож перевіряємо не «одиниця є», а
+        //  яка саме.
+        bool mah = true, raw = false;
+        for (int i = 0; i < EDF_COUNT; i++) {
+            if (!editFieldIsCca(i)) continue;
+            if (strcmp(editFieldUnit(i), "мА·год") != 0) mah = false;
+            if (strstr(editFieldUnit(i), "сир")) raw = true;
+        }
+        check(mah,  "лічильники заряду/розряду міряються в мА·год");
+        check(!raw, "…і сирих одиниць чипа людині більше не показують");
         check(sane,  "…і кожне знає, у який чип пише");
         // ⚑ Межа між чипами — за НОМЕРОМ поля, тож порядок у переліку не
         //  косметика: перемішавши їх, ми мовчки відправили б правку не туди.
@@ -124,8 +150,12 @@ int main() {
             if (p.haveKey) withKey++;
             if (p.f[EDF_HISTCCA].avail) withHist++;
             if (has38 && p.f[EDF_ETM].avail && p.f[EDF_ETM].cur >= 0) withEtm++;
-            // Прочитане мусить збігтися з тим, що каже штатний розбір.
-            if (has38 && p.f[EDF_MONCCA].cur != impresCca(a38)) {
+            // Прочитане мусить збігтися з тим, що каже штатний розбір — але
+            // ТЕПЕР У МА·ГОД: редактор більше не показує сирих одиниць чипа,
+            // бо «40» не каже людині нічого. Переклад робиться за шунтом ЦЬОГО
+            // пакета, тож і звіряти треба з ним, а не з сирим числом.
+            if (has38 && p.f[EDF_MONCCA].avail &&
+                p.f[EDF_MONCCA].cur != impresCcaMahFromRaw(impresCca(a38), p.rsOhm)) {
                 check(false, "лічильник заряду монітора прочитано не так, як його читає решта");
                 break;
             }
@@ -169,7 +199,8 @@ int main() {
 
     printf("\n3) записали — і прочитали назад те саме\n");
     {
-        struct { int f; long v; const char *nm; } tries[] = {
+        struct Try { int f; long v; const char *nm; };
+        Try tries[] = {
             { EDF_CYCLES,  123,      "цикли IMPRES" },
             { EDF_NONIMP,  7,        "цикли не-IMPRES" },
             // ⚑ ЛІЧИЛЬНИКИ ЗАРЯДУ/РОЗРЯДУ — ЗНАЧЕННЯ ЗАВІДОМО НИЖЧІ ЗА ПОТОЧНІ.
@@ -178,13 +209,13 @@ int main() {
             //  десятки разів. Тобто перевірка вимагала записати стан, якого
             //  немає в жодному з 41 живого пакета корпусу, — і сама ж
             //  доводила б, що редактор такий стан пропускає.
-            { EDF_HISTCCA, 21,       "наробіток у пакеті: заряд" },
-            { EDF_HISTDCA, 13,       "наробіток у пакеті: розряд" },
+            { EDF_HISTCCA, 0,        "наробіток у пакеті: заряд" },
+            { EDF_HISTDCA, 0,        "наробіток у пакеті: розряд" },
             { EDF_RATED,   2500,     "паспортна ємність" },
             { EDF_CALCYC,  9,        "калібрувальні цикли" },
             { EDF_ETM,     42,       "наробіток монітора" },
-            { EDF_MONCCA,  17,       "лічильник заряду монітора" },
-            { EDF_MONDCA,  11,       "лічильник розряду монітора" },
+            { EDF_MONCCA,  0,        "лічильник заряду монітора" },
+            { EDF_MONDCA,  0,        "лічильник розряду монітора" },
         };
         for (auto &t : tries) {
             uint8_t b33[DUMP_SIZE], b38[DS2438_MEM_SIZE];
@@ -193,6 +224,12 @@ int main() {
             EditPlan p;
             editPlanBuild(p, b33, b38, wrom, 20260824);
             if (!p.f[t.f].avail) { printf("   —     %s: у цьому пакеті немає\n", t.nm); continue; }
+            // ⚑ ЛІЧИЛЬНИКИ ЖИВУТЬ У МА·ГОД, АЛЕ КРОК У НИХ ГРУБИЙ (сотні
+            //  мА·год, і в кожного пакета свій). Тому число для них береться
+            //  НЕ з голови, а з самої сітки: інакше перевірка вимагала б
+            //  записати значення, якого чип не вміє, і падала б на чесній
+            //  роботі притягування.
+            if (editFieldIsCca(t.f)) t.v = impresCcaMahFromRaw(20, p.rsOhm);
             // ⚑ ЧЕРЕЗ ПОЧИНКУ, А НЕ ЧЕРЕЗ ГОЛУ ЗВІРКУ. Саме так кличуть
             //  редактор веб і USB (editPlanRepair -> editPlanApply): звірка
             //  лише КАЖЕ, що набір суперечливий, а рішення про очевидну
@@ -368,8 +405,10 @@ int main() {
                   "…і виправлення названо: людина бачить, що сталось із її числом");
             EditPlan p2;
             editPlanBuild(p2, b33, b38, wrom, 20260824);
-            check(editPlanSet(p2, EDF_HISTCCA, -0 + 99999) && p2.f[EDF_HISTCCA].want == 65535,
-                  "перебір у сирих одиницях теж притискається до стелі");
+            // Стеля тепер у мА·год і залежить від шунта пакета: беремо її ж.
+            long hiMah = p2.f[EDF_HISTCCA].hi;
+            check(editPlanSet(p2, EDF_HISTCCA, hiMah * 4) && p2.f[EDF_HISTCCA].want == hiMah,
+                  "перебір лічильника теж притискається до стелі");
         }
         // б) сміття замість дати — притискаємо покомпонентно.
         //    13-й місяць -> 12-й, 45-те число -> останнє в місяці.
@@ -580,11 +619,17 @@ int main() {
         //  одиницях (це ~165 циклів заряду) і наробіток 11 діб при подіях на
         //  1500-й добі: набір, якого немає в жодному живому пакеті, і саме
         //  його перевірка вимагала записати.
+        // Лічильники — у мА·год і на сітці чипа (див. розділ 3): число з голови
+        // притягнулось би до сусіднього можливого, і перевірка «прочитали те
+        // саме» падала б на чесній роботі притягування.
+        long m1 = impresCcaMahFromRaw(30, p.rsOhm);
+        long m2 = impresCcaMahFromRaw(24, p.rsOhm);
+        long m3 = impresCcaMahFromRaw(28, p.rsOhm);
         editPlanSet(p, EDF_CYCLES,  555);
-        editPlanSet(p, EDF_HISTCCA, 777);
-        editPlanSet(p, EDF_HISTDCA, 666);
+        editPlanSet(p, EDF_HISTCCA, m1);
+        editPlanSet(p, EDF_HISTDCA, m2);
         editPlanSet(p, EDF_ETM,     2000);
-        editPlanSet(p, EDF_MONCCA,  888);
+        editPlanSet(p, EDF_MONCCA,  m3);
         check(editPlanCount(p, 33) == 3 && editPlanCount(p, 38) == 2,
               "план знає, скільки правок у кожен чип");
         char why[128];
@@ -594,13 +639,13 @@ int main() {
         EditPlan q;
         editPlanBuild(q, b33, b38, wrom, 20260824);
         check(done == 5 && w3 && w8, "усі п'ять застосовано, обидва чипи позначені");
-        check(q.f[EDF_CYCLES].cur == 555 && q.f[EDF_HISTCCA].cur == 777 &&
-              q.f[EDF_HISTDCA].cur == 666 && q.f[EDF_ETM].cur == 2000 &&
-              q.f[EDF_MONCCA].cur == 888, "…і всі п'ять читаються назад");
+        check(q.f[EDF_CYCLES].cur == 555 && q.f[EDF_HISTCCA].cur == m1 &&
+              q.f[EDF_HISTDCA].cur == m2 && q.f[EDF_ETM].cur == 2000 &&
+              q.f[EDF_MONCCA].cur == m3, "…і всі п'ять читаються назад");
         // ⚑ ОБИДВА НАРОБІТКИ ЛЕЖАТЬ В ОДНОМУ БЛОЦІ. Записати їх по черзі —
         //  це двічі перерахувати ту саму суму; сума мусить лишитись цілою.
         uint16_t hC = 0, hD = 0;
-        check(impresBmsHistCounters(b33, &hC, &hD) && hC == 777 && hD == 666,
+        check(impresBmsHistCounters(b33, &hC, &hD) && hC == 30 && hD == 24,
               "сума блока наробітку ціла — штатний читач бачить обидва числа");
     }
 
@@ -726,6 +771,43 @@ int main() {
         check(datTried > 0 && datOk == datTried, m);
     }
 
+    printf("\n11в) грубий крок лічильника не ховається, а називається\n");
+    {
+        // ⚑ ОДИНИЦЯ ЧИПА ВЕЛИКА (339…790 мА·год залежно від шунта), тож
+        //  записуване не кожне число в мА·год. Притягування неминуче — але
+        //  МОВЧАЗНЕ притягування гірше за сирі одиниці: людина побачила б у
+        //  полі не те, що ввела, і не мала б жодної підказки чому.
+        uint8_t b33[DUMP_SIZE], b38[DS2438_MEM_SIZE];
+        memcpy(b33, w33, DUMP_SIZE);
+        memcpy(b38, w38, DS2438_MEM_SIZE);
+        EditPlan p;
+        editPlanBuild(p, b33, b38, wrom, 20260824);
+        if (!p.f[EDF_MONCCA].avail) {
+            printf("   —     у цьому пакеті лічильник монітора не читається\n");
+        } else {
+            long step = impresCcaMahFromRaw(1, p.rsOhm);
+            long onGrid = impresCcaMahFromRaw(10, p.rsOhm);
+            char m[140];
+            snprintf(m, sizeof(m), "крок лічильника — %ld мА·год, і він не нульовий", step);
+            check(step > 0, m);
+
+            // Значення НА сітці проходить недоторканим: правило мусить уміти
+            // відповісти «ні», інакше воно чіпає геть усе.
+            check(editPlanSet(p, EDF_MONCCA, onGrid) &&
+                  p.f[EDF_MONCCA].want == onGrid && !editPlanFixed(p),
+                  "значення, яке чип уміє записати, проходить недоторканим");
+
+            // А значення МІЖ вузлами притягується — і про це сказано.
+            EditPlan q;
+            editPlanBuild(q, b33, b38, wrom, 20260824);
+            long off = onGrid + step / 2;
+            check(editPlanSet(q, EDF_MONCCA, off) && q.f[EDF_MONCCA].want != off,
+                  "значення між вузлами притягується до можливого");
+            check(editPlanFixed(q) && strstr(q.fix, "крок лічильника"),
+                  "…і людині сказано, ЩО саме сталося з її числом");
+        }
+    }
+
     printf("\n11б) стеля родини називає ВИННОГО і вміє відповісти «ні»\n");
     {
         // ⚑ ПО ОДНОМУ ЧЛЕНУ РОДИНИ ЗА РАЗ. Перевірка, де завеликі відразу
@@ -736,12 +818,16 @@ int main() {
         //  і тоді стелю перевищували ще й ті лічильники, що вже лежали в
         //  пакеті, тож звірка чесно називала винним ПЕРШОГО з них, а не того,
         //  кого підняли. Перевірка падала й показала саме це.
+        // ⚑ ЛІЧИЛЬНИКИ ТЕПЕР У МА·ГОД, І СТЕЛЯ В НИХ ТЕЖ. Число «завелике»
+        //  беремо не з голови, а від самої стелі: 9000 мА·год колись було
+        //  вчетверо більше за неї в сирих одиницях, а в мА·год це менше за
+        //  один цикл — тобто перевірка мовчки перестала б щось перевіряти.
         struct { int f; long over; const char *nm; } who[] = {
             { EDF_CALCYC,  950,  "калібрувальні цикли" },
-            { EDF_HISTCCA, 9000, "наробіток у пакеті: заряд" },
-            { EDF_HISTDCA, 9000, "наробіток у пакеті: розряд" },
-            { EDF_MONCCA,  9000, "лічильник заряду монітора" },
-            { EDF_MONDCA,  9000, "лічильник розряду монітора" },
+            { EDF_HISTCCA, 0,    "наробіток у пакеті: заряд" },
+            { EDF_HISTDCA, 0,    "наробіток у пакеті: розряд" },
+            { EDF_MONCCA,  0,    "лічильник заряду монітора" },
+            { EDF_MONDCA,  0,    "лічильник розряду монітора" },
         };
         for (auto &t : who) {
             uint8_t b33[DUMP_SIZE], b38[DS2438_MEM_SIZE];
@@ -753,7 +839,8 @@ int main() {
                 printf("   —     %s: у цьому пакеті немає\n", t.nm); continue;
             }
             editPlanSet(p, EDF_CYCLES, 900);
-            editPlanSet(p, t.f, t.over);
+            long over = t.over ? t.over : editCcaCapMah(p, 900) * 2;
+            editPlanSet(p, t.f, over);
             char why[128];
             char m[200];
             bool refused = !editPlanConsistent(p, why, sizeof(why));
@@ -761,7 +848,7 @@ int main() {
                      t.nm, why);
             check(refused && strstr(why, editFieldName(t.f)) != nullptr, m);
             bool ok = editPlanRepair(p);
-            bool pulled = p.f[t.f].want >= 0 && p.f[t.f].want < t.over;
+            bool pulled = p.f[t.f].want >= 0 && p.f[t.f].want < over;
             snprintf(m, sizeof(m), "…і починка притиснула його до %ld", p.f[t.f].want);
             check(ok && pulled, m);
             check(editPlanFixed(p), "…і сказала про це людині, а не зробила мовчки");

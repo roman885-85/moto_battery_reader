@@ -14,6 +14,7 @@ Moto IMPRES USB bridge — нативний клієнт для COM-порту.
 Збірка .exe:      build.bat
 """
 import sys, os, time, json, threading, webbrowser, urllib.parse, argparse
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # ⚑ ТОЙ САМИЙ МОДУЛЬ, ЩО Й У ПРОГРАМИ. Підпис порту, розрізнення вхідного та
@@ -23,6 +24,31 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 #  розходження помічають останнім.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moto_models as mm
+
+
+# ── ВИВІД У КОНСОЛЬ, ЯКИЙ НЕ МОЖЕ ВБИТИ МІСТ ──────────────────────────────
+#  ⚑ ЗВИЧАЙНИЙ print() ТУТ — ЦЕ РИЗИК ВТРАТИТИ ВЕСЬ ПРИЛАД. Консоль Windows на
+#  російській/українській локалі це cp866, і в ній немає ні «—», ні лапок
+#  «ялинок». Коли вивід ще й перенаправлено (ярлик, запуск із іншої програми,
+#  збірка PyInstaller), print() кидає UnicodeEncodeError — а стоїть він у
+#  main() ПЕРЕД serve_forever(). Тобто привітання, яке ніхто не читає, не
+#  давало серверу початись узагалі: вікно блимало й закривалось, браузер діставав
+#  «connection refused».
+#
+#  Напис ніколи не важливіший за роботу. Не вліз у кодування консолі — хай
+#  втратить розкіш (— стане -, «» стануть ""), але не роботу.
+def say(text):
+    try:
+        print(text)
+        return
+    except Exception:
+        pass
+    try:
+        enc = (getattr(sys.stdout, "encoding", None) or "ascii")
+        sys.stdout.write(text.encode(enc, "replace").decode(enc, "replace") + "\n")
+        sys.stdout.flush()
+    except Exception:
+        pass          # консолі може не бути взагалі (--windowed) — це не привід падати
 
 try:
     import serial
@@ -245,7 +271,37 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    # ── ЖОДЕН ЗАПИТ НЕ СМІЄ ЛИШИТИСЬ БЕЗ ВІДПОВІДІ ────────────────────────
+    #  ⚑ ОБІРВАНЕ З'ЄДНАННЯ — НАЙГІРША З УСІХ ВІДПОВІДЕЙ. Саме так виглядав
+    #  дефект із сурогатною парою: сторінка не віддавалась, браузер писав
+    #  «не вдалося відкрити», і жодного натяку, ДЕ шукати. Виняток у обробнику
+    #  за замовчуванням друкує слід у консоль (яку ніхто не бачить) і мовчки
+    #  закриває сокет.
+    #
+    #  Тепер будь-який виняток стає сторінкою з причиною. Кодування тут
+    #  навмисно поблажливе ("replace") — це остання відповідь, і краще показати
+    #  текст із зіпсованим символом, ніж не показати нічого. У _send()
+    #  кодування лишається суворим: інакше та сама сурогатна пара просто
+    #  перетворилась би на «????» і дефект знову ніхто б не помітив.
     def do_GET(self):
+        try:
+            self._route()
+        except Exception:
+            body = ("<h2>Міст спіткнувся на запиті " + self.path + "</h2>"
+                    "<p>Це не «сторінка не відкривається» — це сторінка, яка "
+                    "каже, що саме сталося. Покажіть цей текст розробнику.</p>"
+                    "<pre>" + traceback.format_exc() + "</pre>")
+            try:
+                self.send_response(500)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                b = body.encode("utf-8", "replace")
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers()
+                self.wfile.write(b)
+            except Exception:
+                pass
+
+    def _route(self):
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
         if u.path in ("/", "/index.html", "/client_usb.html"):
@@ -301,6 +357,17 @@ class Handler(BaseHTTPRequestHandler):
         pass   # тиша в консолі
 
 
+def _bridge_answers(port):
+    """Чи сидить на порту ЖИВИЙ міст. Питаємо його ж /ports: чужа програма на
+    тому самому порту відповість чим завгодно, тільки не нашим JSON."""
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:%d/ports" % port, timeout=1.5) as r:
+            return isinstance(json.loads(r.read().decode("utf-8")).get("ports"), list)
+    except Exception:
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser(description="Moto IMPRES USB bridge")
     ap.add_argument("--port", help="COM-порт (напр. COM5). За замовч. — автовибір єдиного")
@@ -316,16 +383,48 @@ def main():
     elif len(ports) == 1:
         DEFAULT_PORT[0] = ports[0]["port"]
 
-    srv = ThreadingHTTPServer(("127.0.0.1", a.http), Handler)
-    url = "http://127.0.0.1:%d/" % a.http
-    print("=" * 52)
-    print(" Moto IMPRES USB bridge")
-    print(" Інтерфейс:  " + url)
-    print(" COM-порти:  " + (", ".join(p["port"] for p in ports) or "(не знайдено)"))
+    # ── ЗАЙНЯТИЙ ПОРТ — НЕ ПРИВІД ПОМЕРТИ МОВЧКИ ──────────────────────────
+    #  ⚑ ЦЕ ТРАПЛЯЄТЬСЯ ЧАСТІШЕ ЗА ВСЕ ІНШЕ. Міст закрили хрестиком, а процес
+    #  лишився; або він і не закривався. Другий запуск падав на bind() з
+    #  «Address already in use» ще ДО того, як щось надрукує: вікно блимало й
+    #  зникало, а браузер відкривався на ту саму адресу — і його зустрічав
+    #  СТАРИЙ примірник. Тобто оновлення виглядало як «нічого не змінилось» або
+    #  як «сторінка померла», залежно від того, в якому стані був старий.
+    #
+    #  Тому: зайнято — питаємо, ХТО там. Свій міст уже працює? Кажемо про це й
+    #  відкриваємо його. Хтось чужий? Беремо наступний вільний порт і чесно
+    #  повідомляємо новий номер. Померти мовчки не можна в жодному з випадків.
+    srv, port, note = None, a.http, None
+    for cand in range(a.http, a.http + 12):
+        try:
+            srv = ThreadingHTTPServer(("127.0.0.1", cand), Handler)
+            port = cand
+            break
+        except OSError:
+            if cand == a.http and _bridge_answers(cand):
+                say("Міст уже запущено на http://127.0.0.1:%d/ — відкриваю його." % cand)
+                say("Якщо потрібен саме новий примірник, закрийте старий або "
+                    "вкажіть інший порт: --http %d" % (cand + 1))
+                if not a.no_browser:
+                    webbrowser.open("http://127.0.0.1:%d/" % cand)
+                return
+            note = a.http
+    if srv is None:
+        say("Не вдалося зайняти жодного порту з %d..%d. Закрийте зайві програми "
+            "або вкажіть вільний: --http <номер>" % (a.http, a.http + 11))
+        return
+
+    url = "http://127.0.0.1:%d/" % port
+    say("=" * 52)
+    say(" Moto IMPRES USB bridge")
+    say(" Інтерфейс:  " + url)
+    if note:
+        say(" Увага:      порт %d зайнятий — узяв %d" % (note, port))
+    say(" COM-порти:  " + (", ".join(p["port"] for p in ports) or "(не знайдено)"))
     if DEFAULT_PORT[0]:
-        print(" За замовч.: " + DEFAULT_PORT[0])
-    print(" Натисніть «Підключити» у браузері. Ctrl+C — вихід.")
-    print("=" * 52)
+        say(" За замовч.: " + DEFAULT_PORT[0])
+    say(" Натисніть «Підключити» у браузері. Ctrl+C — вихід.")
+    say("=" * 52)
     if not a.no_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:

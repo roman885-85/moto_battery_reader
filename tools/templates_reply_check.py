@@ -220,6 +220,82 @@ def check_ports():
         ok_ports = False
     check(ok_ports, "перелік портів віддається у JSON навіть коли портів немає")
 
+    # ── МІСТ НЕ ВМИРАЄ МОВЧКИ ────────────────────────────────────────────
+    #  ⚑ ЦІЛИЙ КЛАС СКАРГ ЗВУЧИТЬ ОДНАКОВО: «сторінка не відкривається». Під
+    #  цим щоразу було щось інше — і щоразу воно вбивало міст ДО того, як він
+    #  устигав щось сказати. Тому тут перевіряється не окрема причина, а
+    #  властивість: що б не сталося, або сторінка є, або названо адресу, де
+    #  вона є.
+    import re as _re
+
+    def _spawn(argv, stdout_enc=None, squat=None):
+        """Запустити main() у потоці й повернути надруковане ним."""
+        buf = io.StringIO()
+        if stdout_enc:
+            import codecs
+            class Narrow(io.StringIO):
+                def write(self, t):
+                    t.encode(stdout_enc)      # кине UnicodeEncodeError, як консоль
+                    return io.StringIO.write(self, t)
+            buf = Narrow()
+        old_out, old_argv = sys.stdout, sys.argv
+        sys.stdout, sys.argv = buf, argv
+        try:
+            threading.Thread(target=MB.main, daemon=True).start()
+            time.sleep(2.0 if squat else 0.8)
+        finally:
+            sys.stdout, sys.argv = old_out, old_argv
+        return buf.getvalue()
+
+    import threading, time, socket, urllib.error
+
+    def _page_at(text):
+        m = _re.search(r"http://127\.0\.0\.1:\d+/", text or "")
+        if not m:
+            return None
+        try:
+            return urllib.request.urlopen(m.group(0), timeout=4).read().decode("utf-8")
+        except Exception:
+            return None
+
+    #  1. Консоль, яка не вміє української. cp866 — типова консоль Windows на
+    #  російській локалі; у ній немає ні «—», ні лапок-ялинок. Привітання в
+    #  main() стояло ПЕРЕД serve_forever(), тож напис, якого ніхто не читає,
+    #  не давав серверу початись узагалі.
+    out = _spawn(["moto_bridge.py", "--no-browser", "--http", "8871"], stdout_enc="cp866")
+    check(_page_at(out) is not None,
+          "консоль, яка не вміє українських лапок, не заважає мосту працювати")
+
+    #  2. Порт зайнято чужою програмою. Раніше bind() кидав виняток до першого
+    #  надрукованого рядка: вікно блимало й зникало.
+    squat = socket.socket(); squat.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    squat.bind(("127.0.0.1", 8873)); squat.listen(1)
+    out = _spawn(["moto_bridge.py", "--no-browser", "--http", "8873"], squat=squat)
+    page = _page_at(out)
+    check(page is not None and "Знайти прилад" in page,
+          "зайнятий порт: міст бере наступний вільний і називає адресу вголос")
+    check("8873" in out and "зайнят" in out,
+          "…і каже, ЧОМУ адреса не та, яку чекали")
+    squat.close()
+
+    #  3. Виняток усередині обробника. Найгірша відповідь — обірване
+    #  з'єднання: браузер каже «не вдалося відкрити», і шукати нема де.
+    class Boom(MB.Handler):
+        def _route(self):
+            raise RuntimeError("драйвер портів упав")
+    srv3 = ThreadingHTTPServer(("127.0.0.1", 0), Boom)
+    threading.Thread(target=srv3.serve_forever, daemon=True).start()
+    body, code = None, None
+    try:
+        urllib.request.urlopen("http://127.0.0.1:%d/" % srv3.server_address[1], timeout=4).read()
+    except urllib.error.HTTPError as e:
+        code, body = e.code, e.read().decode("utf-8", "replace")
+    except Exception as e:
+        body = "З'ЄДНАННЯ ОБІРВАНО: %s" % e
+    srv3.shutdown()
+    check(code == 500 and body and "драйвер портів упав" in body,
+          "виняток у обробнику стає сторінкою з причиною, а не обірваним з'єднанням")
+
     # Підказка мусить називати причину, а не повторювати системну помилку.
     h = G.port_open_hint(INC, "PermissionError(13)")
     check("вихідним" in h, "відмова на вхідному порту пояснює, що робити")

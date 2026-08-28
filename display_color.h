@@ -247,6 +247,7 @@ static int  g_displayPage = 0;
 // Стан прихованих жестів і повноекранного повідомлення — тут, бо на них
 // дивиться і обробник кнопок, і рендер.
 static ComboHold  g_hold;
+static ComboSeq   g_seq;
 static ComboFlash g_flash;
 inline bool displayFlashActive() { return comboFlashActive(g_flash, millis()); }
 static bool g_readRequested = false;
@@ -2252,7 +2253,7 @@ inline const char *holdLongHint() {
         return (d == OPD_SAFE) ? nullptr : "відпустіть = ПУСК";
     }
     if (g_displayPage == PAGE_WIZARD)      return "відпустіть = ВИКОНАТИ";
-    if (g_displayPage < NUM_STATUS_PAGES)  return "відпустіть = ЗЧИТАТИ";
+    if (g_displayPage < NUM_STATUS_PAGES)  return "відпустіть = МЕНЮ";
     return nullptr;
 }
 
@@ -2322,12 +2323,6 @@ inline void displayHandleButton() {
         return;
     }
 
-    if (hev == CHOLD_FLASH) {
-        comboFlashArm(g_flash, millis(), COMBO_FLASH_MS);
-        displayScreenCleared();
-        displayRender();
-        return;
-    }
     if (hev == CHOLD_CHARGE) { displayToggleChargeMode(); return; }
     if (hev == CHOLD_ARM_CHARGE) {
         // П'ять секунд, протягом яких нічого не відбувається, читаються як
@@ -2341,6 +2336,34 @@ inline void displayHandleButton() {
         if (h) displayShow(h);
         return;
     }
+
+    // ── ПРИХОВАНИЙ ЖЕСТ: ПОСЛІДОВНІСТЬ КЛАВІШ ─────────────────────────────
+    //  ⚑ ЖИВЕ ПОРУЧ ІЗ ЗВИЧАЙНОЮ НАВІГАЦІЄЮ, А НЕ ЗАМІСТЬ НЕЇ. Проміжні
+    //  клавіші жесту роблять те, що робили завжди (гортають сторінки, водять
+    //  курсор) — інакше набір було б видно з екрана, і жест перестав би бути
+    //  прихованим. А от ОСТАННЮ клавішу, ту, якою жест завершено, звичайна
+    //  обробка вже не бачить: інакше разом із жестом спрацювало б іще й
+    //  «зчитати» або пункт меню під курсором.
+    //
+    //  ⚑ ДОВГЕ НАТИСКАННЯ РВЕ ЛАНЦЮЖОК. У жесті беруть участь лише короткі:
+    //  довге — це вже інша команда (меню, стрибок групою, ПУСК), і зараховувати
+    //  її в ланцюжок означало б рахувати як клавішу те, чим людина щойно
+    //  зробила щось інше.
+    if (holdLive) {
+        comboSeqTick(g_seq, millis());
+        if (e1 == 2 || e2 == 2 || e3 == 2) comboSeqReset(g_seq);
+        uint8_t ck = (e1 == 1) ? CKEY_RIGHT : (e2 == 1) ? CKEY_LEFT
+                   : (e3 == 1) ? CKEY_ENTER : CKEY_NONE;
+        if (comboSeqFeed(g_seq, millis(), ck)) {
+            comboFlashArm(g_flash, millis(), COMBO_FLASH_MS);
+            displayScreenCleared();
+            displayRender();
+            return;
+        }
+    } else {
+        comboSeqReset(g_seq);
+    }
+
 
     // ── РЕЖИМ РОЗРЯДУ ──────────────────────────────────────────────────────
     // Поки навантаження увімкнене, кнопки НЕ гортають меню: на екрані
@@ -2424,8 +2447,8 @@ inline void displayHandleButton() {
     if      (e1 == 1) { g_displayPage = (g_displayPage + 1) % NUM_STATUS_PAGES; displayFlip(); }
     else if (e2 == 1) { g_displayPage = (g_displayPage - 1 + NUM_STATUS_PAGES) % NUM_STATUS_PAGES; displayFlip(); }
     else if (e2 == 2) { g_displayPage = PAGE_MAIN; displayFlip(); }
-    else if (e3 == 1) { g_displayPage = PAGE_MENU; displayFlip(); }
-    else if (e3 == 2) { g_readRequested = true; displayShow("ЗЧИТУВАННЯ..."); }
+    else if (e3 == 1) { g_readRequested = true; displayShow("ЗЧИТУВАННЯ..."); }
+    else if (e3 == 2) { g_displayPage = PAGE_MENU; displayFlip(); }
 #else
     // ДВІ кнопки: «›» — рух, «‹» — вибір/виконання. Те саме правило, лише
     // рух назад дістається довгому натисканню замість окремої кнопки.
@@ -2449,8 +2472,8 @@ inline void displayHandleButton() {
         return;
     }
     if      (e1 == 1) { g_displayPage = (g_displayPage + 1) % NUM_STATUS_PAGES; displayFlip(); }
-    else if (e1 == 2) { g_readRequested = true; displayShow("ЗЧИТУВАННЯ..."); }
-    else if (e2 == 1) { g_displayPage = PAGE_MENU; displayFlip(); }
+    else if (e2 == 1) { g_readRequested = true; displayShow("ЗЧИТУВАННЯ..."); }
+    else if (e2 == 2) { g_displayPage = PAGE_MENU; displayFlip(); }
 #endif
 }
 

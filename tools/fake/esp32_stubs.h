@@ -45,7 +45,13 @@ static void yield() {}
 static void pinMode(int, int) {}
 static void digitalWrite(int, int) {}
 static int  digitalRead(int) { return HIGH; }
-static int  analogRead(int) { return 4095; }
+// ⚑ КЕРОВАНИЙ ADC — ЩОБ КНОПКИ МОЖНА БУЛО НАТИСКАТИ З ТЕСТУ. Усі три кнопки
+//  приладу висять на одному аналоговому вході (дільник), тож «натиснути
+//  кнопку» на хості означає підставити її напругу сюди. Без цього поведінку
+//  кнопок можна було перевіряти лише текстом файла — а текст не бачить, ЩО
+//  саме станеться, коли на кнопку справді натиснуть.
+static int g_fakeAdc = 4095;                 // 4095 = нічого не натиснуто
+static int  analogRead(int) { return g_fakeAdc; }
 static void analogReadResolution(int) {}
 static void analogSetPinAttenuation(int, int) {}
 #define ADC_11db 3

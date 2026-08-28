@@ -318,15 +318,15 @@ inline void opInfo(int sel, const char **name, const char **l1, const char **l2,
 // ---------------------------------------------------------------------------
 
 // Групи (порядок = порядок показу). MG_NAV — службова, без заголовка.
-enum { MG_NAV = 0, MG_REPAIR, MG_LINK, MG_CHARGE, MG_DISCHARGE, MG_COUNTERS,
+enum { MG_NAV = 0, MG_LINK, MG_REPAIR, MG_CHARGE, MG_DISCHARGE, MG_COUNTERS,
        MG_MODEL, MG_NEW, MG_DATA, MG_SYSTEM, MG_DANGER, MG_COUNT };
 
 // Порожня назва означає «заголовок не малювати».
 inline const char *menuGroupName(int g) {
     switch (g) {
         case MG_NAV:      return "";
-        case MG_REPAIR:   return "РЕМОНТ";
         case MG_LINK:     return "ЗВ'ЯЗОК";
+        case MG_REPAIR:   return "РЕМОНТ";
         case MG_CHARGE:    return "ЗАРЯД";
         case MG_DISCHARGE: return "РОЗРЯД";
         case MG_COUNTERS: return "ЛІЧИЛЬНИКИ";
@@ -362,12 +362,19 @@ enum { MS_OPS = 0,      // явний список кодів OP_*
 struct MenuSeg { uint8_t group, kind; const int16_t *v; uint8_t n; };
 
 static const int16_t MSEG_NAV[]      = { MPG_HOME };
-static const int16_t MSEG_REPAIR[]   = { OP_CELLSWAP, OP_CELLSWAP_DEEP, OP_REPAIR };
-// ⚑ ОДИН ПУНКТ — І ОДРАЗУ ПІСЛЯ РЕМОНТУ, тобто п'ятим рядком списку. Місце
-//  задав власник, і воно не випадкове: до перемикача радіо доводиться діставатись
-//  саме тоді, коли зв'язку НЕМАЄ, — а отже не через клієнта, а кнопками, і чим
-//  менше їх треба натиснути, тим краще.
+// ⚑ ОДИН ПУНКТ — І ПЕРШИМ У СПИСКУ. Місце задав власник, і воно не випадкове:
+//  до перемикача радіо доводиться діставатись саме тоді, коли зв'язку НЕМАЄ, —
+//  а отже не через клієнта, а кнопками, наосліп. Кожен рядок над ним — це
+//  натискання, яке робиться навпомацки.
+//
+//  ⚑ «ПЕРШИМ» ОЗНАЧАЄ ПЕРШИМ СЕРЕД ПУНКТІВ, А НЕ ПЕРЕД «‹ ПОКАЗАННЯ». Той
+//  рядок — не пункт меню, а вихід із нього; курсор навмисно починається ПІСЛЯ
+//  нього (g_menuSel = 1). Поставити перемикач над виходом означало б, що
+//  дорога назад щоразу шукається під першим рядком, якого там більше немає.
+//  А так курсор одразу стоїть на перемикачі: увійшов у меню — і він під
+//  пальцем.
 static const int16_t MSEG_LINK[]     = { OP_RADIO };
+static const int16_t MSEG_REPAIR[]   = { OP_CELLSWAP, OP_CELLSWAP_DEEP, OP_REPAIR };
 // ⚑ ОДНАКОВА ФОРМА В ОБОХ ГРУП, І ЦЕ НАВМИСНО: дія -> ціль -> ручні уставки
 //  -> профіль. Раніше заряд і розряд лежали впереміш в одній групі
 //  «ЖИВЛЕННЯ», і щоб знайти ціль розряду, доводилось проходити повз пункти
@@ -386,8 +393,8 @@ static const int16_t MSEG_DANGER[]   = { OP_WIPE33_REL, OP_WIPE38_REL };
 
 static const MenuSeg MENU_SEGS[] = {
     { MG_NAV,      MS_PAGES,   MSEG_NAV,      1 },
-    { MG_REPAIR,   MS_OPS,     MSEG_REPAIR,   3 },
     { MG_LINK,     MS_OPS,     MSEG_LINK,     1 },
+    { MG_REPAIR,   MS_OPS,     MSEG_REPAIR,   3 },
     { MG_CHARGE,   MS_OPS,     MSEG_CHARGE,   6 },
     { MG_DISCHARGE,MS_OPS,     MSEG_DISCHARGE,4 },
     { MG_COUNTERS, MS_OPS,     MSEG_COUNTERS, 3 },

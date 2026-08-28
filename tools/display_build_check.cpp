@@ -124,19 +124,23 @@ static void buttonsBehave() {
     comboSeqReset(g_seq);
     (void)displayConsumeReadRequest();
 
-    const int SEQ[] = { ADC_LEFT, ADC_RIGHT, ADC_RIGHT, ADC_LEFT, ADC_ENTER };
-    for (int i = 0; i < 5; i++) {
+    //  «‹ ‹ › › › › ‹ ‹ ›» — дев'ять клавіш, і жодного «OK» серед них.
+    const int SEQ[] = { ADC_LEFT, ADC_LEFT, ADC_RIGHT, ADC_RIGHT, ADC_RIGHT,
+                        ADC_RIGHT, ADC_LEFT, ADC_LEFT, ADC_RIGHT };
+    const int SEQN = (int)(sizeof(SEQ) / sizeof(SEQ[0]));
+    int pageBefore = g_displayPage;
+    bool early = false;
+    for (int i = 0; i < SEQN - 1; i++) {
         tap(SEQ[i], 150);
-        if (i < 4) {
-            char m[90];
-            snprintf(m, sizeof(m), "після %d-ї клавіші напису ще немає", i + 1);
-            ck(!displayFlashActive(), m);
-        }
+        if (displayFlashActive()) early = true;
     }
+    ck(!early, "перші вісім клавіш напису не дають");
+    pageBefore = g_displayPage;
+    tap(SEQ[SEQN - 1], 150);
     ck(displayFlashActive(), "набраний ланцюжок показує повноекранний напис");
     //  ⚑ І ОСТАННЯ КЛАВІША НЕ СПРАЦЮВАЛА ЩЕ Й ЯК ЗВИЧАЙНА. Інакше разом із
-    //  жестом пішло б зчитування пакета — на екрані напис, а прилад тим часом
-    //  ліз у чип.
+    //  жестом сторінка поїхала б далі — напис на екрані, а під ним уже інша.
+    ck(g_displayPage == pageBefore, "…і сторінку нею не перегорнуло");
     ck(!displayConsumeReadRequest(), "…і зчитування нею не запустилось");
 
     // Будь-яке натискання прибирає напис.
@@ -146,18 +150,24 @@ static void buttonsBehave() {
     // ── ЖЕСТ НЕ НАБИРАЄТЬСЯ ЗВИЧАЙНИМ ГОРТАННЯМ ──────────────────────────
     g_displayPage = 0; g_flash.until = 0; comboSeqReset(g_seq);
     bool fired = false;
-    for (int i = 0; i < 40; i++) {
+    for (int i = 0; i < 60; i++) {
         tap((i % 2) ? ADC_RIGHT : ADC_LEFT, 150);
         if (displayFlashActive()) fired = true;
     }
-    ck(!fired, "сорок разів «вперед-назад» напису не викликають");
+    ck(!fired, "шістдесят разів «вперед-назад» напису не викликають");
+    g_flash.until = 0; comboSeqReset(g_seq);
+    for (int i = 0; i < 60; i++) {               // довгий пробіг в один бік
+        tap(ADC_RIGHT, 150);
+        if (displayFlashActive()) fired = true;
+    }
+    ck(!fired, "…і довге гортання в один бік теж");
 
     // ── ВІКНО: НЕДОБРАНИЙ ЖЕСТ НЕ ЧЕКАЄ ВІЧНО ────────────────────────────
     g_displayPage = 0; g_flash.until = 0; comboSeqReset(g_seq);
-    tap(ADC_LEFT, 150); tap(ADC_RIGHT, 150); tap(ADC_RIGHT, 150); tap(ADC_LEFT, 150);
+    for (int i = 0; i < SEQN - 1; i++) tap(SEQ[i], 150);
     g_fakeMillis += COMBO_SEQ_WINDOW_MS + 1000;
     displayHandleButton();                       // прохід без натискання
-    tap(ADC_ENTER, 150);
+    tap(SEQ[SEQN - 1], 150);
     ck(!displayFlashActive(), "після 5 секунд ланцюжок обнулено — добрати його нічим");
 }
 

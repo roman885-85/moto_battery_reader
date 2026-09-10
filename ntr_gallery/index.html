@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NTR Phone — разблокировка галереи</title>
+<style>
+:root{
+  --bg:#0e1116; --panel:#161b22; --panel2:#1c232c; --line:#2a323d;
+  --ink:#e6edf3; --dim:#9aa7b4; --acc:#7c5cff; --acc2:#48d597;
+  --warn:#f0a336; --err:#ff6b6b;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+     font:14px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+     padding:0 16px}
+.wrap{max-width:980px;margin:0 auto;padding-block:28px 60px}
+h1{font-size:22px;margin:0 0 4px}
+h2{font-size:15px;margin:0 0 10px;letter-spacing:.02em}
+.sub{color:var(--dim);margin:0 0 24px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+      padding:16px;margin-bottom:14px}
+.card.off{opacity:.45;pointer-events:none}
+.step{display:inline-block;min-width:22px;height:22px;line-height:22px;text-align:center;
+      background:var(--acc);color:#fff;border-radius:6px;font-size:12px;font-weight:700;
+      margin-right:8px;vertical-align:2px}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:26px 16px;text-align:center;
+      color:var(--dim);cursor:pointer;transition:.15s}
+.drop:hover,.drop.hot{border-color:var(--acc);color:var(--ink);background:var(--panel2)}
+.drop b{color:var(--ink)}
+input[type=file]{display:none}
+label.opt{display:flex;gap:9px;align-items:flex-start;padding:6px 0;cursor:pointer}
+label.opt input{margin:3px 0 0}
+label.opt span small{display:block;color:var(--dim)}
+.row{display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 14px;font-size:13px}
+.kv dt{color:var(--dim)}
+.kv dd{margin:0}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line)}
+th{color:var(--dim);font-weight:600}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;width:64px}
+.scroll{max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:8px}
+button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:10px 18px;
+       font:inherit;font-weight:600;cursor:pointer}
+button:disabled{background:#333b47;color:#6b7683;cursor:not-allowed}
+button.ghost{background:var(--panel2);color:var(--ink);border:1px solid var(--line);font-weight:500;
+             padding:6px 12px}
+input[type=number]{background:var(--panel2);color:var(--ink);border:1px solid var(--line);
+                   border-radius:6px;padding:5px 8px;width:76px;font:inherit}
+.tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:12px;
+     background:var(--panel2);border:1px solid var(--line);color:var(--dim)}
+.tag.ok{color:var(--acc2);border-color:#265c46}
+.tag.new{color:var(--acc);border-color:#3d3070}
+.note{border-left:3px solid var(--warn);background:#1d1a12;padding:10px 12px;border-radius:0 8px 8px 0;
+      color:#e8d9bd;font-size:13px;margin:12px 0 0}
+.note.bad{border-color:var(--err);background:#1f1416;color:#f2cdcd}
+.note.ok{border-color:var(--acc2);background:#101d18;color:#c6e8da}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+details summary{cursor:pointer;color:var(--dim);padding:4px 0}
+.hint{color:var(--dim);font-size:12.5px;margin-top:6px}
+.bar{height:6px;border-radius:3px;background:var(--panel2);overflow:hidden}
+.bar i{display:block;height:100%;background:var(--acc2)}
+@media (max-width:520px){ .wrap{padding-block:18px 40px} h1{font-size:19px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>NTR Phone — разблокировка галереи</h1>
+<p class="sub">Открывает все изображения, аудио и видео в галерее прямо в файле бэкапа
+  <span class="mono">.ntrbckp</span>. Всё считается в браузере — файл никуда не уходит.
+  Сборка-эталон: <b>0.45.0</b>.</p>
+
+<div class="card" id="c1">
+  <h2><span class="step">1</span>Бэкап</h2>
+  <div class="drop" id="drop1">Перетащите сюда <b>.ntrbckp</b> или нажмите, чтобы выбрать<br>
+    <span class="hint">Phone → Settings → Backup → Export</span></div>
+  <input type="file" id="file1" accept=".ntrbckp,.zip">
+  <div id="info1"></div>
+</div>
+
+<div class="card off" id="c2">
+  <h2><span class="step">2</span>Откуда взять полный список файлов</h2>
+  <label class="opt"><input type="radio" name="src" value="builtin" checked>
+    <span>Встроенный каталог сборки 0.45.0
+      <small>690 записей. Работает без файлов игры. Не знает контента, добавленного после 0.45.0.</small></span></label>
+  <label class="opt"><input type="radio" name="src" value="pck">
+    <span>Файл игры: <span class="mono">.pck</span>, <span class="mono">.exe</span> или <span class="mono">.apk</span>
+      <small>Точный список из самой игры — подходит для любой версии.</small></span></label>
+  <label class="opt"><input type="radio" name="src" value="dir">
+    <span>Папка с ассетами игры
+      <small>Для распакованных сборок: выберите папку, внутри которой лежит <span class="mono">assets/</span>.</small></span></label>
+
+  <div id="srcExtra" hidden style="margin-top:10px">
+    <div class="drop" id="drop2">Нажмите, чтобы выбрать</div>
+    <input type="file" id="file2">
+    <input type="file" id="file3" webkitdirectory directory multiple>
+  </div>
+  <div id="info2"></div>
+
+  <div class="row" style="margin-top:12px">
+    <label class="opt" style="padding:0"><span>Расширить каждую серию на
+      <input type="number" id="extend" value="0" min="0" max="200" step="1"> файлов
+      <small>Догадка для нового контента: дописать <span class="mono">Rachel103…</span> и так далее.
+        Несуществующие файлы игра просто не покажет.</small></span></label>
+  </div>
+</div>
+
+<div class="card off" id="c3">
+  <h2><span class="step">3</span>Что ещё сделать</h2>
+  <label class="opt"><input type="checkbox" id="optContacts" checked>
+    <span>Разблокировать контакты (<span class="mono">locked</span> → <span class="mono">unlocked</span>)
+      <small>Без этого часть галереи не на что повесить — вкладки героинь останутся скрытыми.</small></span></label>
+  <label class="opt"><input type="checkbox" id="optDev">
+    <span>Включая служебные dev-чаты
+      <small><span class="mono">playground</span>, <span class="mono">unlock_test</span> и прочие тестовые. Обычно не нужно.</small></span></label>
+  <label class="opt"><input type="checkbox" id="optTracker">
+    <span>Поставить 100 % в трекере прогресса
+      <small>Косметика: счётчик прохождения, на галерею не влияет.</small></span></label>
+  <div class="note">Флаги <span class="mono">is_patron</span> и <span class="mono">user_patron_code</span>
+    инструмент не трогает — это платная подписка, а не прогресс.</div>
+</div>
+
+<div class="card off" id="c4">
+  <h2><span class="step">4</span>Результат</h2>
+  <div id="preview"></div>
+  <div class="row" style="margin-top:14px">
+    <button id="go" disabled>Скачать разблокированный бэкап</button>
+    <span id="goHint" class="hint"></span>
+  </div>
+</div>
+
+<details class="card">
+  <summary>Как вернуть файл в игру и что делать, если что-то пошло не так</summary>
+  <ol style="margin:8px 0 0;padding-left:20px;color:var(--dim)">
+    <li>Сохраните исходный <span class="mono">.ntrbckp</span> — это ваша точка отката.</li>
+    <li>В игре: Phone → Settings → Backup → <b>Import</b> и выберите скачанный файл.</li>
+    <li>Пустая плитка в галерее значит, что записи такого файла в игре нет —
+      уменьшите «расширить серию» или возьмите список из <span class="mono">.pck</span>.</li>
+    <li>Игра не приняла файл — импортируйте исходный бэкап обратно.</li>
+  </ol>
+</details>
+
+</div>
+<script>
+"use strict";
+
+/* ---------- Каталог сборки 0.45.0 ---------------------------------------
+   [папка, тип (0 фото, 1 аудио, 2 видео), герой, основа имени, расширение,
+    номера, сколько знаков в номере (если с нулями впереди)] */
+const CATALOG_0450 = [
+  ["res://assets/audio/amber", 1, "amber", "Amber_Ch_2_A", ".mp3", "1-3"],
+  ["res://assets/audio/amber", 1, "amber", "Amber_Ch_3_A", ".mp3", "1-6"],
+  ["res://assets/audio/amber", 1, "amber", "Amber_Ch_5_A", ".mp3", "1-2"],
+  ["res://assets/audio/cathryn", 1, "alice", "Alice_Ch_1_A", ".mp3", "1-2"],
+  ["res://assets/audio/cathryn", 1, "alice", "Alice_Ch_2_A", ".mp3", "1"],
+  ["res://assets/audio/cathryn", 1, "cathryn", "Cathryn_Ch_4_A", ".mp3", "1-2"],
+  ["res://assets/audio/cathryn", 1, "cathryn", "Cathryn_Ch_4_E", ".mp3", "1-2"],
+  ["res://assets/audio/cathryn", 1, "cathryn", "Cathryn_Ch_4_H", ".mp3", "1-3"],
+  ["res://assets/audio/cathryn", 1, "cathryn", "Cathryn_Ch_7_B", ".mp3", "1"],
+  ["res://assets/audio/elena", 1, "elena", "Elena_Ch_1_A", ".mp3", "1-5"],
+  ["res://assets/audio/elena", 1, "elena", "Elena_Ch_2_A", ".mp3", "1-3"],
+  ["res://assets/audio/elena", 1, "elena", "Elena_Ch_3_A", ".mp3", "1-2"],
+  ["res://assets/audio/lilith", 1, "lilith", "Lilith_Ch_3_B", ".mp3", "1-2"],
+  ["res://assets/audio/lilith", 1, "lilith", "Lilith_Ch_3_C", ".mp3", "1"],
+  ["res://assets/audio/lilith", 1, "lilith", "Lilith_Ch_3_D", ".mp3", "1"],
+  ["res://assets/audio/lilith", 1, "lilith", "Lilith_Ch_3_E", ".mp3", "1"],
+  ["res://assets/audio/lilith", 1, "lilith", "Lilith_Ch_4_A", ".mp3", "1"],
+  ["res://assets/audio/lilith", 1, "lilith", "Lilith_Ch_4_C", ".mp3", "1"],
+  ["res://assets/audio/lilith", 1, "lilith", "Lilith_Ch_4_D", ".mp3", "1"],
+  ["res://assets/audio/lilith", 1, "lilith", "Lilith_Ch_4_E", ".mp3", "1-2"],
+  ["res://assets/audio/lilith", 1, "lilith", "Lilith_Ch_5_B", ".mp3", "1"],
+  ["res://assets/audio/lilith", 1, "lilith", "Lilith_Ch_5_C", ".mp3", "1"],
+  ["res://assets/audio/mabel", 1, "mabel", "Mabel_Ch_1_A", ".mp3", "1-3"],
+  ["res://assets/audio/mabel", 1, "mabel", "Mabel_Ch_3_B", ".mp3", "1"],
+  ["res://assets/audio/mabel", 1, "mabel", "Mabel_Ch_4_A", ".mp3", "1"],
+  ["res://assets/audio/mabel", 1, "mabel", "Mabel_Ch_4_B", ".mp3", "1"],
+  ["res://assets/audio/rachel", 1, "rachel", "Rachel_Ch_5_D", ".mp3", "1-3"],
+  ["res://assets/audio/rachel", 1, "rachel", "Rachel_Ch_5_H", ".mp3", "1"],
+  ["res://assets/images/amber", 0, "amber", "Amber", ".jpg", "1-65"],
+  ["res://assets/images/cathryn", 0, "alice", "Alice", ".jpg", "1-13"],
+  ["res://assets/images/cathryn", 0, "alice", "Cathryn", ".jpg", "60"],
+  ["res://assets/images/cathryn", 0, "cathryn", "Cathryn", ".jpg", "1-59,61-74"],
+  ["res://assets/images/elena", 0, "blake", "Blake", ".jpg", "1-5"],
+  ["res://assets/images/elena", 0, "elena", "Elena", ".jpg", "1-22"],
+  ["res://assets/images/elena", 0, "hazel", "Hazel", ".jpg", "1"],
+  ["res://assets/images/elena", 0, "tabletop_chat", "TabletopChat", ".jpg", "1-4"],
+  ["res://assets/images/lilith", 0, "lilith", "Lilith", ".jpg", "1-90"],
+  ["res://assets/images/mabel", 0, "mabel", "Mabel", ".jpg", "1-55"],
+  ["res://assets/images/mabel", 0, "mabel_lf", "MabelLF", ".jpg", "1-7"],
+  ["res://assets/images/naomi", 0, "naomi", "Naomi", ".jpg", "1-83"],
+  ["res://assets/images/naomi", 0, "naomii", "Naomii", ".jpg", "1-14"],
+  ["res://assets/images/naomi", 0, "new_naomi", "New_Naomi", ".jpg", "1"],
+  ["res://assets/images/natalie6x", 0, "natalie6x", "Natalie", ".jpg", "1-14"],
+  ["res://assets/images/polly", 0, "anna", "Anna", ".jpg", "1-3"],
+  ["res://assets/images/polly", 0, "polly", "Polly", ".jpg", "1-7,10-14,22-30"],
+  ["res://assets/images/polly", 0, "polly_lamp_chat", "Polly", ".jpg", "8-9,15-21"],
+  ["res://assets/images/polly", 0, "vixenp", "Vixenp", ".jpg", "1-22"],
+  ["res://assets/images/rachel", 0, "rachel", "Rachel", ".jpg", "1-102", 2],
+  ["res://assets/images/rachel", 0, "rachel_bull", "RachelBull", ".jpg", "1"],
+  ["res://assets/images/rachel", 0, "rachel_group_chat", "Rachels_Group_Chat", ".jpg", "1-7"],
+  ["res://assets/images/rachel", 0, "rachel_secretlover", "Rachels_Secretlover", ".jpg", "1"],
+  ["res://assets/video/amber", 2, "amber", "amber_animation_", ".ogv", "1", 2],
+  ["res://assets/video/cathryn", 2, "alice", "cathryn_animation_", ".ogv", "1", 2],
+  ["res://assets/video/lilith", 2, "lilith", "lilith_animation_", ".ogv", "1-2", 2],
+  ["res://assets/video/mabel", 2, "mabel", "mabel_animation_", ".ogv", "1", 2],
+  ["res://assets/video/naomi", 2, "naomi", "naomi_animation_", ".ogv", "1-3", 2],
+  ["res://assets/video/polly", 2, "anna", "polly_animation_", ".ogv", "2", 2],
+  ["res://assets/video/polly", 2, "polly", "polly_animation_", ".ogv", "1,3", 2],
+  ["res://assets/video/rachel", 2, "rachel", "rachel_animation_", ".ogv", "1-2", 2],
+  ["res://assets/images/mabel", 0, "mabel", "Mabel_3B_Escort_Screenshot.jpg", "", ""],
+  ["res://assets/images/mabel", 0, "mabel", "Mabel_3B_Social_Media_Screenshot.jpg", "", ""],
+  ["res://assets/images/mabel", 0, "mabel", "Mabel_Marin_Escort_Screenshot.jpg", "", ""],
+  ["res://assets/images/mabel", 0, "mabel", "Mabel_Marin_Social_Media_Screenshot.jpg", "", ""],
+  ["res://assets/images/naomi", 0, "naomi", "Naomi_Lonelyfans_Screenshots.jpg", "", ""],
+  ["res://assets/images/rachel", 0, "rachel", "Rachel06_Small.jpg", "", ""],
+  ["res://assets/images/rachel", 0, "rachel", "Rachel20_Small.jpg", "", ""],
+  ["res://assets/images/tutorial", 0, "tutorial", "Beach.jpg", "", ""],
+  ["res://assets/images/tutorial", 0, "tutorial", "Landscape.jpg", "", ""],
+];
+// записей: 690, лишних сверх сохранения: 14
+
+/* ---------- ZIP: чтение и запись -----------------------------------------
+   .ntrbckp — обычный ZIP с deflate. Пересобираем его целиком, сохраняя имена,
+   порядок, даты и атрибуты записей: меняется только содержимое тех файлов,
+   которые правим. */
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(buf) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+async function pipe(bytes, stream) {
+  const src = new Blob([bytes]).stream().pipeThrough(stream);
+  return new Uint8Array(await new Response(src).arrayBuffer());
+}
+const inflateRaw = b => pipe(b, new DecompressionStream('deflate-raw'));
+const deflateRaw = b => pipe(b, new CompressionStream('deflate-raw'));
+
+const SIG_LFH = 0x04034b50, SIG_CDH = 0x02014b50, SIG_EOCD = 0x06054b50;
+
+async function zipRead(buf) {
+  const dv = new DataView(buf), u8 = new Uint8Array(buf);
+  let eo = -1;
+  for (let i = u8.length - 22; i >= 0 && i >= u8.length - 22 - 65535; i--) {
+    if (dv.getUint32(i, true) === SIG_EOCD) { eo = i; break; }
+  }
+  if (eo < 0) throw new Error('это не ZIP-архив: не найден конец каталога');
+  const count = dv.getUint16(eo + 10, true);
+  let p = dv.getUint32(eo + 16, true);
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    if (dv.getUint32(p, true) !== SIG_CDH) throw new Error('повреждён каталог ZIP');
+    const nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true);
+    out.push({
+      versionMadeBy: dv.getUint16(p + 4, true),
+      versionNeeded: dv.getUint16(p + 6, true),
+      flags: dv.getUint16(p + 8, true),
+      method: dv.getUint16(p + 10, true),
+      time: dv.getUint16(p + 12, true),
+      date: dv.getUint16(p + 14, true),
+      csize: dv.getUint32(p + 20, true),
+      intAttr: dv.getUint16(p + 36, true),
+      extAttr: dv.getUint32(p + 38, true),
+      lfh: dv.getUint32(p + 42, true),
+      name: new TextDecoder().decode(u8.subarray(p + 46, p + 46 + nl)),
+    });
+    p += 46 + nl + xl + cl;
+  }
+  for (const e of out) {
+    if (dv.getUint32(e.lfh, true) !== SIG_LFH) throw new Error('повреждена запись ' + e.name);
+    const nl = dv.getUint16(e.lfh + 26, true), xl = dv.getUint16(e.lfh + 28, true);
+    const start = e.lfh + 30 + nl + xl;
+    const raw = u8.subarray(start, start + e.csize);
+    if (e.method === 0) e.data = raw.slice();
+    else if (e.method === 8) e.data = await inflateRaw(raw);
+    else throw new Error('неизвестное сжатие в ' + e.name);
+  }
+  return out;
+}
+
+async function zipWrite(entries) {
+  const enc = new TextEncoder();
+  const parts = [], central = [];
+  let ofs = 0;
+  for (const e of entries) {
+    const nameB = enc.encode(e.name);
+    const comp = await deflateRaw(e.data);
+    const crc = crc32(e.data);
+    const lfh = new Uint8Array(30 + nameB.length);
+    const d = new DataView(lfh.buffer);
+    d.setUint32(0, SIG_LFH, true);
+    d.setUint16(4, e.versionNeeded ?? 20, true);
+    d.setUint16(6, e.flags ?? 0x800, true);
+    d.setUint16(8, 8, true);
+    d.setUint16(10, e.time ?? 0, true);
+    d.setUint16(12, e.date ?? 0x2100, true);
+    d.setUint32(14, crc, true);
+    d.setUint32(18, comp.length, true);
+    d.setUint32(22, e.data.length, true);
+    d.setUint16(26, nameB.length, true);
+    lfh.set(nameB, 30);
+    parts.push(lfh, comp);
+    central.push({ e, nameB, crc, csize: comp.length, usize: e.data.length, ofs });
+    ofs += lfh.length + comp.length;
+  }
+  const cdStart = ofs;
+  for (const c of central) {
+    const h = new Uint8Array(46 + c.nameB.length);
+    const d = new DataView(h.buffer);
+    d.setUint32(0, SIG_CDH, true);
+    d.setUint16(4, c.e.versionMadeBy ?? 0x0314, true);
+    d.setUint16(6, c.e.versionNeeded ?? 20, true);
+    d.setUint16(8, c.e.flags ?? 0x800, true);
+    d.setUint16(10, 8, true);
+    d.setUint16(12, c.e.time ?? 0, true);
+    d.setUint16(14, c.e.date ?? 0x2100, true);
+    d.setUint32(16, c.crc, true);
+    d.setUint32(20, c.csize, true);
+    d.setUint32(24, c.usize, true);
+    d.setUint16(28, c.nameB.length, true);
+    d.setUint16(36, c.e.intAttr ?? 0, true);
+    d.setUint32(38, c.e.extAttr ?? 0, true);
+    d.setUint32(42, c.ofs, true);
+    h.set(c.nameB, 46);
+    parts.push(h);
+    ofs += h.length;
+  }
+  const eocd = new Uint8Array(22);
+  const d = new DataView(eocd.buffer);
+  d.setUint32(0, SIG_EOCD, true);
+  d.setUint16(8, central.length, true);
+  d.setUint16(10, central.length, true);
+  d.setUint32(12, ofs - cdStart, true);
+  d.setUint32(16, cdStart, true);
+  parts.push(eocd);
+  return new Blob(parts, { type: 'application/zip' });
+}
+
+/* ---------- Godot .pck: только оглавление --------------------------------
+   Нужны одни имена файлов, данные не читаем. Магия GDPC либо в начале
+   отдельного .pck, либо в хвосте .exe со встроенным паком. */
+
+const PCK_MAGIC = 0x43504447;
+
+function pckIndex(buf) {
+  const dv = new DataView(buf), u8 = new Uint8Array(buf);
+  let base = 0;
+  if (dv.getUint32(0, true) !== PCK_MAGIC) {
+    if (buf.byteLength <= 12 || dv.getUint32(buf.byteLength - 4, true) !== PCK_MAGIC)
+      throw new Error('это не Godot .pck и не .exe со встроенным паком');
+    const size = Number(dv.getBigUint64(buf.byteLength - 12, true));
+    base = buf.byteLength - 12 - size;
+    if (base < 0 || dv.getUint32(base, true) !== PCK_MAGIC)
+      throw new Error('встроенный пак повреждён');
+  }
+  let p = base + 4;
+  const ver = dv.getUint32(p, true); p += 4;
+  p += 12;                                     // ver_major / minor / patch
+  let flags = 0;
+  if (ver >= 2) { flags = dv.getUint32(p, true); p += 4; p += 8; }   // + file_base
+  if (flags & 1) throw new Error('оглавление пака зашифровано — список не прочитать');
+  p += 64;                                     // 16 зарезервированных uint32
+  const count = dv.getUint32(p, true); p += 4;
+  const dec = new TextDecoder();
+  const paths = [];
+  for (let i = 0; i < count; i++) {
+    const sl = dv.getUint32(p, true); p += 4;
+    if (sl > 4096 || p + sl > buf.byteLength) throw new Error('оглавление пака повреждено');
+    paths.push(dec.decode(u8.subarray(p, p + sl)).replace(/[\u0000]+$/, ''));
+    p += sl + 8 + 8 + 16 + (ver >= 2 ? 4 : 0);  // offset, size, md5, flags
+  }
+  return paths;
+}
+
+/* ---------- Модель галереи ------------------------------------------------ */
+
+const EXT_TYPE = {
+  jpg: 0, jpeg: 0, png: 0, webp: 0,
+  mp3: 1, ogg: 1, wav: 1,
+  ogv: 2, webm: 2, mp4: 2,
+};
+const TYPE_NAME = { 0: 'фото', 1: 'аудио', 2: 'видео' };
+const MEDIA_DIRS = /^res:\/\/assets\/(images|audio|video)\//;
+
+function expandCatalog(rows) {
+  const out = [];
+  for (const [dir, type, ch, stem, ext, ranges, pad] of rows) {
+    if (!ranges) { out.push({ filepath: dir + '/' + stem, character: ch, type }); continue; }
+    for (const part of ranges.split(',')) {
+      const dash = part.indexOf('-');
+      const lo = +(dash < 0 ? part : part.slice(0, dash));
+      const hi = dash < 0 ? lo : +part.slice(dash + 1);
+      for (let n = lo; n <= hi; n++)
+        out.push({ filepath: dir + '/' + stem + num(n, pad) + ext, character: ch, type });
+    }
+  }
+  return out;
+}
+
+/** Номер файла: у части серий он с нулями впереди — Rachel01, но Rachel102. */
+const num = (n, pad) => String(n).padStart(pad || 0, '0');
+
+/** Серии вида <основа><номер>.<ext> с максимальным известным номером. */
+function seriesOf(entries) {
+  const map = new Map();
+  for (const e of entries) {
+    const m = /^(res:\/\/.*\/)([^/]*?)(\d+)(\.[a-z0-9]+)$/i.exec(e.filepath);
+    if (!m) continue;
+    const key = m[1] + m[2] + ' ' + m[4];
+    const s = map.get(key) || { dir: m[1], stem: m[2], ext: m[4], type: e.type, max: 0, pad: 0, chars: new Map() };
+    s.max = Math.max(s.max, +m[3]);
+    if (m[3][0] === '0') s.pad = Math.max(s.pad, m[3].length);
+    s.chars.set(e.character, (s.chars.get(e.character) || 0) + 1);
+    map.set(key, s);
+  }
+  for (const s of map.values())
+    s.character = [...s.chars.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  return [...map.values()];
+}
+
+/** Продолжить каждую серию на n номеров вперёд. */
+function extendSeries(entries, n) {
+  if (n <= 0) return [];
+  const have = new Set(entries.map(e => e.filepath));
+  const out = [];
+  for (const s of seriesOf(entries)) {
+    for (let i = 1; i <= n; i++) {
+      const fp = s.dir + s.stem + num(s.max + i, s.pad) + s.ext;
+      if (!have.has(fp)) out.push({ filepath: fp, character: s.character, type: s.type });
+    }
+  }
+  return out;
+}
+
+/** Кто хозяин файла, о котором мы знаем только путь. */
+function makeOwnerGuess(known) {
+  const byStem = new Map(), byDir = new Map();
+  const bump = (map, k, ch) => {
+    const c = map.get(k) || new Map();
+    c.set(ch, (c.get(ch) || 0) + 1);
+    map.set(k, c);
+  };
+  for (const e of known) {
+    const m = /^(res:\/\/.*)\/([^/]*?)\d*\.[a-z0-9]+$/i.exec(e.filepath);
+    if (!m) continue;
+    if (m[2]) bump(byStem, m[1] + '/' + m[2].toLowerCase(), e.character);
+    bump(byDir, m[1], e.character);
+  }
+  const top = c => c && [...c.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  return filepath => {
+    const m = /^(res:\/\/.*)\/([^/]*?)\d*\.[a-z0-9]+$/i.exec(filepath);
+    if (!m) return filepath.split('/').filter(Boolean).pop();
+    return top(byStem.get(m[1] + '/' + m[2].toLowerCase()))
+        || top(byDir.get(m[1]))
+        || m[1].split('/').pop();
+  };
+}
+
+/** Пути из .pck или папки с ассетами → записи галереи. */
+function manifestFromPaths(paths, known) {
+  const guess = makeOwnerGuess(known);
+  const byPath = new Map(known.map(e => [e.filepath, e]));
+  const out = new Map();
+  for (let p of paths) {
+    if (p.endsWith('.import') || p.endsWith('.remap')) p = p.slice(0, p.lastIndexOf('.'));
+    if (!MEDIA_DIRS.test(p) || out.has(p)) continue;
+    const ext = p.slice(p.lastIndexOf('.') + 1).toLowerCase();
+    if (!(ext in EXT_TYPE)) continue;
+    const seen = byPath.get(p);
+    out.set(p, seen
+      ? { filepath: p, character: seen.character, type: seen.type }
+      : { filepath: p, character: guess(p), type: EXT_TYPE[ext] });
+  }
+  return [...out.values()];
+}
+
+/** Что из кандидатов реально добавится к текущей галерее. */
+function planUnlock(current, candidates) {
+  const have = new Set(current.map(e => e.filepath));
+  const added = [];
+  for (const c of candidates) {
+    if (have.has(c.filepath)) continue;
+    have.add(c.filepath);
+    added.push(c);
+  }
+  return added;
+}
+
+/* ---------- Файлы внутри бэкапа ------------------------------------------ */
+
+const F_GALLERY  = 'virtualphone/gallery/unlocked_photos';
+const F_CONTACTS = 'virtualphone/messenger/contacts_list';
+const F_TRACKER  = 'virtualphone/tracker/completion_cache';
+const F_INFO     = 'save_info';
+
+const readJSON = (entries, name) => {
+  const e = entries.find(x => x.name === name);
+  if (!e) return null;
+  try { return JSON.parse(new TextDecoder().decode(e.data)); }
+  catch (err) { throw new Error('не разобрать ' + name + ': ' + err.message); }
+};
+
+const writeJSON = (entries, name, value, indent) => {
+  const e = entries.find(x => x.name === name);
+  if (!e) return false;
+  e.data = new TextEncoder().encode(JSON.stringify(value, null, indent || undefined));
+  return true;
+};
+
+/* ---------- Интерфейс ----------------------------------------------------- */
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const plural = (n, a, b, c) => {
+  const n10 = n % 10, n100 = n % 100;
+  return n + ' ' + (n10 === 1 && n100 !== 11 ? a
+    : n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14) ? b : c);
+};
+
+const S = {
+  file: null, entries: null,
+  gallery: null, contacts: null, info: null, tracker: null,
+  paths: null, pathsLabel: '',
+  added: [],
+};
+
+/* --- шаг 1: бэкап --- */
+
+function bindDrop(dropEl, inputEl, onFile, pick) {
+  dropEl.addEventListener('click', () => (pick ? pick() : inputEl).click());
+  inputEl.addEventListener('change', () => { if (inputEl.files[0]) onFile(inputEl.files[0]); });
+  for (const ev of ['dragenter', 'dragover']) dropEl.addEventListener(ev, e => {
+    e.preventDefault(); dropEl.classList.add('hot');
+  });
+  for (const ev of ['dragleave', 'drop']) dropEl.addEventListener(ev, () => dropEl.classList.remove('hot'));
+  dropEl.addEventListener('drop', e => {
+    e.preventDefault();
+    if (e.dataTransfer.files[0]) onFile(e.dataTransfer.files[0]);
+  });
+}
+
+async function loadBackup(file) {
+  $('#info1').innerHTML = '<p class="hint">Читаю…</p>';
+  try {
+    S.entries = await zipRead(await file.arrayBuffer());
+    S.gallery = readJSON(S.entries, F_GALLERY);
+    if (!Array.isArray(S.gallery))
+      throw new Error('в архиве нет ' + F_GALLERY + ' — это не бэкап NTR Phone');
+    S.contacts = readJSON(S.entries, F_CONTACTS);
+    S.info = readJSON(S.entries, F_INFO);
+    S.tracker = readJSON(S.entries, F_TRACKER);
+    S.file = file;
+  } catch (err) {
+    S.entries = null;
+    $('#info1').innerHTML = '<div class="note bad">' + esc(err.message) + '</div>';
+    for (const id of ['#c2', '#c3', '#c4']) $(id).classList.add('off');
+    return;
+  }
+  renderBackup();
+  for (const id of ['#c2', '#c3', '#c4']) $(id).classList.remove('off');
+  recompute();
+}
+
+function groupByCharacter(list) {
+  const g = new Map();
+  for (const e of list) {
+    const row = g.get(e.character) || [0, 0, 0];
+    row[e.type] = (row[e.type] || 0) + 1;
+    g.set(e.character, row);
+  }
+  return [...g.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+function renderBackup() {
+  const build = S.info && S.info.build_version ? S.info.build_version : 'неизвестна';
+  const locked = S.contacts ? S.contacts.filter(c => c.state === 'locked').length : 0;
+  const rows = groupByCharacter(S.gallery).map(([ch, t]) =>
+    '<tr><td>' + esc(ch) + '</td><td class="n">' + (t[0] || '') +
+    '</td><td class="n">' + (t[1] || '') + '</td><td class="n">' + (t[2] || '') + '</td></tr>').join('');
+  $('#info1').innerHTML =
+    '<dl class="kv" style="margin:14px 0 12px">' +
+    '<dt>файл</dt><dd>' + esc(S.file.name) + '</dd>' +
+    '<dt>сборка</dt><dd>' + esc(build) + '</dd>' +
+    '<dt>в галерее</dt><dd>' + plural(S.gallery.length, 'запись', 'записи', 'записей') + '</dd>' +
+    '<dt>контакты</dt><dd>' + (S.contacts
+      ? S.contacts.filter(c => c.state === 'unlocked').length + ' открыто, ' + locked + ' закрыто'
+      : '<span class="tag">нет в бэкапе</span>') + '</dd>' +
+    '</dl>' +
+    '<details><summary>Что уже открыто</summary><div class="scroll" style="margin-top:8px">' +
+    '<table><thead><tr><th>герой</th><th class="n">фото</th><th class="n">аудио</th>' +
+    '<th class="n">видео</th></tr></thead><tbody>' + rows + '</tbody></table></div></details>';
+}
+
+/* --- шаг 2: источник списка --- */
+
+function srcMode() {
+  return document.querySelector('input[name=src]:checked').value;
+}
+
+function onSrcChange() {
+  const mode = srcMode();
+  $('#srcExtra').hidden = mode === 'builtin';
+  $('#drop2').textContent = mode === 'pck'
+    ? 'Выберите .pck, .exe или .apk игры'
+    : 'Выберите папку игры (ту, внутри которой assets/)';
+  $('#extend').disabled = mode !== 'builtin' && !!S.paths;
+  if (mode === 'builtin') { S.paths = null; S.pathsLabel = ''; $('#info2').innerHTML = ''; }
+  recompute();
+}
+
+async function loadPck(file) {
+  $('#info2').innerHTML = '<p class="hint">Читаю оглавление…</p>';
+  try {
+    const buf = await file.arrayBuffer();
+    let paths;
+    if (new DataView(buf).getUint32(0, true) === SIG_LFH) {
+      // .apk и прочие архивы: ищем .pck внутри
+      const inner = (await zipRead(buf)).find(e => e.name.toLowerCase().endsWith('.pck'));
+      if (!inner) throw new Error('внутри архива нет .pck');
+      paths = pckIndex(inner.data.buffer.slice(inner.data.byteOffset,
+                                               inner.data.byteOffset + inner.data.byteLength));
+    } else {
+      paths = pckIndex(buf);
+    }
+    S.paths = paths;
+    S.pathsLabel = file.name;
+  } catch (err) {
+    S.paths = null;
+    $('#info2').innerHTML = '<div class="note bad">' + esc(err.message) +
+      '<br>Оставьте встроенный каталог — он тоже открывает почти всё.</div>';
+    recompute();
+    return;
+  }
+  reportPaths();
+}
+
+function loadDir(files) {
+  const paths = [];
+  for (const f of files) {
+    const rel = f.webkitRelativePath || f.name;
+    const i = rel.indexOf('assets/');
+    if (i >= 0) paths.push('res://' + rel.slice(i));
+  }
+  if (!paths.length) {
+    S.paths = null;
+    $('#info2').innerHTML = '<div class="note bad">В выбранной папке нет каталога ' +
+      '<span class="mono">assets/</span>. Для собранной игры выберите вариант с ' +
+      '<span class="mono">.pck</span>.</div>';
+    recompute();
+    return;
+  }
+  S.paths = paths;
+  S.pathsLabel = 'папка, ' + plural(files.length, 'файл', 'файла', 'файлов');
+  reportPaths();
+}
+
+function reportPaths() {
+  const media = manifestFromPaths(S.paths, S.gallery || []);
+  $('#info2').innerHTML = '<div class="note ok">' + esc(S.pathsLabel) + ': ' +
+    plural(S.paths.length, 'путь', 'пути', 'путей') + ', из них медиа галереи — ' +
+    media.length + '.</div>';
+  $('#extend').disabled = true;
+  $('#extend').value = 0;
+  recompute();
+}
+
+/* --- шаг 4: план и выгрузка --- */
+
+function candidates() {
+  const base = S.gallery || [];
+  let list;
+  if (S.paths) {
+    list = manifestFromPaths(S.paths, base);
+  } else {
+    list = expandCatalog(CATALOG_0450);
+    const n = Math.max(0, Math.min(200, +$('#extend').value || 0));
+    list = list.concat(extendSeries(base.concat(list), n));
+  }
+  return list;
+}
+
+function recompute() {
+  if (!S.entries) return;
+  S.added = planUnlock(S.gallery, candidates());
+  const lockedNow = S.contacts ? S.contacts.filter(c =>
+    c.state === 'locked' || ($('#optDev').checked && c.state === 'dev-locked')).length : 0;
+  const willContacts = $('#optContacts').checked ? lockedNow : 0;
+
+  const total = S.gallery.length + S.added.length;
+  const rows = groupByCharacter(S.added).map(([ch, t]) =>
+    '<tr><td>' + esc(ch) + '</td><td class="n">' + (t[0] || '') +
+    '</td><td class="n">' + (t[1] || '') + '</td><td class="n">' + (t[2] || '') + '</td></tr>').join('');
+  const list = S.added.slice(0, 4000).map(e =>
+    '<div class="mono">' + esc(e.filepath.replace('res://assets/', '')) +
+    ' <span class="tag">' + TYPE_NAME[e.type] + '</span></div>').join('');
+
+  $('#preview').innerHTML = S.added.length || willContacts
+    ? '<div class="bar" style="margin-bottom:10px"><i style="width:' +
+        Math.round(100 * S.gallery.length / total) + '%"></i></div>' +
+      '<dl class="kv">' +
+      '<dt>было</dt><dd>' + S.gallery.length + '</dd>' +
+      '<dt>станет</dt><dd><b>' + total + '</b> <span class="tag new">+' + S.added.length + '</span></dd>' +
+      (willContacts ? '<dt>контактов откроется</dt><dd>' + willContacts + '</dd>' : '') +
+      ($('#optTracker').checked && S.tracker ? '<dt>трекер</dt><dd>все по 100 %</dd>' : '') +
+      '</dl>' +
+      (S.added.length
+        ? '<details style="margin-top:10px"><summary>Что добавится</summary>' +
+          '<div class="scroll" style="margin-top:8px"><table><thead><tr><th>герой</th>' +
+          '<th class="n">фото</th><th class="n">аудио</th><th class="n">видео</th></tr></thead>' +
+          '<tbody>' + rows + '</tbody></table></div>' +
+          '<div class="scroll" style="margin-top:8px;padding:8px">' + list + '</div></details>'
+        : '')
+    : '<div class="note ok">Добавлять нечего: галерея уже полная по выбранному списку.</div>';
+
+  $('#go').disabled = !(S.added.length || willContacts ||
+    ($('#optTracker').checked && S.tracker));
+  $('#goHint').textContent = S.paths ? 'список из файлов игры' : 'встроенный каталог 0.45.0';
+}
+
+async function build() {
+  const now = Date.now() / 1000;
+  const gallery = S.gallery.concat(S.added.map(e => ({
+    character: e.character, filepath: e.filepath, timestamp: now, type: e.type,
+  })));
+  writeJSON(S.entries, F_GALLERY, gallery);
+
+  if ($('#optContacts').checked && S.contacts) {
+    const dev = $('#optDev').checked;
+    for (const c of S.contacts)
+      if (c.state === 'locked' || (dev && c.state === 'dev-locked')) c.state = 'unlocked';
+    writeJSON(S.entries, F_CONTACTS, S.contacts);
+  }
+  if ($('#optTracker').checked && S.tracker) {
+    for (const k of Object.keys(S.tracker)) S.tracker[k] = 100;
+    writeJSON(S.entries, F_TRACKER, S.tracker, '\t');
+  }
+
+  const blob = await zipWrite(S.entries);
+  const base = S.file.name.replace(/\.ntrbckp$/i, '');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = base + '-unlocked.ntrbckp';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+/* --- проводка --- */
+
+if (typeof document !== 'undefined') {
+  bindDrop($('#drop1'), $('#file1'), loadBackup);
+  bindDrop($('#drop2'), $('#file2'), f => {
+    if (srcMode() === 'dir') loadDir([f]); else loadPck(f);
+  }, () => srcMode() === 'dir' ? $('#file3') : $('#file2'));
+  $('#file3').addEventListener('change', e => {
+    if (e.target.files.length) loadDir(e.target.files);
+  });
+  for (const r of document.querySelectorAll('input[name=src]'))
+    r.addEventListener('change', onSrcChange);
+  for (const id of ['#optContacts', '#optDev', '#optTracker', '#extend'])
+    $(id).addEventListener('change', recompute);
+  $('#extend').addEventListener('input', recompute);
+  $('#go').addEventListener('click', async () => {
+    $('#go').disabled = true;
+    $('#goHint').textContent = 'собираю архив…';
+    try {
+      await build();
+      $('#goHint').textContent = 'готово — импортируйте файл в игре';
+    } catch (err) {
+      $('#goHint').textContent = 'не вышло: ' + err.message;
+    }
+    $('#go').disabled = false;
+  });
+  if (!('CompressionStream' in window))
+    $('#info1').innerHTML = '<div class="note bad">Браузер не умеет CompressionStream — ' +
+      'нужен Chrome/Edge 80+, Firefox 113+ или Safari 16.4+.</div>';
+}
+</script>
+</body>
+</html>

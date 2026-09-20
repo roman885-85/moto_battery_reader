@@ -600,7 +600,10 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         потрібна рації інформація живе в <b>DS2438</b>: сторінки 3–6 — дзеркало заголовка DS2433, і
         серед них байт паспортної ємності. Тому копія працює з <b>порожнім DS2433</b>. Ми повторюємо
         це: монітор зі зразка, лічильники в нуль, паливомір із поточної напруги, DS2433 стерто.</div>
-      <div class="row"><span class="k">Дамп DS2438 копії (64 Б)</span><input type="file" id="clFile" accept=".bin"></div>
+      <div class="row"><span class="k">Вбудований зразок</span>
+        <select id="clSample" onchange="clPick()" style="min-width:240px"></select></div>
+      <div class="note i" id="clSampleNote" style="display:none"></div>
+      <div class="row"><span class="k">або свій дамп DS2438 (64 Б)</span><input type="file" id="clFile" accept=".bin"></div>
       <div class="note i">або 128 hex-символів:
         <input type="text" id="clHex" placeholder="0F 48 18 22 …" style="width:100%;margin-top:4px"></div>
       <div class="rpg">
@@ -615,6 +618,11 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
         <div class="rpf"><span>Дата першого запуску</span><input type="date" id="clUse" style="width:150px"></div>
         <div class="rpf"><span>Знос, %</span><input type="number" id="clHp" min="1" max="100" placeholder="100" style="width:80px"></div>
       </div>
+      <label style="display:block;margin:6px 0"><input type="checkbox" id="clZero" checked>
+        <b>Скинути лічильники</b> — наробіток, CCA і DCA у нуль (числа копії до ваших банок не стосуються).</label>
+      <label style="display:block;margin:6px 0"><input type="checkbox" id="clRecheck" checked>
+        <b>Перевірити заряд після запису</b> — до запису в чипі стояли шунт і OFFSET копії, тож
+        відсоток рахується ще раз уже за вашими константами.</label>
       <label style="display:block;margin:8px 0"><input type="checkbox" id="clId33">
         <b>Записати ідентичність у DS2433</b> — <b>ЕКСПЕРИМЕНТАЛЬНО</b>: каркас із еталона родини
         4409, а модель, дати й знос шифруються ключем із ROM-ID <b>цього</b> чипа.</label>
@@ -730,7 +738,7 @@ async function connect(){
     log('> порт відкрито, очікування завантаження ESP32 (1.6 с)...');
     await new Promise(r=>setTimeout(r,1600));   // ESP32 перезавантажується при відкритті порту
     const p=await cmd('PING',3000);
-    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')'; await refresh(); await loadTemplates(); await sndLoad();
+    if(p&&p.ok){ $('st').textContent='Підключено ('+(p.dev||'')+')'; await refresh(); await loadTemplates(); await sndLoad(); await clLoadSamples();
                  await disTick(); }   // одразу підхопити розряд, якщо він уже йде
     else { $('st').textContent='Немає відповіді (перевірте порт/швидкість)'; }
   }catch(e){ log('! '+e.message); $('st').textContent='Помилка: '+e.message; disconnect(); }
@@ -928,7 +936,25 @@ async function clockSync(){
   else toast('Помилка: '+((r&&r.err)||''));
 }
 // Крайній засіб: відновлення за зразком копії (див. картку в «Небезпечній зоні»).
+// Вбудовані зразки моніторів копій — щоб не носити файл із собою.
+let clSamples=[];
+async function clLoadSamples(){
+  if(!connected) return;
+  const r=await cmd('SAMPLES',8000);
+  if(!r||!r.ok) return;
+  clSamples=r.samples||[];
+  const sel=$('clSample'); if(!sel) return;
+  sel.innerHTML='<option value="">— свій файл або hex —</option>'+
+    clSamples.map((s,i)=>'<option value="'+i+'">'+esc(s.name)+'</option>').join('');
+}
+function clPick(){
+  const i=$('clSample').value, n=$('clSampleNote');
+  if(i===''||!clSamples[i]){n.style.display='none';return;}
+  n.style.display=''; n.textContent=clSamples[i].note+' · ємність '+clSamples[i].rated+' мА·год';
+}
 async function clRead38(){
+  const i=$('clSample')?$('clSample').value:'';
+  if(i!=='' && clSamples[i]) return clSamples[i].hex;
   const f=$('clFile').files[0];
   if(f){
     if(f.size!==64){toast('Дамп DS2438 має бути рівно 64 байти (зараз '+f.size+')');return null;}
@@ -955,7 +981,9 @@ async function cloneRestore(){
     (dn('clMfg')?(' MFG='+dn('clMfg')):'')+
     (dn('clUse')?(' USE='+dn('clUse')):'')+
     ($('clHp').value?(' HEALTH='+$('clHp').value):'')+
-    (id33?' ID33=1':'');
+    (id33?' ID33=1':'')+
+    ($('clZero').checked?'':' ZERO=0')+
+    ($('clRecheck').checked?'':' RECHECK=0');
   const r=await cmd('CLONE'+a,30000);
   toast(r&&r.ok?('✅ '+(r.note||'Готово')):('Помилка: '+((r&&r.err)||'')));
   await refresh(); setBusy(false);

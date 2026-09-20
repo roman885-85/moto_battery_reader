@@ -786,7 +786,10 @@
                 сторінки 3–6 — це дзеркало заголовка DS2433, і серед них байт паспортної ємності.
                 Тому копія працює з <b>порожнім DS2433</b>. Ми повторюємо це: пишемо монітор зі
                 зразка, лічильники обнуляємо, паливомір беремо з поточної напруги, а DS2433 стираємо.</div>
-            <div class="row"><span class="k">Дамп DS2438 копії (64 Б)</span>
+            <div class="row"><span class="k">Вбудований зразок</span>
+                <select id="clSample" onchange="clPick()" style="min-width:260px"></select></div>
+            <div class="note i" id="clSampleNote" style="display:none"></div>
+            <div class="row"><span class="k">або свій дамп DS2438 (64 Б)</span>
                 <input type="file" id="clFile" accept=".bin"></div>
             <div class="note i">або вставте 128 hex-символів:
                 <input type="text" id="clHex" placeholder="0F 48 18 22 …" style="width:100%;margin-top:4px;
@@ -810,6 +813,13 @@
                 <div class="rpf"><span>Знос, %</span>
                     <input type="number" id="clHp" min="1" max="100" placeholder="100" style="width:80px"></div>
             </div>
+            <label style="display:block;margin:6px 0"><input type="checkbox" id="clZero" checked>
+                <b>Скинути лічильники</b> — наробіток, CCA і DCA у нуль. Числа копії до ваших банок
+                стосунку не мають, тож типово так. Знявши галочку, лічильники зі зразка лишаться як є.</label>
+            <label style="display:block;margin:6px 0"><input type="checkbox" id="clRecheck" checked>
+                <b>Перевірити заряд після запису</b> — паливомір рахується з напруги, виміряної <b>до</b>
+                запису, коли в чипі ще стояли шунт і OFFSET копії. Після запису шунт уже ваш, і той самий
+                АЦП дає інше число, тож монітор перечитується і відсоток рахується ще раз.</label>
             <label style="display:block;margin:8px 0"><input type="checkbox" id="clId33">
                 <b>Записати ідентичність у DS2433</b> — <b>ЕКСПЕРИМЕНТАЛЬНО</b>. У справжньої копії
                 DS2433 порожній; тут каркас береться з еталона <b>родини 4409</b>, а модель, дати
@@ -1182,7 +1192,27 @@ async function clockSync(){
 // Крайній засіб: відновлення за зразком копії. Уся інформація, потрібна рації,
 // живе в DS2438 (дзеркало заголовка несе ємність), тож DS2433 лишаємо стертим.
 // Ідентичність у DS2433 — окремою галочкою й тільки як експеримент.
+// Вбудовані зразки моніторів копій: щоб не носити файл із собою.
+let clSamples=[];
+async function clLoadSamples(){
+    try{
+        const r=await(await fetch('/api/clone/samples')).json();
+        clSamples=r.samples||[];
+        const sel=$('clSample'); if(!sel)return;
+        sel.innerHTML='<option value="">— свій файл або hex —</option>'+
+            clSamples.map((s,i)=>'<option value="'+i+'">'+esc(s.name)+'</option>').join('');
+    }catch(e){}
+}
+function clPick(){
+    const i=$('clSample').value, n=$('clSampleNote');
+    if(i===''||!clSamples[i]){n.style.display='none';return}
+    const s=clSamples[i];
+    n.style.display=''; n.textContent=s.note+' · ємність із дзеркала '+s.rated+' мА·год';
+    if(!$('clRated').value)$('clRated').placeholder=s.rated+' (зі зразка)';
+}
 async function clRead38(){
+    const i=$('clSample')?$('clSample').value:'';
+    if(i!=='' && clSamples[i]) return clSamples[i].hex;
     const f=$('clFile').files[0];
     if(f){
         if(f.size!==64){toast('Дамп DS2438 має бути рівно 64 байти (зараз '+f.size+')','err');return null}
@@ -1206,7 +1236,8 @@ async function cloneRestore(){
         const r=await postForm('/api/clone',{password:$('pwClone').value,hex38:hex,
             rated:$('clRated').value||'0', rsense:$('clRs').value||'0',
             model:($('clModel').value||'').toUpperCase(), mfg:dnum('clMfg'), use:dnum('clUse'),
-            health:$('clHp').value||'0', id33:id33?'1':'0'});
+            health:$('clHp').value||'0', id33:id33?'1':'0',
+            zero:$('clZero').checked?'1':'0', recheck:$('clRecheck').checked?'1':'0'});
         if(r.status==='success'){toast('✅ '+r.message,'ok');await refreshAll();}
         else toast('Помилка: '+r.message,'err');
     }catch(e){toast('Помилка: '+e.message,'err')}
@@ -2295,7 +2326,7 @@ async function sndReset(){
     }catch(e){ toast('Не вдалось скинути','err'); }
 }
 
-window.onload=function(){refreshAll();loadTemplates();sndLoad();setInterval(refreshAll,10000)};
+window.onload=function(){refreshAll();loadTemplates();sndLoad();clLoadSamples();setInterval(refreshAll,10000)};
 </script>
 </body>
 </html>

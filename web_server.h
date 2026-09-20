@@ -2792,7 +2792,8 @@ bool performCloneRestore(const uint8_t *src38, int ratedMah, long rsRaw,
                          bool write33, const char *model,
                          int mfgY, int mfgM, int mfgD,
                          int useY, int useM, int useD, int healthPct,
-                         String *note) {
+                         String *note, bool zeroCounters = true,
+                         bool recheckCharge = true) {
     if (!src38) return false;
 
     // Паливомір — із РЕАЛЬНОЇ напруги цього пакета, а не з чисел копії.
@@ -2804,7 +2805,7 @@ bool performCloneRestore(const uint8_t *src38, int ratedMah, long rsRaw,
         ? impresIcaFromPercentRs(pct, rated, rsUse > 0 ? rsUse / 100000.0f : DS2438_RSENSE_OHM)
         : src38[12];
 
-    impresCloneBuild38(batteryDump2438, src38, ratedMah, rsRaw, ica);
+    impresCloneBuild38(batteryDump2438, src38, ratedMah, rsRaw, ica, zeroCounters);
     hasDump2438 = true;
 
     // DS2433 — у 0xFF, як у копії.
@@ -2854,12 +2855,58 @@ bool performCloneRestore(const uint8_t *src38, int ratedMah, long rsRaw,
         saveDump("/dump.bin", batteryDump, DUMP_SIZE);
         saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
     }
+    // ⚑ КОРЕКЦІЯ ЗАРЯДУ ПІСЛЯ ЗАПИСУ. Паливомір ми порахували з напруги, яку
+    // виміряли ДО запису — а вимірював її чіп, у якому ще стояли шунт і OFFSET
+    // копії. Після запису шунт уже наш, і той самий АЦП дає інше число. Тому
+    // перечитуємо монітор і рахуємо заряд ще раз, уже за новими константами;
+    // інакше в пакет лишився б відсоток, порахований за чужим шунтом.
+    if (ok && recheckCharge) {
+        delay(50);                                   // дати вимірюванню осісти
+        uint8_t re[DS2438_MEM_SIZE];
+        if (battery.readDS2438(re, DS2438_MEM_SIZE)) {
+            memcpy(batteryDump2438, re, DS2438_MEM_SIZE);
+            int p2 = impresPercentFromMv(impresVoltageMv(batteryDump2438));
+            if (p2 >= 0) {
+                float rsNow = impresBmsRsense(batteryDump2438);
+                uint8_t ica2 = impresIcaFromPercentRs(p2, rated,
+                                   rsNow > 0.0f ? rsNow : DS2438_RSENSE_OHM);
+                if (ica2 != batteryDump2438[12]) {
+                    batteryDump2438[12] = ica2;
+                    if (battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE)) {
+                        saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+                        Serial.printf("Clone: заряд перераховано після запису -> %d %% (ICA %u)\n",
+                                      p2, ica2);
+                    }
+                }
+                n += " Заряд перевірено після запису: ";
+                n += p2; n += " %.";
+            }
+        }
+    }
     displayShow(ok ? "КОПІЯ OK" : "КОПІЯ ЗБІЙ");
     ledSet(ok ? LED_OK : LED_ERROR);
     if (note) *note = n;
     Serial.printf("Clone restore: rated=%d rs=%ld ica=%u id33=%d -> %s\n",
                   rated, rsUse, ica, write33 ? 1 : 0, ok ? "OK" : "FAIL");
     return ok;
+}
+
+// GET /api/clone/samples — вбудовані зразки моніторів копій.
+void handleCloneSamples() {
+    String j = "{\"status\":\"success\",\"samples\":[";
+    for (int i = 0; i < CLONE_SAMPLE_COUNT; i++) {
+        if (i) j += ",";
+        j += "{\"name\":\""; j += CLONE_SAMPLES[i].name;
+        j += "\",\"note\":\""; j += CLONE_SAMPLES[i].note;
+        j += "\",\"rated\":"; j += impresCloneRatedFrom38(CLONE_SAMPLES[i].d38);
+        j += ",\"rsense\":"; j += (int)(CLONE_SAMPLES[i].d38[56] | (CLONE_SAMPLES[i].d38[57] << 8));
+        j += ",\"hex\":\"";
+        char b[3];
+        for (int k = 0; k < DS2438_MEM_SIZE; k++) { sprintf(b, "%02X", CLONE_SAMPLES[i].d38[k]); j += b; }
+        j += "\"}";
+    }
+    j += "]}";
+    server.send(200, "application/json", j);
 }
 
 // POST /api/clone — hex38 (64 Б), rated, rsense, id33, model, mfg, use, health
@@ -2883,7 +2930,9 @@ void handleCloneRestore() {
         md.c_str(),
         (int)(mfg / 10000), (int)((mfg / 100) % 100), (int)(mfg % 100),
         (int)(use / 10000), (int)((use / 100) % 100), (int)(use % 100),
-        server.hasArg("health") ? server.arg("health").toInt() : 0, &note);
+        server.hasArg("health") ? server.arg("health").toInt() : 0, &note,
+        !server.hasArg("zero")    || server.arg("zero") != "0",
+        !server.hasArg("recheck") || server.arg("recheck") != "0");
     if (!ok) {
         server.send(500, "application/json",
                     "{\"status\":\"error\",\"message\":\"Збій запису (див. Serial-лог)\"}");
@@ -2970,6 +3019,7 @@ void setupWebServer() {
     server.on("/api/discharge/stop", HTTP_POST, handleDischargeStop);    // зупинити розряд
     server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
     server.on("/api/clone", HTTP_POST, handleCloneRestore);      // крайній засіб: режим копії
+    server.on("/api/clone/samples", HTTP_GET, handleCloneSamples); // вбудовані зразки копій
     server.on("/api/restore", HTTP_POST, handleRestore);         // відновлення еталона verbatim
     server.on("/api/restore/plan", HTTP_GET, handleRestorePlan); // правки еталона під цей пакет
     server.on("/api/restore/fixes", HTTP_POST, handleApplyFixes); // лише правки, без еталона

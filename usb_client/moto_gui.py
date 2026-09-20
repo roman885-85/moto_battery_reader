@@ -1436,6 +1436,10 @@ class App:
                             "Ідентичність у DS2433 — окремою галочкою й лише як ЕКСПЕРИМЕНТ: каркас\n"
                             "береться з еталона родини 4409, а дані шифруються ключем із ROM цього чипа.",
                   foreground="#d08a3a", justify="left").pack(anchor="w")
+        self.cbClSample = self._row(bcl, "Вбудований зразок:", lambda fr: self._combo(fr, 32))
+        self.cbClSample["values"] = ["— свій файл —"]
+        self.cbClSample.set("— свій файл —")
+        self.cbClSample.bind("<<ComboboxSelected>>", lambda _e: self._clone_sample_pick())
         cf = ttk.Frame(bcl); cf.pack(fill="x", pady=2)
         ttk.Button(cf, text="📂 Обрати дамп DS2438 (64 Б)",
                    command=self.clone_pick).pack(side="left", padx=3)
@@ -1449,6 +1453,12 @@ class App:
         self.eClMfg = self._row(bcl, "Дата виготовлення (РРРР-ММ-ДД):", lambda fr: self._entry(fr, 12, ""))
         self.eClUse = self._row(bcl, "Дата першого запуску:", lambda fr: self._entry(fr, 12, ""))
         self.eClHp = self._row(bcl, "Знос, %:", lambda fr: self._entry(fr, 6, ""))
+        self.vClZero = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bcl, text="Скинути лічильники (наробіток, CCA, DCA) — числа копії до ваших банок не стосуються",
+                        variable=self.vClZero).pack(anchor="w")
+        self.vClRecheck = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bcl, text="Перевірити заряд після запису — до запису в чипі стояв шунт копії",
+                        variable=self.vClRecheck).pack(anchor="w")
         self.vClId33 = tk.BooleanVar(value=False)
         ttk.Checkbutton(bcl, text="Записати ЕКСПЕРИМЕНТАЛЬНУ ідентичність у DS2433 (каркас 4409)",
                         variable=self.vClId33).pack(anchor="w", pady=(2, 0))
@@ -1819,7 +1829,8 @@ class App:
             self.btnConn.config(text="⏏ Відключити")
             self.status("Підключено (" + r.get("port", "") + ")", True)
             self.cmd("PING", 3.0, cb=lambda _: (self.load_templates(), self.sound_load(),
-                                                 self.clock_load(), self.refresh()))
+                                                 self.clock_load(), self.clone_samples_load(),
+                                                 self.refresh()))
         else:
             self.status("Помилка порту: " + r.get("err", ""), False)
 
@@ -2789,6 +2800,26 @@ class App:
         self.cmd("CLOCK %d" % self._rp_today(), 8.0,
                  cb=lambda r: (self.status("✅ Дату пристрою синхронізовано"), self.clock_load()))
 
+    def clone_samples_load(self):
+        """Вбудовані зразки моніторів копій — щоб не носити файл із собою."""
+        if not self.connected:
+            return
+        self.cmd("SAMPLES", 8.0, cb=self._clone_samples_show)
+
+    def _clone_samples_show(self, r):
+        if not isinstance(r, dict) or not r.get("ok"):
+            return
+        self._clSamples = r.get("samples", []) or []
+        self.cbClSample["values"] = ["— свій файл —"] + [s.get("name", "?") for s in self._clSamples]
+
+    def _clone_sample_pick(self):
+        i = self.cbClSample.current() - 1        # 0 = «свій файл»
+        subs = getattr(self, "_clSamples", [])
+        if i < 0 or i >= len(subs):
+            return
+        self._cloneHex = subs[i].get("hex", "")
+        self.lblClone.config(text="%s · %d мА·год" % (subs[i].get("note", ""), subs[i].get("rated", 0)))
+
     def clone_pick(self):
         """Обрати дамп DS2438 копії — рівно 64 байти."""
         p = filedialog.askopenfilename(title="Дамп DS2438 копії (64 Б)",
@@ -2838,6 +2869,8 @@ class App:
         if dn(self.eClUse):                     a += " USE=%d" % dn(self.eClUse)
         if (self.eClHp.get() or "").strip():    a += " HEALTH=" + self.eClHp.get().strip()
         if id33:                                a += " ID33=1"
+        if not self.vClZero.get():              a += " ZERO=0"
+        if not self.vClRecheck.get():           a += " RECHECK=0"
         self.maybe_auth(lambda: (self.status("Режим копії..."),
                                  self.cmd("CLONE" + a, 30.0,
                                           cb=lambda r: self._after_write(r, "✅ Відновлено за зразком копії"))))

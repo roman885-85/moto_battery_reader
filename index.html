@@ -454,6 +454,11 @@
                 профіль моделі <b id="intProf">—</b>, COPYRIGHT <b id="intCp">—</b>.</div>
             <input type="password" class="pw" id="pwRep" placeholder="🔑 Пароль адміністратора">
             <button class="btn btn-warn" style="width:100%" onclick="repairFw()">🛠 ВІДНОВИТИ ЦІЛІСНІСТЬ</button>
+            <div class="note i" style="margin-top:8px">🔌 Якщо чіп стертий, а зарядна станція <b>WPLN4226A</b>
+                сама встигла дописати в нього дзеркало заголовка з DS2438 (перевірте вище — заголовок
+                «навчений», хоч чіп мав бути порожнім) — тут вона зупинилась, суму не виправила. Кнопка
+                нижче добудовує РІВНО те, що почала станція; профіль і модель цим не відновлюються.</div>
+            <button class="btn btn-info" style="width:100%" onclick="hdrFix()">🔌 ДОБУДУВАТИ ЗАГОЛОВОК ПІСЛЯ СТАНЦІЇ</button>
         </div>
     </div>
     <div class="sub" id="fw-cal">
@@ -1238,6 +1243,20 @@ async function cloneRestore(){
             model:($('clModel').value||'').toUpperCase(), mfg:dnum('clMfg'), use:dnum('clUse'),
             health:$('clHp').value||'0', id33:id33?'1':'0',
             zero:$('clZero').checked?'1':'0', recheck:$('clRecheck').checked?'1':'0'});
+        if(r.status==='success'){toast('✅ '+r.message,'ok');await refreshAll();}
+        else toast('Помилка: '+r.message,'err');
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
+// Добудова заголовка DS2433 після зарядної станції WPLN4226A: вона сама
+// копіює дзеркало з DS2438, але не виправляє суму й на цьому зупиняється.
+async function hdrFix(){
+    if(!confirm('🔌 Добудувати заголовок із дзеркала DS2438?\n\nПрофіль і модель цим не '+
+                'відновлюються — лише заголовок стане структурно валідним.'))return;
+    prog(true,'Добудова...');
+    try{
+        const r=await postForm('/api/hdrfix',{password:$('pwRep').value});
         if(r.status==='success'){toast('✅ '+r.message,'ok');await refreshAll();}
         else toast('Помилка: '+r.message,'err');
     }catch(e){toast('Помилка: '+e.message,'err')}

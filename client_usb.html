@@ -356,6 +356,10 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
       <h2>🛠 Ремонт цілісності <span class="chipb">пише в DS2433 + DS2438</span></h2>
       <div class="note i">Суми (0x41/0x5A) + дзеркало калібрування з уцілілого DS2438. Якщо рація «не бачить» АКБ.</div>
       <button class="btn b-warn" onclick="op('REPAIR','🛠 Відновити цілісність і записати?',15000)">🛠 ВІДНОВИТИ</button>
+      <div class="note i" style="margin-top:8px">🔌 Якщо чіп стертий, а зарядна станція WPLN4226A сама
+        встигла дописати дзеркало заголовка з DS2438 (суму не виправила) — кнопка нижче добудовує рівно
+        це; профіль і модель цим не відновлюються.</div>
+      <button class="btn b-inf" onclick="hdrFix()">🔌 ДОБУДУВАТИ ЗАГОЛОВОК</button>
     </div>
   </div>
   <div class="sub" id="fwcal">
@@ -986,6 +990,16 @@ async function cloneRestore(){
     ($('clRecheck').checked?'':' RECHECK=0');
   const r=await cmd('CLONE'+a,30000);
   toast(r&&r.ok?('✅ '+(r.note||'Готово')):('Помилка: '+((r&&r.err)||'')));
+  await refresh(); setBusy(false);
+}
+// Добудова заголовка після зарядної станції WPLN4226A — див. картку «Ремонт
+// цілісності». Окрема функція, а не op(): треба показати r.note, не просто «Готово».
+async function hdrFix(){
+  if(!connected){toast('Підключіться');return;}
+  if(!confirm('🔌 Добудувати заголовок із дзеркала DS2438?\nПрофіль і модель цим не відновлюються.'))return;
+  await ensureAuth(); setBusy(true); toast('Добудова...');
+  const r=await cmd('HDRFIX',15000);
+  toast(r&&r.ok?('✅ '+(r.note||'Готово')):('Помилка: '+((r&&r.note)||(r&&r.err)||'')));
   await refresh(); setBusy(false);
 }
 function warnForeign2438(d, etmSec){

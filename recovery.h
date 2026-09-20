@@ -55,6 +55,12 @@ enum {
     ISS_DATE_INSANE  = 1u << 15, // дата виготовлення неправдоподібна
     ISS_ETM_FOREIGN  = 1u << 16, // наробіток більший за вік пакета -> чужий DS2438
     ISS_USE_BEFORE_CHG = 1u << 17,// пакет «вмикали», але жодного разу не заряджали
+    // ⚑ Одномісний зарядний WPLN4226A сам дописує в стертий DS2433 дзеркало
+    // заголовка з DS2438 (26 байт, 0x01..0x1A), але НЕ виправляє контрольну
+    // суму — і на цьому зупиняється: профіль, модель і блоки лишаються 0xFF.
+    // Структурно це «побитий заголовок», але дані в ньому вже правильні,
+    // тому лікується не переписуванням, а добудовою (див. ACT_HDRFIX).
+    ISS_CHARGER_PARTIAL = 1u << 18,
 };
 
 // ---- Дії Майстра ----------------------------------------------------------
@@ -69,6 +75,7 @@ enum {
     ACT_CLEAN,           // очистка історії
     ACT_SETCHARGE_AUTO,  // виставити заряд із напруги
     ACT_CHARGE_STATION,  // ЗОВНІШНІЙ крок: калібрування на IMPRES-ЗП
+    ACT_HDRFIX,          // добудувати заголовок DS2433 із дзеркала DS2438
     ACT_CRYPT,           // перешифрувати дати й лічильники під ROM цього чипа
     ACT_VERIFY,          // фінальна перевірка
 };
@@ -109,6 +116,8 @@ static const RecoveryRule RECOVERY_RULES[] = {
                            "Перечитайте монітор; якщо пакет щойно був на ЗП — правте наробіток ПІСЛЯ калібрування" },
     { ISS_USE_BEFORE_CHG, 1, "Пакет позначено як увімкнений, але жодного разу не заряджений",
                            "Перешифрувати під ROM цього чипа — запис приведе поля до несуперечливого стану" },
+    { ISS_CHARGER_PARTIAL, 2, "Станція частково записала заголовок (дзеркало є, сума й решта чипа — ні)",
+                           "Добудувати заголовок із дзеркала; якщо модель невідома — режим копії" },
 };
 static const int RECOVERY_RULE_COUNT = sizeof(RECOVERY_RULES) / sizeof(RECOVERY_RULES[0]);
 
@@ -138,6 +147,7 @@ static void wizActionMeta(uint8_t a, const char **title, const char **detail,
             case ACT_RECAL:
             case ACT_RECAL_DEEP:
             case ACT_CLEAN:          *chips = OPC_BOTH; break;
+            case ACT_HDRFIX:
             case ACT_CRYPT:          *chips = OPC_33;   break;
             case ACT_RESET:
             case ACT_SETCHARGE_AUTO: *chips = OPC_38;   break;
@@ -161,6 +171,12 @@ static void wizActionMeta(uint8_t a, const char **title, const char **detail,
                           *detail = "Стерти історію/статистику, лишити ідентичність і калібрування."; break;
         case ACT_SETCHARGE_AUTO: *title = "Заряд із напруги";
                           *detail = "Виставити паливомір за поточною напругою (" BATTERY_SCALE_TXT ")."; break;
+        case ACT_HDRFIX:  *title = "Добудувати заголовок";
+                          *detail = "Зарядна станція сама дописала в стертий чип дзеркало заголовка з "
+                                    "DS2438, але не виправила суму — і на цьому зупинилась. Крок копіює "
+                                    "ті самі 26 байт (якщо ще не скопійовані) і виправляє контрольну "
+                                    "суму. Профіль, модель і блоки цим НЕ відновлюються — далі потрібен "
+                                    "«Відновити еталон» (якщо модель відома) або режим копії."; break;
         case ACT_CRYPT:   *title = "Перешифрувати під ROM чипа";
                           *detail = "Дати й лічильники зашифровані ключем із ROM-ID самого чипа. "
                                     "Якщо вміст прийшов від іншого пакета, рація розшифрує його "
@@ -241,6 +257,16 @@ static void wizAnalyze(BatteryDiag &d) {
 
         d.hdrOk = headerChecksumOk(batteryDump);
         if (!d.hdrOk && !blank) d.issues |= ISS_HDR_BAD;
+
+        // ⚑ Відрізняємо «станція почала добудову» від просто побитого
+        // заголовка: тут дзеркало вже НА МІСЦІ (26 байт зі своєї частини
+        // DS2438), лишилась не виправлена сума. «Просто побитий» заголовок
+        // такого збігу не дає — там дзеркало або відсутнє, або розходиться.
+        if (!d.hdrOk && !blank && hasDump2438 &&
+            mirrorSourceValid(batteryDump2438) && mirrorOk(batteryDump, batteryDump2438)) {
+            d.issues |= ISS_CHARGER_PARTIAL;
+            d.issues &= ~ISS_HDR_BAD;   // конкретніший діагноз — той самий крок ремонту,
+        }                               // але людині зрозуміліше, що саме сталося.
 
         if (!decodeModel(d.model, sizeof(d.model))) { d.issues |= ISS_NO_MODEL; d.model[0] = '\0'; }
 
@@ -344,6 +370,11 @@ static void wizComputeActions(const BatteryDiag &d) {
     uint32_t is = d.issues;
 
     if (is & ISS_NO_CHIP) { add(ACT_READ); return; }
+
+    // Добудова — ПЕРШИМ кроком: без валідного заголовка інші перевірки чипа
+    // (модель, профіль) однаково нічого не скажуть, а дзеркало вже на місці —
+    // шкоди від зайвого кроку немає.
+    if (is & ISS_CHARGER_PARTIAL) add(ACT_HDRFIX);
 
     if (is & (ISS_BLANK33 | ISS_NO_MODEL))       add(ACT_RESTORE);
     else if (is & (ISS_HDR_BAD | ISS_MIRROR_BAD | ISS_BLOCK_SUM)) add(ACT_REPAIR);
@@ -477,6 +508,7 @@ static const char *wizActionName(uint8_t a) {
         case ACT_RECAL_DEEP: return "recaldeep";
         case ACT_RESET: return "reset";          case ACT_CLEAN: return "clean";
         case ACT_SETCHARGE_AUTO: return "charge";case ACT_CHARGE_STATION: return "station";
+        case ACT_HDRFIX: return "hdrfix";
         case ACT_CRYPT: return "crypt";
         case ACT_VERIFY: return "verify";        default: return "none";
     }
@@ -656,6 +688,7 @@ static String wizExecStep(int idx, const String &model, const String &fixes = St
             if (ok) strncpy(g_wizJ.model, m.c_str(), sizeof(g_wizJ.model) - 1);
         } break;
         case ACT_REPAIR:        ok = performRepair();        msg = ok ? "Цілісність відновлено" : "Помилка ремонту"; break;
+        case ACT_HDRFIX:        { String hn; ok = performHeaderComplete(&hn); msg = hn.length() ? hn : (ok ? "Заголовок добудовано" : "Помилка добудови"); } break;
         case ACT_RECAL:         ok = performRecalPrepare(false);
                                 msg = ok ? "Навчений хвіст стерто, лічильники скинуто — готово до калібрування на ЗП"
                                          : "Помилка підготовки"; break;

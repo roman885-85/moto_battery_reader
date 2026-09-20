@@ -38,6 +38,8 @@
 //   DISCHARGE [мВ]       -> почати керований розряд (типово до 7200 мВ)
 //   DISCHARGE STOP       -> зупинити розряд;  DISCHARGE ? -> стан розряду
 //   INITBAT <MODEL> <мАг>-> ініціалізувати порожній чип як новий АКБ моделі
+//   HDRFIX               -> добудувати заголовок DS2433 із дзеркала DS2438
+//                          (коли зарядна станція сама почала, але не завершила)
 //   SAMPLES              -> вбудовані зразки моніторів копій (для CLONE)
 //   CLONE <hex128> [RATED=] [RSENSE=] [MODEL=] [MFG=] [USE=] [HEALTH=] [ID33=1]
 //                  [ZERO=0] [RECHECK=0]
@@ -579,6 +581,11 @@ static void serialExec(const String &line) {
     // годинник. Годинника реального часу в ESP32 немає, а NTP недосяжний:
     // пристрій сам є точкою доступу. Ту саму дату несе TODAY= у RESTORE/FIXES.
     // SETHEALTH <1..100> — знос одним рухом (те саме, що правка «знос» у плані).
+    // HDRFIX — добудувати заголовок DS2433 із дзеркала DS2438 (див. ISS_CHARGER_PARTIAL).
+    else if (cmd == "HDRFIX")   { String note; bool ok = performHeaderComplete(&note);
+                                  String r = "{\"ok\":"; r += ok ? "true" : "false";
+                                  r += ",\"note\":\""; r += note; r += "\"}";
+                                  sResp(r); }
     // CLONE <hex128> [RATED=] [RSENSE=] [MODEL=] [MFG=] [USE=] [HEALTH=] [ID33=1]
     // Крайній засіб: відновлення за зразком китайської копії. Перший токен —
     // дамп DS2438 копії (64 Б = 128 hex-символів), решта — ручні значення.

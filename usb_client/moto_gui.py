@@ -1263,6 +1263,12 @@ class App:
                    command=lambda: self.simple_op("RECAL DEEP", "Глибока чистка?\nДодатково стирає навчені записи ємності (0x153–0x189) і журнал використання.\nВмикайте, лише якщо після звичайного ремонту ЗП тримається за стару ємність.", 25.0)).pack(anchor="w", pady=3)
         ttk.Button(b2b, text="🛠 Ремонт цілісності (контрольні суми + дзеркало)",
                    command=lambda: self.simple_op("REPAIR", "Відновити цілісність і записати?")).pack(anchor="w", pady=3)
+        ttk.Label(b2b, text="🔌 Якщо чіп стертий, а зарядна станція WPLN4226A сама встигла дописати\n"
+                            "дзеркало заголовка з DS2438 (суму не виправила) — кнопка нижче добудовує\n"
+                            "рівно це; профіль і модель цим не відновлюються.",
+                  foreground="#b9bd86", justify="left").pack(anchor="w", pady=(4, 0))
+        ttk.Button(b2b, text="🔌 Добудувати заголовок після станції",
+                   command=self.hdr_fix).pack(anchor="w", pady=3)
 
         b2d = ttk.LabelFrame(p_cal, text="Розряд перед калібруванням (навантаження MOSFET)  ·  пише в DS2438", padding=8); b2d.pack(fill="x", pady=4)
         ttk.Label(b2d, text="Розряд — це приймальний контроль після перепайки: він міряє реальну ємність нових\n"
@@ -2819,6 +2825,26 @@ class App:
             return
         self._cloneHex = subs[i].get("hex", "")
         self.lblClone.config(text="%s · %d мА·год" % (subs[i].get("note", ""), subs[i].get("rated", 0)))
+
+    def hdr_fix(self):
+        """Добудова заголовка DS2433, яку почала (але не завершила) станція
+        WPLN4226A: дзеркало з DS2438 уже на місці, суму вона не виправила."""
+        if not self.need_conn():
+            return
+        if not messagebox.askyesno("Добудова заголовка",
+                "Добудувати заголовок із дзеркала DS2438?\n\n"
+                "Профіль і модель цим не відновлюються — лише заголовок стане структурно валідним."):
+            return
+        self.maybe_auth(lambda: (self.status("Добудова..."),
+                                 self.cmd("HDRFIX", 15.0, cb=self._hdrfix_show)))
+
+    def _hdrfix_show(self, r):
+        ok = isinstance(r, dict) and r.get("ok")
+        note = (r or {}).get("note", "")
+        self.status(("✅ " + note) if ok and note else ("✅ Готово" if ok else "Помилка: " + note), ok)
+        if not ok:
+            messagebox.showerror("Добудова заголовка", note or "Збій запису")
+        self.refresh()
 
     def clone_pick(self):
         """Обрати дамп DS2438 копії — рівно 64 байти."""

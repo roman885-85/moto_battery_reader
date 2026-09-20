@@ -1321,6 +1321,57 @@ void repairDumps() {
 // відновлення стертого DS2433 робиться завантаженням еталонного дампа той же
 // моделі (вкладка «Прошивка» → запис).
 // Ядро ремонту без HTTP — викликається і з веб-обробника, і з меню дисплея.
+// ── ДОБУДОВА ПІСЛЯ ЗАРЯДНОЇ СТАНЦІЇ ──────────────────────────────────────
+//  Одномісний IMPRES-зарядний WPLN4226A, отримавши пакет зі стертим DS2433,
+//  сам записує в нього дзеркало заголовка з DS2438 (26 байт: DS2433[0x01..0x1A]
+//  = DS2438[0x18..0x31]) — але НЕ виправляє контрольну суму, і на цьому
+//  зупиняється: профіль, модель і блоки лишаються 0xFF. Заголовок після цього
+//  структурно НЕВАЛІДНИЙ, хоча дані в ньому вже правильні.
+//
+//  Ця функція добудовує РІВНО те, що почала станція: копіює дзеркало (якщо
+//  ще не скопійоване — safe навіть коли вже скопійоване) і виправляє суму.
+//  Профіль, модель і блоки цим НЕ відновлюються — для них потрібен «Відновити
+//  еталон» (модель відома) або режим копії (модель невідома, але DS2438 несе
+//  достатньо даних — див. impres_clone.h).
+bool performHeaderComplete(String *note) {
+    if (!hasDump) { if (note) *note = "Спочатку зчитайте АКБ"; return false; }
+    if (!hasDump2438 || !mirrorSourceValid(batteryDump2438)) {
+        if (note) *note = "DS2438 не читається або дзеркала в ньому немає — добудовувати нічим";
+        return false;
+    }
+    bool already = mirrorOk(batteryDump, batteryDump2438);
+    syncMirrorFrom2438(batteryDump, batteryDump2438);
+    ledSet(LED_WRITE); displayShow("ДОБУДОВА...");
+    bool ok = battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (ok) saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+    displayShow(ok ? "ДОБУДОВА OK" : "ДОБУДОВА ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    if (note) {
+        String n = already
+            ? "Заголовок добудовано: дзеркало вже було на місці, виправлено лише суму."
+            : "Заголовок добудовано з дзеркала DS2438.";
+        // Чесно кажемо, чого цей крок НЕ вирішує — інакше виглядало б, що
+        // пакет уже готовий, хоча профілю й моделі в ньому й досі немає.
+        char md[16] = "";
+        if (!decodeModel(md, sizeof(md)) || !md[0])
+            n += " Модель і профіль ще відсутні: далі — «Відновити еталон» (якщо модель "
+                 "відома) або режим копії в «Небезпечній зоні» (якщо ні).";
+        *note = n;
+    }
+    Serial.printf("HDRFIX: mirror %s, write %s\n", already ? "already ok" : "restored",
+                  ok ? "OK" : "FAIL");
+    return ok;
+}
+
+// POST /api/hdrfix
+void handleHeaderComplete() {
+    if (!requireAdmin()) return;
+    String note;
+    bool ok = performHeaderComplete(&note);
+    server.send(ok ? 200 : 400, "application/json",
+                String("{\"status\":\"") + (ok ? "success" : "error") + "\",\"message\":\"" + note + "\"}");
+}
+
 bool performRepair() {
     if (!hasDump && !hasDump2438) { displayShow("СПОЧАТКУ ЧИТАЙ"); return false; }
     ledSet(LED_WRITE); displayShow("РЕМОНТ...");
@@ -3009,6 +3060,7 @@ void setupWebServer() {
     server.on("/api/templates", HTTP_GET, handleTemplates);      // список вшитих моделей
     server.on("/api/ops", HTTP_GET, handleOps);                  // каталог операцій (operations.h)
     server.on("/api/sethealth", HTTP_POST, handleSetHealth);     // знос/здоров'я одним рухом
+    server.on("/api/hdrfix", HTTP_POST, handleHeaderComplete);   // добудова заголовка після станції
     server.on("/api/clock", HTTP_GET, handleClockGet);           // системна дата пристрою
     server.on("/api/clock", HTTP_POST, handleClockSet);          // завести годинник
     server.on("/api/sound", HTTP_GET, handleSoundGet);           // налаштування звуку

@@ -13,6 +13,7 @@
 #include "restore_plan.h"      // правки еталона під конкретний пакет перед записом
 #include "device_clock.h"     // системна дата пристрою (джерело «сьогодні»)
 #include "impres_audit.h"     // аудит змісту: шифрування й узгодженість даних
+#include "impres_clone.h"     // крайній засіб: відновлення за зразком копії
 #include "discharge.h"         // керований розряд навантаженням (MOSFET)
 #include "leds.h"
 #include "display.h"
@@ -2777,6 +2778,121 @@ void handleInitBattery() {
     server.send(200, "application/json", j);
 }
 
+// ── ВІДНОВЛЕННЯ ЗА ЗРАЗКОМ КИТАЙСЬКОЇ КОПІЇ — КРАЙНІЙ ЗАСІБ ────────────────
+//  Коли жодна спроба відновлення не вдалася. Копії влаштовані так, що вся
+//  потрібна рації інформація живе в DS2438 (дзеркало заголовка несе паспортну
+//  ємність, поруч — шунт і OFFSET), а DS2433 у них порожній і не пишеться.
+//  Повторюємо це: пишемо монітор зі зразка, а DS2433 стираємо.
+//
+//  ⚑ Запис ідентичності в DS2433 (модель, дати, знос) — ОКРЕМИЙ і
+//  ЕКСПЕРИМЕНТАЛЬНИЙ крок за бажанням власника: у справжньої копії цього немає
+//  взагалі. Каркас беремо з еталона родини 4409 — саме її шунт (45.65 мОм)
+//  несуть монітори копій. Шифроване пишеться ключем із ROM ЦЬОГО чипа.
+bool performCloneRestore(const uint8_t *src38, int ratedMah, long rsRaw,
+                         bool write33, const char *model,
+                         int mfgY, int mfgM, int mfgD,
+                         int useY, int useM, int useD, int healthPct,
+                         String *note) {
+    if (!src38) return false;
+
+    // Паливомір — із РЕАЛЬНОЇ напруги цього пакета, а не з чисел копії.
+    int pct = chargePctFromVoltage();
+    int rated = ratedMah > 0 ? ratedMah : impresCloneRatedFrom38(src38);
+    if (rated <= 0) rated = 2150;                       // родина 4409 за умовчанням
+    long rsUse = rsRaw > 0 ? rsRaw : (long)(src38[56] | (src38[57] << 8));
+    uint8_t ica = (pct >= 0)
+        ? impresIcaFromPercentRs(pct, rated, rsUse > 0 ? rsUse / 100000.0f : DS2438_RSENSE_OHM)
+        : src38[12];
+
+    impresCloneBuild38(batteryDump2438, src38, ratedMah, rsRaw, ica);
+    hasDump2438 = true;
+
+    // DS2433 — у 0xFF, як у копії.
+    memset(batteryDump, 0xFF, DUMP_SIZE);
+    hasDump = true;
+    String n = "Монітор записано за зразком копії; DS2433 стерто.";
+
+    if (write33) {
+        // ЕКСПЕРИМЕНТ: каркас 4409 + ручна ідентичність під ROM цього чипа.
+        int t = findTemplate(model && *model ? model : "PMNN4409A");
+        if (t < 0) t = findTemplate("PMNN4409A");
+        if (t < 0) {
+            n += " Каркаса 4409 немає — ідентичність не записано.";
+        } else if (!hasSN2433) {
+            n += " ROM чипа невідомий — ідентичність НЕ записано (шифрувати нічим).";
+        } else {
+            memcpy_P(batteryDump, BATTERY_TEMPLATES[t].d33, DUMP_SIZE);
+            int cleared = applyFreshTail(BATTERY_TEMPLATES[t].fresh);
+            if (cleared < 0) impresEraseTail(batteryDump);
+            if (ratedMah > 0)
+                batteryDump[IMPRES_RATED_BYTE] = (uint8_t)(ratedMah / IMPRES_RATED_STEP);
+            if (model && *model) applyModel(model);
+            uint8_t cts = restoreCtsFromHealth(healthPct > 0 ? healthPct : 100, rated,
+                                               rsUse > 0 ? rsUse / 100000.0f : DS2438_RSENSE_OHM);
+            // Ключ — ТІЛЬКИ з ROM цього чипа (див. tools/client_audit.py).
+            impresIdentityWrite(batteryDump, chipSN2433, mfgY, mfgM, mfgD, cts);
+            // Дата першого запуску зберігається як «діб від виготовлення».
+            if (useY > 0 && mfgY > 0) {
+                ImpresCryptFields f;
+                impresCryptRead(batteryDump, chipSN2433[1], chipSN2433[6], &f);
+                f.dayInitialUse = f.dayInitialUse2 =
+                    restoreDaysBetween(mfgY, mfgM, mfgD, useY, useM, useD);
+                impresCryptWrite(batteryDump, chipSN2433[1], chipSN2433[6], &f);
+            }
+            impresCyclesWrite(batteryDump, 0);
+            impresNonImpresWrite(batteryDump, 0);
+            impresFixHeader(batteryDump);
+            n = "Монітор за зразком копії; у DS2433 записано ЕКСПЕРИМЕНТАЛЬНУ "
+                "ідентичність на каркасі 4409 під ROM цього чипа.";
+        }
+    }
+
+    ledSet(LED_WRITE); displayShow("РЕЖИМ КОПІЇ");
+    bool ok = battery.writeDS2438(batteryDump2438, DS2438_MEM_SIZE);
+    if (ok) ok &= battery.writeBattery(batteryDump, DUMP_SIZE);
+    if (ok) {
+        saveDump("/dump.bin", batteryDump, DUMP_SIZE);
+        saveDump("/dump2438.bin", batteryDump2438, DS2438_MEM_SIZE);
+    }
+    displayShow(ok ? "КОПІЯ OK" : "КОПІЯ ЗБІЙ");
+    ledSet(ok ? LED_OK : LED_ERROR);
+    if (note) *note = n;
+    Serial.printf("Clone restore: rated=%d rs=%ld ica=%u id33=%d -> %s\n",
+                  rated, rsUse, ica, write33 ? 1 : 0, ok ? "OK" : "FAIL");
+    return ok;
+}
+
+// POST /api/clone — hex38 (64 Б), rated, rsense, id33, model, mfg, use, health
+void handleCloneRestore() {
+    if (!requireAdmin()) return;
+    String hx = server.arg("hex38");
+    uint8_t src[DS2438_MEM_SIZE];
+    if (hexToBytes(hx, src, DS2438_MEM_SIZE) != DS2438_MEM_SIZE) {
+        server.send(400, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Потрібен дамп DS2438 — рівно 64 байти\"}");
+        return;
+    }
+    long mfg = server.hasArg("mfg") ? server.arg("mfg").toInt() : 0;
+    long use = server.hasArg("use") ? server.arg("use").toInt() : 0;
+    String md = server.arg("model"); md.trim(); md.toUpperCase();
+    String note;
+    bool ok = performCloneRestore(src,
+        server.hasArg("rated")  ? server.arg("rated").toInt()  : 0,
+        server.hasArg("rsense") ? server.arg("rsense").toInt() : 0,
+        server.hasArg("id33") && server.arg("id33") == "1",
+        md.c_str(),
+        (int)(mfg / 10000), (int)((mfg / 100) % 100), (int)(mfg % 100),
+        (int)(use / 10000), (int)((use / 100) % 100), (int)(use % 100),
+        server.hasArg("health") ? server.arg("health").toInt() : 0, &note);
+    if (!ok) {
+        server.send(500, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Збій запису (див. Serial-лог)\"}");
+        return;
+    }
+    server.send(200, "application/json",
+                String("{\"status\":\"success\",\"message\":\"") + note + "\"}");
+}
+
 // Перезавантаження ESP32 (під паролем). Корисно після серії операцій або якщо
 // 1-Wire шина «зависла». Відповідь надсилаємо ДО restart, з невеликою затримкою,
 // щоб браузер встиг її отримати.
@@ -2853,6 +2969,7 @@ void setupWebServer() {
     server.on("/api/discharge/start", HTTP_POST, handleDischargeStart);  // почати розряд
     server.on("/api/discharge/stop", HTTP_POST, handleDischargeStop);    // зупинити розряд
     server.on("/api/initbattery", HTTP_POST, handleInitBattery); // ініціалізація нового АКБ
+    server.on("/api/clone", HTTP_POST, handleCloneRestore);      // крайній засіб: режим копії
     server.on("/api/restore", HTTP_POST, handleRestore);         // відновлення еталона verbatim
     server.on("/api/restore/plan", HTTP_GET, handleRestorePlan); // правки еталона під цей пакет
     server.on("/api/restore/fixes", HTTP_POST, handleApplyFixes); // лише правки, без еталона

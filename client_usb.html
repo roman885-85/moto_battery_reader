@@ -595,6 +595,32 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
   <div class="sub" id="fwdang">
     <div class="subintro">Незворотні операції. Після них АКБ не працюватиме, доки не запишете еталон моделі.</div>
 <div class="card" style="border-color:#e74c3c">
+      <h2>🧬 Відновлення за зразком копії <span class="chipb">пише в DS2433 + DS2438</span></h2>
+      <div class="note w">⚠️ <b>Крайній засіб</b> — коли жодна інша спроба не вдалася. У копій уся
+        потрібна рації інформація живе в <b>DS2438</b>: сторінки 3–6 — дзеркало заголовка DS2433, і
+        серед них байт паспортної ємності. Тому копія працює з <b>порожнім DS2433</b>. Ми повторюємо
+        це: монітор зі зразка, лічильники в нуль, паливомір із поточної напруги, DS2433 стерто.</div>
+      <div class="row"><span class="k">Дамп DS2438 копії (64 Б)</span><input type="file" id="clFile" accept=".bin"></div>
+      <div class="note i">або 128 hex-символів:
+        <input type="text" id="clHex" placeholder="0F 48 18 22 …" style="width:100%;margin-top:4px"></div>
+      <div class="rpg">
+        <div class="rpf"><span>Ємність, мА·год</span><input type="number" id="clRated" min="1000" max="6000" step="25" placeholder="з дзеркала" style="width:110px"></div>
+        <div class="rpf"><span>Шунт</span><select id="clRs" style="width:200px">
+            <option value="">— з дампа копії —</option>
+            <option value="4565">45.65 мОм (родина 4409)</option>
+            <option value="2490">24.90 мОм (4488/4493)</option>
+            <option value="2500">25.00 мОм (4809)</option></select></div>
+        <div class="rpf"><span>Модель</span><input type="text" id="clModel" maxlength="9" placeholder="PMNN4409A" style="width:140px"></div>
+        <div class="rpf"><span>Дата виготовлення</span><input type="date" id="clMfg" style="width:150px"></div>
+        <div class="rpf"><span>Дата першого запуску</span><input type="date" id="clUse" style="width:150px"></div>
+        <div class="rpf"><span>Знос, %</span><input type="number" id="clHp" min="1" max="100" placeholder="100" style="width:80px"></div>
+      </div>
+      <label style="display:block;margin:8px 0"><input type="checkbox" id="clId33">
+        <b>Записати ідентичність у DS2433</b> — <b>ЕКСПЕРИМЕНТАЛЬНО</b>: каркас із еталона родини
+        4409, а модель, дати й знос шифруються ключем із ROM-ID <b>цього</b> чипа.</label>
+      <button class="btn b-dng" onclick="cloneRestore()">🧬 Відновити за зразком копії</button>
+    </div>
+<div class="card" style="border-color:#e74c3c">
       <h2>🔥 ПОВНЕ стирання DS2433 (крайній випадок) <span class="chipb">пише в DS2433</span></h2>
       <div class="note w">🛑 Стирає ВЕСЬ DS2433 у 0xFF: модель, серійний/ID, калібрування. АКБ НЕ ПРАЦЮВАТИМЕ,
         доки не запишете еталонний дамп. DS2438 не чіпається.</div>
@@ -900,6 +926,39 @@ async function clockSync(){
   const r=await cmd('CLOCK '+rpToday(),8000);
   if(r&&r.ok){toast('Дату пристрою синхронізовано');await clockLoad();}
   else toast('Помилка: '+((r&&r.err)||''));
+}
+// Крайній засіб: відновлення за зразком копії (див. картку в «Небезпечній зоні»).
+async function clRead38(){
+  const f=$('clFile').files[0];
+  if(f){
+    if(f.size!==64){toast('Дамп DS2438 має бути рівно 64 байти (зараз '+f.size+')');return null;}
+    const b=new Uint8Array(await f.arrayBuffer());
+    return Array.from(b).map(x=>x.toString(16).padStart(2,'0')).join('');
+  }
+  const e=$('clHex'); const h=e&&e.value?e.value.replace(/[^0-9A-Fa-f]/g,''):'';
+  if(h.length!==128){toast('Потрібно 64 байти: файл або 128 hex-символів');return null;}
+  return h;
+}
+async function cloneRestore(){
+  if(!connected){toast('Підключіться');return;}
+  const hex=await clRead38(); if(!hex)return;
+  const dn=id=>{const e=$(id);return e&&e.value?e.value.replace(/-/g,''):'';};
+  const id33=$('clId33').checked;
+  if(!confirm('🧬 Відновити за зразком копії?\nDS2438 — зі зразка, лічильники в нуль, паливомір із '+
+              'поточної напруги.\nDS2433 '+(id33?'отримає ЕКСПЕРИМЕНТАЛЬНУ ідентичність.':'буде СТЕРТО.')+
+              '\nЦе крайній засіб. Продовжити?'))return;
+  await ensureAuth(); setBusy(true); toast('Режим копії...');
+  const a=' '+hex+
+    ($('clRated').value?(' RATED='+$('clRated').value):'')+
+    ($('clRs').value?(' RSENSE='+$('clRs').value):'')+
+    ($('clModel').value?(' MODEL='+$('clModel').value.toUpperCase()):'')+
+    (dn('clMfg')?(' MFG='+dn('clMfg')):'')+
+    (dn('clUse')?(' USE='+dn('clUse')):'')+
+    ($('clHp').value?(' HEALTH='+$('clHp').value):'')+
+    (id33?' ID33=1':'');
+  const r=await cmd('CLONE'+a,30000);
+  toast(r&&r.ok?('✅ '+(r.note||'Готово')):('Помилка: '+((r&&r.err)||'')));
+  await refresh(); setBusy(false);
 }
 function warnForeign2438(d, etmSec){
   const w=$('warn2438'); if(!w) return;

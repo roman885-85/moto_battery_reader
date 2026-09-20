@@ -780,6 +780,45 @@
     <div class="sub" id="fw-dang">
         <div class="subintro">Незворотні операції. Після них АКБ не працюватиме, доки не запишете еталон моделі.</div>
 <div class="card" style="border-color:#e74c3c">
+            <h2>🧬 Відновлення за зразком копії <span class="chipb">пише в DS2433 + DS2438</span></h2>
+            <div class="note w">⚠️ <b>Крайній засіб</b> — коли жодна інша спроба не вдалася.
+                Копії влаштовані так, що вся потрібна рації інформація живе в <b>DS2438</b>:
+                сторінки 3–6 — це дзеркало заголовка DS2433, і серед них байт паспортної ємності.
+                Тому копія працює з <b>порожнім DS2433</b>. Ми повторюємо це: пишемо монітор зі
+                зразка, лічильники обнуляємо, паливомір беремо з поточної напруги, а DS2433 стираємо.</div>
+            <div class="row"><span class="k">Дамп DS2438 копії (64 Б)</span>
+                <input type="file" id="clFile" accept=".bin"></div>
+            <div class="note i">або вставте 128 hex-символів:
+                <input type="text" id="clHex" placeholder="0F 48 18 22 …" style="width:100%;margin-top:4px;
+                       padding:6px;border-radius:6px;border:1px solid var(--line);background:var(--card2);color:var(--text)"></div>
+            <div class="rpg">
+                <div class="rpf"><span>Паспортна ємність, мА·год</span>
+                    <input type="number" id="clRated" min="1000" max="6000" step="25" placeholder="з дзеркала" style="width:110px"></div>
+                <div class="rpf"><span>Шунт</span>
+                    <select id="clRs" style="width:200px">
+                        <option value="">— з дампа копії —</option>
+                        <option value="4565">45.65 мОм (родина 4409)</option>
+                        <option value="2490">24.90 мОм (4488/4493)</option>
+                        <option value="2500">25.00 мОм (4809)</option>
+                    </select></div>
+                <div class="rpf"><span>Модель</span>
+                    <input type="text" id="clModel" maxlength="9" placeholder="PMNN4409A" style="width:140px"></div>
+                <div class="rpf"><span>Дата виготовлення</span>
+                    <input type="date" id="clMfg" style="width:150px"></div>
+                <div class="rpf"><span>Дата першого запуску</span>
+                    <input type="date" id="clUse" style="width:150px"></div>
+                <div class="rpf"><span>Знос, %</span>
+                    <input type="number" id="clHp" min="1" max="100" placeholder="100" style="width:80px"></div>
+            </div>
+            <label style="display:block;margin:8px 0"><input type="checkbox" id="clId33">
+                <b>Записати ідентичність у DS2433</b> — <b>ЕКСПЕРИМЕНТАЛЬНО</b>. У справжньої копії
+                DS2433 порожній; тут каркас береться з еталона <b>родини 4409</b>, а модель, дати
+                й знос шифруються ключем із ROM-ID <b>цього</b> чипа. Без галочки DS2433 лишається
+                стертим — рація бачитиме лише ємність і рахуватиме заряд.</label>
+            <input type="password" class="pw" id="pwClone" placeholder="🔑 Пароль адміністратора">
+            <button class="btn btn-danger" style="width:100%" onclick="cloneRestore()">🧬 ВІДНОВИТИ ЗА ЗРАЗКОМ КОПІЇ</button>
+        </div>
+<div class="card" style="border-color:#e74c3c">
             <h2>🔥 ПОВНЕ стирання DS2433 (крайній випадок) <span class="chipb">пише в DS2433</span></h2>
             <div class="note w">🛑 Стирає <b>ВЕСЬ</b> чіп DS2433 у 0xFF, разом з моделлю, серійним/ID та
                 калібруванням! Після цього АКБ <b>НЕ ПРАЦЮЄ</b>, доки не запишете еталонний дамп тієї ж
@@ -1140,6 +1179,40 @@ async function clockSync(){
         else toast('Помилка: '+r.message,'err');
     }catch(e){toast('Помилка: '+e.message,'err')}
 }
+// Крайній засіб: відновлення за зразком копії. Уся інформація, потрібна рації,
+// живе в DS2438 (дзеркало заголовка несе ємність), тож DS2433 лишаємо стертим.
+// Ідентичність у DS2433 — окремою галочкою й тільки як експеримент.
+async function clRead38(){
+    const f=$('clFile').files[0];
+    if(f){
+        if(f.size!==64){toast('Дамп DS2438 має бути рівно 64 байти (зараз '+f.size+')','err');return null}
+        const b=new Uint8Array(await f.arrayBuffer());
+        return Array.from(b).map(x=>x.toString(16).padStart(2,'0')).join('');
+    }
+    const e=$('clHex'); const h=e&&e.value?e.value.replace(/[^0-9A-Fa-f]/g,''):'';
+    if(h.length!==128){toast('Потрібно 64 байти: файл або 128 hex-символів','err');return null}
+    return h;
+}
+async function cloneRestore(){
+    const hex=await clRead38(); if(!hex)return;
+    const dnum=id=>{const e=$(id);return e&&e.value?e.value.replace(/-/g,''):'0'};
+    const id33=$('clId33').checked;
+    if(!confirm('🧬 Відновити за зразком копії?\n\nDS2438 буде записано зі зразка, лічильники '+
+                'обнулено, паливомір — із поточної напруги.\nDS2433 '+
+                (id33?'отримає ЕКСПЕРИМЕНТАЛЬНУ ідентичність на каркасі 4409.':'буде СТЕРТО.')+
+                '\n\nЦе крайній засіб. Продовжити?'))return;
+    prog(true,'Режим копії...');
+    try{
+        const r=await postForm('/api/clone',{password:$('pwClone').value,hex38:hex,
+            rated:$('clRated').value||'0', rsense:$('clRs').value||'0',
+            model:($('clModel').value||'').toUpperCase(), mfg:dnum('clMfg'), use:dnum('clUse'),
+            health:$('clHp').value||'0', id33:id33?'1':'0'});
+        if(r.status==='success'){toast('✅ '+r.message,'ok');await refreshAll();}
+        else toast('Помилка: '+r.message,'err');
+    }catch(e){toast('Помилка: '+e.message,'err')}
+    prog(false);
+}
+
 async function downloadBin(url,name){
     try{
         const r=await fetch(url);

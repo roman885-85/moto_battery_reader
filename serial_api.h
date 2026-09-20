@@ -510,8 +510,16 @@ static void serialExec(const String &line) {
                                   if (findTemplate(md.c_str()) < 0) sResp("{\"ok\":false,\"err\":\"немає шаблону моделі\"}");
                                   else if (mah <= 0)                sResp("{\"ok\":false,\"err\":\"вкажіть мА·год (INITBAT <модель> <мАг>)\"}");
                                   else { bool ok = performInitBattery(md.c_str(), mah);
-                                         sResp(ok ? (String("{\"ok\":true,\"model\":\"") + md + "\"}")
-                                                  : "{\"ok\":false,\"err\":\"збій запису\"}"); } }
+                                         if (!ok) sResp("{\"ok\":false,\"err\":\"збій запису\"}");
+                                         else {
+                                             // identity=false означає, що ROM чипа не знайшли
+                                             // й у пам'яті лишилась шифровка донора.
+                                             String r = "{\"ok\":true,\"model\":\""; r += md;
+                                             r += "\",\"identity\":";
+                                             r += g_initIdentityGen ? "true" : "false";
+                                             r += ",\"mfgDate\":"; r += g_initIdentityDate;
+                                             sResp(r + "}");
+                                         } } }
     // RESTOREPLAN <модель> [NOREAD] [FIXES=...] — що саме буде виправлено в
     // еталоні під ЦЕЙ пакет. Нічого не пише. Типово перечитує чипи, щоб заряд
     // був свіжий; NOREAD — перерахувати на вже прочитаних даних (клієнт смикає

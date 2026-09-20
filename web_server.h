@@ -1751,6 +1751,25 @@ static bool fillMissingRsense(uint8_t *d38, const uint8_t *tpl38) {
 // (як заводська очистка), ставимо здоров'я 100%, а введену вручну ємність у
 // мА·год пишемо в ICA (поточний заряд). Дзеркало калібрування DS2438<->DS2433
 // у шаблоні вже узгоджене. Пишемо ОБИДВІ мікросхеми.
+// Чи був чип ПОРОЖНІЙ до відновлення: усе 0xFF (стертий) або все 0x00 (новий /
+// не читався). Тільки в цьому випадку ідентичність можна генерувати наново — на
+// пакеті з даними це знищило б його справжню історію.
+static bool dumpIsBlank(const uint8_t *d33) {
+    if (!d33) return true;
+    bool allFF = true, all00 = true;
+    for (int i = 0; i < DUMP_SIZE; i++) {
+        if (d33[i] != 0xFF) allFF = false;
+        if (d33[i] != 0x00) all00 = false;
+        if (!allFF && !all00) return false;
+    }
+    return true;
+}
+
+// Чи згенерувалась ідентичність під ROM цього чипа в останньому «новому АКБ» —
+// щоб клієнт міг це показати, а не лише Serial-лог.
+static bool g_initIdentityGen = false;
+static int  g_initIdentityDate = 0;      // РРРРММДД, 0 — годинник не заведено
+
 bool performInitBattery(const char *model, long mah) {
     int t = findTemplate(model);
     if (t < 0) { displayShow("НЕМА ШАБЛОНУ"); return false; }
@@ -1791,10 +1810,40 @@ bool performInitBattery(const char *model, long mah) {
     factoryCleanData();
     impresFixHeader(batteryDump);
 
+    // ⚑ ІДЕНТИЧНІСТЬ ГЕНЕРУЄМО, А НЕ КОПІЮЄМО. Зашифровані блоки еталона
+    // (дати, знос, калібрування) зашифровані ROM-ом ДОНОРА: рація розшифрує їх
+    // СВОЇМ ключем і побачить сміття — це і є «невідомий акумулятор»
+    // (dumps/16-verbatim-4409a-chuzhyi-kliuch). Тому беремо ROM-ID цього чипа
+    // (він і є серійним номером пакета), із нього — ключі, і під ними пишемо
+    // свіжі числа: дата виготовлення = сьогодні, пакет ще не вмикали,
+    // лічильники нульові, потенційна ємність = паспортна.
+    int gy = 0, gm = 0, gd = 0;
+    deviceClockToday(&gy, &gm, &gd);          // 0, якщо годинник не заведено
+    int ratedNew = impresRatedMahFor(batteryDump, model);
+    uint8_t ctsNew = restoreCtsFromHealth(100, ratedNew, impresBmsRsense(batteryDump2438));
+    g_initIdentityGen = false;
+    g_initIdentityDate = 0;
+    if (hasSN2433 && impresIdentityWrite(batteryDump, chipSN2433, gy, gm, gd, ctsNew)) {
+        g_initIdentityGen = true;
+        g_initIdentityDate = (int)restoreDateNum(gy, gm, gd);
+        Serial.printf("INIT: ідентичність згенеровано під ROM %02X%02X…: ключі %02X/%02X, "
+                      "дата %04d-%02d-%02d, CTS %u\n",
+                      chipSN2433[0], chipSN2433[1], chipSN2433[1], chipSN2433[6],
+                      gy, gm, gd, (unsigned)ctsNew);
+        if (!gy) Serial.println("INIT: годинник не заведено — блок DATE лишено як є");
+    } else {
+        Serial.println("INIT: ROM DS2433 невідомий — ідентичність НЕ згенеровано, "
+                       "у чипі лишились зашифровані поля донора (рація побачить сміття)");
+    }
+    // Лічильники циклів ключа не потребують — обнуляємо їх окремо, інакше
+    // новий пакет успадкував би гістограму донора.
+    impresCyclesWrite(batteryDump, 0);
+    impresNonImpresWrite(batteryDump, 0);
+    impresFixHeader(batteryDump);
+
     // Монітор — у стан «новий пакет» (конфіг/поріг/дзеркало зберігаються).
     // Введена ємність (поточний заряд) у мА·год -> регістр ICA DS2438.
-    long ica = impresIcaFromMahRs(mah, impresRatedMahFor(batteryDump, model),
-                                  impresBmsRsense(batteryDump2438));
+    long ica = impresIcaFromMahRs(mah, ratedNew, impresBmsRsense(batteryDump2438));
     impresResetMonitor(batteryDump2438, batteryDump, (uint8_t)ica);
 
     ledSet(LED_WRITE); displayShow("НОВИЙ АКБ...");
@@ -1866,6 +1915,9 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
     uint8_t was38[DS2438_MEM_SIZE];
     bool had38 = hasDump2438;
     if (had38) memcpy(was38, batteryDump2438, DS2438_MEM_SIZE);
+    // Чи був чип порожній — питаємо ДО того, як шаблон затре буфер: після
+    // memcpy_P там уже лежить еталон, і відповідь була б завжди «ні».
+    bool wasBlank33 = !hasDump || dumpIsBlank(batteryDump);
 
     // ⚑ План складаємо ДО того, як шаблон затре буфери: після memcpy_P у
     // batteryDump2438 лежить монітор ДОНОРА, і все, пораховане з нього, буде
@@ -1924,6 +1976,25 @@ bool performRestoreTemplate(const char *model, bool *ok33 = nullptr, bool *ok38 
         if (touch38) impresResetMonitor(batteryDump2438, batteryDump, plan->icaUse);
         // Правки — ПІСЛЯ скидання монітора: воно обнуляє наробіток і паливомір.
         restorePlanApply(*plan, batteryDump, touch38 ? batteryDump2438 : nullptr);
+        // ⚑ Порожній чип: ідентичність ГЕНЕРУЄМО з його ROM, а не лишаємо
+        // донорську. Інакше зашифровані блоки еталона лишились би під ключем
+        // донора, і рація, розшифрувавши їх своїм, побачила б сміття —
+        // «невідомий акумулятор» (dumps/16). На пакеті З ДАНИМИ так робити не
+        // можна: це знищило б його справжню історію, тож умова строга —
+        // порожньо було до відновлення.
+        if (wasBlank33 && hasSN2433) {
+            int gy = 0, gm = 0, gd = 0;
+            deviceClockToday(&gy, &gm, &gd);
+            uint8_t cts = restoreCtsFromHealth(100, impresRatedMahFor(batteryDump, model),
+                                               impresBmsRsense(batteryDump2438));
+            impresIdentityWrite(batteryDump, chipSN2433, gy, gm, gd, cts);
+            impresCyclesWrite(batteryDump, 0);
+            impresNonImpresWrite(batteryDump, 0);
+            impresFixHeader(batteryDump);
+            Serial.printf("Restore: чип був порожній -> ідентичність згенеровано під ROM "
+                          "(ключі %02X/%02X, дата %04d-%02d-%02d, CTS %u)\n",
+                          chipSN2433[1], chipSN2433[6], gy, gm, gd, (unsigned)cts);
+        }
         char pl[96] = "";
         for (int i = 0, k = 0; i < RPF_COUNT; i++)
             if (plan->fx[i].on) k += snprintf(pl + k, sizeof(pl) - k, "%s%s",
@@ -2658,9 +2729,34 @@ void handleInitBattery() {
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Ємність має бути > 0 мА·год\"}"); return;
     }
     bool ok = performInitBattery(model.c_str(), mah);
-    server.send(ok ? 200 : 500, "application/json",
-        ok ? (String("{\"status\":\"success\",\"message\":\"Новий АКБ ") + model + " записано\"}")
-           : "{\"status\":\"error\",\"message\":\"Збій запису (див. Serial-лог)\"}");
+    if (!ok) {
+        server.send(500, "application/json",
+                    "{\"status\":\"error\",\"message\":\"Збій запису (див. Serial-лог)\"}");
+        return;
+    }
+    // Кажемо прямо, чи згенеровано ідентичність: без ROM у чипі лишається
+    // шифровка донора, і рація прочитає її як сміття — про це треба знати.
+    String m = "Новий АКБ "; m += model; m += " записано. ";
+    if (g_initIdentityGen) {
+        m += "Ідентичність згенеровано з ROM-ID цього чипа";
+        if (g_initIdentityDate) {
+            char d[16];
+            snprintf(d, sizeof(d), "%04d-%02d-%02d", g_initIdentityDate / 10000,
+                     (g_initIdentityDate / 100) % 100, g_initIdentityDate % 100);
+            m += ", дата виготовлення "; m += d;
+        } else {
+            m += " (дату виготовлення не записано: годинник пристрою не заведено)";
+        }
+        m += ".";
+    } else {
+        m += "⚠️ ROM-ID чипа невідомий — ідентичність НЕ згенеровано, у чипі лишились "
+             "зашифровані поля донора. Перечитайте АКБ і повторіть.";
+    }
+    String j = "{\"status\":\"success\",\"identity\":";
+    j += g_initIdentityGen ? "true" : "false";
+    j += ",\"mfgDate\":"; j += g_initIdentityDate;
+    j += ",\"message\":\""; j += m; j += "\"}";
+    server.send(200, "application/json", j);
 }
 
 // Перезавантаження ESP32 (під паролем). Корисно після серії операцій або якщо

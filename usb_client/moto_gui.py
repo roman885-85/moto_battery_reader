@@ -1404,6 +1404,12 @@ class App:
         ttk.Button(b4r, text="🧪 Байт-у-байт (ручний режим, для аналізу)", command=self.restore_battery_verbatim).pack(anchor="w", pady=2)
 
         b4 = ttk.LabelFrame(p_id, text="🆕 Новий акумулятор (порожній чип)  ·  пише в DS2433 + DS2438", padding=8); b4.pack(fill="x", pady=4)
+        ttk.Label(b4, text="З еталона береться лише МОДЕЛЬНА частина. Ідентичність не копіюється, а\n"
+                           "ГЕНЕРУЄТЬСЯ з ROM-ID саме цього чипа: зашифровані поля еталона зашифровані\n"
+                           "ROM-ом донора, і рація прочитала б їх як сміття («невідомий акумулятор»).\n"
+                           "Дата виготовлення — сьогоднішня, пакет ще не ввімкнений. Чип має бути\n"
+                           "ПРОЧИТАНИЙ: без ROM-ID генерувати нема з чого.",
+                  foreground="#b9bd86", justify="left").pack(anchor="w")
         self.cbInit = self._row(b4, "Модель-еталон:", lambda fr: self._combo(fr, 18))
         self.eInitMah = self._row(b4, "Заряд, мА·год:", lambda fr: self._entry(fr, 10, "1000"))
         ttk.Button(b4, text="🆕 Записати новий АКБ (DS2433+DS2438)", command=self.init_battery).pack(anchor="w", pady=2)
@@ -2015,7 +2021,23 @@ class App:
         if not messagebox.askyesno("Новий АКБ", f"Ініціалізувати чип як НОВИЙ {model} ({mah} мА·год)?\nПерезапише ОБИДВІ мікросхеми. Лише для порожнього чипа."):
             return
         self.maybe_auth(lambda: (self.status("Запис нового АКБ..."),
-                                 self.cmd(f"INITBAT {model} {mah}", 25.0, cb=lambda r: self._after_write(r, f"✅ Новий {model} записано"))))
+                                 self.cmd(f"INITBAT {model} {mah}", 25.0,
+                                          cb=lambda r: self._after_init(r, model))))
+
+    def _after_init(self, r, model):
+        """identity=False означає, що ROM чипа не знайшли й у пам'яті лишилась
+        шифровка донора — рація прочитає її як сміття. Мовчати про це не можна."""
+        if isinstance(r, dict) and r.get("ok") and not r.get("identity", True):
+            messagebox.showwarning(
+                "Новий АКБ",
+                "%s записано, але ROM-ID чипа DS2433 невідомий — ідентичність НЕ згенеровано.\n\n"
+                "У чипі лишилась зашифрована частина донора: рація розшифрує її своїм ключем\n"
+                "і побачить сміття («невідомий акумулятор»). Перечитайте АКБ і повторіть." % model)
+            self._after_write(r, "⚠️ %s записано без згенерованої ідентичності" % model)
+            return
+        dt = _dnum((r or {}).get("mfgDate", 0)) if isinstance(r, dict) else ""
+        self._after_write(r, "✅ Новий %s записано%s"
+                          % (model, (", ідентичність із ROM, дата " + dt) if dt and dt != "—" else ""))
 
     # ---- керований розряд ---------------------------------------------
     def _dis_show(self, r):

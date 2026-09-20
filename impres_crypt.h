@@ -126,8 +126,23 @@ inline void impresCryptRead(const uint8_t *d33, uint8_t k1, uint8_t k2,
 // Записати ті самі поля ключем k1/k2 і полагодити суми блоків. Пишемо лише те,
 // що справді прочиталось: інакше «перешифрування» тихо заповнило б нулями
 // блок, якого ми не бачили.
+// Привести поля до внутрішньо несуперечливого стану ПЕРЕД записом. Пакет, який
+// уже вмикали, не міг жодного разу заряджатись: день останнього заряду не може
+// бути меншим за день першого запуску. Раніше ми лишали його нульовим — і
+// власний же підбір ключа згодом вважав такий вміст сміттям.
+inline void impresCryptNormalize(ImpresCryptFields *f) {
+    if (!f) return;
+    if (f->dayInitialUse > 0 && f->dayLastCharge < f->dayInitialUse)
+        f->dayLastCharge = f->dayInitialUse;
+    if (f->dayInitialUse2 && f->dayInitialUse2 != f->dayInitialUse)
+        f->dayInitialUse2 = f->dayInitialUse;   // поле-близнюк іде разом
+}
+
 inline void impresCryptWrite(uint8_t *d33, uint8_t k1, uint8_t k2,
-                             const ImpresCryptFields *f) {
+                             const ImpresCryptFields *fIn) {
+    ImpresCryptFields tmp = *fIn;
+    impresCryptNormalize(&tmp);
+    const ImpresCryptFields *f = &tmp;
     uint16_t aCyc = impresCryptAddr(d33, BMS_V_CYCLE);
     uint16_t aRec = impresCryptAddr(d33, BMS_V_RECOND);
     uint16_t aDat = impresCryptAddr(d33, BMS_V_DATE);
@@ -238,9 +253,31 @@ inline bool impresNonImpresWrite(uint8_t *d33, int cycles) {
 // підробити результат неможливо). Повертає false, якщо ключ не визначається:
 // тоді перешифровувати нема чого — ми не знаємо, що саме там записано.
 inline bool impresCryptSourceKey(const uint8_t *d33, const uint8_t *d38,
-                                 uint8_t *k1, uint8_t *k2) {
+                                 uint8_t *k1, uint8_t *k2,
+                                 const uint8_t *rom33 = nullptr) {
     ImpresBms o;
     if (!impresBmsParse(d33, d38, nullptr, 0.0f, &o)) return false;
+    // ⚑ Якщо ROM цього чипа відомий — його ключ перевіряємо ПЕРШИМ і прямо, а
+    // не шукаємо наосліп. Підбір вимагає, щоб кандидат лишився РІВНО один, і на
+    // щойно записаному пакеті (лічильники нульові, дату вписали руками) жоден
+    // кандидат не проходив — картка правок показувала прочерк, хоча вкладка
+    // «Дані», яка читає прямо ROM-ом, показувала все правильно.
+    // Питання, на яке тут відповідають, — не «який ключ підійде», а «чи не
+    // зашифровано вміст ЧУЖИМ ключем». Із відомим ROM його вирішує сама дата:
+    // правильний ключ дає правдоподібну дату виготовлення, чужий — сміття на
+    // кшталт 2107-13-21 (dumps/16). Звірку лічильників тут НЕ застосовуємо: вона
+    // потрібна, щоб розрізнити 16 кандидатів наосліп, а ROM неоднозначності не
+    // лишає. Саме на ній і горіло: щойно записаний пакет має нульові лічильники,
+    // тоді як CCA монітора вже ненульове, — і власний ключ відкидався як чужий.
+    if (rom33) {
+        ImpresBms t = o;
+        t.key1 = rom33[1]; t.key2 = rom33[6]; t.haveKey = true;
+        impresBmsDecrypt(d33, &t);
+        if (impresBmsDateSane(t.mfgY, t.mfgM, t.mfgD)) {
+            *k1 = rom33[1]; *k2 = rom33[6];
+            return true;
+        }
+    }
     if (impresBmsFindKey(d33, d38, &o) != 1) return false;
     *k1 = o.key1; *k2 = o.key2;
     return true;

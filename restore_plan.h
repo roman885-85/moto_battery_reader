@@ -315,7 +315,10 @@ inline void restorePlanBuild(RestorePlan &p, const char *model,
                 p.useSeen = restoreDateNum(y, m, d);
             }
         }
-        p.cryptSrcOk = impresCryptSourceKey(pack33, pack38, &p.srcK1, &p.srcK2);
+        // ROM цього чипа передаємо як підказку: коли він відомий, ключ не
+        // треба вгадувати — його перевіряють прямо (див. impresCryptSourceKey).
+        p.cryptSrcOk = impresCryptSourceKey(pack33, pack38, &p.srcK1, &p.srcK2,
+                                            p.haveRom ? packRom33 : nullptr);
         if (p.cryptSrcOk) {
             impresCryptRead(pack33, p.srcK1, p.srcK2, &p.cf);
             p.mfgY = p.cf.mfgY; p.mfgM = p.cf.mfgM; p.mfgD = p.cf.mfgD;

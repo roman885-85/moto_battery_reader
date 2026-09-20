@@ -794,6 +794,17 @@
 <div class="page" id="cfg">
     <div class="subintro">Налаштування самого пристрою. В акумулятор нічого не пишеться.</div>
 <div class="card">
+            <h2>🕐 Дата пристрою <span class="nochip">в АКБ не пише</span></h2>
+            <div class="note i">Годинника реального часу тут немає, а NTP недосяжний: пристрій сам —
+                точка доступу. Тому дату йому <b>приносить клієнт</b> — кожен запит плану чи запису
+                вже несе сьогоднішню. Вона зберігається й переживає перезавантаження, і саме з неї
+                рахується наробіток там, де клієнта немає: у меню самого приладу й у Майстрі з екрана.</div>
+            <div class="row"><span class="k">Пристрій вважає, що сьогодні</span>
+                <b id="clkNow">—</b></div>
+            <div class="row"><span class="k">Звідки взято</span><b id="clkSrc">—</b></div>
+            <button class="btn btn-info" style="width:100%" onclick="clockSync()">🕐 СИНХРОНІЗУВАТИ З ЦИМ ПРИСТРОЄМ</button>
+        </div>
+<div class="card">
             <h2>🔊 Налаштування звуку <span class="nochip">в АКБ не пише</span></h2>
             <div class="note i">Нічого не пише в акумулятор — це налаштування самого пристрою; воно
                 зберігається в його пам'яті й переживає перезавантаження. Заводські значення підібрані
@@ -854,6 +865,9 @@ function showTab(el){
     document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
     document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
     el.classList.add('active'); $(el.dataset.p).classList.add('active');
+    // Дату пристрою питаємо при вході на «Налаштування»: тримати її свіжою
+    // постійним опитуванням немає сенсу, вона міняється раз на добу.
+    if(el.dataset.p==='cfg') clockLoad();
     window.scrollTo(0,0);
 }
 // Під-вкладки «Ремонту». Картка «Відновити еталон» показує план правок, і його
@@ -1106,6 +1120,26 @@ async function setHealth(){
     prog(false);
 }
 
+// Дата пристрою. Годинника реального часу тут немає, тож єдине джерело —
+// клієнт; показуємо, що пристрій думає, і даємо виправити одним рухом.
+const CLK_SRC={client:'від клієнта (точна)',
+               saved:'відновлена після перезавантаження — відстає',
+               none:'не заведено'};
+async function clockLoad(){
+    try{
+        const r=await(await fetch('/api/clock')).json();
+        const dt=r.today?(''+r.today).replace(/^(\d{4})(\d{2})(\d{2})$/,'$1-$2-$3'):'—';
+        if($('clkNow'))$('clkNow').textContent=dt;
+        if($('clkSrc'))$('clkSrc').textContent=CLK_SRC[r.src]||r.src||'—';
+    }catch(e){}
+}
+async function clockSync(){
+    try{
+        const r=await postForm('/api/clock',{today:rpToday()});
+        if(r.status==='success'){toast('Дату пристрою синхронізовано','ok');await clockLoad();}
+        else toast('Помилка: '+r.message,'err');
+    }catch(e){toast('Помилка: '+e.message,'err')}
+}
 async function downloadBin(url,name){
     try{
         const r=await fetch(url);

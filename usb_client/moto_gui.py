@@ -1428,6 +1428,19 @@ class App:
         ttk.Button(b6, text="🔥 ПОВНЕ стирання DS2433", command=self.wipe33).pack(anchor="w", pady=2)
         ttk.Button(b6, text="🔥 ПОВНЕ стирання DS2438", command=self.wipe38).pack(anchor="w", pady=2)
 
+        # Дата пристрою. Годинника реального часу немає, NTP недосяжний (пристрій
+        # сам — точка доступу), тож єдине джерело — цей ПК. Показуємо, що
+        # пристрій думає, і даємо виправити одним рухом.
+        bclk = ttk.LabelFrame(p_cfg, text="🕐 Дата пристрою  ·  в АКБ не пише", padding=8)
+        bclk.pack(fill="x", pady=4)
+        ttk.Label(bclk, text="З неї рахується наробіток там, де клієнта немає — у меню самого\n"
+                             "приладу й у Майстрі з екрана. Зберігається й переживає перезавантаження.",
+                  foreground="#b9bd86", justify="left").pack(anchor="w")
+        self.lblClk = ttk.Label(bclk, text="пристрій вважає, що сьогодні: —", foreground="#c8b04a")
+        self.lblClk.pack(anchor="w", pady=(2, 0))
+        ttk.Button(bclk, text="🕐 Синхронізувати з цим ПК",
+                   command=self.clock_sync).pack(anchor="w", pady=2)
+
         self._build_sound(p_cfg)
 
         b7 = ttk.LabelFrame(p_cfg, text="Пристрій", padding=8); b7.pack(fill="x", pady=4)
@@ -1771,7 +1784,8 @@ class App:
             self.connected = True
             self.btnConn.config(text="⏏ Відключити")
             self.status("Підключено (" + r.get("port", "") + ")", True)
-            self.cmd("PING", 3.0, cb=lambda _: (self.load_templates(), self.sound_load(), self.refresh()))
+            self.cmd("PING", 3.0, cb=lambda _: (self.load_templates(), self.sound_load(),
+                                                 self.clock_load(), self.refresh()))
         else:
             self.status("Помилка порту: " + r.get("err", ""), False)
 
@@ -2717,6 +2731,29 @@ class App:
         if not messagebox.askyesno("Здоров'я", f"Записати ємність {v}%?"):
             return
         self.maybe_auth(lambda: self.cmd(f"SETCAP {v}", 15.0, cb=lambda r: self._after_write(r, "✅ Записано")))
+
+    CLK_SRC = {"client": "від клієнта (точна)",
+               "saved":  "відновлена після перезавантаження — відстає",
+               "none":   "не заведено"}
+
+    def clock_load(self):
+        """Спитати, яку дату пристрій вважає сьогоднішньою."""
+        if not self.connected:
+            return
+        self.cmd("CLOCK", 8.0, cb=self._clock_show)
+
+    def _clock_show(self, r):
+        if not isinstance(r, dict) or not r.get("ok"):
+            return
+        src = self.CLK_SRC.get(r.get("src", ""), r.get("src", "—"))
+        self.lblClk.config(text="пристрій вважає, що сьогодні: %s  ·  %s"
+                                % (_dnum(r.get("today", 0)), src))
+
+    def clock_sync(self):
+        if not self.need_conn():
+            return
+        self.cmd("CLOCK %d" % self._rp_today(), 8.0,
+                 cb=lambda r: (self.status("✅ Дату пристрою синхронізовано"), self.clock_load()))
 
     def set_health(self):
         """Знос окремою дією. Рахує ПРИСТРІЙ (той самий restore_plan.h, що й у

@@ -165,13 +165,23 @@ bool readAllChips(bool &ok2433, bool &ok2438) {
 
     // Серійні номери чипів (лазерні ROM-ID). ROM DS2433 — це ще й ключ до
     // зашифрованих лічильників і дат у прошивці АКБ (див. impres_bms.h).
+    // ⚑ Дзеркалимо стан драйвера ОБОМА гілками. Раніше «else» не було, і
+    // серійник лишався від ПОПЕРЕДНЬОГО пакета, якщо цей не визначився. Для
+    // показу це дрібниця, а для шифрування — ні: ROM DS2433 і є ключем, і
+    // старий ROM означав би, що дані цього пакета зашифровано чужим.
     if (battery.hasRom2438()) {
         memcpy(chipSN2438, battery.rom2438(), 8);
         hasSN2438 = true;
+    } else {
+        hasSN2438 = false;
+        memset(chipSN2438, 0, sizeof(chipSN2438));
     }
     if (battery.hasRom2433()) {
         memcpy(chipSN2433, battery.rom2433(), 8);
         hasSN2433 = true;
+    } else {
+        hasSN2433 = false;
+        memset(chipSN2433, 0, sizeof(chipSN2433));
     }
 
     char st[40];

@@ -70,6 +70,19 @@ bool BatteryReader::findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr) {
     // Скидаємо пошук для наступного разу
     _ow->reset_search();
 
+    // ⚑ ПАКЕТ ЗМІНИЛИ — КЕШ НЕДІЙСНИЙ. ROM-ID це не просто серійник для показу:
+    // з нього беруться ключі шифрування дат і лічильників. Якщо новий пакет
+    // знайшовся лише одним чипом, а другий підставився з кешу від ПОПЕРЕДНЬОГО,
+    // ми зашифрували б дані цього пакета чужим ключем — рівно та біда, від якої
+    // лікуємо. Обидва чипи живуть в одному пакеті, тож зміна будь-якого з ROM
+    // означає, що пакет інший, і другий кеш теж треба викинути.
+    bool swapped = (found2433 && _haveRom2433 && memcmp(_rom2433, ds2433_addr, 8) != 0) ||
+                   (found2438 && _haveRom2438 && memcmp(_rom2438, ds2438_addr, 8) != 0);
+    if (swapped) {
+        Serial.println("1-Wire: ROM змінився -> інший пакет, кеш ROM скинуто");
+        _haveRom2433 = _haveRom2438 = false;
+    }
+
     // Запам’ятовуємо ROM-ID (серійники) знайдених чипів
     if (found2433) { memcpy(_rom2433, ds2433_addr, 8); _haveRom2433 = true; }
     if (found2438) { memcpy(_rom2438, ds2438_addr, 8); _haveRom2438 = true; }
@@ -96,7 +109,12 @@ bool BatteryReader::findDevices(uint8_t* ds2433_addr, uint8_t* ds2438_addr) {
                 Serial.println("DS2438: using cached ROM");
             }
         } else {
-            Serial.println("1-Wire: no presence pulse -> bus empty, cached ROM NOT used");
+            // Шина порожня — пакет зняли. Кеш ROM після цього нічого не
+            // означає: наступним поставлять інший пакет, і підставити йому
+            // ключ від попереднього — найгірше, що можна зробити.
+            Serial.println("1-Wire: no presence pulse -> bus empty, "
+                           "cached ROM NOT used and cleared");
+            _haveRom2433 = _haveRom2438 = false;
         }
     }
 

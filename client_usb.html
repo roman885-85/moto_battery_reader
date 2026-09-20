@@ -606,6 +606,15 @@ input,select{width:auto}.pw{width:100%;margin:6px 0}
 <div class="page" id="cfg">
   <div class="subintro">Налаштування пристрою та журнал обміну. В акумулятор нічого не пишеться.</div>
 <div class="card">
+      <h2>🕐 Дата пристрою <span class="nochip">в АКБ не пише</span></h2>
+      <div class="note i">Годинника реального часу тут немає, а NTP недосяжний: пристрій сам —
+        точка доступу. Дату йому <b>приносить клієнт</b>; вона зберігається й переживає
+        перезавантаження, і саме з неї рахується наробіток там, де клієнта немає.</div>
+      <div class="row"><span class="k">Пристрій вважає, що сьогодні</span><b id="clkNow">—</b></div>
+      <div class="row"><span class="k">Звідки взято</span><b id="clkSrc">—</b></div>
+      <button class="btn b-inf" onclick="clockSync()">🕐 Синхронізувати з цим ПК</button>
+    </div>
+<div class="card">
       <h2>🔊 Налаштування звуку <span class="nochip">в АКБ не пише</span></h2>
       <div class="note i">Нічого не пише в акумулятор — це налаштування самого пристрою; воно
         зберігається в його пам'яті й переживає перезавантаження. Кожен п'єзо має свій резонанс:
@@ -658,7 +667,10 @@ let authed=false;
 
 function tab(el,id){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-  el.classList.add('active');$(id).classList.add('active');window.scrollTo(0,0);}
+  el.classList.add('active');$(id).classList.add('active');window.scrollTo(0,0);
+  // Дату пристрою питаємо при вході на «Налаштування»: вона міняється раз на
+  // добу, постійно опитувати немає сенсу.
+  if(id==='cfg') clockLoad();}
 // Під-вкладки «Ремонту»: сторінка була на 20 карток в один скрол. Картка
 // «Відновити еталон» показує план правок — при поверненні на неї план треба
 // перечитати, інакше висів би складений під іншу модель.
@@ -869,6 +881,25 @@ async function setHealth(){
   const r=await cmd('SETHEALTH '+v,20000);
   if(r&&r.ok){toast('Знос '+r.health+' % записано (CTS '+r.cts+')');await refresh();}
   else toast('Помилка: '+((r&&r.err)||'збій запису'));
+}
+// Дата пристрою: єдине джерело — клієнт, тож показуємо, що пристрій думає,
+// і даємо виправити одним рухом.
+const CLK_SRC={client:'від клієнта (точна)',
+               saved:'відновлена після перезавантаження — відстає',
+               none:'не заведено'};
+async function clockLoad(){
+  if(!connected) return;
+  const r=await cmd('CLOCK',8000);
+  if(!r||!r.ok) return;
+  const dt=r.today?(''+r.today).replace(/^(\d{4})(\d{2})(\d{2})$/,'$1-$2-$3'):'—';
+  if($('clkNow'))$('clkNow').textContent=dt;
+  if($('clkSrc'))$('clkSrc').textContent=CLK_SRC[r.src]||r.src||'—';
+}
+async function clockSync(){
+  if(!connected){toast('Підключіться');return;}
+  const r=await cmd('CLOCK '+rpToday(),8000);
+  if(r&&r.ok){toast('Дату пристрою синхронізовано');await clockLoad();}
+  else toast('Помилка: '+((r&&r.err)||''));
 }
 function warnForeign2438(d, etmSec){
   const w=$('warn2438'); if(!w) return;

@@ -70,5 +70,40 @@ only_gui    = sorted(gcmds - usb_cmd)
 if only_bridge: print("   лише в бріджі: " + ", ".join(only_bridge))
 if only_gui:    print("   лише в GUI:    " + ", ".join(only_gui))
 
+# ── Ключ шифрування береться з ROM ЦІЛЬОВОГО чипа ──────────────────────────
+#  Дані, які потребують шифрування, мусять шифруватись ключем із серійного
+#  номера того акумулятора, у який їх пишуть. impresCryptWrite() приймає ключ
+#  звичайними параметрами, тож сама сигнатура цього не гарантує — перевіряємо
+#  джерела: у кожному виклику ключ має походити з ROM, і виклик має стояти під
+#  умовою «ROM відомий». Інакше в пакет піде шифровка під чужим ключем, і
+#  рація прочитає сміття — рівно та біда, від якої лікуємо.
+print("\n=== ключ шифрування = ROM цільового чипа")
+ROM_OK = ("romK1", "romK2", "chipSN2433", "rom33", "packRom33")
+GUARD  = ("haveRom", "hasSN2433")
+sites = 0
+for name in ("restore_plan.h", "web_server.h", "recovery.h", "serial_api.h", "impres_clone.h"):
+    f = root / name
+    if not f.exists():
+        continue
+    src = f.read_text(encoding="utf-8")
+    lines = src.splitlines()
+    for i, ln in enumerate(lines):
+        if "impresCryptWrite(" not in ln and "impresIdentityWrite(" not in ln:
+            continue
+        if ln.lstrip().startswith(("//", "*")) or "inline " in ln:
+            continue          # оголошення й коментарі, а не виклик
+        sites += 1
+        if not any(k in ln for k in ROM_OK):
+            bad("%s:%d — ключ не з ROM: %s" % (name, i + 1, ln.strip()[:70]))
+        # Умова «ROM відомий» має стояти вище — зазвичай вона відкриває весь
+        # блок запису, а той буває довгим: у restore_plan.h між if і самим
+        # записом лежить підготовка полів на 29 рядків. Тому вікно широке.
+        ctx = "\n".join(lines[max(0, i - 45):i + 1])
+        if not any(g in ctx for g in GUARD):
+            bad("%s:%d — виклик не під умовою «ROM відомий»" % (name, i + 1))
+print("   місць запису шифрованого: %d" % sites)
+if sites == 0:
+    bad("жодного виклику не знайдено — перевірка нічого не значить")
+
 print("\n%s (помилок: %d)" % ("Є ПОМИЛКИ" if fails else "усі перевірки пройдено", fails))
 sys.exit(1 if fails else 0)
